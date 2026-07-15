@@ -151,7 +151,7 @@ Open the built-in frontend at:
 http://localhost:8000/dashboard
 ```
 
-Each camera tile shows its assigned tasks. Fire, smoke, and plate bounding boxes are drawn server-side on the exact frame that produced the AI result, then streamed as MJPEG. Cameras assigned to both tasks are published after both results for that frame have been composed.
+Each camera tile shows its assigned tasks. Fire, smoke, and plate bounding boxes are drawn server-side on the exact frame that produced the AI result. The dashboard receives every camera through one multiplexed binary WebSocket, avoiding the browser's six-connection HTTP/1.1 limit. Cameras assigned to both tasks are published after both results for that frame have been composed.
 
 The dashboard polls the same source registry and broadcast-state APIs every two seconds. Changes made through Swagger at `/docs` therefore update camera names, enabled state, and task badges without a manual page refresh. The dashboard links back to Swagger, `/dashboard` is listed in Swagger, and `/` redirects to the dashboard.
 
@@ -174,9 +174,12 @@ Content-Type: application/json
 Streams and snapshots are available at:
 
 ```text
+WS  /api/v1/broadcast/ws
 GET /api/v1/broadcast/streams/camera-01.mjpg
 GET /api/v1/broadcast/snapshots/camera-01.jpg
 ```
+
+The WebSocket is the dashboard transport for all cameras. Individual MJPEG endpoints remain available for external clients that need a single camera.
 
 Positive detections print one-line `[DETECTION]` records to standard output. Empty frames are not logged.
 

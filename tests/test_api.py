@@ -33,6 +33,7 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert "Video AI Operations Wall" in response.text
             assert "synchronizeDashboard" in response.text
+            assert "/api/v1/broadcast/ws" in response.text
 
             response = client.get("/", follow_redirects=False)
             assert response.status_code in {302, 307}

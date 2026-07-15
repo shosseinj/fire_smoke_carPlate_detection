@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
+import struct
 from collections.abc import Iterator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -49,6 +53,44 @@ def update_broadcast_state(
 ) -> dict:
     runtime.broadcast.set_enabled(payload.enabled)
     return runtime.broadcast.status()
+
+
+@router.websocket("/api/v1/broadcast/ws")
+async def annotated_broadcast_websocket(websocket: WebSocket) -> None:
+    from app.main import runtime
+
+    await websocket.accept()
+    if not runtime.broadcast.enabled:
+        await websocket.close(code=1013, reason="Frontend broadcasting is disabled")
+        return
+    subscriber_id, target = runtime.broadcast.subscribe()
+    try:
+        while runtime.broadcast.enabled:
+            try:
+                frame = await asyncio.to_thread(target.get, True, 20.0)
+            except queue.Empty:
+                await websocket.send_json({"type": "keepalive"})
+                continue
+            try:
+                if frame is None:
+                    break
+                header = json.dumps(
+                    {
+                        "source_id": frame.source_id,
+                        "frame_index": frame.frame_index,
+                        "tasks": list(frame.tasks),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                await websocket.send_bytes(
+                    struct.pack("!I", len(header)) + header + frame.jpeg
+                )
+            finally:
+                target.task_done()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        runtime.broadcast.unsubscribe(subscriber_id)
 
 
 def _mjpeg_stream(hub: AnnotatedBroadcastHub, source_id: str) -> Iterator[bytes]:

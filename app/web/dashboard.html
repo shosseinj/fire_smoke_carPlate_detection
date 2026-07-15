@@ -210,10 +210,15 @@
     let broadcasting = false;
     let sourcesSignature = '';
     let synchronizationRunning = false;
+    let broadcastSocket = null;
+    let reconnectTimer = null;
 
     const taskLabel = task => task === 'fire_smoke' ? 'Fire / Smoke' : 'Plate Recognition';
 
     function renderSources() {
+      for (const image of document.querySelectorAll('img[data-object-url]')) {
+        URL.revokeObjectURL(image.dataset.objectUrl);
+      }
       cameraGrid.innerHTML = '';
       for (const source of sources) {
         const card = document.createElement('article');
@@ -246,20 +251,72 @@
       applyStreams();
     }
 
+    function updateFrame(payload) {
+      const view = new DataView(payload);
+      if (view.byteLength < 5) return;
+      const headerLength = view.getUint32(0, false);
+      if (headerLength <= 0 || headerLength + 4 >= view.byteLength) return;
+      const headerBytes = new Uint8Array(payload, 4, headerLength);
+      const header = JSON.parse(new TextDecoder().decode(headerBytes));
+      const image = [...document.querySelectorAll('img[data-source-id]')]
+        .find(item => item.dataset.sourceId === header.source_id);
+      if (!image) return;
+      const jpeg = new Uint8Array(payload, 4 + headerLength);
+      const nextUrl = URL.createObjectURL(new Blob([jpeg], {type: 'image/jpeg'}));
+      const previousUrl = image.dataset.objectUrl;
+      image.dataset.objectUrl = nextUrl;
+      image.src = nextUrl;
+      if (previousUrl) {
+        image.addEventListener('load', () => URL.revokeObjectURL(previousUrl), {once: true});
+      }
+    }
+
+    function connectBroadcastSocket() {
+      if (!broadcasting) return;
+      if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
+      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws`);
+      broadcastSocket = socket;
+      socket.binaryType = 'arraybuffer';
+      socket.addEventListener('message', event => {
+        if (event.data instanceof ArrayBuffer) updateFrame(event.data);
+      });
+      socket.addEventListener('close', () => {
+        if (broadcastSocket === socket) broadcastSocket = null;
+        if (broadcasting) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = window.setTimeout(connectBroadcastSocket, 1000);
+        }
+      });
+    }
+
+    function disconnectBroadcastSocket() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      if (broadcastSocket) {
+        const socket = broadcastSocket;
+        broadcastSocket = null;
+        socket.close(1000, 'Broadcast disabled');
+      }
+    }
+
     function applyStreams() {
       for (const image of document.querySelectorAll('img[data-source-id]')) {
         const sourceId = image.dataset.sourceId;
         const status = document.querySelector(`[data-status-for="${sourceId}"]`);
         if (broadcasting) {
-          status.textContent = 'Waiting for processed frames…';
+          status.textContent = 'Waiting for multiplexed AI stream…';
           status.classList.remove('hidden');
-          image.src = `/api/v1/broadcast/streams/${encodeURIComponent(sourceId)}.mjpg?t=${Date.now()}`;
         } else {
+          if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+          delete image.dataset.objectUrl;
           image.removeAttribute('src');
           status.textContent = 'Frontend broadcast disabled';
           status.classList.remove('hidden');
         }
       }
+      if (broadcasting) connectBroadcastSocket();
+      else disconnectBroadcastSocket();
     }
 
     function showState(enabled) {

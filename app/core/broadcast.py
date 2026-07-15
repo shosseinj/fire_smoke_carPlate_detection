@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import queue
 import threading
 import time
+import uuid
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,6 +55,9 @@ class AnnotatedBroadcastHub:
             str, OrderedDict[int, PendingAnnotatedFrame]
         ] = defaultdict(OrderedDict)
         self._latest: dict[str, EncodedBroadcastFrame] = {}
+        self._subscribers: dict[
+            str, queue.Queue[EncodedBroadcastFrame | None]
+        ] = {}
         self._version = 0
         self._rendered_frames = 0
         self._encode_failures = 0
@@ -68,6 +73,16 @@ class AnnotatedBroadcastHub:
             if not self._enabled:
                 self._pending.clear()
                 self._latest.clear()
+                for target in self._subscribers.values():
+                    try:
+                        target.put_nowait(None)
+                    except queue.Full:
+                        try:
+                            target.get_nowait()
+                            target.task_done()
+                            target.put_nowait(None)
+                        except (queue.Empty, queue.Full):
+                            pass
             self._condition.notify_all()
             return self._enabled
 
@@ -260,7 +275,7 @@ class AnnotatedBroadcastHub:
                 return
             self._version += 1
             self._rendered_frames += 1
-            self._latest[packet.source_id] = EncodedBroadcastFrame(
+            encoded_frame = EncodedBroadcastFrame(
                 version=self._version,
                 source_id=packet.source_id,
                 frame_index=packet.frame_index,
@@ -268,7 +283,39 @@ class AnnotatedBroadcastHub:
                 tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
                 updated_monotonic=time.monotonic(),
             )
+            self._latest[packet.source_id] = encoded_frame
+            for target in self._subscribers.values():
+                try:
+                    target.put_nowait(encoded_frame)
+                except queue.Full:
+                    try:
+                        target.get_nowait()
+                        target.task_done()
+                        target.put_nowait(encoded_frame)
+                    except (queue.Empty, queue.Full):
+                        pass
             self._condition.notify_all()
+
+    def subscribe(
+        self,
+        maximum_queue: int = 64,
+    ) -> tuple[str, queue.Queue[EncodedBroadcastFrame | None]]:
+        subscriber_id = uuid.uuid4().hex
+        target: queue.Queue[EncodedBroadcastFrame | None] = queue.Queue(
+            maxsize=max(8, maximum_queue)
+        )
+        with self._condition:
+            self._subscribers[subscriber_id] = target
+            for frame in sorted(self._latest.values(), key=lambda item: item.version):
+                try:
+                    target.put_nowait(frame)
+                except queue.Full:
+                    break
+        return subscriber_id, target
+
+    def unsubscribe(self, subscriber_id: str) -> None:
+        with self._condition:
+            self._subscribers.pop(subscriber_id, None)
 
     def latest(self, source_id: str) -> EncodedBroadcastFrame | None:
         with self._condition:
@@ -301,6 +348,7 @@ class AnnotatedBroadcastHub:
                 "enabled": self._enabled,
                 "rendered_frames": self._rendered_frames,
                 "encode_failures": self._encode_failures,
+                "websocket_subscribers": len(self._subscribers),
                 "active_streams": {
                     source_id: {
                         "frame_index": frame.frame_index,

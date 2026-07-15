@@ -37,6 +37,7 @@ def result(task: TaskName, data: dict) -> TaskResult:
 
 def test_dual_task_frame_is_broadcast_only_after_both_exact_results() -> None:
     hub = AnnotatedBroadcastHub(enabled=True)
+    subscriber_id, target = hub.subscribe()
     source_packet = packet(["fire_smoke", "plate_recognition"])
     fire_result = result(
         TaskName.FIRE_SMOKE,
@@ -67,10 +68,17 @@ def test_dual_task_frame_is_broadcast_only_after_both_exact_results() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert encoded.tasks == ("fire_smoke", "plate_recognition")
+    delivered = target.get(timeout=1.0)
+    assert delivered is not None
+    assert delivered.source_id == "camera-07"
+    target.task_done()
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     assert image.shape == (180, 320, 3)
     assert int(image.sum()) > 0
+
+    hub.unsubscribe(subscriber_id)
+    assert hub.status()["websocket_subscribers"] == 0
 
     hub.set_enabled(False)
     assert hub.latest("camera-07") is None
