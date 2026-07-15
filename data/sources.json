@@ -1,0 +1,100 @@
+[
+  {
+    "source_id": "camera-01",
+    "name": "Fire Camera",
+    "enabled": true,
+    "tasks": [
+      "plate_recognition"
+    ],
+    "source_uri": "data/cars.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:13:08.729307+00:00"
+  },
+  {
+    "source_id": "camera-02",
+    "name": "Smoke Camera 2",
+    "enabled": true,
+    "tasks": [
+      "fire_smoke"
+    ],
+    "source_uri": "data/smoke2.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:42:28.291667+00:00"
+  },
+  {
+    "source_id": "camera-03",
+    "name": "Fire Camera",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke"
+    ],
+    "source_uri": "data/sdf.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  },
+  {
+    "source_id": "camera-04",
+    "name": "Vehicle Camera",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke"
+    ],
+    "source_uri": "data/fg.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  },
+  {
+    "source_id": "camera-05",
+    "name": "Road Camera",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke"
+    ],
+    "source_uri": "data/yt.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  },
+  {
+    "source_id": "camera-06",
+    "name": "Workshop Camera",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke"
+    ],
+    "source_uri": "data/bucket11.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  },
+  {
+    "source_id": "camera-07",
+    "name": "Mixed Camera 1",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke",
+      "plate_recognition"
+    ],
+    "source_uri": "data/etry.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  },
+  {
+    "source_id": "camera-08",
+    "name": "Mixed Camera 2",
+    "enabled": false,
+    "tasks": [
+      "fire_smoke",
+      "plate_recognition"
+    ],
+    "source_uri": "data/test1.mp4",
+    "metadata": {},
+    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
+    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+  }
+]

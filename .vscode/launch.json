@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "main",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "python": "C:/Users/jafari.h/Desktop/ai_project/.venv/Scripts/python.exe",
+      "args": ["app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"],
+      "jinja": true,
+      "justMyCode": true,
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    },
+    {
+      "name": "images_to_mp4",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/images_to_mp4.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "cwd": "${workspaceFolder}",
+      "python": "C:/Users/jafari.h/Desktop/ai_project/.venv/Scripts/python.exe",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    }
+  ]
+}
