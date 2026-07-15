@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.runtime import build_runtime
 
 
@@ -95,3 +96,20 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
         assert test_runtime.broadcast.enabled is False
     finally:
         main_module.runtime = old_runtime
+
+
+def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Path) -> None:
+    runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            source_registry_path=tmp_path / "sources.json",
+            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
+            video_ingest_backend="deepstream",
+        )
+    )
+    try:
+        assert isinstance(runtime.video_ingestor, DeepStreamIngestor)
+        assert runtime.video_ingestor.status()["backend"] == "deepstream"
+    finally:
+        runtime.close()

@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
@@ -112,3 +113,59 @@ def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
     assert router.calls[0]["source_times_seconds"] == [0.1, 0.1]
     assert ingestor.status()["sources"]["camera-01"]["stride"] == 2
     ingestor.close()
+
+
+def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(tmp_path: Path) -> None:
+    registry = SourceRegistry()
+    router = RecordingRouter(registry)
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=router,  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    rtsp = SourceRecord(
+        source_id="camera-01",
+        name="RTSP",
+        source_uri="rtsp://user:password@192.0.2.10:554/live",
+        metadata={},
+    )
+    local = SourceRecord(
+        source_id="camera-02",
+        name="File",
+        source_uri="data/example.mp4",
+        metadata={},
+    )
+
+    assert ingestor.is_supported_source(rtsp) is True
+    assert ingestor.is_supported_source(local) is True
+    assert ingestor._resolve_uri(rtsp.source_uri or "") == rtsp.source_uri
+    assert ingestor._resolve_uri(local.source_uri or "").startswith("file:")
+    assert "example.mp4" in ingestor._resolve_uri(local.source_uri or "")
+
+
+def test_deepstream_static_only_mode_excludes_rtsp_before_open(tmp_path: Path) -> None:
+    registry = SourceRegistry()
+    registry.create(
+        SourceRecord(
+            source_id="camera-01",
+            name="RTSP",
+            source_uri="rtsp://user:password@192.0.2.10:554/live",
+            metadata={},
+        )
+    )
+    registry.create(
+        SourceRecord(
+            source_id="camera-02",
+            name="File",
+            source_uri="data/example.mp4",
+            metadata={},
+        )
+    )
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        rtsp_enabled=False,
+    )
+
+    assert [record.source_id for record in ingestor._active_records()] == ["camera-02"]

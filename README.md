@@ -131,14 +131,59 @@ examples/main_project_integration.py
 
 ## Built-in video camera ingestion
 
-At application startup, enabled records with `metadata.kind` set to `video_file` are opened automatically. Files loop at end-of-stream and are sampled at 5 FPS by default. The ingestor follows live registry changes: disabling a source closes its reader, enabling it reopens the file, and changing its assigned tasks affects the next submitted frame.
+At application startup, enabled local video records and `rtsp://`/`rtsps://` sources are opened automatically. An RTSP URI is recognized directly, so `metadata` may be empty. Local files loop at end-of-stream; RTSP readers reconnect after a failure. Both are sampled at 5 FPS by default. The ingestor follows live registry changes: disabling a source closes its reader, enabling it reopens the source, and changing its assigned tasks affects the next submitted frame.
+
+Two ingestion backends are available:
+
+- `deepstream`: production Linux/NVIDIA path. `nvurisrcbin` and NVDEC create an independent pipeline for every enabled MP4 or RTSP source. One blocked camera cannot block the other sources.
+- `opencv`: native development fallback, including Windows. It is retained for tests and small local-file demonstrations, not large RTSP deployments.
 
 The controls are:
 
 ```text
 VIDEO_INGESTION_ENABLED=true
+VIDEO_INGEST_BACKEND=deepstream
 VIDEO_INGEST_FPS=5
 VIDEO_LOOP=true
+RTSP_TRANSPORT=tcp
+RTSP_INGESTION_ENABLED=true
+RTSP_OPEN_TIMEOUT_MS=20000
+RTSP_READ_TIMEOUT_MS=10000
+RTSP_RECONNECT_SECONDS=3
+DEEPSTREAM_RTSP_LATENCY_MS=250
+```
+
+With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. TCP is the default for reliable LAN camera delivery. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
+
+### Run the DeepStream service
+
+DeepStream runs in the NVIDIA Linux container; it does not run inside the native Windows Python debugger. Build the image while internet access is available:
+
+```powershell
+docker compose build
+```
+
+After the image is built, switch to the camera LAN if required and start it without rebuilding:
+
+```powershell
+docker compose up -d --no-build
+docker compose logs -f video-ai-router
+```
+
+Open `http://127.0.0.1:8000/dashboard`. No source schema changes are required: both `data/example.mp4` and `rtsp://...` values work with empty metadata. `GET /health` reports `video_ingestor.backend` as `deepstream` and exposes per-source frame, warning, and reconnect counters.
+
+The provided Compose service defaults `RTSP_INGESTION_ENABLED` to `false`, so its first run opens only local video files and never creates an RTSP pipeline. Enable cameras explicitly in a later run with:
+
+```powershell
+$env:RTSP_INGESTION_ENABLED="true"
+docker compose up -d --no-build --force-recreate
+```
+
+To use the native fallback explicitly:
+
+```powershell
+$env:VIDEO_INGEST_BACKEND="opencv"
+python run.py
 ```
 
 Live ingestion counters and per-camera frame indexes are available at `GET /api/v1/router/status` and under `video_ingestor` in `GET /health`.
@@ -369,4 +414,4 @@ SMOKE TEST PASSED
 
 ## Important boundary
 
-This project now owns local video-file reading, routing, and inference for the configured demo. An external extractor is still the integration boundary for RTSP/live readers; it should obey `enabled_source_ids()` when those sources are added.
+This project owns local video-file and RTSP reading, routing, and inference. Other live-source types can still be supplied through an external extractor that obeys `enabled_source_ids()`.

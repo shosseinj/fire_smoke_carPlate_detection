@@ -12,6 +12,7 @@ from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
 from app.core.worker import TaskWorker
+from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
 from app.processors.mock import MockProcessor
@@ -26,12 +27,16 @@ class Runtime:
     router: TaskRouter
     broadcast: AnnotatedBroadcastHub
     plate_logs: PlateLogStore
-    video_ingestor: VideoFileIngestor | None = None
+    video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def start(self) -> None:
         self.router.start()
-        if self.video_ingestor is not None:
-            self.video_ingestor.start()
+        try:
+            if self.video_ingestor is not None:
+                self.video_ingestor.start()
+        except Exception:
+            self.router.close()
+            raise
 
     def close(self) -> None:
         # End long-lived MJPEG responses first so Uvicorn reload/shutdown cannot
@@ -122,13 +127,29 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
     if app_settings.video_ingestion_enabled:
-        video_ingestor = VideoFileIngestor(
-            registry=registry,
-            router=router,
-            project_root=project_root,
-            target_fps=app_settings.video_ingest_fps,
-            loop=app_settings.video_loop,
-        )
+        common_ingestor_settings = {
+            "registry": registry,
+            "router": router,
+            "project_root": project_root,
+            "target_fps": app_settings.video_ingest_fps,
+            "loop": app_settings.video_loop,
+            "rtsp_transport": app_settings.rtsp_transport,
+            "rtsp_reconnect_seconds": app_settings.rtsp_reconnect_seconds,
+        }
+        if app_settings.video_ingest_backend == "deepstream":
+            video_ingestor = DeepStreamIngestor(
+                **common_ingestor_settings,
+                rtsp_enabled=app_settings.rtsp_ingestion_enabled,
+                rtsp_latency_ms=app_settings.deepstream_rtsp_latency_ms,
+            )
+        elif app_settings.video_ingest_backend == "opencv":
+            video_ingestor = VideoFileIngestor(
+                **common_ingestor_settings,
+                rtsp_open_timeout_ms=app_settings.rtsp_open_timeout_ms,
+                rtsp_read_timeout_ms=app_settings.rtsp_read_timeout_ms,
+            )
+        else:
+            raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
     return Runtime(
         settings=app_settings,
         registry=registry,

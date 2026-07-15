@@ -1,12 +1,25 @@
 services:
   video-ai-router:
-    build: .
-    env_file: .env
+    build:
+      context: .
+      dockerfile: Dockerfile.deepstream
+      args:
+        INSTALL_AI_REQUIREMENTS: ${INSTALL_AI_REQUIREMENTS:-0}
+    environment:
+      PROCESSOR_MODE: ${PROCESSOR_MODE:-mock}
+      VIDEO_INGEST_BACKEND: deepstream
+      VIDEO_INGESTION_ENABLED: "true"
+      RTSP_INGESTION_ENABLED: ${RTSP_INGESTION_ENABLED:-false}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      PLATE_LOG_DB_PATH: /app/data/plate_logs.sqlite3
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./weights:/app/weights:ro
+      - ./saved_media:/app/saved_media
+    shm_size: "2gb"
     deploy:
       resources:
         reservations:

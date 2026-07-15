@@ -1,0 +1,23 @@
+FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app:/usr/lib/python3/dist-packages \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+
+WORKDIR /app
+COPY requirements.deepstream.txt .
+COPY requirements.deepstream-ai.txt .
+ARG INSTALL_AI_REQUIREMENTS=0
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir -r requirements.deepstream.txt \
+    && if [ "$INSTALL_AI_REQUIREMENTS" = "1" ]; then \
+         python3 -m pip install --no-cache-dir -r requirements.deepstream-ai.txt; \
+       fi
+
+COPY . .
+
+EXPOSE 8000
+CMD ["python3", "run.py"]

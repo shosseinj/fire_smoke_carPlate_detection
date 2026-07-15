@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import cv2
 
@@ -20,6 +22,8 @@ VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".webm"}
 class VideoState:
     source_id: str
     source_uri: str
+    display_uri: str
+    is_live: bool
     capture: Any
     fps: float
     stride: int
@@ -31,7 +35,7 @@ class VideoState:
 
 
 class VideoFileIngestor:
-    """Reads configured video files as looping cameras and feeds synchronized rounds."""
+    """Reads local video files and RTSP cameras into synchronized AI rounds."""
 
     def __init__(
         self,
@@ -41,15 +45,32 @@ class VideoFileIngestor:
         project_root: Path,
         target_fps: float = 5.0,
         loop: bool = True,
-        capture_factory: Callable[[str], Any] = cv2.VideoCapture,
+        rtsp_transport: str = "tcp",
+        rtsp_open_timeout_ms: int = 20000,
+        rtsp_read_timeout_ms: int = 10000,
+        rtsp_reconnect_seconds: float = 3.0,
+        capture_factory: Callable[..., Any] = cv2.VideoCapture,
     ) -> None:
         self.registry = registry
         self.router = router
         self.project_root = project_root
         self.target_fps = max(0.1, target_fps)
         self.loop = loop
+        self.rtsp_transport = (
+            rtsp_transport.strip().lower()
+            if rtsp_transport.strip().lower() in {"tcp", "udp"}
+            else "tcp"
+        )
+        self.rtsp_open_timeout_ms = max(1000, rtsp_open_timeout_ms)
+        self.rtsp_read_timeout_ms = max(1000, rtsp_read_timeout_ms)
+        self.rtsp_reconnect_seconds = max(0.5, rtsp_reconnect_seconds)
         self.capture_factory = capture_factory
+        os.environ.setdefault(
+            "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+            f"rtsp_transport;{self.rtsp_transport}",
+        )
         self._states: dict[str, VideoState] = {}
+        self._retry_after: dict[str, float] = {}
         self._thread: threading.Thread | None = None
         self._state_lock = threading.RLock()
         self._stop = threading.Event()
@@ -58,18 +79,42 @@ class VideoFileIngestor:
         self._rounds_submitted = 0
         self._frames_submitted = 0
         self._open_failures = 0
+        self._reconnects = 0
         self._last_error: str | None = None
+
+    @staticmethod
+    def is_rtsp_uri(source_uri: str) -> bool:
+        return source_uri.strip().lower().startswith(("rtsp://", "rtsps://"))
+
+    @staticmethod
+    def redact_uri(source_uri: str) -> str:
+        if not VideoFileIngestor.is_rtsp_uri(source_uri):
+            return source_uri
+        parsed = urlsplit(source_uri)
+        host = parsed.hostname or "camera"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        credentials = "***:***@" if parsed.username is not None else ""
+        return urlunsplit(
+            (parsed.scheme, f"{credentials}{host}", parsed.path, "", "")
+        )
 
     @staticmethod
     def is_video_source(record: SourceRecord) -> bool:
         if not record.source_uri:
             return False
+        if VideoFileIngestor.is_rtsp_uri(record.source_uri):
+            return True
         if record.metadata.get("kind") == "video_file":
             return True
         uri = record.source_uri.lower()
         return "://" not in uri and Path(uri).suffix.lower() in VIDEO_SUFFIXES
 
     def _resolve_uri(self, source_uri: str) -> str:
+        if self.is_rtsp_uri(source_uri):
+            return source_uri
         path = Path(source_uri).expanduser()
         if not path.is_absolute():
             path = self.project_root / path
@@ -91,19 +136,57 @@ class VideoFileIngestor:
     def _open(self, record: SourceRecord) -> VideoState | None:
         assert record.source_uri is not None
         resolved_uri = self._resolve_uri(record.source_uri)
-        capture = self.capture_factory(resolved_uri)
+        is_live = self.is_rtsp_uri(resolved_uri)
+        display_uri = self.redact_uri(resolved_uri)
+        try:
+            if is_live:
+                parameters = [
+                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                    self.rtsp_open_timeout_ms,
+                    cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                    self.rtsp_read_timeout_ms,
+                ]
+                try:
+                    capture = self.capture_factory(
+                        resolved_uri,
+                        cv2.CAP_FFMPEG,
+                        parameters,
+                    )
+                except TypeError:
+                    capture = self.capture_factory(resolved_uri)
+            else:
+                capture = self.capture_factory(resolved_uri)
+        except Exception as exc:
+            self._open_failures += 1
+            self._retry_after[record.source_id] = (
+                time.monotonic() + self.rtsp_reconnect_seconds
+            )
+            self._last_error = (
+                f"Could not create reader for {record.source_id} ({display_uri}): "
+                f"{type(exc).__name__}"
+            )
+            LOGGER.error(self._last_error)
+            return None
         if not capture.isOpened():
             capture.release()
             self._open_failures += 1
-            self._last_error = f"Could not open video source {record.source_id}: {resolved_uri}"
+            self._retry_after[record.source_id] = (
+                time.monotonic() + self.rtsp_reconnect_seconds
+            )
+            self._last_error = (
+                f"Could not open video source {record.source_id}: {display_uri}"
+            )
             LOGGER.error(self._last_error)
             return None
+        self._retry_after.pop(record.source_id, None)
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
         if fps <= 0.0:
             fps = self.target_fps
         return VideoState(
             source_id=record.source_id,
             source_uri=record.source_uri,
+            display_uri=display_uri,
+            is_live=is_live,
             capture=capture,
             fps=fps,
             stride=max(1, round(fps / self.target_fps)),
@@ -116,13 +199,18 @@ class VideoFileIngestor:
 
     def _read(self, state: VideoState) -> tuple[bool, Any, float | None]:
         ok, frame = state.capture.read()
-        if not ok and self.loop:
+        if not ok and self.loop and not state.is_live:
             state.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             state.loop_count += 1
             ok, frame = state.capture.read()
         if not ok:
             state.read_failures += 1
-            state.last_error = "End of stream" if not self.loop else "Frame read failed after rewind"
+            if state.is_live:
+                state.last_error = "RTSP frame read failed; reconnect scheduled"
+            else:
+                state.last_error = (
+                    "End of stream" if not self.loop else "Frame read failed after rewind"
+                )
             return False, None, None
 
         state.frame_index = max(
@@ -149,6 +237,8 @@ class VideoFileIngestor:
         active_ids = {record.source_id for record in records}
         for source_id in set(self._states) - active_ids:
             self._release(source_id)
+        for source_id in set(self._retry_after) - active_ids:
+            self._retry_after.pop(source_id, None)
 
         frames: list[Any] = []
         source_ids: list[str] = []
@@ -160,8 +250,11 @@ class VideoFileIngestor:
             state = self._states.get(record.source_id)
             if state is not None and state.source_uri != record.source_uri:
                 self._release(record.source_id)
+                self._retry_after.pop(record.source_id, None)
                 state = None
             if state is None:
+                if self._retry_after.get(record.source_id, 0.0) > time.monotonic():
+                    continue
                 state = self._open(record)
                 if state is None:
                     continue
@@ -169,7 +262,13 @@ class VideoFileIngestor:
 
             ok, frame, source_time = self._read(state)
             if not ok:
-                if not self.loop:
+                if state.is_live:
+                    self._reconnects += 1
+                    self._retry_after[record.source_id] = (
+                        time.monotonic() + self.rtsp_reconnect_seconds
+                    )
+                    self._release(record.source_id)
+                elif not self.loop:
                     self._release(record.source_id)
                 continue
             frames.append(frame)
@@ -178,7 +277,8 @@ class VideoFileIngestor:
             source_times.append(source_time)
             metadata.append(
                 {
-                    "source_uri": record.source_uri,
+                    "source_uri": state.display_uri,
+                    "source_type": "rtsp" if state.is_live else "video_file",
                     "video_loop_count": state.loop_count,
                 }
             )
@@ -230,16 +330,19 @@ class VideoFileIngestor:
     def _status_unlocked(self) -> dict[str, Any]:
         return {
             "enabled": True,
+            "backend": "opencv",
             "running": self._thread is not None and self._thread.is_alive(),
             "target_fps": self.target_fps,
             "loop": self.loop,
             "rounds_submitted": self._rounds_submitted,
             "frames_submitted": self._frames_submitted,
             "open_failures": self._open_failures,
+            "reconnects": self._reconnects,
             "last_error": self._last_error,
             "sources": {
                 source_id: {
-                    "source_uri": state.source_uri,
+                    "source_uri": state.display_uri,
+                    "source_type": "rtsp" if state.is_live else "video_file",
                     "source_fps": state.fps,
                     "stride": state.stride,
                     "frame_index": state.frame_index,

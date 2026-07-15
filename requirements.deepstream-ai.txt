@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+arabic-reshaper==3.0.1
+hezar==0.44.0
+jdatetime==5.3.0
+pillow==12.2.0
+python-bidi==0.6.11
+PyYAML==6.0.3
+torch==2.5.1+cu124
+torchvision==0.20.1+cu124
+transformers==5.13.1
+ultralytics==8.4.83

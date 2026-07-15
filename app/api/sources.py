@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.core.source_registry import SourceRecord
+from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
 from app.schemas import SourceCreate, SourceResponse, SourceUpdate, TaskAssignment
 
@@ -17,6 +18,8 @@ def get_runtime() -> Runtime:
 
 def _response(record: SourceRecord) -> SourceResponse:
     value = record.to_dict()
+    if value.get("source_uri"):
+        value["source_uri"] = VideoFileIngestor.redact_uri(value["source_uri"])
     return SourceResponse(**value)
 
 
