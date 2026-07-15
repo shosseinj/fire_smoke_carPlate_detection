@@ -1,23 +1,24 @@
 [
   {
     "source_id": "camera-01",
-    "name": "Fire Camera",
+    "name": "Fire and plate Camera",
     "enabled": true,
-    "tasks": ["plate_recognition"],
-    "source_uri": "data/cars.mp4",
+    "tasks": ["fire_smoke", "plate_recognition"],
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101",
+
     "metadata": {},
     "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:13:08.729307+00:00"
+    "updated_at_utc": "2026-07-15T10:39:58.018632+00:00"
   },
   {
     "source_id": "camera-02",
     "name": "Smoke Camera 2",
     "enabled": true,
-    "tasks": ["fire_smoke"],
-    "source_uri": "data/smoke2.mp4",
+    "tasks": ["fire_smoke", "plate_recognition"],
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101",
     "metadata": {},
     "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:42:28.291667+00:00"
+    "updated_at_utc": "2026-07-15T11:12:11.947821+00:00"
   },
   {
     "source_id": "camera-03",
@@ -33,11 +34,11 @@
     "source_id": "camera-04",
     "name": "Vehicle Camera",
     "enabled": true,
-    "tasks": ["fire_smoke"],
+    "tasks": ["fire_smoke", "plate_recognition"],
     "source_uri": "data/fg.mp4",
     "metadata": {},
     "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "updated_at_utc": "2026-07-15T10:41:22.877299+00:00"
   },
   {
     "source_id": "camera-05",

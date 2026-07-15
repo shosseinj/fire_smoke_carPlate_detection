@@ -1,0 +1,10 @@
+camera_urls = [
+    "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101",
+    "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101",
+    "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/101",
+    "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/201",
+    "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/301",
+    "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/401",
+    "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/501",
+    "rtsp://admin:pMc897OmId@192.168.110.29:554/Streaming/Channels/101",
+]
