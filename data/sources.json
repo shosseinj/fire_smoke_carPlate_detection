@@ -4,7 +4,7 @@
     "name": "Fire and plate Camera",
     "enabled": true,
     "tasks": ["fire_smoke", "plate_recognition"],
-    "source_uri": "data/sdf.mp4",
+    "source_uri": "data/cars.mp4",
 
     "metadata": {},
     "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
@@ -15,8 +15,7 @@
     "name": "Smoke Camera 2",
     "enabled": true,
     "tasks": ["fire_smoke", "plate_recognition"],
-
-    "source_uri": "data/sdf.mp4",
+    "source_uri": "data/smoke2.mp4",
     "metadata": {},
     "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
     "updated_at_utc": "2026-07-15T11:12:11.947821+00:00"

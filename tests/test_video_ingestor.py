@@ -135,9 +135,15 @@ def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(tmp_path: Pa
         source_uri="data/example.mp4",
         metadata={},
     )
+    registry.create(rtsp)
+    registry.create(local)
 
     assert ingestor.is_supported_source(rtsp) is True
     assert ingestor.is_supported_source(local) is True
+    assert [record.source_id for record in ingestor._active_records()] == [
+        "camera-01",
+        "camera-02",
+    ]
     assert ingestor._resolve_uri(rtsp.source_uri or "") == rtsp.source_uri
     assert ingestor._resolve_uri(local.source_uri or "").startswith("file:")
     assert "example.mp4" in ingestor._resolve_uri(local.source_uri or "")

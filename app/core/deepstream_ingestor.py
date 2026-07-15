@@ -77,7 +77,7 @@ class DeepStreamIngestor:
         loop: bool = True,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
-        rtsp_latency_ms: int = 250,
+        rtsp_latency_ms: int = 500,
         rtsp_reconnect_seconds: float = 3.0,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
     ) -> None:
@@ -276,15 +276,17 @@ class DeepStreamIngestor:
             self._set_if_supported(source, "disable-audio", True)
             if is_rtsp:
                 self._set_if_supported(source, "latency", self.rtsp_latency_ms)
+                self._set_if_supported(source, "drop-on-latency", True)
                 self._set_if_supported(
                     source,
                     "rtsp-reconnect-interval",
                     max(1, int(round(self.rtsp_reconnect_seconds))),
                 )
+                self._set_if_supported(source, "rtsp-reconnect-attempts", -1)
                 self._set_if_supported(
                     source,
                     "select-rtp-protocol",
-                    4 if self.rtsp_transport == "tcp" else 1,
+                    4 if self.rtsp_transport == "tcp" else 0,
                 )
             else:
                 # nvurisrcbin's internal file-loop can emit buffers before a new

@@ -150,7 +150,7 @@ RTSP_INGESTION_ENABLED=true
 RTSP_OPEN_TIMEOUT_MS=20000
 RTSP_READ_TIMEOUT_MS=10000
 RTSP_RECONNECT_SECONDS=3
-DEEPSTREAM_RTSP_LATENCY_MS=250
+DEEPSTREAM_RTSP_LATENCY_MS=500
 ```
 
 With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. TCP is the default for reliable LAN camera delivery. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
@@ -172,10 +172,10 @@ docker compose logs -f video-ai-router
 
 Open `http://127.0.0.1:8000/dashboard`. No source schema changes are required: both `data/example.mp4` and `rtsp://...` values work with empty metadata. `GET /health` reports `video_ingestor.backend` as `deepstream` and exposes per-source frame, warning, and reconnect counters.
 
-The provided Compose service defaults `RTSP_INGESTION_ENABLED` to `false`, so its first run opens only local video files and never creates an RTSP pipeline. Enable cameras explicitly in a later run with:
+The provided Compose service now defaults `RTSP_INGESTION_ENABLED` to `true`, so enabled `rtsp://` records and local video files are opened together. To force a static-only run that never creates an RTSP pipeline, use:
 
 ```powershell
-$env:RTSP_INGESTION_ENABLED="true"
+$env:RTSP_INGESTION_ENABLED="false"
 docker compose up -d --no-build --force-recreate
 ```
 
