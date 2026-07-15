@@ -61,7 +61,7 @@ class Settings:
     plate_use_fp16: bool = _env_bool("PLATE_USE_FP16", True)
 
     draw_info: bool = _env_bool("draw_info", True)
-    save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)
+    save_plate_snapshot: bool = _env_bool("save_plate_snapshot", False)
 
 
 settings = Settings()
