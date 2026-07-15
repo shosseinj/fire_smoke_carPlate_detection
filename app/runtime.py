@@ -114,9 +114,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             result_store=results,
             batch_size=app_settings.plate_batch_size,
             max_wait_ms=app_settings.plate_max_wait_ms,
-            # result_callback=broadcast.publish_result,
-
-            result_callback=plate_logs.insert_result,
+            result_callback=broadcast.publish_result,
+            result_observer=plate_logs.insert_result,
         ),
     }
     router = TaskRouter(registry=registry, workers=workers, result_store=results)

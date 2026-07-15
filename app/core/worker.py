@@ -34,7 +34,7 @@ class TaskWorker:
         batch_size: int,
         max_wait_ms: float,
         result_callback: Callable[[FramePacket, TaskResult], None] | None = None,
-        result_observer: Callable[[TaskResult], None] | None = None,
+        result_observer: Callable[[FramePacket, TaskResult], None] | None = None,
     ) -> None:
         self.processor = processor
         self.result_store = result_store
@@ -81,7 +81,7 @@ class TaskWorker:
                     # self._print_positive_detection(result)
                     if self.result_observer is not None:
                         try:
-                            self.result_observer(result)
+                            self.result_observer(packet, result)
                         except Exception:
                             LOGGER.exception("Result observer failed")
                     if self.result_callback is not None:
