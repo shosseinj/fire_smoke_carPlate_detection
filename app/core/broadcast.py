@@ -101,6 +101,8 @@ class AnnotatedBroadcastHub:
                 "name": record.name,
                 "enabled": record.enabled,
                 "tasks": sorted(task.value for task in record.tasks),
+                "frame_width": record.frame_width,
+                "frame_height": record.frame_height,
                 "updated_at_utc": record.updated_at_utc,
             }
         event = BroadcastControlEvent(

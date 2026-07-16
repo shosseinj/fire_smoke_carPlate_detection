@@ -157,6 +157,8 @@ With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream a
 
 Camera configuration is stored in the SQLite `cameras` table. `CAMERA_DB_PATH` defaults to `data/cameras.sqlite3`. On the first run only, when the table is empty, records are imported from `SOURCE_REGISTRY_PATH` (default `data/sources.json`). After import, SQLite is authoritative and the JSON file is not rewritten.
 
+Each camera has `frame_width` and `frame_height` fields (both default to `640`). With the DeepStream backend, `nvvideoconvert` performs this normalization on the GPU before the frame reaches the CPU-facing app sink. Updating either value through camera CRUD cleanly rebuilds only that camera pipeline.
+
 ### Run the DeepStream service
 
 DeepStream runs in the NVIDIA Linux container; it does not run inside the native Windows Python debugger. Build the image while internet access is available:
@@ -257,6 +259,27 @@ Content-Type: application/json
 
 Stored records can be read with `GET /api/v1/plate-logs`. Optional query parameters are `camera_id`, `plate`, and `limit`.
 
+## Persistent fire/smoke events
+
+Confirmed severity transitions are written to `fire_smoke_logs` in the same SQLite database as plate logs. Each record includes the camera, UTC time, severity, fire/smoke counts and confidence, rolling-window length, and a snapshot URL. Snapshot drawing, JPEG encoding, and database writes use a bounded background queue and do not block inference. Files are served below `/media/fire_smoke_snapshots/` and stored under `SAVED_MEDIA_PATH`.
+
+The default policy treats fewer than 5 positive processed frames in 3 seconds as a false positive, 5 as low, 10 as medium, and 20 as high. Admin changes take effect online without restarting DeepStream:
+
+```http
+GET /api/v1/fire-smoke/settings
+PUT /api/v1/fire-smoke/settings
+Content-Type: application/json
+
+{
+  "window_seconds": 3,
+  "low_count": 5,
+  "medium_count": 10,
+  "high_count": 20
+}
+```
+
+Read events with `GET /api/v1/fire-smoke-logs`; optional filters are `camera_id`, `severity`, and `limit`. Counts are based on frames actually submitted to AI, so configure `VIDEO_INGEST_FPS` high enough for the selected window and high threshold.
+
 ## Camera and routing API
 
 The camera API provides full online CRUD. Changes are persisted before the API returns and are also published as secret-free `camera_changed` JSON messages over `/api/v1/broadcast/ws`. Binary messages on the same socket remain annotated JPEG frames.
@@ -273,6 +296,8 @@ Content-Type: application/json
   "enabled": true,
   "tasks": ["fire_smoke", "plate_recognition"],
   "source_uri": "rtsp://user:password@camera-host/live",
+  "frame_width": 640,
+  "frame_height": 640,
   "metadata": {"area": "gate"}
 }
 ```

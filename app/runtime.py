@@ -8,6 +8,7 @@ from app.config import Settings, settings
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
+from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
@@ -15,6 +16,7 @@ from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
+from app.fire_core.policy import FireSmokePolicyConfig
 from app.processors.mock import MockProcessor
 from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 from app.processors.ultralytics_loader import preload_model_dependencies
@@ -28,6 +30,7 @@ class Runtime:
     router: TaskRouter
     broadcast: AnnotatedBroadcastHub
     plate_logs: PlateLogStore
+    fire_smoke_logs: FireSmokeLogStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def start(self) -> None:
@@ -48,6 +51,7 @@ class Runtime:
         if self.video_ingestor is not None:
             self.video_ingestor.close()
         self.router.close()
+        self.fire_smoke_logs.close()
         self.registry.close()
 
     def status(self) -> dict:
@@ -59,6 +63,7 @@ class Runtime:
         )
         value["broadcast"] = self.broadcast.status()
         value["plate_log_count"] = self.plate_logs.count()
+        value["fire_smoke_logs"] = self.fire_smoke_logs.status()
         return value
 
 
@@ -95,6 +100,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_logs = PlateLogStore(app_settings.plate_log_db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
+    fire_smoke_logs = FireSmokeLogStore(
+        app_settings.plate_log_db_path,
+        app_settings.saved_media_path,
+        default_policy=FireSmokePolicyConfig(
+            window_seconds=app_settings.fire_severity_window_seconds,
+            low_count=app_settings.fire_low_incident_count,
+            medium_count=app_settings.fire_medium_incident_count,
+            high_count=app_settings.fire_high_incident_count,
+        ),
+    )
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
@@ -107,7 +122,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 imgsz=app_settings.fire_imgsz,
                 batch_size=app_settings.fire_batch_size,
                 engine_fixed_batch=app_settings.fire_engine_fixed_batch,
-            )
+            ),
+            policy_provider=fire_smoke_logs.policy_snapshot,
         )
         plate_processor = PlateRecognitionProcessor(
             PlateSettings(
@@ -130,7 +146,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             batch_size=app_settings.fire_batch_size,
             max_wait_ms=app_settings.fire_max_wait_ms,
             result_callback=broadcast.publish_result,
-            
+            result_observer=fire_smoke_logs.observe_result,
         ),
         TaskName.PLATE_RECOGNITION: TaskWorker(
             processor=plate_processor,
@@ -176,5 +192,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         router=router,
         broadcast=broadcast,
         plate_logs=plate_logs,
+        fire_smoke_logs=fire_smoke_logs,
         video_ingestor=video_ingestor,
     )

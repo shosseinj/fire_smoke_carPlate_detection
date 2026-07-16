@@ -50,6 +50,13 @@ class Settings:
     broadcast_enabled: bool = _env_bool("BROADCAST_ENABLED", True)
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
     plate_log_db_path: Path = _path("PLATE_LOG_DB_PATH", "plate_logs.sqlite3")
+    saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media")
+    fire_severity_window_seconds: float = _env_float(
+        "FIRE_SEVERITY_WINDOW_SECONDS", 3.0
+    )
+    fire_low_incident_count: int = _env_int("FIRE_LOW_INCIDENT_COUNT", 5)
+    fire_medium_incident_count: int = _env_int("FIRE_MEDIUM_INCIDENT_COUNT", 10)
+    fire_high_incident_count: int = _env_int("FIRE_HIGH_INCIDENT_COUNT", 20)
 
     fire_model_path: Path = _path("FIRE_SMOKE_MODEL_PATH", "weights/fire_smoke/best_nano_111.pt")
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")

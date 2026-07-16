@@ -140,6 +140,7 @@ def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
     assert router.calls[0]["source_ids"] == ["camera-01", "camera-02"]
     assert router.calls[0]["frame_indexes"] == [0, 0]
     assert router.calls[0]["source_times_seconds"] == [0.1, 0.1]
+    assert all(frame.shape == (640, 640, 3) for frame in router.calls[0]["frames"])
     assert ingestor.status()["sources"]["camera-01"]["stride"] == 2
     ingestor.close()
 
@@ -243,7 +244,9 @@ def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
     def open_source(record: SourceRecord) -> None:
         opened.append((record.source_id, record.source_uri))
         ingestor._states[record.source_id] = SimpleNamespace(
-            source_uri=record.source_uri
+            source_uri=record.source_uri,
+            frame_width=record.frame_width,
+            frame_height=record.frame_height,
         )
 
     def close_source(source_id: str) -> None:

@@ -38,9 +38,15 @@ class DeepStreamSourceState:
     display_uri: str
     source_type: str
     pipeline: Any
+    source: Any
     sink: Any
     bus: Any
     bus_handler_id: int
+    pipeline_handler_id: int
+    source_pad_handler_id: int
+    sink_handler_id: int
+    frame_width: int
+    frame_height: int
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
@@ -174,7 +180,13 @@ class DeepStreamIngestor:
                 return message
             return message.replace(state.source_uri, state.display_uri)
 
-    def _mark_failed(self, source_id: str, message: str) -> None:
+    def _mark_failed(
+        self,
+        source_id: str,
+        message: str,
+        *,
+        expected: bool = False,
+    ) -> None:
         safe_message = self._redact_error(source_id, message)
         with self._lock:
             state = self._states.get(source_id)
@@ -183,10 +195,15 @@ class DeepStreamIngestor:
             self._last_error = f"{source_id}: {safe_message}"
             self._failed_sources.add(source_id)
             self._retry_after[source_id] = time.monotonic() + self.rtsp_reconnect_seconds
-        LOGGER.error("DeepStream source failed: %s: %s", source_id, safe_message)
+        log = LOGGER.info if expected else LOGGER.error
+        log("DeepStream source %s: %s", source_id, safe_message)
 
-    def _on_bus_message(self, _: Any, message: Any, source_id: str) -> None:
+    def _on_bus_message(self, bus: Any, message: Any, source_id: str) -> None:
         Gst, _ = self._require_runtime()
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.bus is not bus:
+                return
         if message.type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
             detail = str(error)
@@ -194,7 +211,18 @@ class DeepStreamIngestor:
                 detail = f"{detail} ({debug})"
             self._mark_failed(source_id, detail)
         elif message.type == Gst.MessageType.EOS:
-            self._mark_failed(source_id, "End of stream; source restart scheduled")
+            if self.loop:
+                LOGGER.info("DeepStream file reached EOS; restarting cleanly: %s", source_id)
+                self._mark_failed(
+                    source_id,
+                    "End of stream; source restart scheduled",
+                    expected=True,
+                )
+            else:
+                LOGGER.info("DeepStream file reached EOS: %s", source_id)
+                with self._lock:
+                    self._failed_sources.add(source_id)
+                    self._retry_after[source_id] = float("inf")
         elif message.type == Gst.MessageType.WARNING:
             warning, _ = message.parse_warning()
             safe_warning = self._redact_error(source_id, str(warning))
@@ -214,7 +242,7 @@ class DeepStreamIngestor:
         now = time.monotonic()
         with self._lock:
             state = self._states.get(source_id)
-            if state is None:
+            if state is None or state.sink is not sink:
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
             minimum_interval = 1.0 / self.target_fps
@@ -264,8 +292,14 @@ class DeepStreamIngestor:
     def _open_source(self, record: SourceRecord) -> None:
         Gst, _ = self._require_runtime()
         assert record.source_uri is not None
-        gst_uri = self._resolve_uri(record.source_uri)
         is_rtsp = VideoFileIngestor.is_rtsp_uri(record.source_uri)
+        if not is_rtsp:
+            source_path = Path(record.source_uri).expanduser()
+            if not source_path.is_absolute():
+                source_path = self.project_root / source_path
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Video file was not found: {record.source_uri}")
+        gst_uri = self._resolve_uri(record.source_uri)
         display_uri = VideoFileIngestor.redact_uri(record.source_uri)
         safe_id = self._safe_element_name(record.source_id)
         pipeline = Gst.Pipeline.new(f"pipeline_{safe_id}")
@@ -286,7 +320,9 @@ class DeepStreamIngestor:
             # even with disable-audio=true. Hook it before the source bin is
             # added so encoded audio pads are ignored without requiring an AAC
             # decoder or spending CPU on an unused audio stream.
-            pipeline.connect("deep-element-added", self._on_deep_element_added)
+            pipeline_handler_id = pipeline.connect(
+                "deep-element-added", self._on_deep_element_added
+            )
 
             source.set_property("uri", gst_uri)
             self._set_if_supported(source, "disable-audio", True)
@@ -315,7 +351,13 @@ class DeepStreamIngestor:
             queue.set_property("max-size-bytes", 0)
             queue.set_property("max-size-time", 0)
             pacer.set_property("sync", not is_rtsp)
-            bgrx_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGRx"))
+            bgrx_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    "video/x-raw,format=BGRx,"
+                    f"width={record.frame_width},height={record.frame_height}"
+                ),
+            )
             bgr_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGR"))
             sink.set_property("emit-signals", True)
             sink.set_property("sync", False)
@@ -346,8 +388,12 @@ class DeepStreamIngestor:
                 raise RuntimeError("Could not link videoconvert to BGR caps")
             if not bgr_caps.link(sink):
                 raise RuntimeError("Could not link BGR caps to appsink")
-            source.connect("pad-added", self._on_pad_added, pacer)
-            sink.connect("new-sample", self._on_new_sample, record.source_id)
+            source_pad_handler_id = source.connect(
+                "pad-added", self._on_pad_added, pacer
+            )
+            sink_handler_id = sink.connect(
+                "new-sample", self._on_new_sample, record.source_id
+            )
 
             bus = pipeline.get_bus()
             bus.add_signal_watch()
@@ -358,9 +404,15 @@ class DeepStreamIngestor:
                 display_uri=display_uri,
                 source_type="rtsp" if is_rtsp else "video_file",
                 pipeline=pipeline,
+                source=source,
                 sink=sink,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
+                pipeline_handler_id=pipeline_handler_id,
+                source_pad_handler_id=source_pad_handler_id,
+                sink_handler_id=sink_handler_id,
+                frame_width=record.frame_width,
+                frame_height=record.frame_height,
             )
             with self._lock:
                 self._states[record.source_id] = state
@@ -370,23 +422,48 @@ class DeepStreamIngestor:
             with self._lock:
                 self._retry_after.pop(record.source_id, None)
         except Exception:
-            pipeline.set_state(Gst.State.NULL)
             with self._lock:
-                self._states.pop(record.source_id, None)
+                state = self._states.pop(record.source_id, None)
+            if state is not None:
+                self._dispose_state(state)
+            else:
+                pipeline.set_state(Gst.State.NULL)
+                try:
+                    pipeline.get_state(5 * Gst.SECOND)
+                except Exception:
+                    pass
             raise
 
-    def _close_source(self, source_id: str) -> None:
+    def _dispose_state(self, state: DeepStreamSourceState) -> None:
         Gst, _ = self._require_runtime()
-        with self._lock:
-            state = self._states.pop(source_id, None)
-        if state is None:
-            return
+        for element, handler_id in (
+            (state.sink, state.sink_handler_id),
+            (state.source, state.source_pad_handler_id),
+            (state.pipeline, state.pipeline_handler_id),
+            (state.bus, state.bus_handler_id),
+        ):
+            try:
+                element.disconnect(handler_id)
+            except Exception:
+                pass
         try:
-            state.bus.disconnect(state.bus_handler_id)
             state.bus.remove_signal_watch()
         except Exception:
             pass
         state.pipeline.set_state(Gst.State.NULL)
+        try:
+            # Wait until NVDEC and nvurisrcbin have actually released their
+            # resources before another pipeline for this camera is constructed.
+            state.pipeline.get_state(5 * Gst.SECOND)
+        except Exception:
+            LOGGER.debug("GStreamer NULL-state wait failed for %s", state.source_id)
+
+    def _close_source(self, source_id: str) -> None:
+        with self._lock:
+            state = self._states.pop(source_id, None)
+        if state is None:
+            return
+        self._dispose_state(state)
 
     def _active_records(self) -> list[SourceRecord]:
         return [
@@ -418,7 +495,11 @@ class DeepStreamIngestor:
             with self._lock:
                 state = self._states.get(record.source_id)
                 retry_after = self._retry_after.get(record.source_id, 0.0)
-            if state is not None and state.source_uri != record.source_uri:
+            if state is not None and (
+                state.source_uri != record.source_uri
+                or state.frame_width != record.frame_width
+                or state.frame_height != record.frame_height
+            ):
                 self._close_source(record.source_id)
                 state = None
             if state is not None or retry_after > time.monotonic():
@@ -453,6 +534,8 @@ class DeepStreamIngestor:
                 {
                     "source_uri": state.display_uri,
                     "source_type": state.source_type,
+                    "frame_width": state.frame_width,
+                    "frame_height": state.frame_height,
                     "ingest_backend": "deepstream",
                 }
                 for state in selected
@@ -563,6 +646,8 @@ class DeepStreamIngestor:
                     source_id: {
                         "source_uri": state.display_uri,
                         "source_type": state.source_type,
+                        "frame_width": state.frame_width,
+                        "frame_height": state.frame_height,
                         "decoded_samples": state.decoded_samples,
                         "received_frames": state.received_frames,
                         "submitted_frames": state.submitted_frames,

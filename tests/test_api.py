@@ -116,6 +116,8 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                         "name": "Live camera",
                         "enabled": True,
                         "tasks": ["fire_smoke"],
+                        "frame_width": 640,
+                        "frame_height": 640,
                         "updated_at_utc": event["camera"]["updated_at_utc"],
                     },
                 }
@@ -123,6 +125,8 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                 source_alias = client.get("/api/v1/sources/camera-live")
                 assert source_alias.status_code == 200
                 assert source_alias.json()["source_id"] == "camera-live"
+                assert source_alias.json()["frame_width"] == 640
+                assert source_alias.json()["frame_height"] == 640
                 assert "secret" not in source_alias.json()["source_uri"]
 
                 updated = client.patch(
@@ -130,10 +134,14 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                     json={
                         "name": "Updated camera",
                         "tasks": ["fire_smoke", "plate_recognition"],
+                        "frame_width": 960,
+                        "frame_height": 544,
                     },
                 )
                 assert updated.status_code == 200
                 assert updated.json()["name"] == "Updated camera"
+                assert updated.json()["frame_width"] == 960
+                assert updated.json()["frame_height"] == 544
                 assert set(updated.json()["tasks"]) == {
                     "fire_smoke",
                     "plate_recognition",

@@ -12,3 +12,4 @@ output/
 *.sqlite3-shm
 *.sqlite3-wal
 *.jpg
+*.tar

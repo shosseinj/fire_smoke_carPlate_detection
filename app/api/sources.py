@@ -38,6 +38,8 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
                 enabled=payload.enabled,
                 tasks=set(payload.tasks),
                 source_uri=payload.source_uri,
+                frame_width=payload.frame_width,
+                frame_height=payload.frame_height,
                 metadata=dict(payload.metadata),
             )
         )

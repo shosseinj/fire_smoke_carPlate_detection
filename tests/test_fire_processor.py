@@ -32,13 +32,19 @@ class FakeModel:
         return [FakeResult() for _ in source]
 
 
-def packet(source_id: str, frame_index: int) -> FramePacket:
+def packet(
+    source_id: str,
+    frame_index: int,
+    captured_monotonic: float | None = None,
+) -> FramePacket:
     return FramePacket(
         source_id=source_id,
         frame=np.zeros((20, 20, 3), dtype=np.uint8),
         round_sequence=frame_index,
         frame_index=frame_index,
-        captured_monotonic=time.monotonic(),
+        captured_monotonic=(
+            time.monotonic() if captured_monotonic is None else captured_monotonic
+        ),
         captured_at_utc="2026-01-01T00:00:00+00:00",
         source_time_seconds=frame_index / 25.0,
     )
@@ -90,3 +96,29 @@ def test_fire_pt_gpu_inference_uses_quantize_instead_of_half(tmp_path: Path) -> 
     processor.process_batch([packet("camera-01", 1)])
     assert model.kwargs["quantize"] == 16
     assert "half" not in model.kwargs
+
+
+def test_default_three_second_count_window_maps_5_10_20_to_severity(
+    tmp_path: Path,
+) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            evidence_min_track_hits=1,
+        ),
+        model=FakeModel(),
+    )
+    severities = []
+    for index in range(1, 21):
+        result = processor.process_batch(
+            [packet("camera-window", index, 100.0 + index * 0.1)]
+        )[0]
+        severities.append(result.data["severity"])
+
+    assert severities[3] == "none"
+    assert severities[4] == "low"
+    assert severities[9] == "medium"
+    assert severities[19] == "high"
+    assert result.data["severity_window_seconds"] == 3.0

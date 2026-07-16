@@ -13,6 +13,8 @@ class SourceCreate(BaseModel):
     enabled: bool = True
     tasks: set[TaskName] = Field(default_factory=set)
     source_uri: str | None = None
+    frame_width: int = Field(default=640, ge=16, le=4096)
+    frame_height: int = Field(default=640, ge=16, le=4096)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("source_id")
@@ -29,6 +31,8 @@ class SourceUpdate(BaseModel):
     enabled: bool | None = None
     tasks: set[TaskName] | None = None
     source_uri: str | None = None
+    frame_width: int | None = Field(default=None, ge=16, le=4096)
+    frame_height: int | None = Field(default=None, ge=16, le=4096)
     metadata: dict[str, Any] | None = None
 
 
@@ -51,6 +55,8 @@ class SourceResponse(BaseModel):
     enabled: bool
     tasks: list[TaskName]
     source_uri: str | None
+    frame_width: int
+    frame_height: int
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
@@ -62,6 +68,8 @@ class CameraCreate(BaseModel):
     enabled: bool = True
     tasks: set[TaskName] = Field(default_factory=set)
     source_uri: str | None = None
+    frame_width: int = Field(default=640, ge=16, le=4096)
+    frame_height: int = Field(default=640, ge=16, le=4096)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("camera_id")
@@ -78,6 +86,8 @@ class CameraUpdate(BaseModel):
     enabled: bool | None = None
     tasks: set[TaskName] | None = None
     source_uri: str | None = None
+    frame_width: int | None = Field(default=None, ge=16, le=4096)
+    frame_height: int | None = Field(default=None, ge=16, le=4096)
     metadata: dict[str, Any] | None = None
 
 
@@ -86,6 +96,8 @@ class CameraReplace(BaseModel):
     enabled: bool = True
     tasks: set[TaskName] = Field(default_factory=set)
     source_uri: str | None = None
+    frame_width: int = Field(default=640, ge=16, le=4096)
+    frame_height: int = Field(default=640, ge=16, le=4096)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -95,6 +107,8 @@ class CameraResponse(BaseModel):
     enabled: bool
     tasks: list[TaskName]
     source_uri: str | None
+    frame_width: int
+    frame_height: int
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str

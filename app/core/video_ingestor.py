@@ -27,6 +27,8 @@ class VideoState:
     capture: Any
     fps: float
     stride: int
+    frame_width: int
+    frame_height: int
     frame_index: int = -1
     submitted_frames: int = 0
     loop_count: int = 0
@@ -190,6 +192,8 @@ class VideoFileIngestor:
             capture=capture,
             fps=fps,
             stride=max(1, round(fps / self.target_fps)),
+            frame_width=record.frame_width,
+            frame_height=record.frame_height,
         )
 
     def _release(self, source_id: str) -> None:
@@ -248,7 +252,11 @@ class VideoFileIngestor:
 
         for record in records:
             state = self._states.get(record.source_id)
-            if state is not None and state.source_uri != record.source_uri:
+            if state is not None and (
+                state.source_uri != record.source_uri
+                or state.frame_width != record.frame_width
+                or state.frame_height != record.frame_height
+            ):
                 self._release(record.source_id)
                 self._retry_after.pop(record.source_id, None)
                 state = None
@@ -271,6 +279,12 @@ class VideoFileIngestor:
                 elif not self.loop:
                     self._release(record.source_id)
                 continue
+            if frame.shape[1] != state.frame_width or frame.shape[0] != state.frame_height:
+                frame = cv2.resize(
+                    frame,
+                    (state.frame_width, state.frame_height),
+                    interpolation=cv2.INTER_LINEAR,
+                )
             frames.append(frame)
             source_ids.append(record.source_id)
             frame_indexes.append(state.frame_index)
@@ -279,6 +293,8 @@ class VideoFileIngestor:
                 {
                     "source_uri": state.display_uri,
                     "source_type": "rtsp" if state.is_live else "video_file",
+                    "frame_width": state.frame_width,
+                    "frame_height": state.frame_height,
                     "video_loop_count": state.loop_count,
                 }
             )

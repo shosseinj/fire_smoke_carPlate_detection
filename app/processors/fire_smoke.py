@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -18,6 +18,7 @@ from app.fire_core.severity import (
     SeverityPolicy,
     SeverityThreshold,
 )
+from app.fire_core.policy import FireSmokePolicyConfig
 from app.fire_core.tracking import (
     Detection,
     StableObjectTracker,
@@ -56,19 +57,19 @@ class FireSmokeSettings:
     confidence_ema_alpha: float = 0.35
     evidence_min_track_hits: int = 2
 
-    severity_timeline_seconds: float = 5.0
+    severity_timeline_seconds: float = 3.0
     low_severity_min_count: int = 5
-    low_severity_min_ratio: float = 0.20
-    medium_severity_min_count: int = 15
-    medium_severity_min_ratio: float = 0.45
-    high_severity_min_count: int = 30
-    high_severity_min_ratio: float = 0.70
-    fire_low_confidence: float = 0.38
-    fire_medium_confidence: float = 0.48
-    fire_high_confidence: float = 0.60
-    smoke_low_confidence: float = 0.32
-    smoke_medium_confidence: float = 0.42
-    smoke_high_confidence: float = 0.55
+    low_severity_min_ratio: float = 0.0
+    medium_severity_min_count: int = 10
+    medium_severity_min_ratio: float = 0.0
+    high_severity_min_count: int = 20
+    high_severity_min_ratio: float = 0.0
+    fire_low_confidence: float = 0.0
+    fire_medium_confidence: float = 0.0
+    fire_high_confidence: float = 0.0
+    smoke_low_confidence: float = 0.0
+    smoke_medium_confidence: float = 0.0
+    smoke_high_confidence: float = 0.0
     demotion_hold_seconds: float = 5.0
 
     incident_start_severity: HazardSeverity = HazardSeverity.MEDIUM
@@ -92,6 +93,7 @@ class PerSourceState:
     analyzer: SeverityAnalyzer
     incident: IncidentState | None = None
     last_frame_index: int = -1
+    policy_revision: int = -1
 
 
 class FireSmokeProcessor(BatchProcessor):
@@ -102,9 +104,11 @@ class FireSmokeProcessor(BatchProcessor):
         settings: FireSmokeSettings,
         *,
         model: Any | None = None,
+        policy_provider: Callable[[], tuple[int, FireSmokePolicyConfig]] | None = None,
     ) -> None:
         self.settings = settings
         self._model = model
+        self._policy_provider = policy_provider
         self._load_lock = threading.Lock()
         self._load_error: Exception | None = None
         self._states: dict[str, PerSourceState] = {}
@@ -112,7 +116,11 @@ class FireSmokeProcessor(BatchProcessor):
         self._processed_frames = 0
         self._last_inference_ms = 0.0
 
-    def _severity_policy(self, label: str) -> SeverityPolicy:
+    def _severity_policy(
+        self,
+        label: str,
+        dynamic: FireSmokePolicyConfig | None = None,
+    ) -> SeverityPolicy:
         if label == "fire":
             low, medium, high = (
                 self.settings.fire_low_confidence,
@@ -126,19 +134,21 @@ class FireSmokeProcessor(BatchProcessor):
                 self.settings.smoke_high_confidence,
             )
         return SeverityPolicy(
-            timeline_seconds=self.settings.severity_timeline_seconds,
+            timeline_seconds=(
+                dynamic.window_seconds if dynamic else self.settings.severity_timeline_seconds
+            ),
             low=SeverityThreshold(
-                self.settings.low_severity_min_count,
+                dynamic.low_count if dynamic else self.settings.low_severity_min_count,
                 self.settings.low_severity_min_ratio,
                 low,
             ),
             medium=SeverityThreshold(
-                self.settings.medium_severity_min_count,
+                dynamic.medium_count if dynamic else self.settings.medium_severity_min_count,
                 self.settings.medium_severity_min_ratio,
                 medium,
             ),
             high=SeverityThreshold(
-                self.settings.high_severity_min_count,
+                dynamic.high_count if dynamic else self.settings.high_severity_min_count,
                 self.settings.high_severity_min_ratio,
                 high,
             ),
@@ -146,6 +156,10 @@ class FireSmokeProcessor(BatchProcessor):
         )
 
     def _new_state(self) -> PerSourceState:
+        revision = -1
+        dynamic = None
+        if self._policy_provider is not None:
+            revision, dynamic = self._policy_provider()
         return PerSourceState(
             tracker=StableObjectTracker(
                 TrackerSettings(
@@ -167,10 +181,21 @@ class FireSmokeProcessor(BatchProcessor):
             ),
             risk=CameraRiskState(),
             analyzer=SeverityAnalyzer(
-                fire_policy=self._severity_policy("fire"),
-                smoke_policy=self._severity_policy("smoke"),
+                fire_policy=self._severity_policy("fire", dynamic),
+                smoke_policy=self._severity_policy("smoke", dynamic),
             ),
+            policy_revision=revision,
         )
+
+    def _sync_policy(self, state: PerSourceState) -> None:
+        if self._policy_provider is None:
+            return
+        revision, dynamic = self._policy_provider()
+        if revision == state.policy_revision:
+            return
+        state.analyzer.fire_policy = self._severity_policy("fire", dynamic)
+        state.analyzer.smoke_policy = self._severity_policy("smoke", dynamic)
+        state.policy_revision = revision
 
     def _ensure_model(self) -> None:
         if self._model is not None:
@@ -331,7 +356,11 @@ class FireSmokeProcessor(BatchProcessor):
 
     def _process_one(self, packet: FramePacket, result: Any, batch_ms: float) -> TaskResult:
         started = time.perf_counter()
-        state = self._states.setdefault(packet.source_id, self._new_state())
+        state = self._states.get(packet.source_id)
+        if state is None:
+            state = self._new_state()
+            self._states[packet.source_id] = state
+        self._sync_policy(state)
         detections = self._extract_detections(result)
         tracks, transitions = state.tracker.update(
             detections,
@@ -391,6 +420,9 @@ class FireSmokeProcessor(BatchProcessor):
         ]
         data = {
             "severity": overall.label,
+            "previous_severity": risk["previous_overall"].label,
+            "severity_changed": bool(risk["overall_changed"]),
+            "severity_window_seconds": state.analyzer.fire_policy.timeline_seconds,
             "fire": state.analyzer.snapshot_dict(risk["fire"]),
             "smoke": state.analyzer.snapshot_dict(risk["smoke"]),
             "tracks": track_payload,

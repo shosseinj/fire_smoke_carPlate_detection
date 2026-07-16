@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
 from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
+from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.sources import router as sources_router
 from app.config import settings
 from app.runtime import build_runtime
@@ -41,6 +43,8 @@ app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)
 app.include_router(plate_logs_router)
+app.include_router(fire_smoke_logs_router)
+app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 
 
 @app.get("/", include_in_schema=False)
@@ -59,5 +63,6 @@ def health() -> dict:
         "video_ingestor": status["video_ingestor"],
         "broadcast": status["broadcast"],
         "plate_log_count": status["plate_log_count"],
+        "fire_smoke_logs": status["fire_smoke_logs"],
         "workers": status["workers"],
     }

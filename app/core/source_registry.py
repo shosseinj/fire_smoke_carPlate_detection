@@ -27,6 +27,8 @@ class SourceRecord:
     enabled: bool = True
     tasks: set[TaskName] = field(default_factory=set)
     source_uri: str | None = None
+    frame_width: int = 640
+    frame_height: int = 640
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
@@ -47,6 +49,8 @@ class SourceRecord:
             enabled=bool(value.get("enabled", True)),
             tasks={TaskName(item) for item in value.get("tasks", [])},
             source_uri=value.get("source_uri"),
+            frame_width=int(value.get("frame_width", 640)),
+            frame_height=int(value.get("frame_height", 640)),
             metadata=dict(value.get("metadata") or {}),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
@@ -100,6 +104,8 @@ class SourceRegistry:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     tasks_json TEXT NOT NULL DEFAULT '[]',
                     source_uri TEXT,
+                    frame_width INTEGER NOT NULL DEFAULT 640,
+                    frame_height INTEGER NOT NULL DEFAULT 640,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at_utc TEXT NOT NULL,
                     updated_at_utc TEXT NOT NULL,
@@ -107,6 +113,18 @@ class SourceRegistry:
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in self._connection.execute("PRAGMA table_info(cameras)")
+            }
+            if "frame_width" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN frame_width INTEGER NOT NULL DEFAULT 640"
+                )
+            if "frame_height" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN frame_height INTEGER NOT NULL DEFAULT 640"
+                )
             self._connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_cameras_enabled
@@ -120,6 +138,7 @@ class SourceRegistry:
             rows = self._connection.execute(
                 """
                 SELECT camera_id, name, enabled, tasks_json, source_uri,
+                       frame_width, frame_height,
                        metadata_json, created_at_utc, updated_at_utc
                 FROM cameras
                 ORDER BY rowid
@@ -140,6 +159,12 @@ class SourceRegistry:
             raise ValueError("name cannot be blank")
         value.tasks = {TaskName(task) for task in value.tasks}
         value.metadata = dict(value.metadata)
+        value.frame_width = int(value.frame_width)
+        value.frame_height = int(value.frame_height)
+        if not 16 <= value.frame_width <= 4096:
+            raise ValueError("frame_width must be between 16 and 4096")
+        if not 16 <= value.frame_height <= 4096:
+            raise ValueError("frame_height must be between 16 and 4096")
         return value
 
     @staticmethod
@@ -150,6 +175,8 @@ class SourceRegistry:
             enabled=bool(row["enabled"]),
             tasks={TaskName(item) for item in json.loads(row["tasks_json"])},
             source_uri=row["source_uri"],
+            frame_width=int(row["frame_width"]),
+            frame_height=int(row["frame_height"]),
             metadata=dict(json.loads(row["metadata_json"])),
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
@@ -163,6 +190,8 @@ class SourceRegistry:
             int(record.enabled),
             json.dumps(sorted(task.value for task in record.tasks)),
             record.source_uri,
+            record.frame_width,
+            record.frame_height,
             json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
             record.created_at_utc,
             record.updated_at_utc,
@@ -222,8 +251,8 @@ class SourceRegistry:
                 """
                 INSERT INTO cameras (
                     camera_id, name, enabled, tasks_json, source_uri,
-                    metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    frame_width, frame_height, metadata_json, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._parameters(record) for record in prepared],
             )
@@ -257,8 +286,8 @@ class SourceRegistry:
                     """
                     INSERT INTO cameras (
                         camera_id, name, enabled, tasks_json, source_uri,
-                        metadata_json, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        frame_width, frame_height, metadata_json, created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._parameters(record),
                 )
@@ -283,13 +312,15 @@ class SourceRegistry:
                 """
                 INSERT INTO cameras (
                     camera_id, name, enabled, tasks_json, source_uri,
-                    metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    frame_width, frame_height, metadata_json, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(camera_id) DO UPDATE SET
                     name = excluded.name,
                     enabled = excluded.enabled,
                     tasks_json = excluded.tasks_json,
                     source_uri = excluded.source_uri,
+                    frame_width = excluded.frame_width,
+                    frame_height = excluded.frame_height,
                     metadata_json = excluded.metadata_json,
                     updated_at_utc = excluded.updated_at_utc
                 """,
@@ -309,6 +340,8 @@ class SourceRegistry:
         enabled: bool | None = None,
         tasks: Iterable[TaskName] | None = None,
         source_uri: str | None | object = ...,
+        frame_width: int | None = None,
+        frame_height: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SourceRecord:
         with self._lock:
@@ -324,6 +357,10 @@ class SourceRegistry:
                 record.tasks = {TaskName(task) for task in tasks}
             if source_uri is not ...:
                 record.source_uri = source_uri  # type: ignore[assignment]
+            if frame_width is not None:
+                record.frame_width = frame_width
+            if frame_height is not None:
+                record.frame_height = frame_height
             if metadata is not None:
                 record.metadata = dict(metadata)
             record.updated_at_utc = _utc_now()
@@ -332,7 +369,7 @@ class SourceRegistry:
                 """
                 UPDATE cameras
                 SET name = ?, enabled = ?, tasks_json = ?, source_uri = ?,
-                    metadata_json = ?, updated_at_utc = ?
+                    frame_width = ?, frame_height = ?, metadata_json = ?, updated_at_utc = ?
                 WHERE camera_id = ?
                 """,
                 (
@@ -340,6 +377,8 @@ class SourceRegistry:
                     int(record.enabled),
                     json.dumps(sorted(task.value for task in record.tasks)),
                     record.source_uri,
+                    record.frame_width,
+                    record.frame_height,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
                     record.updated_at_utc,
                     source_id,

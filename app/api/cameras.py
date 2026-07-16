@@ -27,6 +27,8 @@ def _response(record: SourceRecord) -> CameraResponse:
         enabled=record.enabled,
         tasks=sorted(record.tasks, key=lambda task: task.value),
         source_uri=source_uri,
+        frame_width=record.frame_width,
+        frame_height=record.frame_height,
         metadata=dict(record.metadata),
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
@@ -51,6 +53,8 @@ def create_camera(
                 enabled=payload.enabled,
                 tasks=set(payload.tasks),
                 source_uri=payload.source_uri,
+                frame_width=payload.frame_width,
+                frame_height=payload.frame_height,
                 metadata=dict(payload.metadata),
             )
         )
@@ -97,6 +101,8 @@ def replace_camera(
                 enabled=payload.enabled,
                 tasks=payload.tasks,
                 source_uri=payload.source_uri,
+                frame_width=payload.frame_width,
+                frame_height=payload.frame_height,
                 metadata=payload.metadata,
             )
         )

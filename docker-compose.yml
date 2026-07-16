@@ -18,6 +18,7 @@ services:
       CAMERA_DB_PATH: /app/data/cameras.sqlite3
       SOURCE_REGISTRY_PATH: /app/data/sources.json
       PLATE_LOG_DB_PATH: /app/data/plate_logs.sqlite3
+      SAVED_MEDIA_PATH: /app/saved_media
     ports:
       - "8000:8000"
     volumes:
