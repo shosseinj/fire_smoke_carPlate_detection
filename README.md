@@ -192,6 +192,8 @@ python run.py
 
 Live ingestion counters and per-camera frame indexes are available at `GET /api/v1/router/status` and under `video_ingestor` in `GET /health`.
 
+Local-file EOS uses a synchronized DeepStream teardown/reopen while preserving a monotonic camera frame index. This prevents the broadcast layer from rejecting frames from the second playback as stale. `VIDEO_LOOP` is passed through Compose and defaults to `true`; per-camera `loop_count` is visible in diagnostics.
+
 ## Annotated camera wall
 
 Open the built-in frontend at:
@@ -261,7 +263,7 @@ Stored records can be read with `GET /api/v1/plate-logs`. Optional query paramet
 
 ## Persistent fire/smoke events
 
-Confirmed severity transitions are written to `fire_smoke_logs` in the same SQLite database as plate logs. Each record includes the camera, UTC time, severity, fire/smoke counts and confidence, rolling-window length, and a snapshot URL. Snapshot drawing, JPEG encoding, and database writes use a bounded background queue and do not block inference. Files are served below `/media/fire_smoke_snapshots/` and stored under `SAVED_MEDIA_PATH`.
+Confirmed incidents are written to `fire_smoke_logs` in the same SQLite database as plate logs. A medium incident creates one row; a later high transition updates that same incident row and snapshot instead of creating another alert. The ten-second incident-end grace prevents one-second detection dips from producing repeated rows. Each record includes the camera, UTC time, severity, fire/smoke counts and confidence, rolling-window length, and a snapshot URL. Snapshot drawing, JPEG encoding, and database writes use a bounded background queue and do not block inference. Files are served below `/media/fire_smoke_snapshots/` and stored under `SAVED_MEDIA_PATH`.
 
 The default policy treats fewer than 5 positive processed frames in 3 seconds as a false positive, 5 as low, 10 as medium, and 20 as high. Admin changes take effect online without restarting DeepStream:
 
@@ -279,6 +281,24 @@ Content-Type: application/json
 ```
 
 Read events with `GET /api/v1/fire-smoke-logs`; optional filters are `camera_id`, `severity`, and `limit`. Counts are based on frames actually submitted to AI, so configure `VIDEO_INGEST_FPS` high enough for the selected window and high threshold.
+
+Detection confidence is filtered both in the model call and again when model output is parsed. The defaults are:
+
+```text
+FIRE_CONFIDENCE=0.30
+SMOKE_CONFIDENCE=0.30
+PLATE_CONFIDENCE=0.30
+```
+
+## Swagger maintenance and model testing
+
+Open `/docs`. The API is ordered into diagnostics, camera CRUD, frame/model testing, fire/smoke, plate logs, results, broadcast, and compatibility sections.
+
+- `GET /api/v1/diagnostics/overview` shows DeepStream, model scores, workers, logs, and broadcast state.
+- `GET /api/v1/diagnostics/checks` runs safe section-by-section maintenance checks.
+- `POST /api/v1/diagnostics/cameras/{camera_id}/restart` cleanly restarts one DeepStream source.
+- `POST /api/v1/frame-rounds/jpeg` accepts test JPEG/PNG frames and routes them through each task assigned to the selected camera ID.
+- `GET /api/v1/results/recent` returns the resulting fire/smoke or plate model output.
 
 ## Camera and routing API
 
@@ -483,20 +503,6 @@ This project owns local video-file and RTSP reading, routing, and inference. Oth
 docker run --rm -it `
   --name merged-video-ai-router `
   --gpus all `
-  -p 8000:8000 `
-  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
-  -e VIDEO_INGESTION_ENABLED=true `
-  -e PROCESSOR_MODE=real `
-  -v "${PWD}\data:/workspace/data" `
-  -v "${PWD}\saved_media:/workspace/saved_media" `
-  -v "${PWD}\models:/workspace/models" `
-  merged-video-ai-router:v1
-```
-
-```
-docker run --rm -it `
-  --name merged-video-ai-router `
-  --gpus all `
   --entrypoint /bin/bash `
   -p 8000:8000 `
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
@@ -504,4 +510,9 @@ docker run --rm -it `
   -e PROCESSOR_MODE=real `
   -v "${PWD}\:/workspace/" `
   merged-video-ai-router:v2
+```
+
+```
+docker compose build video-ai-router
+docker compose up -d --force-recreate video-ai-router
 ```

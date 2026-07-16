@@ -29,13 +29,13 @@ COPY . /workspace
 #     --index-url https://download.pytorch.org/whl/cu124 \
 #     --proxy http://host.docker.internal:10808
 # RUN pip install --no-cache-dir --no-deps ultralytics
-RUN python3 -m pip install requests
-RUN python3 -m pip uninstall -y transformers
+# RUN python3 -m pip install requests
+# RUN python3 -m pip uninstall -y transformers
 
-RUN python3 -m pip install --no-cache-dir \
-    "transformers==4.51.3"
+# RUN python3 -m pip install --no-cache-dir \
+#     "transformers==4.51.3"
 
-RUN  pip install --no-cache-dir "tensorrt-cu12>=7.0.0,!=10.2.0"
+# RUN  pip install --no-cache-dir "tensorrt-cu12>=7.0.0,!=10.2.0"
 RUN mkdir -p \
     /workspace/data \
     /workspace/saved_media \

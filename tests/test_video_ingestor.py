@@ -207,6 +207,22 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(tmp_path: Path) -
     assert [record.source_id for record in ingestor._active_records()] == ["camera-02"]
 
 
+def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
+    tmp_path: Path,
+) -> None:
+    registry = SourceRegistry()
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    assert ingestor._next_frame_index_locked("camera-loop") == 0
+    assert ingestor._next_frame_index_locked("camera-loop") == 1
+    # A replacement Gst pipeline uses the same per-camera sequence.
+    assert ingestor._next_frame_index_locked("camera-loop") == 2
+
+
 def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -> None:
     registry = SourceRegistry()
     ingestor = DeepStreamIngestor(

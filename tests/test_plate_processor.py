@@ -11,26 +11,27 @@ from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 
 
 class FakeBox:
-    def __init__(self) -> None:
+    def __init__(self, confidence: float = 0.9) -> None:
         self.cls = np.array([1], dtype=np.float32)
         self.xyxy = np.array([[2, 2, 20, 10]], dtype=np.float32)
-        self.conf = np.array([0.9], dtype=np.float32)
+        self.conf = np.array([confidence], dtype=np.float32)
 
 
 class FakeResult:
-    def __init__(self) -> None:
-        self.boxes = [FakeBox()]
+    def __init__(self, confidence: float = 0.9) -> None:
+        self.boxes = [FakeBox(confidence)]
 
 
 class FakeDetector:
     names = {0: "car", 1: "plate"}
 
-    def __init__(self) -> None:
+    def __init__(self, confidence: float = 0.9) -> None:
         self.kwargs = None
+        self.confidence = confidence
 
     def predict(self, source, **kwargs):
         self.kwargs = kwargs
-        return [FakeResult() for _ in source]
+        return [FakeResult(self.confidence) for _ in source]
 
 
 @dataclass
@@ -75,3 +76,20 @@ def test_plate_detector_and_ocr_are_batched(tmp_path: Path) -> None:
     assert "half" not in detector.kwargs
     assert results[0].data["plates"][0]["plate"] == "12ب34567"
     assert results[1].data["plate_count"] == 1
+
+
+def test_plate_below_configured_score_is_not_recognized(tmp_path: Path) -> None:
+    processor = PlateRecognitionProcessor(
+        PlateSettings(
+            detector_weights=tmp_path / "detector.pt",
+            recognizer_model_dir=tmp_path / "recognizer",
+            device="cpu",
+            detector_confidence=0.30,
+        ),
+        detector=FakeDetector(confidence=0.29),
+        recognizer=FakeRecognizer(),
+    )
+    result = processor.process_batch([make_packet("camera-low-score")])[0]
+
+    assert result.data["plates"] == []
+    assert result.data["plate_count"] == 0

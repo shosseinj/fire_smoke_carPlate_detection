@@ -122,6 +122,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 imgsz=app_settings.fire_imgsz,
                 batch_size=app_settings.fire_batch_size,
                 engine_fixed_batch=app_settings.fire_engine_fixed_batch,
+                fire_candidate_confidence=app_settings.fire_confidence,
+                smoke_candidate_confidence=app_settings.smoke_confidence,
             ),
             policy_provider=fire_smoke_logs.policy_snapshot,
         )

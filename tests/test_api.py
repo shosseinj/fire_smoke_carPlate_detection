@@ -279,3 +279,47 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
         assert runtime.video_ingestor.status()["backend"] == "deepstream"
     finally:
         runtime.close()
+
+
+def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -> None:
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing.json",
+            plate_log_db_path=tmp_path / "logs.sqlite3",
+            saved_media_path=tmp_path / "media",
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            overview = client.get("/api/v1/diagnostics/overview")
+            assert overview.status_code == 200
+            assert overview.json()["model_configuration"] == {
+                "fire_minimum_score": 0.3,
+                "smoke_minimum_score": 0.3,
+                "plate_minimum_score": 0.3,
+                "fire_model": overview.json()["model_configuration"]["fire_model"],
+                "plate_detector": overview.json()["model_configuration"]["plate_detector"],
+            }
+            checks = client.get("/api/v1/diagnostics/checks")
+            assert checks.status_code == 200
+            assert {item["section"] for item in checks.json()["checks"]} >= {
+                "camera_registry",
+                "deepstream",
+                "fire_smoke_model",
+                "plate_model",
+                "persistent_logs",
+            }
+            schema = client.get("/openapi.json").json()
+            assert "/api/v1/diagnostics/checks" in schema["paths"]
+            assert "/api/v1/frame-rounds/jpeg" in schema["paths"]
+            assert schema["tags"][0]["name"] == "system-diagnostics"
+    finally:
+        main_module.runtime = old_runtime

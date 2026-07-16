@@ -118,6 +118,10 @@ class FireSmokeLogStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_severity ON fire_smoke_logs(severity)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_incident "
+                "ON fire_smoke_logs(incident_id)"
+            )
             connection.commit()
 
     def _load_policy(self) -> FireSmokePolicyConfig:
@@ -174,7 +178,8 @@ class FireSmokeLogStore:
             self._closed
             or result.error
             or result.task != TaskName.FIRE_SMOKE
-            or result.data.get("severity") == "none"
+            or result.data.get("severity") not in {"medium", "high"}
+            or not result.data.get("incident_id")
             or not result.data.get("severity_changed", False)
         ):
             return
@@ -188,6 +193,8 @@ class FireSmokeLogStore:
 
     @staticmethod
     def _incident_id(result: TaskResult) -> str | None:
+        if result.data.get("incident_id"):
+            return str(result.data["incident_id"])
         for event in result.data.get("events", []):
             if event.get("incident_id"):
                 return str(event["incident_id"])
@@ -197,6 +204,20 @@ class FireSmokeLogStore:
         result = pending.result
         fire = dict(result.data.get("fire") or {})
         smoke = dict(result.data.get("smoke") or {})
+        incident_id = self._incident_id(result)
+        existing: sqlite3.Row | None = None
+        if incident_id:
+            with self._lock, self._connect() as connection:
+                existing = connection.execute(
+                    "SELECT id, severity, snapshot_url FROM fire_smoke_logs "
+                    "WHERE incident_id = ? ORDER BY id LIMIT 1",
+                    (incident_id,),
+                ).fetchone()
+        severity_rank = {"medium": 2, "high": 3}
+        if existing is not None and severity_rank.get(
+            str(existing["severity"]), 0
+        ) >= severity_rank.get(str(result.data.get("severity")), 0):
+            return
         frame = pending.frame
         for track in result.data.get("tracks", []):
             if track.get("label") not in {"fire", "smoke"}:
@@ -220,31 +241,49 @@ class FireSmokeLogStore:
         if not cv2.imwrite(str(snapshot_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 88]):
             raise RuntimeError(f"Could not save fire/smoke snapshot: {snapshot_path}")
         snapshot_url = f"/media/fire_smoke_snapshots/{filename}"
+        values = (
+            result.source_id,
+            result.processed_at_utc,
+            incident_id,
+            result.data["severity"],
+            int(fire.get("positive_count", 0)),
+            int(smoke.get("positive_count", 0)),
+            float(fire.get("max_confidence", 0.0)),
+            float(smoke.get("max_confidence", 0.0)),
+            float(result.data.get("severity_window_seconds", 3.0)),
+            snapshot_url,
+            json.dumps(result.data, ensure_ascii=False, sort_keys=True),
+        )
         with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO fire_smoke_logs (
-                    camera, time, incident_id, severity, fire_count, smoke_count,
-                    fire_confidence, smoke_confidence, window_seconds,
-                    snapshot_url, details_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result.source_id,
-                    result.processed_at_utc,
-                    self._incident_id(result),
-                    result.data["severity"],
-                    int(fire.get("positive_count", 0)),
-                    int(smoke.get("positive_count", 0)),
-                    float(fire.get("max_confidence", 0.0)),
-                    float(smoke.get("max_confidence", 0.0)),
-                    float(result.data.get("severity_window_seconds", 3.0)),
-                    snapshot_url,
-                    json.dumps(result.data, ensure_ascii=False, sort_keys=True),
-                ),
-            )
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO fire_smoke_logs (
+                        camera, time, incident_id, severity, fire_count, smoke_count,
+                        fire_confidence, smoke_confidence, window_seconds,
+                        snapshot_url, details_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE fire_smoke_logs
+                    SET camera = ?, time = ?, incident_id = ?, severity = ?,
+                        fire_count = ?, smoke_count = ?, fire_confidence = ?,
+                        smoke_confidence = ?, window_seconds = ?, snapshot_url = ?,
+                        details_json = ?
+                    WHERE id = ?
+                    """,
+                    (*values, int(existing["id"])),
+                )
             connection.commit()
             self._saved += 1
+        if existing is not None and existing["snapshot_url"]:
+            old_path = self.snapshot_dir / Path(str(existing["snapshot_url"])).name
+            if old_path != snapshot_path:
+                old_path.unlink(missing_ok=True)
 
     def _run(self) -> None:
         while True:

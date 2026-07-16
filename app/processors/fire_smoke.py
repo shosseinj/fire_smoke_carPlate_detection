@@ -39,7 +39,7 @@ class FireSmokeSettings:
     fire_class_id: int = 0
     smoke_class_id: int = 1
     fire_candidate_confidence: float = 0.30
-    smoke_candidate_confidence: float = 0.25
+    smoke_candidate_confidence: float = 0.30
     iou: float = 0.45
     max_detections: int = 50
 
@@ -423,6 +423,9 @@ class FireSmokeProcessor(BatchProcessor):
             "previous_severity": risk["previous_overall"].label,
             "severity_changed": bool(risk["overall_changed"]),
             "severity_window_seconds": state.analyzer.fire_policy.timeline_seconds,
+            "incident_id": (
+                state.incident.incident_id if state.incident is not None else None
+            ),
             "fire": state.analyzer.snapshot_dict(risk["fire"]),
             "smoke": state.analyzer.snapshot_dict(risk["smoke"]),
             "tracks": track_payload,

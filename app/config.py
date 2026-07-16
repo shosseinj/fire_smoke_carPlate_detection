@@ -64,6 +64,8 @@ class Settings:
     fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 25.0)
     fire_imgsz: int = _env_int("FIRE_SMOKE_IMGSZ", 640)
     fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 8)
+    fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
+    smoke_confidence: float = _env_float("SMOKE_CONFIDENCE", 0.30)
 
     plate_detector_weights: Path = _path("PLATE_DETECTOR_WEIGHTS", "weights/plate_detector/model.pt")
     plate_recognizer_dir: Path = _path("PLATE_RECOGNIZER_DIR", "weights/plate_recognizer")
@@ -71,12 +73,12 @@ class Settings:
     plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 8)
     plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 25.0)
     plate_imgsz: int = _env_int("PLATE_IMGSZ", 640)
-    plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.35)
+    plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)
     plate_use_fp16: bool = _env_bool("PLATE_USE_FP16", True)
 
     draw_info: bool = _env_bool("draw_info", True)
-    save_plate_snapshot: bool = _env_bool("save_plate_snapshot", False)
+    save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)
 
 
 settings = Settings()

@@ -12,11 +12,47 @@ from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
+from app.api.diagnostics import router as diagnostics_router
 from app.api.sources import router as sources_router
 from app.config import settings
 from app.runtime import build_runtime
 
 runtime = build_runtime(settings)
+
+OPENAPI_TAGS = [
+    {
+        "name": "system-diagnostics",
+        "description": "Maintenance checks, configuration visibility, and controlled pipeline restart.",
+    },
+    {
+        "name": "cameras",
+        "description": "Authoritative camera-table CRUD, sizing, enable/disable, and task assignment.",
+    },
+    {
+        "name": "frame-routing",
+        "description": "Upload JPEG/PNG frames to test fire/smoke and plate model routing from Swagger.",
+    },
+    {
+        "name": "fire-smoke",
+        "description": "Stable incident logs and online rolling-window severity configuration.",
+    },
+    {
+        "name": "plate-logs",
+        "description": "Persistent recognized-plate records and snapshots.",
+    },
+    {
+        "name": "results",
+        "description": "Recent model results, worker status, and result WebSocket.",
+    },
+    {
+        "name": "annotated-broadcast",
+        "description": "Dashboard, annotated streams, snapshots, and multiplexed WebSocket.",
+    },
+    {
+        "name": "sources",
+        "description": "Backward-compatible alias for the camera registry.",
+    },
+]
 
 
 @asynccontextmanager
@@ -36,7 +72,9 @@ app = FastAPI(
         "recognition. Open [/dashboard](/dashboard) for the synchronized annotated camera wall."
     ),
     lifespan=lifespan,
+    openapi_tags=OPENAPI_TAGS,
 )
+app.include_router(diagnostics_router)
 app.include_router(sources_router)
 app.include_router(cameras_router)
 app.include_router(frames_router)
@@ -52,7 +90,7 @@ def root() -> RedirectResponse:
     return RedirectResponse(url="/dashboard")
 
 
-@app.get("/health")
+@app.get("/health", tags=["system-diagnostics"], summary="Health and runtime counters")
 def health() -> dict:
     status = runtime.status()
     return {

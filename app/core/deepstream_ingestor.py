@@ -58,6 +58,7 @@ class DeepStreamSourceState:
     last_frame_monotonic: float = 0.0
     last_error: str | None = None
     warnings: int = 0
+    loop_count: int = 0
 
 
 class DeepStreamIngestor:
@@ -111,6 +112,8 @@ class DeepStreamIngestor:
         self._states: dict[str, DeepStreamSourceState] = {}
         self._retry_after: dict[str, float] = {}
         self._failed_sources: set[str] = set()
+        self._frame_sequences: dict[str, int] = {}
+        self._loop_counts: dict[str, int] = {}
         self._round_sequence = 0
         self._rounds_submitted = 0
         self._frames_submitted = 0
@@ -194,7 +197,11 @@ class DeepStreamIngestor:
                 state.last_error = safe_message
             self._last_error = f"{source_id}: {safe_message}"
             self._failed_sources.add(source_id)
-            self._retry_after[source_id] = time.monotonic() + self.rtsp_reconnect_seconds
+            self._retry_after[source_id] = (
+                time.monotonic()
+                if expected
+                else time.monotonic() + self.rtsp_reconnect_seconds
+            )
         log = LOGGER.info if expected else LOGGER.error
         log("DeepStream source %s: %s", source_id, safe_message)
 
@@ -212,6 +219,11 @@ class DeepStreamIngestor:
             self._mark_failed(source_id, detail)
         elif message.type == Gst.MessageType.EOS:
             if self.loop:
+                with self._lock:
+                    if source_id not in self._failed_sources:
+                        self._loop_counts[source_id] = (
+                            self._loop_counts.get(source_id, 0) + 1
+                        )
                 LOGGER.info("DeepStream file reached EOS; restarting cleanly: %s", source_id)
                 self._mark_failed(
                     source_id,
@@ -282,12 +294,18 @@ class DeepStreamIngestor:
                 return Gst.FlowReturn.OK
             state.latest_frame = frame
             state.latest_version += 1
-            state.frame_index += 1
+            state.frame_index = self._next_frame_index_locked(source_id)
             state.source_time_seconds = source_time
             state.received_frames += 1
             state.last_frame_monotonic = now
             state.last_error = None
         return Gst.FlowReturn.OK
+
+    def _next_frame_index_locked(self, source_id: str) -> int:
+        """Return a monotonic index that survives EOS pipeline replacement."""
+        next_frame_index = self._frame_sequences.get(source_id, -1) + 1
+        self._frame_sequences[source_id] = next_frame_index
+        return next_frame_index
 
     def _open_source(self, record: SourceRecord) -> None:
         Gst, _ = self._require_runtime()
@@ -413,6 +431,7 @@ class DeepStreamIngestor:
                 sink_handler_id=sink_handler_id,
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
+                loop_count=self._loop_counts.get(record.source_id, 0),
             )
             with self._lock:
                 self._states[record.source_id] = state
@@ -490,6 +509,12 @@ class DeepStreamIngestor:
             self._close_source(source_id)
             with self._lock:
                 self._retry_after.pop(source_id, None)
+                self._frame_sequences.pop(source_id, None)
+                self._loop_counts.pop(source_id, None)
+        with self._lock:
+            for source_id in set(self._frame_sequences) - set(by_id):
+                self._frame_sequences.pop(source_id, None)
+                self._loop_counts.pop(source_id, None)
 
         for record in records:
             with self._lock:
@@ -652,6 +677,9 @@ class DeepStreamIngestor:
                         "received_frames": state.received_frames,
                         "submitted_frames": state.submitted_frames,
                         "frame_index": state.frame_index,
+                        "loop_count": self._loop_counts.get(
+                            source_id, state.loop_count
+                        ),
                         "last_frame_age_seconds": (
                             round(now - state.last_frame_monotonic, 3)
                             if state.last_frame_monotonic > 0
@@ -663,3 +691,13 @@ class DeepStreamIngestor:
                     for source_id, state in self._states.items()
                 },
             }
+
+    def restart_source(self, source_id: str) -> bool:
+        """Schedule one source for a clean in-thread teardown and immediate reopen."""
+        record = self.registry.get(source_id)
+        if record is None or not record.enabled or not self.is_supported_source(record):
+            return False
+        with self._lock:
+            self._failed_sources.add(source_id)
+            self._retry_after[source_id] = 0.0
+        return True

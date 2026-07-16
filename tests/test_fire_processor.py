@@ -19,17 +19,18 @@ class FakeBoxes:
 
 
 class FakeResult:
-    def __init__(self):
-        self.boxes = FakeBoxes([[1, 1, 12, 12, 0.95, 0]])
+    def __init__(self, confidence: float = 0.95):
+        self.boxes = FakeBoxes([[1, 1, 12, 12, confidence, 0]])
 
 
 class FakeModel:
-    def __init__(self):
+    def __init__(self, confidence: float = 0.95):
         self.kwargs = None
+        self.confidence = confidence
 
     def predict(self, source, **kwargs):
         self.kwargs = {"source": source, **kwargs}
-        return [FakeResult() for _ in source]
+        return [FakeResult(self.confidence) for _ in source]
 
 
 def packet(
@@ -122,3 +123,21 @@ def test_default_three_second_count_window_maps_5_10_20_to_severity(
     assert severities[9] == "medium"
     assert severities[19] == "high"
     assert result.data["severity_window_seconds"] == 3.0
+
+
+def test_fire_below_configured_score_is_not_a_detection(tmp_path: Path) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            fire_candidate_confidence=0.30,
+            evidence_min_track_hits=1,
+        ),
+        model=FakeModel(confidence=0.29),
+    )
+    result = processor.process_batch([packet("camera-low-score", 1)])[0]
+
+    assert result.data["tracks"] == []
+    assert result.data["fire"]["positive_count"] == 0
+    assert result.data["severity"] == "none"

@@ -43,7 +43,7 @@ class PlateSettings:
     recognizer_model_dir: Path
     device: str = "0"
     detector_imgsz: int = 640
-    detector_confidence: float = 0.35
+    detector_confidence: float = 0.30
     detector_iou: float = 0.45
     use_fp16: bool = True
     plate_class_ids: tuple[int, ...] = ()
@@ -239,6 +239,9 @@ class PlateRecognitionProcessor(BatchProcessor):
                 class_id = int(box.cls[0].item())
                 if class_id not in allowed_ids:
                     continue
+                detector_confidence = float(box.conf[0].item())
+                if detector_confidence < self.settings.detector_confidence:
+                    continue
                 x1, y1, x2, y2 = [int(round(value)) for value in box.xyxy[0].tolist()]
                 x1 = max(0, min(x1, width - 1))
                 y1 = max(0, min(y1, height - 1))
@@ -248,7 +251,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                 if crop.size == 0:
                     continue
                 crop_records.append(
-                    (frame_position, [x1, y1, x2, y2], float(box.conf[0].item()), crop)
+                    (frame_position, [x1, y1, x2, y2], detector_confidence, crop)
                 )
 
         recognized = self._recognize_crops([item[3] for item in crop_records])

@@ -9,6 +9,7 @@ services:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-mock}
       VIDEO_INGEST_BACKEND: deepstream
       VIDEO_INGESTION_ENABLED: "true"
+      VIDEO_LOOP: ${VIDEO_LOOP:-true}
       RTSP_INGESTION_ENABLED: ${RTSP_INGESTION_ENABLED:-true}
       RTSP_TRANSPORT: ${RTSP_TRANSPORT:-tcp}
       RTSP_RECONNECT_SECONDS: ${RTSP_RECONNECT_SECONDS:-3}
@@ -19,6 +20,9 @@ services:
       SOURCE_REGISTRY_PATH: /app/data/sources.json
       PLATE_LOG_DB_PATH: /app/data/plate_logs.sqlite3
       SAVED_MEDIA_PATH: /app/saved_media
+      FIRE_CONFIDENCE: ${FIRE_CONFIDENCE:-0.30}
+      SMOKE_CONFIDENCE: ${SMOKE_CONFIDENCE:-0.30}
+      PLATE_CONFIDENCE: ${PLATE_CONFIDENCE:-0.30}
     ports:
       - "8000:8000"
     volumes:
