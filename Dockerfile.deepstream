@@ -1,23 +1,44 @@
-FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch
+FROM merged-video-ai-router:v2
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app:/usr/lib/python3/dist-packages \
-    NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
-WORKDIR /app
-COPY requirements.deepstream.txt .
-COPY requirements.deepstream-ai.txt .
-ARG INSTALL_AI_REQUIREMENTS=0
-RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir -r requirements.deepstream.txt \
-    && if [ "$INSTALL_AI_REQUIREMENTS" = "1" ]; then \
-         python3 -m pip install --no-cache-dir -r requirements.deepstream-ai.txt; \
-       fi
+WORKDIR /workspace
 
-COPY . .
+# Install only application-level system dependencies inside the image.
+# Nothing is installed on Windows.
+
+
+# COPY requirements.deepstream.txt /workspace/requirements.txt
+
+# RUN python3 -m pip install \
+#     --no-cache-dir \
+#     -r /workspace/requirements.txt
+
+COPY . /workspace
+
+# RUN python3 -m pip install \
+#     --no-deps \
+#     torch==2.4.1 \
+#     torchvision==0.19.1 \
+#     torchaudio==2.4.1 \
+#     --index-url https://download.pytorch.org/whl/cu124 \
+#     --proxy http://host.docker.internal:10808
+# RUN pip install --no-cache-dir --no-deps ultralytics
+RUN python3 -m pip install requests
+RUN python3 -m pip uninstall -y transformers
+
+RUN python3 -m pip install --no-cache-dir \
+    "transformers==4.51.3"
+
+RUN  pip install --no-cache-dir "tensorrt-cu12>=7.0.0,!=10.2.0"
+RUN mkdir -p \
+    /workspace/data \
+    /workspace/saved_media \
+    /workspace/models
 
 EXPOSE 8000
-CMD ["python3", "run.py"]
+
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

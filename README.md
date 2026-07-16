@@ -33,16 +33,16 @@ The list must always be accompanied by the matching source-ID order. The router 
 
 `data/sources.json` and `examples/initial_sources.json` select eight of the provided videos:
 
-| Source | Video | Tasks |
-|---|---|---|
-| `camera-01` | `smoke1.mp4` | `fire_smoke` |
-| `camera-02` | `smoke2.mp4` | `fire_smoke` |
-| `camera-03` | `sdf.mp4` | `fire_smoke` |
-| `camera-04` | `fg.mp4` | `plate_recognition` |
-| `camera-05` | `yt.mp4` | `plate_recognition` |
-| `camera-06` | `bucket11.mp4` | `plate_recognition` |
-| `camera-07` | `etry.mp4` | `fire_smoke`, `plate_recognition` |
-| `camera-08` | `test1.mp4` | `fire_smoke`, `plate_recognition` |
+| Source      | Video          | Tasks                             |
+| ----------- | -------------- | --------------------------------- |
+| `camera-01` | `smoke1.mp4`   | `fire_smoke`                      |
+| `camera-02` | `smoke2.mp4`   | `fire_smoke`                      |
+| `camera-03` | `sdf.mp4`      | `fire_smoke`                      |
+| `camera-04` | `fg.mp4`       | `plate_recognition`               |
+| `camera-05` | `yt.mp4`       | `plate_recognition`               |
+| `camera-06` | `bucket11.mp4` | `plate_recognition`               |
+| `camera-07` | `etry.mp4`     | `fire_smoke`, `plate_recognition` |
+| `camera-08` | `test1.mp4`    | `fire_smoke`, `plate_recognition` |
 
 For one extraction round containing all eight cameras, the router creates:
 
@@ -232,11 +232,11 @@ Positive detections print one-line `[DETECTION]` records to standard output. Emp
 
 Every recognized non-empty plate is automatically written to the SQLite table `plate_logs`. The table has exactly three fields:
 
-| Field | Meaning |
-|---|---|
-| `camera` | Source/camera ID that detected the plate |
-| `time` | UTC detection timestamp from `processed_at_utc` |
-| `plate` | Recognized plate number |
+| Field    | Meaning                                         |
+| -------- | ----------------------------------------------- |
+| `camera` | Source/camera ID that detected the plate        |
+| `time`   | UTC detection timestamp from `processed_at_utc` |
+| `plate`  | Recognized plate number                         |
 
 The database defaults to `data/plate_logs.sqlite3` and can be changed with `PLATE_LOG_DB_PATH`.
 
@@ -415,3 +415,30 @@ SMOKE TEST PASSED
 ## Important boundary
 
 This project owns local video-file and RTSP reading, routing, and inference. Other live-source types can still be supplied through an external extractor that obeys `enabled_source_ids()`.
+
+```
+docker run --rm -it `
+  --name merged-video-ai-router `
+  --gpus all `
+  -p 8000:8000 `
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
+  -e VIDEO_INGESTION_ENABLED=true `
+  -e PROCESSOR_MODE=real `
+  -v "${PWD}\data:/workspace/data" `
+  -v "${PWD}\saved_media:/workspace/saved_media" `
+  -v "${PWD}\models:/workspace/models" `
+  merged-video-ai-router:v1
+```
+
+```
+docker run --rm -it `
+  --name merged-video-ai-router `
+  --gpus all `
+  --entrypoint /bin/bash `
+  -p 8000:8000 `
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
+  -e VIDEO_INGESTION_ENABLED=true `
+  -e PROCESSOR_MODE=real `
+  -v "${PWD}\:/workspace/" `
+  merged-video-ai-router:v2
+```

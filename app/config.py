@@ -37,7 +37,7 @@ class Settings:
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
-    video_ingest_backend: str = os.getenv("VIDEO_INGEST_BACKEND", "opencv").strip().lower()
+    video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()
     video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 5.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
@@ -50,7 +50,7 @@ class Settings:
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
     plate_log_db_path: Path = _path("PLATE_LOG_DB_PATH", "plate_logs.sqlite3")
 
-    fire_model_path: Path = _path("FIRE_SMOKE_MODEL_PATH", "weights/fire_smoke/model.engine")
+    fire_model_path: Path = _path("FIRE_SMOKE_MODEL_PATH", "weights/fire_smoke/best_nano_111.pt")
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")
     fire_batch_size: int = _env_int("FIRE_SMOKE_BATCH_SIZE", 8)
     fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 25.0)
