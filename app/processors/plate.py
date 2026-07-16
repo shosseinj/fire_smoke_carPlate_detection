@@ -40,13 +40,21 @@ def normalize_plate_text(text: str, output_persian_digits: bool = False) -> str:
 @dataclass(frozen=True, slots=True)
 class PlateSettings:
     detector_weights: Path
+    vehicle_detector_weights: Path
     recognizer_model_dir: Path
     device: str = "0"
     detector_imgsz: int = 640
     detector_confidence: float = 0.30
     detector_iou: float = 0.45
+    plate_crop_batch_size: int = 16
     use_fp16: bool = True
     plate_class_ids: tuple[int, ...] = ()
+    vehicle_class_ids: tuple[int, ...] = (2, 3, 5, 7)
+    vehicle_confidence: float = 0.35
+    vehicle_iou: float = 0.45
+    vehicle_imgsz: int = 640
+    vehicle_max_per_frame: int = 12
+    vehicle_crop_padding_ratio: float = 0.05
     output_persian_digits: bool = False
 
 
@@ -62,10 +70,12 @@ class PlateRecognitionProcessor(BatchProcessor):
         self,
         settings: PlateSettings,
         *,
+        vehicle_detector: Any | None = None,
         detector: Any | None = None,
         recognizer: Any | None = None,
     ) -> None:
         self.settings = settings
+        self._vehicle_detector = vehicle_detector
         self._detector = detector
         self._recognizer = recognizer
         self._load_lock = threading.Lock()
@@ -73,6 +83,8 @@ class PlateRecognitionProcessor(BatchProcessor):
         self._processed_batches = 0
         self._processed_frames = 0
         self._last_inference_ms = 0.0
+        self._last_vehicle_inference_ms = 0.0
+        self._last_plate_inference_ms = 0.0
 
     def recognizer_missing_files(self) -> list[Path]:
         root = self.settings.recognizer_model_dir
@@ -87,18 +99,31 @@ class PlateRecognitionProcessor(BatchProcessor):
         return configured
 
     def _ensure_models(self) -> None:
-        if self._detector is not None and self._recognizer is not None:
+        if (
+            self._vehicle_detector is not None
+            and self._detector is not None
+            and self._recognizer is not None
+        ):
             return
         if self._load_error is not None:
             raise RuntimeError(f"Plate models loading previously failed: {self._load_error}")
         with self._load_lock:
-            if self._detector is not None and self._recognizer is not None:
+            if (
+                self._vehicle_detector is not None
+                and self._detector is not None
+                and self._recognizer is not None
+            ):
                 return
             with serialized_model_load():
                 try:
                     if not self.settings.detector_weights.is_file():
                         raise FileNotFoundError(
                             f"Plate detector checkpoint was not found: {self.settings.detector_weights}"
+                        )
+                    if not self.settings.vehicle_detector_weights.is_file():
+                        raise FileNotFoundError(
+                            "Vehicle detector checkpoint was not found: "
+                            f"{self.settings.vehicle_detector_weights}"
                         )
                     if not self.settings.recognizer_model_dir.is_dir():
                         raise FileNotFoundError(
@@ -112,12 +137,16 @@ class PlateRecognitionProcessor(BatchProcessor):
                         )
                     YOLO = load_yolo_class()
                     Model = load_hezar_model_class()
+                    vehicle_detector = YOLO(
+                        str(self.settings.vehicle_detector_weights)
+                    )
                     detector = YOLO(str(self.settings.detector_weights))
                     recognizer = Model.load(
                         str(self.settings.recognizer_model_dir), load_locally=True
                     )
                     recognizer.eval()
                     recognizer.to(self._torch_device())
+                    self._vehicle_detector = vehicle_detector
                     self._detector = detector
                     self._recognizer = recognizer
                 except Exception as exc:
@@ -150,26 +179,74 @@ class PlateRecognitionProcessor(BatchProcessor):
             raise RuntimeError("Could not identify plate class; configure PLATE_CLASS_IDS")
         return matched
 
-    def _predict_detector(self, frames: list[np.ndarray]) -> list[Any]:
+    def _predict_yolo(
+        self,
+        *,
+        model: Any,
+        frames: list[np.ndarray],
+        confidence: float,
+        iou: float,
+        imgsz: int,
+        classes: list[int] | None = None,
+    ) -> tuple[list[Any], float]:
+        if not frames:
+            return [], 0.0
+        quantize = (
+            16
+            if self.settings.use_fp16 and self.settings.device.lower() != "cpu"
+            else None
+        )
+        kwargs: dict[str, Any] = {
+            "source": frames,
+            "batch": len(frames),
+            "conf": confidence,
+            "iou": iou,
+            "imgsz": imgsz,
+            "device": self.settings.device,
+            "quantize": quantize,
+            "verbose": False,
+        }
+        if classes:
+            kwargs["classes"] = classes
+        started = time.perf_counter()
+        results = list(model.predict(**kwargs))
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if len(results) != len(frames):
+            raise RuntimeError("YOLO result count does not match input count")
+        return results, elapsed_ms
+
+    def _predict_vehicles(self, frames: list[np.ndarray]) -> list[Any]:
+        self._ensure_models()
+        assert self._vehicle_detector is not None
+        results, self._last_vehicle_inference_ms = self._predict_yolo(
+            model=self._vehicle_detector,
+            frames=frames,
+            confidence=self.settings.vehicle_confidence,
+            iou=self.settings.vehicle_iou,
+            imgsz=self.settings.vehicle_imgsz,
+            classes=list(self.settings.vehicle_class_ids),
+        )
+        return results
+
+    def _predict_plates(self, vehicle_crops: list[np.ndarray]) -> list[Any]:
         self._ensure_models()
         assert self._detector is not None
-        quantize = 16 if self.settings.use_fp16 and self.settings.device.lower() != "cpu" else None
-        started = time.perf_counter()
-        results = list(
-            self._detector.predict(
-                source=frames,
-                batch=len(frames),
-                conf=self.settings.detector_confidence,
+        results: list[Any] = []
+        self._last_plate_inference_ms = 0.0
+        chunk_size = max(1, self.settings.plate_crop_batch_size)
+        for start in range(0, len(vehicle_crops), chunk_size):
+            chunk_results, elapsed_ms = self._predict_yolo(
+                model=self._detector,
+                frames=vehicle_crops[start : start + chunk_size],
+                confidence=self.settings.detector_confidence,
                 iou=self.settings.detector_iou,
                 imgsz=self.settings.detector_imgsz,
-                device=self.settings.device,
-                quantize=quantize,
-                verbose=False,
             )
+            results.extend(chunk_results)
+            self._last_plate_inference_ms += elapsed_ms
+        self._last_inference_ms = (
+            self._last_vehicle_inference_ms + self._last_plate_inference_ms
         )
-        self._last_inference_ms = (time.perf_counter() - started) * 1000.0
-        if len(results) != len(frames):
-            raise RuntimeError("Plate detector result count does not match input frame count")
         return results
 
     @staticmethod
@@ -226,12 +303,74 @@ class PlateRecognitionProcessor(BatchProcessor):
     def process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
         if not packets:
             return []
-        detector_results = self._predict_detector([packet.frame for packet in packets])
+        vehicle_results = self._predict_vehicles(
+            [packet.frame for packet in packets]
+        )
+        vehicle_records: list[
+            tuple[int, list[int], float, np.ndarray]
+        ] = []
+        vehicle_counts = {index: 0 for index in range(len(packets))}
+        padding_ratio = max(0.0, self.settings.vehicle_crop_padding_ratio)
+        allowed_vehicle_ids = set(self.settings.vehicle_class_ids)
+
+        for frame_position, (packet, result) in enumerate(
+            zip(packets, vehicle_results)
+        ):
+            frame_height, frame_width = packet.frame.shape[:2]
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            accepted = 0
+            for box in boxes:
+                class_id = int(box.cls[0].item())
+                vehicle_confidence = float(box.conf[0].item())
+                if (
+                    class_id not in allowed_vehicle_ids
+                    or vehicle_confidence < self.settings.vehicle_confidence
+                ):
+                    continue
+                x1, y1, x2, y2 = [
+                    int(round(value)) for value in box.xyxy[0].tolist()
+                ]
+                padding_x = int(round(max(0, x2 - x1) * padding_ratio))
+                padding_y = int(round(max(0, y2 - y1) * padding_ratio))
+                x1 = max(0, min(x1 - padding_x, frame_width - 1))
+                y1 = max(0, min(y1 - padding_y, frame_height - 1))
+                x2 = max(x1 + 1, min(x2 + padding_x, frame_width))
+                y2 = max(y1 + 1, min(y2 + padding_y, frame_height))
+                crop = packet.frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+                vehicle_records.append(
+                    (
+                        frame_position,
+                        [x1, y1, x2, y2],
+                        vehicle_confidence,
+                        crop,
+                    )
+                )
+                accepted += 1
+                if accepted >= max(1, self.settings.vehicle_max_per_frame):
+                    break
+            vehicle_counts[frame_position] = accepted
+
+        detector_results = self._predict_plates(
+            [record[3] for record in vehicle_records]
+        )
         allowed_ids = self._plate_class_ids()
 
-        crop_records: list[tuple[int, list[int], float, np.ndarray]] = []
-        for frame_position, (packet, result) in enumerate(zip(packets, detector_results)):
-            height, width = packet.frame.shape[:2]
+        crop_records: list[
+            tuple[int, list[int], float, np.ndarray, list[int], float]
+        ] = []
+        for vehicle_record, result in zip(vehicle_records, detector_results):
+            (
+                frame_position,
+                vehicle_bbox,
+                vehicle_confidence,
+                vehicle_crop,
+            ) = vehicle_record
+            vehicle_x1, vehicle_y1, _, _ = vehicle_bbox
+            crop_height, crop_width = vehicle_crop.shape[:2]
             boxes = getattr(result, "boxes", None)
             if boxes is None:
                 continue
@@ -243,27 +382,48 @@ class PlateRecognitionProcessor(BatchProcessor):
                 if detector_confidence < self.settings.detector_confidence:
                     continue
                 x1, y1, x2, y2 = [int(round(value)) for value in box.xyxy[0].tolist()]
-                x1 = max(0, min(x1, width - 1))
-                y1 = max(0, min(y1, height - 1))
-                x2 = max(x1 + 1, min(x2, width))
-                y2 = max(y1 + 1, min(y2, height))
-                crop = packet.frame[y1:y2, x1:x2]
+                x1 = max(0, min(x1, crop_width - 1))
+                y1 = max(0, min(y1, crop_height - 1))
+                x2 = max(x1 + 1, min(x2, crop_width))
+                y2 = max(y1 + 1, min(y2, crop_height))
+                crop = vehicle_crop[y1:y2, x1:x2]
                 if crop.size == 0:
                     continue
                 crop_records.append(
-                    (frame_position, [x1, y1, x2, y2], detector_confidence, crop)
+                    (
+                        frame_position,
+                        [
+                            vehicle_x1 + x1,
+                            vehicle_y1 + y1,
+                            vehicle_x1 + x2,
+                            vehicle_y1 + y2,
+                        ],
+                        detector_confidence,
+                        crop,
+                        vehicle_bbox,
+                        vehicle_confidence,
+                    )
                 )
 
         recognized = self._recognize_crops([item[3] for item in crop_records])
         by_frame: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(packets))}
         for record, (plate, recognizer_confidence) in zip(crop_records, recognized):
-            frame_position, bbox, detector_confidence, _ = record
+            (
+                frame_position,
+                bbox,
+                detector_confidence,
+                _,
+                vehicle_bbox,
+                vehicle_confidence,
+            ) = record
             by_frame[frame_position].append(
                 {
                     "plate": plate,
                     "detector_confidence": round(detector_confidence, 5),
                     "recognizer_confidence": round(recognizer_confidence, 5),
                     "bbox": bbox,
+                    "vehicle_bbox": vehicle_bbox,
+                    "vehicle_confidence": round(vehicle_confidence, 5),
                     "characters": list(plate),
                 }
             )
@@ -295,6 +455,13 @@ class PlateRecognitionProcessor(BatchProcessor):
                     data={
                         "plates": predictions,
                         "plate_count": len(predictions),
+                        "vehicle_count": vehicle_counts[index],
+                        "vehicle_inference_ms": round(
+                            self._last_vehicle_inference_ms, 3
+                        ),
+                        "plate_inference_ms": round(
+                            self._last_plate_inference_ms, 3
+                        ),
                         "batch_inference_ms": round(self._last_inference_ms, 3),
                     },
                 )
@@ -306,14 +473,33 @@ class PlateRecognitionProcessor(BatchProcessor):
     def status(self) -> dict[str, Any]:
         return {
             "task": self.task.value,
+            "pipeline": "vehicle -> plate -> OCR",
+            "vehicle_detector_weights": str(
+                self.settings.vehicle_detector_weights
+            ),
+            "vehicle_detector_exists": (
+                self.settings.vehicle_detector_weights.is_file()
+            ),
+            "vehicle_confidence": self.settings.vehicle_confidence,
             "detector_weights": str(self.settings.detector_weights),
             "detector_exists": self.settings.detector_weights.is_file(),
+            "plate_confidence": self.settings.detector_confidence,
             "recognizer_model_dir": str(self.settings.recognizer_model_dir),
             "recognizer_complete": self.settings.recognizer_model_dir.is_dir()
             and not self.recognizer_missing_files(),
-            "models_loaded": self._detector is not None and self._recognizer is not None,
+            "models_loaded": (
+                self._vehicle_detector is not None
+                and self._detector is not None
+                and self._recognizer is not None
+            ),
             "model_load_error": str(self._load_error) if self._load_error else None,
             "processed_batches": self._processed_batches,
             "processed_frames": self._processed_frames,
             "last_inference_ms": round(self._last_inference_ms, 3),
+            "last_vehicle_inference_ms": round(
+                self._last_vehicle_inference_ms, 3
+            ),
+            "last_plate_inference_ms": round(
+                self._last_plate_inference_ms, 3
+            ),
         }

@@ -24,6 +24,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    value = os.getenv(name)
+    if value in {None, ""}:
+        return default
+    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
 def _path(name: str, default: str) -> Path:
     value = Path(os.getenv(name, default)).expanduser()
     return value if value.is_absolute() else (ROOT / value).resolve()
@@ -68,6 +75,9 @@ class Settings:
     smoke_confidence: float = _env_float("SMOKE_CONFIDENCE", 0.30)
 
     plate_detector_weights: Path = _path("PLATE_DETECTOR_WEIGHTS", "weights/plate_detector/model.pt")
+    vehicle_detector_weights: Path = _path(
+        "VEHICLE_DETECTOR_WEIGHTS", "weights/vehicle_detector/yolo11n.pt"
+    )
     plate_recognizer_dir: Path = _path("PLATE_RECOGNIZER_DIR", "weights/plate_recognizer")
     plate_device: str = os.getenv("PLATE_DEVICE", "0")
     plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 8)
@@ -75,6 +85,17 @@ class Settings:
     plate_imgsz: int = _env_int("PLATE_IMGSZ", 640)
     plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)
+    plate_crop_batch_size: int = _env_int("PLATE_CROP_BATCH_SIZE", 16)
+    vehicle_confidence: float = _env_float("VEHICLE_CONFIDENCE", 0.35)
+    vehicle_iou: float = _env_float("VEHICLE_IOU", 0.45)
+    vehicle_imgsz: int = _env_int("VEHICLE_IMGSZ", 640)
+    vehicle_max_per_frame: int = _env_int("VEHICLE_MAX_PER_FRAME", 12)
+    vehicle_class_ids: tuple[int, ...] = _env_int_tuple(
+        "VEHICLE_CLASS_IDS", (2, 3, 5, 7)
+    )
+    vehicle_crop_padding_ratio: float = _env_float(
+        "VEHICLE_CROP_PADDING_RATIO", 0.05
+    )
     plate_use_fp16: bool = _env_bool("PLATE_USE_FP16", True)
 
     draw_info: bool = _env_bool("draw_info", True)

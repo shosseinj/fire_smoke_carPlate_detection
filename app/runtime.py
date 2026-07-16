@@ -130,11 +130,19 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         plate_processor = PlateRecognitionProcessor(
             PlateSettings(
                 detector_weights=app_settings.plate_detector_weights,
+                vehicle_detector_weights=app_settings.vehicle_detector_weights,
                 recognizer_model_dir=app_settings.plate_recognizer_dir,
                 device=app_settings.plate_device,
                 detector_imgsz=app_settings.plate_imgsz,
                 detector_confidence=app_settings.plate_confidence,
                 detector_iou=app_settings.plate_iou,
+                plate_crop_batch_size=app_settings.plate_crop_batch_size,
+                vehicle_confidence=app_settings.vehicle_confidence,
+                vehicle_iou=app_settings.vehicle_iou,
+                vehicle_imgsz=app_settings.vehicle_imgsz,
+                vehicle_max_per_frame=app_settings.vehicle_max_per_frame,
+                vehicle_class_ids=app_settings.vehicle_class_ids,
+                vehicle_crop_padding_ratio=app_settings.vehicle_crop_padding_ratio,
                 use_fp16=app_settings.plate_use_fp16,
             )
         )

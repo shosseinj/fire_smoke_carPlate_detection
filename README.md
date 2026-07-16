@@ -290,6 +290,27 @@ SMOKE_CONFIDENCE=0.30
 PLATE_CONFIDENCE=0.30
 ```
 
+Plate recognition uses a GPU-batched cascade:
+
+```text
+full frames -> YOLO vehicle gate -> vehicle crops -> plate detector -> plate crops -> OCR
+```
+
+The vehicle gate uses `weights/vehicle_detector/yolo11n.pt` and COCO classes car, motorcycle, bus, and truck. Frames without an accepted vehicle never run the plate model. Plate boxes are converted back to original-frame coordinates before drawing, logging, and WebSocket delivery. Relevant controls are:
+
+```text
+VEHICLE_DETECTOR_WEIGHTS=weights/vehicle_detector/yolo11n.pt
+VEHICLE_CONFIDENCE=0.35
+VEHICLE_IOU=0.45
+VEHICLE_IMGSZ=640
+VEHICLE_MAX_PER_FRAME=12
+VEHICLE_CLASS_IDS=2,3,5,7
+VEHICLE_CROP_PADDING_RATIO=0.05
+PLATE_CROP_BATCH_SIZE=16
+```
+
+Vehicle crops are grouped into bounded GPU batches instead of invoking the plate detector once per car.
+
 ## Swagger maintenance and model testing
 
 Open `/docs`. The API is ordered into diagnostics, camera CRUD, frame/model testing, fire/smoke, plate logs, results, broadcast, and compatibility sections.

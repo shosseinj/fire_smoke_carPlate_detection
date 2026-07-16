@@ -39,9 +39,11 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
         },
         "deepstream": status["video_ingestor"],
         "model_configuration": {
+            "plate_pipeline": "vehicle -> plate -> OCR",
             "fire_minimum_score": runtime.settings.fire_confidence,
             "smoke_minimum_score": runtime.settings.smoke_confidence,
             "plate_minimum_score": runtime.settings.plate_confidence,
+            "vehicle_minimum_score": runtime.settings.vehicle_confidence,
             "fire_model": {
                 "path": str(runtime.settings.fire_model_path),
                 "exists": runtime.settings.fire_model_path.is_file(),
@@ -49,6 +51,11 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
             "plate_detector": {
                 "path": str(runtime.settings.plate_detector_weights),
                 "exists": runtime.settings.plate_detector_weights.is_file(),
+            },
+            "vehicle_detector": {
+                "path": str(runtime.settings.vehicle_detector_weights),
+                "exists": runtime.settings.vehicle_detector_weights.is_file(),
+                "class_ids": list(runtime.settings.vehicle_class_ids),
             },
         },
         "fire_smoke_policy": runtime.fire_smoke_logs.settings(),
@@ -107,6 +114,16 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
                 else "fail"
             ),
             "detail": {"minimum_score": runtime.settings.fire_confidence},
+        },
+        {
+            "section": "vehicle_model",
+            "status": (
+                "pass"
+                if runtime.settings.processor_mode == "mock"
+                or runtime.settings.vehicle_detector_weights.is_file()
+                else "fail"
+            ),
+            "detail": {"minimum_score": runtime.settings.vehicle_confidence},
         },
         {
             "section": "plate_model",

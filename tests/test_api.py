@@ -301,19 +301,20 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
         with TestClient(main_module.app) as client:
             overview = client.get("/api/v1/diagnostics/overview")
             assert overview.status_code == 200
-            assert overview.json()["model_configuration"] == {
-                "fire_minimum_score": 0.3,
-                "smoke_minimum_score": 0.3,
-                "plate_minimum_score": 0.3,
-                "fire_model": overview.json()["model_configuration"]["fire_model"],
-                "plate_detector": overview.json()["model_configuration"]["plate_detector"],
-            }
+            model_configuration = overview.json()["model_configuration"]
+            assert model_configuration["plate_pipeline"] == "vehicle -> plate -> OCR"
+            assert model_configuration["fire_minimum_score"] == 0.3
+            assert model_configuration["smoke_minimum_score"] == 0.3
+            assert model_configuration["plate_minimum_score"] == 0.3
+            assert model_configuration["vehicle_minimum_score"] == 0.35
+            assert model_configuration["vehicle_detector"]["class_ids"] == [2, 3, 5, 7]
             checks = client.get("/api/v1/diagnostics/checks")
             assert checks.status_code == 200
             assert {item["section"] for item in checks.json()["checks"]} >= {
                 "camera_registry",
                 "deepstream",
                 "fire_smoke_model",
+                "vehicle_model",
                 "plate_model",
                 "persistent_logs",
             }
