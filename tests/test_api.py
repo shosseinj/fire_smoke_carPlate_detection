@@ -308,6 +308,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert model_configuration["plate_minimum_score"] == 0.3
             assert model_configuration["vehicle_minimum_score"] == 0.35
             assert model_configuration["vehicle_detector"]["class_ids"] == [2, 3, 5, 7]
+            assert overview.json()["plate_detection_policy"]["plate_confidence"] == 0.3
             checks = client.get("/api/v1/diagnostics/checks")
             assert checks.status_code == 200
             assert {item["section"] for item in checks.json()["checks"]} >= {
@@ -321,6 +322,76 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             schema = client.get("/openapi.json").json()
             assert "/api/v1/diagnostics/checks" in schema["paths"]
             assert "/api/v1/frame-rounds/jpeg" in schema["paths"]
+            assert "/api/v1/plate-settings/general" in schema["paths"]
+            assert "/api/v1/plate-settings/cameras/{camera_id}" in schema["paths"]
+            assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
             assert schema["tags"][0]["name"] == "system-diagnostics"
+    finally:
+        main_module.runtime = old_runtime
+
+
+def test_plate_settings_api_applies_general_and_camera_inheritance(
+    tmp_path: Path,
+) -> None:
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing.json",
+            plate_log_db_path=tmp_path / "logs.sqlite3",
+            saved_media_path=tmp_path / "media",
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            camera_id = test_runtime.registry.list()[0].source_id
+            inherited = client.get(
+                f"/api/v1/plate-settings/cameras/{camera_id}"
+            )
+            assert inherited.status_code == 200
+            assert inherited.json()["overrides"] == {}
+
+            overridden = client.patch(
+                f"/api/v1/plate-settings/cameras/{camera_id}",
+                json={"plate_confidence": 0.61},
+            )
+            assert overridden.status_code == 200
+            assert overridden.json()["effective"]["plate_confidence"] == 0.61
+            assert "vehicle_confidence" in overridden.json()["inherited_fields"]
+
+            general = client.put(
+                "/api/v1/plate-settings/general",
+                json={
+                    "vehicle_confidence": 0.41,
+                    "plate_confidence": 0.47,
+                    "ocr_confidence": 0.55,
+                    "min_vehicle_width_pixels": 150,
+                    "min_vehicle_height_pixels": 90,
+                    "min_vehicle_area_ratio": 0.03,
+                    "vehicle_crop_padding_ratio": 0.04,
+                },
+            )
+            assert general.status_code == 200
+
+            effective = client.get(
+                f"/api/v1/plate-settings/cameras/{camera_id}"
+            ).json()["effective"]
+            assert effective["plate_confidence"] == 0.61
+            assert effective["vehicle_confidence"] == 0.41
+            assert effective["min_vehicle_width_pixels"] == 150
+
+            cleared = client.patch(
+                f"/api/v1/plate-settings/cameras/{camera_id}",
+                json={"plate_confidence": None},
+            )
+            assert cleared.status_code == 200
+            assert cleared.json()["effective"]["plate_confidence"] == 0.47
+            assert "plate_confidence" in cleared.json()["inherited_fields"]
     finally:
         main_module.runtime = old_runtime

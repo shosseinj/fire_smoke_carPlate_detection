@@ -96,6 +96,10 @@ class Settings:
     vehicle_crop_padding_ratio: float = _env_float(
         "VEHICLE_CROP_PADDING_RATIO", 0.05
     )
+    plate_ocr_confidence: float = _env_float("PLATE_OCR_CONFIDENCE", 0.50)
+    min_vehicle_width_pixels: int = _env_int("MIN_VEHICLE_WIDTH_PIXELS", 120)
+    min_vehicle_height_pixels: int = _env_int("MIN_VEHICLE_HEIGHT_PIXELS", 80)
+    min_vehicle_area_ratio: float = _env_float("MIN_VEHICLE_AREA_RATIO", 0.025)
     plate_use_fp16: bool = _env_bool("PLATE_USE_FP16", True)
 
     draw_info: bool = _env_bool("draw_info", True)

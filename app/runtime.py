@@ -8,6 +8,7 @@ from app.config import Settings, settings
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
+from app.core.plate_settings_store import PlateDetectionPolicy, PlateSettingsStore
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
@@ -30,6 +31,7 @@ class Runtime:
     router: TaskRouter
     broadcast: AnnotatedBroadcastHub
     plate_logs: PlateLogStore
+    plate_settings: PlateSettingsStore
     fire_smoke_logs: FireSmokeLogStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
@@ -99,6 +101,19 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         jpeg_quality=app_settings.broadcast_jpeg_quality,
     )
     registry.add_listener(broadcast.publish_source_change)
+    plate_settings = PlateSettingsStore(
+        app_settings.camera_db_path,
+        default_policy=PlateDetectionPolicy(
+            vehicle_confidence=app_settings.vehicle_confidence,
+            plate_confidence=app_settings.plate_confidence,
+            ocr_confidence=app_settings.plate_ocr_confidence,
+            min_vehicle_width_pixels=app_settings.min_vehicle_width_pixels,
+            min_vehicle_height_pixels=app_settings.min_vehicle_height_pixels,
+            min_vehicle_area_ratio=app_settings.min_vehicle_area_ratio,
+            vehicle_crop_padding_ratio=app_settings.vehicle_crop_padding_ratio,
+        ),
+    )
+    registry.add_listener(plate_settings.on_source_change)
     plate_logs = PlateLogStore(app_settings.plate_log_db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
     fire_smoke_logs = FireSmokeLogStore(
         app_settings.plate_log_db_path,
@@ -143,8 +158,13 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 vehicle_max_per_frame=app_settings.vehicle_max_per_frame,
                 vehicle_class_ids=app_settings.vehicle_class_ids,
                 vehicle_crop_padding_ratio=app_settings.vehicle_crop_padding_ratio,
+                ocr_confidence=app_settings.plate_ocr_confidence,
+                min_vehicle_width_pixels=app_settings.min_vehicle_width_pixels,
+                min_vehicle_height_pixels=app_settings.min_vehicle_height_pixels,
+                min_vehicle_area_ratio=app_settings.min_vehicle_area_ratio,
                 use_fp16=app_settings.plate_use_fp16,
-            )
+            ),
+            settings_provider=plate_settings.resolve,
         )
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")
@@ -202,6 +222,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         router=router,
         broadcast=broadcast,
         plate_logs=plate_logs,
+        plate_settings=plate_settings,
         fire_smoke_logs=fire_smoke_logs,
         video_ingestor=video_ingestor,
     )

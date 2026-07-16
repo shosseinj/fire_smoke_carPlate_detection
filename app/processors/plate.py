@@ -3,14 +3,15 @@ from __future__ import annotations
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import cv2
 import numpy as np
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.plate_settings_store import PlateDetectionPolicy
 from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import (
     load_hezar_model_class,
@@ -27,6 +28,9 @@ PERSIAN_TO_LATIN_DIGITS = str.maketrans(
     }
 )
 LATIN_TO_PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+PERSIAN_PLATE_LETTERS = frozenset(
+    "آابتثجچحخدذرزژسشصضطظعغفقکگلمنوهیپ"
+)
 
 
 def normalize_plate_text(text: str, output_persian_digits: bool = False) -> str:
@@ -35,6 +39,17 @@ def normalize_plate_text(text: str, output_persian_digits: bool = False) -> str:
     normalized = re.sub(r"[\s\-_.:/\\|]+", "", normalized)
     normalized = re.sub(r"[^0-9A-Za-zآ-ی♿]", "", normalized)
     return normalized.translate(LATIN_TO_PERSIAN_DIGITS) if output_persian_digits else normalized
+
+
+def is_valid_iranian_plate(text: str) -> bool:
+    """Iranian private plates contain 7 digits and one Persian letter."""
+    normalized = normalize_plate_text(text, output_persian_digits=False)
+    return (
+        len(normalized) == 8
+        and normalized[:2].isdigit()
+        and normalized[2] in PERSIAN_PLATE_LETTERS
+        and normalized[3:].isdigit()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +70,10 @@ class PlateSettings:
     vehicle_imgsz: int = 640
     vehicle_max_per_frame: int = 12
     vehicle_crop_padding_ratio: float = 0.05
+    ocr_confidence: float = 0.50
+    min_vehicle_width_pixels: int = 120
+    min_vehicle_height_pixels: int = 80
+    min_vehicle_area_ratio: float = 0.025
     output_persian_digits: bool = False
 
 
@@ -73,11 +92,13 @@ class PlateRecognitionProcessor(BatchProcessor):
         vehicle_detector: Any | None = None,
         detector: Any | None = None,
         recognizer: Any | None = None,
+        settings_provider: Callable[[str], PlateDetectionPolicy] | None = None,
     ) -> None:
         self.settings = settings
         self._vehicle_detector = vehicle_detector
         self._detector = detector
         self._recognizer = recognizer
+        self._settings_provider = settings_provider
         self._load_lock = threading.Lock()
         self._load_error: Exception | None = None
         self._processed_batches = 0
@@ -85,6 +106,19 @@ class PlateRecognitionProcessor(BatchProcessor):
         self._last_inference_ms = 0.0
         self._last_vehicle_inference_ms = 0.0
         self._last_plate_inference_ms = 0.0
+
+    def _policy(self, source_id: str) -> PlateDetectionPolicy:
+        if self._settings_provider is not None:
+            return self._settings_provider(source_id)
+        return PlateDetectionPolicy(
+            vehicle_confidence=self.settings.vehicle_confidence,
+            plate_confidence=self.settings.detector_confidence,
+            ocr_confidence=self.settings.ocr_confidence,
+            min_vehicle_width_pixels=self.settings.min_vehicle_width_pixels,
+            min_vehicle_height_pixels=self.settings.min_vehicle_height_pixels,
+            min_vehicle_area_ratio=self.settings.min_vehicle_area_ratio,
+            vehicle_crop_padding_ratio=self.settings.vehicle_crop_padding_ratio,
+        ).validated()
 
     def recognizer_missing_files(self) -> list[Path]:
         root = self.settings.recognizer_model_dir
@@ -215,20 +249,28 @@ class PlateRecognitionProcessor(BatchProcessor):
             raise RuntimeError("YOLO result count does not match input count")
         return results, elapsed_ms
 
-    def _predict_vehicles(self, frames: list[np.ndarray]) -> list[Any]:
+    def _predict_vehicles(
+        self,
+        frames: list[np.ndarray],
+        confidence: float,
+    ) -> list[Any]:
         self._ensure_models()
         assert self._vehicle_detector is not None
         results, self._last_vehicle_inference_ms = self._predict_yolo(
             model=self._vehicle_detector,
             frames=frames,
-            confidence=self.settings.vehicle_confidence,
+            confidence=confidence,
             iou=self.settings.vehicle_iou,
             imgsz=self.settings.vehicle_imgsz,
             classes=list(self.settings.vehicle_class_ids),
         )
         return results
 
-    def _predict_plates(self, vehicle_crops: list[np.ndarray]) -> list[Any]:
+    def _predict_plates(
+        self,
+        vehicle_crops: list[np.ndarray],
+        confidence: float,
+    ) -> list[Any]:
         self._ensure_models()
         assert self._detector is not None
         results: list[Any] = []
@@ -238,7 +280,7 @@ class PlateRecognitionProcessor(BatchProcessor):
             chunk_results, elapsed_ms = self._predict_yolo(
                 model=self._detector,
                 frames=vehicle_crops[start : start + chunk_size],
-                confidence=self.settings.detector_confidence,
+                confidence=confidence,
                 iou=self.settings.detector_iou,
                 imgsz=self.settings.detector_imgsz,
             )
@@ -303,20 +345,27 @@ class PlateRecognitionProcessor(BatchProcessor):
     def process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
         if not packets:
             return []
+        policies = [self._policy(packet.source_id) for packet in packets]
         vehicle_results = self._predict_vehicles(
-            [packet.frame for packet in packets]
+            [packet.frame for packet in packets],
+            min(policy.vehicle_confidence for policy in policies),
         )
         vehicle_records: list[
-            tuple[int, list[int], float, np.ndarray]
+            tuple[int, list[int], float, np.ndarray, PlateDetectionPolicy]
         ] = []
         vehicle_counts = {index: 0 for index in range(len(packets))}
-        padding_ratio = max(0.0, self.settings.vehicle_crop_padding_ratio)
+        rejected_small_vehicles = {index: 0 for index in range(len(packets))}
+        rejected_vehicle_scores = {index: 0 for index in range(len(packets))}
+        rejected_plate_scores = {index: 0 for index in range(len(packets))}
+        rejected_ocr_scores = {index: 0 for index in range(len(packets))}
+        rejected_plate_formats = {index: 0 for index in range(len(packets))}
         allowed_vehicle_ids = set(self.settings.vehicle_class_ids)
 
         for frame_position, (packet, result) in enumerate(
             zip(packets, vehicle_results)
         ):
             frame_height, frame_width = packet.frame.shape[:2]
+            policy = policies[frame_position]
             boxes = getattr(result, "boxes", None)
             if boxes is None:
                 continue
@@ -326,12 +375,31 @@ class PlateRecognitionProcessor(BatchProcessor):
                 vehicle_confidence = float(box.conf[0].item())
                 if (
                     class_id not in allowed_vehicle_ids
-                    or vehicle_confidence < self.settings.vehicle_confidence
                 ):
+                    continue
+                if vehicle_confidence < policy.vehicle_confidence:
+                    rejected_vehicle_scores[frame_position] += 1
                     continue
                 x1, y1, x2, y2 = [
                     int(round(value)) for value in box.xyxy[0].tolist()
                 ]
+                x1 = max(0, min(x1, frame_width - 1))
+                y1 = max(0, min(y1, frame_height - 1))
+                x2 = max(x1 + 1, min(x2, frame_width))
+                y2 = max(y1 + 1, min(y2, frame_height))
+                vehicle_width = x2 - x1
+                vehicle_height = y2 - y1
+                vehicle_area_ratio = (
+                    vehicle_width * vehicle_height
+                ) / max(float(frame_width * frame_height), 1.0)
+                if (
+                    vehicle_width < policy.min_vehicle_width_pixels
+                    or vehicle_height < policy.min_vehicle_height_pixels
+                    or vehicle_area_ratio < policy.min_vehicle_area_ratio
+                ):
+                    rejected_small_vehicles[frame_position] += 1
+                    continue
+                padding_ratio = policy.vehicle_crop_padding_ratio
                 padding_x = int(round(max(0, x2 - x1) * padding_ratio))
                 padding_y = int(round(max(0, y2 - y1) * padding_ratio))
                 x1 = max(0, min(x1 - padding_x, frame_width - 1))
@@ -347,6 +415,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                         [x1, y1, x2, y2],
                         vehicle_confidence,
                         crop,
+                        policy,
                     )
                 )
                 accepted += 1
@@ -355,12 +424,24 @@ class PlateRecognitionProcessor(BatchProcessor):
             vehicle_counts[frame_position] = accepted
 
         detector_results = self._predict_plates(
-            [record[3] for record in vehicle_records]
+            [record[3] for record in vehicle_records],
+            min(
+                (record[4].plate_confidence for record in vehicle_records),
+                default=self.settings.detector_confidence,
+            ),
         )
         allowed_ids = self._plate_class_ids()
 
         crop_records: list[
-            tuple[int, list[int], float, np.ndarray, list[int], float]
+            tuple[
+                int,
+                list[int],
+                float,
+                np.ndarray,
+                list[int],
+                float,
+                PlateDetectionPolicy,
+            ]
         ] = []
         for vehicle_record, result in zip(vehicle_records, detector_results):
             (
@@ -368,6 +449,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                 vehicle_bbox,
                 vehicle_confidence,
                 vehicle_crop,
+                policy,
             ) = vehicle_record
             vehicle_x1, vehicle_y1, _, _ = vehicle_bbox
             crop_height, crop_width = vehicle_crop.shape[:2]
@@ -379,7 +461,8 @@ class PlateRecognitionProcessor(BatchProcessor):
                 if class_id not in allowed_ids:
                     continue
                 detector_confidence = float(box.conf[0].item())
-                if detector_confidence < self.settings.detector_confidence:
+                if detector_confidence < policy.plate_confidence:
+                    rejected_plate_scores[frame_position] += 1
                     continue
                 x1, y1, x2, y2 = [int(round(value)) for value in box.xyxy[0].tolist()]
                 x1 = max(0, min(x1, crop_width - 1))
@@ -402,6 +485,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                         crop,
                         vehicle_bbox,
                         vehicle_confidence,
+                        policy,
                     )
                 )
 
@@ -415,7 +499,14 @@ class PlateRecognitionProcessor(BatchProcessor):
                 _,
                 vehicle_bbox,
                 vehicle_confidence,
+                policy,
             ) = record
+            if recognizer_confidence < policy.ocr_confidence:
+                rejected_ocr_scores[frame_position] += 1
+                continue
+            if not is_valid_iranian_plate(plate):
+                rejected_plate_formats[frame_position] += 1
+                continue
             by_frame[frame_position].append(
                 {
                     "plate": plate,
@@ -456,6 +547,12 @@ class PlateRecognitionProcessor(BatchProcessor):
                         "plates": predictions,
                         "plate_count": len(predictions),
                         "vehicle_count": vehicle_counts[index],
+                        "rejected_small_vehicles": rejected_small_vehicles[index],
+                        "rejected_vehicle_scores": rejected_vehicle_scores[index],
+                        "rejected_plate_scores": rejected_plate_scores[index],
+                        "rejected_ocr_scores": rejected_ocr_scores[index],
+                        "rejected_plate_formats": rejected_plate_formats[index],
+                        "effective_settings": asdict(policies[index]),
                         "vehicle_inference_ms": round(
                             self._last_vehicle_inference_ms, 3
                         ),
@@ -484,6 +581,11 @@ class PlateRecognitionProcessor(BatchProcessor):
             "detector_weights": str(self.settings.detector_weights),
             "detector_exists": self.settings.detector_weights.is_file(),
             "plate_confidence": self.settings.detector_confidence,
+            "ocr_confidence": self.settings.ocr_confidence,
+            "strict_iranian_plate_format": "2 digits + 1 Persian letter + 5 digits",
+            "min_vehicle_width_pixels": self.settings.min_vehicle_width_pixels,
+            "min_vehicle_height_pixels": self.settings.min_vehicle_height_pixels,
+            "min_vehicle_area_ratio": self.settings.min_vehicle_area_ratio,
             "recognizer_model_dir": str(self.settings.recognizer_model_dir),
             "recognizer_complete": self.settings.recognizer_model_dir.is_dir()
             and not self.recognizer_missing_files(),

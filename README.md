@@ -288,6 +288,7 @@ Detection confidence is filtered both in the model call and again when model out
 FIRE_CONFIDENCE=0.30
 SMOKE_CONFIDENCE=0.30
 PLATE_CONFIDENCE=0.30
+PLATE_OCR_CONFIDENCE=0.50
 ```
 
 Plate recognition uses a GPU-batched cascade:
@@ -307,13 +308,25 @@ VEHICLE_MAX_PER_FRAME=12
 VEHICLE_CLASS_IDS=2,3,5,7
 VEHICLE_CROP_PADDING_RATIO=0.05
 PLATE_CROP_BATCH_SIZE=16
+MIN_VEHICLE_WIDTH_PIXELS=120
+MIN_VEHICLE_HEIGHT_PIXELS=80
+MIN_VEHICLE_AREA_RATIO=0.025
 ```
 
-Vehicle crops are grouped into bounded GPU batches instead of invoking the plate detector once per car.
+Vehicles below any configured minimum width, height, or frame-area ratio are treated as too far from the camera and rejected before plate inference. Vehicle crops are grouped into bounded GPU batches instead of invoking the plate detector once per car.
+
+OCR output is accepted only when it has the complete Iranian layout: two digits, one Persian letter, then five digits. This is exactly seven digits and one Persian character. Partial reads and Latin-letter reads are discarded and are not logged or broadcast as recognized plates.
+
+General plate settings are seeded from the environment into SQLite on the first run. After that, they can be changed online from Swagger and become effective on the next model batch without restarting DeepStream or reloading the models. Each camera may override any subset; fields without an override always inherit the current general value:
+
+- `GET` / `PUT /api/v1/plate-settings/general`
+- `GET` / `PATCH` / `DELETE /api/v1/plate-settings/cameras/{camera_id}`
+
+For a camera `PATCH`, omitted fields are unchanged and a field sent as `null` has its override removed. `DELETE` removes every override for that camera.
 
 ## Swagger maintenance and model testing
 
-Open `/docs`. The API is ordered into diagnostics, camera CRUD, frame/model testing, fire/smoke, plate logs, results, broadcast, and compatibility sections.
+Open `/docs`. The API is ordered into diagnostics, camera CRUD, frame/model testing, fire/smoke, plate settings, plate logs, results, broadcast, and compatibility sections.
 
 - `GET /api/v1/diagnostics/overview` shows DeepStream, model scores, workers, logs, and broadcast state.
 - `GET /api/v1/diagnostics/checks` runs safe section-by-section maintenance checks.
@@ -437,6 +450,7 @@ The uploaded archives did not contain the actual model files. Copy them to these
 
 ```text
 weights/fire_smoke/model.engine
+weights/vehicle_detector/yolo11n.pt
 weights/plate_detector/model.pt
 weights/plate_recognizer/model.pt
 weights/plate_recognizer/model_config.yaml
@@ -447,11 +461,12 @@ The fire/smoke processor accepts a TensorRT engine or an Ultralytics `.pt` model
 
 The plate processor performs:
 
-1. Batched YOLO plate detection across source frames.
-2. Collection of all plate crops from the batch.
-3. Batched Hezar OCR when supported by the recognizer.
-4. Automatic per-crop fallback when the recognizer does not accept a list.
-5. Per-frame plate deduplication.
+1. Batched YOLO vehicle detection across source frames.
+2. Early rejection of small/distant vehicles using each camera's effective settings.
+3. Batched YOLO plate detection inside the remaining vehicle crops.
+4. Batched Hezar OCR when supported by the recognizer.
+5. Exact Iranian-format and OCR-score validation.
+6. Original-frame coordinate restoration and per-frame plate deduplication.
 
 ## Start
 

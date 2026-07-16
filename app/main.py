@@ -11,6 +11,7 @@ from app.api.broadcast import router as broadcast_router
 from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
+from app.api.plate_settings import router as plate_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.sources import router as sources_router
@@ -35,6 +36,10 @@ OPENAPI_TAGS = [
     {
         "name": "fire-smoke",
         "description": "Stable incident logs and online rolling-window severity configuration.",
+    },
+    {
+        "name": "plate-settings",
+        "description": "General defaults and per-camera overrides with automatic inheritance.",
     },
     {
         "name": "plate-logs",
@@ -82,6 +87,7 @@ app.include_router(results_router)
 app.include_router(broadcast_router)
 app.include_router(plate_logs_router)
 app.include_router(fire_smoke_logs_router)
+app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 
 
