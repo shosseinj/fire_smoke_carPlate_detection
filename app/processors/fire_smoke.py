@@ -25,6 +25,7 @@ from app.fire_core.tracking import (
     TrackerSettings,
 )
 from app.processors.base import BatchProcessor
+from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,17 +180,17 @@ class FireSmokeProcessor(BatchProcessor):
         with self._load_lock:
             if self._model is not None:
                 return
-            try:
-                if not self.settings.model_path.is_file():
-                    raise FileNotFoundError(
-                        f"Fire/smoke model was not found: {self.settings.model_path}"
-                    )
-                from ultralytics import YOLO
-
-                self._model = YOLO(str(self.settings.model_path), task="detect")
-            except Exception as exc:
-                self._load_error = exc
-                raise
+            with serialized_model_load():
+                try:
+                    if not self.settings.model_path.is_file():
+                        raise FileNotFoundError(
+                            f"Fire/smoke model was not found: {self.settings.model_path}"
+                        )
+                    YOLO = load_yolo_class()
+                    self._model = YOLO(str(self.settings.model_path), task="detect")
+                except Exception as exc:
+                    self._load_error = exc
+                    raise
 
     def _predict(self, frames: list[np.ndarray]) -> list[Any]:
         self._ensure_model()

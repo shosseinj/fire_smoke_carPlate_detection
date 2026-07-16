@@ -17,6 +17,7 @@ from app.core.video_ingestor import VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
 from app.processors.mock import MockProcessor
 from app.processors.plate import PlateRecognitionProcessor, PlateSettings
+from app.processors.ultralytics_loader import preload_model_dependencies
 
 
 @dataclass(slots=True)
@@ -30,6 +31,8 @@ class Runtime:
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def start(self) -> None:
+        if self.settings.processor_mode == "real":
+            preload_model_dependencies()
         self.router.start()
         try:
             if self.video_ingestor is not None:

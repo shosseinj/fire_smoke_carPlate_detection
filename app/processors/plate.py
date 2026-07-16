@@ -12,6 +12,11 @@ import numpy as np
 
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.processors.base import BatchProcessor
+from app.processors.ultralytics_loader import (
+    load_hezar_model_class,
+    load_yolo_class,
+    serialized_model_load,
+)
 
 PERSIAN_TO_LATIN_DIGITS = str.maketrans(
     {
@@ -89,33 +94,35 @@ class PlateRecognitionProcessor(BatchProcessor):
         with self._load_lock:
             if self._detector is not None and self._recognizer is not None:
                 return
-            try:
-                if not self.settings.detector_weights.is_file():
-                    raise FileNotFoundError(
-                        f"Plate detector checkpoint was not found: {self.settings.detector_weights}"
+            with serialized_model_load():
+                try:
+                    if not self.settings.detector_weights.is_file():
+                        raise FileNotFoundError(
+                            f"Plate detector checkpoint was not found: {self.settings.detector_weights}"
+                        )
+                    if not self.settings.recognizer_model_dir.is_dir():
+                        raise FileNotFoundError(
+                            f"Plate recognizer directory was not found: {self.settings.recognizer_model_dir}"
+                        )
+                    missing = self.recognizer_missing_files()
+                    if missing:
+                        raise FileNotFoundError(
+                            "Plate recognizer directory is incomplete. Missing: "
+                            + ", ".join(str(path) for path in missing)
+                        )
+                    YOLO = load_yolo_class()
+                    Model = load_hezar_model_class()
+                    detector = YOLO(str(self.settings.detector_weights))
+                    recognizer = Model.load(
+                        str(self.settings.recognizer_model_dir), load_locally=True
                     )
-                if not self.settings.recognizer_model_dir.is_dir():
-                    raise FileNotFoundError(
-                        f"Plate recognizer directory was not found: {self.settings.recognizer_model_dir}"
-                    )
-                missing = self.recognizer_missing_files()
-                if missing:
-                    raise FileNotFoundError(
-                        "Plate recognizer directory is incomplete. Missing: "
-                        + ", ".join(str(path) for path in missing)
-                    )
-                from ultralytics import YOLO
-                from hezar.models import Model
-
-                detector = YOLO(str(self.settings.detector_weights))
-                recognizer = Model.load(str(self.settings.recognizer_model_dir), load_locally=True)
-                recognizer.eval()
-                recognizer.to(self._torch_device())
-                self._detector = detector
-                self._recognizer = recognizer
-            except Exception as exc:
-                self._load_error = exc
-                raise
+                    recognizer.eval()
+                    recognizer.to(self._torch_device())
+                    self._detector = detector
+                    self._recognizer = recognizer
+                except Exception as exc:
+                    self._load_error = exc
+                    raise
 
     @staticmethod
     def _normalize_class_name(value: Any) -> str:
