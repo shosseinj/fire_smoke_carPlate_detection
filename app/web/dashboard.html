@@ -279,7 +279,16 @@
       broadcastSocket = socket;
       socket.binaryType = 'arraybuffer';
       socket.addEventListener('message', event => {
-        if (event.data instanceof ArrayBuffer) updateFrame(event.data);
+        if (event.data instanceof ArrayBuffer) {
+          updateFrame(event.data);
+          return;
+        }
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'camera_changed') synchronizeDashboard();
+        } catch (_) {
+          // Ignore keepalives or extensions unknown to this dashboard version.
+        }
       });
       socket.addEventListener('close', () => {
         if (broadcastSocket === socket) broadcastSocket = null;
@@ -345,11 +354,15 @@
       synchronizationRunning = true;
       try {
         const [sourcesResponse, stateResponse] = await Promise.all([
-          fetch('/api/v1/sources', {cache: 'no-store'}),
+          fetch('/api/v1/cameras', {cache: 'no-store'}),
           fetch('/api/v1/broadcast/state', {cache: 'no-store'})
         ]);
         if (!sourcesResponse.ok || !stateResponse.ok) throw new Error('API unavailable');
-        const nextSources = await sourcesResponse.json();
+        const cameras = await sourcesResponse.json();
+        const nextSources = cameras.map(camera => ({
+          ...camera,
+          source_id: camera.camera_id
+        }));
         const state = await stateResponse.json();
         showState(state.enabled);
         const nextSignature = signatureFor(nextSources);

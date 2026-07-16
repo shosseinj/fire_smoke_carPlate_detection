@@ -21,6 +21,7 @@ def main(rounds: int = 100, sources: int = 50) -> None:
             replace(
                 settings,
                 processor_mode="mock",
+                camera_db_path=Path(directory) / "cameras.sqlite3",
                 source_registry_path=Path(directory) / "sources.json",
             )
         )

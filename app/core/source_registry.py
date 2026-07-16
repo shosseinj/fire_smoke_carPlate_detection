@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from app.core.types import TaskName
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -33,9 +38,12 @@ class SourceRecord:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "SourceRecord":
+        source_id = value.get("source_id", value.get("camera_id"))
+        if source_id is None:
+            raise ValueError("Camera record requires source_id or camera_id")
         return cls(
-            source_id=str(value["source_id"]),
-            name=str(value.get("name") or value["source_id"]),
+            source_id=str(source_id),
+            name=str(value.get("name") or source_id),
             enabled=bool(value.get("enabled", True)),
             tasks={TaskName(item) for item in value.get("tasks", [])},
             source_uri=value.get("source_uri"),
@@ -45,31 +53,186 @@ class SourceRecord:
         )
 
 
-class SourceRegistry:
-    def __init__(self, persistence_path: Path | None = None) -> None:
-        self._lock = threading.RLock()
-        self._records: dict[str, SourceRecord] = {}
-        self.persistence_path = persistence_path
-        if persistence_path is not None and persistence_path.is_file():
-            self.load()
+@dataclass(frozen=True, slots=True)
+class SourceChange:
+    action: str
+    source_id: str
+    revision: int
+    record: SourceRecord | None
 
-    def load(self) -> None:
-        assert self.persistence_path is not None
-        payload = json.loads(self.persistence_path.read_text(encoding="utf-8"))
+
+SourceChangeListener = Callable[[SourceChange], None]
+
+
+class SourceRegistry:
+    """Thread-safe camera registry backed by the SQLite ``cameras`` table."""
+
+    def __init__(self, database_path: Path | None = None) -> None:
+        self._lock = threading.RLock()
+        self.database_path = database_path
+        if database_path is not None:
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            database = str(database_path)
+        else:
+            database = ":memory:"
+        self._connection = sqlite3.connect(
+            database,
+            timeout=10.0,
+            check_same_thread=False,
+        )
+        self._connection.row_factory = sqlite3.Row
+        self._records: dict[str, SourceRecord] = {}
+        self._listeners: set[SourceChangeListener] = set()
+        self._revision = 0
+        self._closed = False
+        self._initialize()
+        self._load_records()
+
+    def _initialize(self) -> None:
         with self._lock:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA busy_timeout=10000")
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cameras (
+                    camera_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    tasks_json TEXT NOT NULL DEFAULT '[]',
+                    source_uri TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at_utc TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    CHECK (enabled IN (0, 1))
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_cameras_enabled
+                ON cameras(enabled)
+                """
+            )
+            self._connection.commit()
+
+    def _load_records(self) -> None:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT camera_id, name, enabled, tasks_json, source_uri,
+                       metadata_json, created_at_utc, updated_at_utc
+                FROM cameras
+                ORDER BY rowid
+                """
+            ).fetchall()
             self._records = {
-                item["source_id"]: SourceRecord.from_dict(item)
-                for item in payload
+                str(row["camera_id"]): self._row_to_record(row) for row in rows
             }
 
-    def _persist(self) -> None:
-        if self.persistence_path is None:
-            return
-        self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.persistence_path.with_suffix(self.persistence_path.suffix + ".tmp")
-        payload = [item.to_dict() for item in self._records.values()]
-        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(self.persistence_path)
+    @staticmethod
+    def _normalized(record: SourceRecord) -> SourceRecord:
+        value = deepcopy(record)
+        value.source_id = value.source_id.strip()
+        value.name = value.name.strip()
+        if not value.source_id:
+            raise ValueError("source_id cannot be blank")
+        if not value.name:
+            raise ValueError("name cannot be blank")
+        value.tasks = {TaskName(task) for task in value.tasks}
+        value.metadata = dict(value.metadata)
+        return value
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> SourceRecord:
+        return SourceRecord(
+            source_id=str(row["camera_id"]),
+            name=str(row["name"]),
+            enabled=bool(row["enabled"]),
+            tasks={TaskName(item) for item in json.loads(row["tasks_json"])},
+            source_uri=row["source_uri"],
+            metadata=dict(json.loads(row["metadata_json"])),
+            created_at_utc=str(row["created_at_utc"]),
+            updated_at_utc=str(row["updated_at_utc"]),
+        )
+
+    @staticmethod
+    def _parameters(record: SourceRecord) -> tuple[Any, ...]:
+        return (
+            record.source_id,
+            record.name,
+            int(record.enabled),
+            json.dumps(sorted(task.value for task in record.tasks)),
+            record.source_uri,
+            json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+            record.created_at_utc,
+            record.updated_at_utc,
+        )
+
+    def _next_change(
+        self,
+        action: str,
+        source_id: str,
+        record: SourceRecord | None,
+    ) -> tuple[SourceChange, tuple[SourceChangeListener, ...]]:
+        self._revision += 1
+        change = SourceChange(
+            action=action,
+            source_id=source_id,
+            revision=self._revision,
+            record=deepcopy(record),
+        )
+        return change, tuple(self._listeners)
+
+    @staticmethod
+    def _notify(
+        change: SourceChange,
+        listeners: tuple[SourceChangeListener, ...],
+    ) -> None:
+        for listener in listeners:
+            try:
+                listener(change)
+            except Exception:
+                LOGGER.exception(
+                    "Camera registry listener failed: action=%s camera_id=%s",
+                    change.action,
+                    change.source_id,
+                )
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
+
+    def add_listener(self, listener: SourceChangeListener) -> None:
+        with self._lock:
+            self._listeners.add(listener)
+
+    def remove_listener(self, listener: SourceChangeListener) -> None:
+        with self._lock:
+            self._listeners.discard(listener)
+
+    def import_if_empty(self, records: Iterable[SourceRecord]) -> int:
+        prepared = [self._normalized(record) for record in records]
+        if not prepared:
+            return 0
+        with self._lock:
+            if self._records:
+                return 0
+            self._connection.executemany(
+                """
+                INSERT INTO cameras (
+                    camera_id, name, enabled, tasks_json, source_uri,
+                    metadata_json, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [self._parameters(record) for record in prepared],
+            )
+            self._connection.commit()
+            self._records = {
+                record.source_id: deepcopy(record) for record in prepared
+            }
+            self._revision += 1
+            return len(prepared)
 
     def list(self) -> list[SourceRecord]:
         with self._lock:
@@ -87,24 +250,56 @@ class SourceRegistry:
         return value
 
     def create(self, record: SourceRecord) -> SourceRecord:
+        record = self._normalized(record)
         with self._lock:
-            if record.source_id in self._records:
-                raise ValueError(f"Source already exists: {record.source_id}")
-            record.tasks = {TaskName(task) for task in record.tasks}
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO cameras (
+                        camera_id, name, enabled, tasks_json, source_uri,
+                        metadata_json, created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    self._parameters(record),
+                )
+                self._connection.commit()
+            except sqlite3.IntegrityError as exc:
+                self._connection.rollback()
+                raise ValueError(f"Source already exists: {record.source_id}") from exc
             self._records[record.source_id] = deepcopy(record)
-            self._persist()
-            return deepcopy(record)
+            change, listeners = self._next_change("created", record.source_id, record)
+        self._notify(change, listeners)
+        return deepcopy(record)
 
     def upsert(self, record: SourceRecord) -> SourceRecord:
+        record = self._normalized(record)
         with self._lock:
             existing = self._records.get(record.source_id)
+            action = "created" if existing is None else "updated"
             if existing is not None:
                 record.created_at_utc = existing.created_at_utc
             record.updated_at_utc = _utc_now()
-            record.tasks = {TaskName(task) for task in record.tasks}
+            self._connection.execute(
+                """
+                INSERT INTO cameras (
+                    camera_id, name, enabled, tasks_json, source_uri,
+                    metadata_json, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(camera_id) DO UPDATE SET
+                    name = excluded.name,
+                    enabled = excluded.enabled,
+                    tasks_json = excluded.tasks_json,
+                    source_uri = excluded.source_uri,
+                    metadata_json = excluded.metadata_json,
+                    updated_at_utc = excluded.updated_at_utc
+                """,
+                self._parameters(record),
+            )
+            self._connection.commit()
             self._records[record.source_id] = deepcopy(record)
-            self._persist()
-            return deepcopy(record)
+            change, listeners = self._next_change(action, record.source_id, record)
+        self._notify(change, listeners)
+        return deepcopy(record)
 
     def update(
         self,
@@ -117,7 +312,8 @@ class SourceRegistry:
         metadata: dict[str, Any] | None = None,
     ) -> SourceRecord:
         with self._lock:
-            record = self._records.get(source_id)
+            existing = self._records.get(source_id)
+            record = deepcopy(existing) if existing is not None else None
             if record is None:
                 raise KeyError(source_id)
             if name is not None:
@@ -131,16 +327,55 @@ class SourceRegistry:
             if metadata is not None:
                 record.metadata = dict(metadata)
             record.updated_at_utc = _utc_now()
-            self._persist()
-            return deepcopy(record)
+            record = self._normalized(record)
+            self._connection.execute(
+                """
+                UPDATE cameras
+                SET name = ?, enabled = ?, tasks_json = ?, source_uri = ?,
+                    metadata_json = ?, updated_at_utc = ?
+                WHERE camera_id = ?
+                """,
+                (
+                    record.name,
+                    int(record.enabled),
+                    json.dumps(sorted(task.value for task in record.tasks)),
+                    record.source_uri,
+                    json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+                    record.updated_at_utc,
+                    source_id,
+                ),
+            )
+            self._connection.commit()
+            self._records[source_id] = deepcopy(record)
+            change, listeners = self._next_change("updated", source_id, record)
+        self._notify(change, listeners)
+        return deepcopy(record)
 
     def delete(self, source_id: str) -> bool:
         with self._lock:
-            existed = self._records.pop(source_id, None) is not None
-            if existed:
-                self._persist()
-            return existed
+            cursor = self._connection.execute(
+                "DELETE FROM cameras WHERE camera_id = ?",
+                (source_id,),
+            )
+            existed = cursor.rowcount > 0
+            if not existed:
+                return False
+            self._connection.commit()
+            self._records.pop(source_id, None)
+            change, listeners = self._next_change("deleted", source_id, None)
+        self._notify(change, listeners)
+        return True
 
     def enabled_source_ids(self) -> list[str]:
         with self._lock:
-            return [record.source_id for record in self._records.values() if record.enabled]
+            return [
+                record.source_id for record in self._records.values() if record.enabled
+            ]
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._listeners.clear()
+            self._connection.close()

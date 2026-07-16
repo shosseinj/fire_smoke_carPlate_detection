@@ -491,12 +491,15 @@ class DeepStreamIngestor:
         submit_interval = 1.0 / self.target_fps
         next_sync = 0.0
         next_submit = 0.0
+        registry_revision = -1
         while not self._stop.is_set():
             now = time.monotonic()
             try:
                 self._iterate_glib()
-                if now >= next_sync:
+                current_revision = self.registry.revision
+                if current_revision != registry_revision or now >= next_sync:
                     self._sync_sources()
+                    registry_revision = self.registry.revision
                     next_sync = now + 1.0
                 if now >= next_submit:
                     self._submit_latest_round()

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app.core.broadcast import AnnotatedBroadcastHub
+from app.core.broadcast import AnnotatedBroadcastHub, BroadcastControlEvent
 from app.runtime import Runtime
 
 router = APIRouter(tags=["annotated-broadcast"])
@@ -74,6 +74,9 @@ async def annotated_broadcast_websocket(websocket: WebSocket) -> None:
             try:
                 if frame is None:
                     break
+                if isinstance(frame, BroadcastControlEvent):
+                    await websocket.send_json(frame.payload)
+                    continue
                 header = json.dumps(
                     {
                         "source_id": frame.source_id,

@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.source_registry import SourceChange
 
 
 TASK_LABELS = {
@@ -37,6 +38,11 @@ class EncodedBroadcastFrame:
     updated_monotonic: float
 
 
+@dataclass(frozen=True, slots=True)
+class BroadcastControlEvent:
+    payload: dict[str, Any]
+
+
 class AnnotatedBroadcastHub:
     """Composes exact-frame AI results and exposes latest annotated JPEGs."""
 
@@ -56,7 +62,7 @@ class AnnotatedBroadcastHub:
         ] = defaultdict(OrderedDict)
         self._latest: dict[str, EncodedBroadcastFrame] = {}
         self._subscribers: dict[
-            str, queue.Queue[EncodedBroadcastFrame | None]
+            str, queue.Queue[EncodedBroadcastFrame | BroadcastControlEvent | None]
         ] = {}
         self._version = 0
         self._rendered_frames = 0
@@ -85,6 +91,42 @@ class AnnotatedBroadcastHub:
                             pass
             self._condition.notify_all()
             return self._enabled
+
+    def publish_source_change(self, change: SourceChange) -> None:
+        record = change.record
+        camera = None
+        if record is not None:
+            camera = {
+                "camera_id": record.source_id,
+                "name": record.name,
+                "enabled": record.enabled,
+                "tasks": sorted(task.value for task in record.tasks),
+                "updated_at_utc": record.updated_at_utc,
+            }
+        event = BroadcastControlEvent(
+            payload={
+                "type": "camera_changed",
+                "action": change.action,
+                "camera_id": change.source_id,
+                "revision": change.revision,
+                "camera": camera,
+            }
+        )
+        with self._condition:
+            self._pending.pop(change.source_id, None)
+            self._latest.pop(change.source_id, None)
+            if self._enabled:
+                for target in self._subscribers.values():
+                    try:
+                        target.put_nowait(event)
+                    except queue.Full:
+                        try:
+                            target.get_nowait()
+                            target.task_done()
+                            target.put_nowait(event)
+                        except (queue.Empty, queue.Full):
+                            pass
+            self._condition.notify_all()
 
     @staticmethod
     def _expected_tasks(packet: FramePacket, result: TaskResult) -> set[TaskName]:
@@ -299,9 +341,14 @@ class AnnotatedBroadcastHub:
     def subscribe(
         self,
         maximum_queue: int = 64,
-    ) -> tuple[str, queue.Queue[EncodedBroadcastFrame | None]]:
+    ) -> tuple[
+        str,
+        queue.Queue[EncodedBroadcastFrame | BroadcastControlEvent | None],
+    ]:
         subscriber_id = uuid.uuid4().hex
-        target: queue.Queue[EncodedBroadcastFrame | None] = queue.Queue(
+        target: queue.Queue[
+            EncodedBroadcastFrame | BroadcastControlEvent | None
+        ] = queue.Queue(
             maxsize=max(8, maximum_queue)
         )
         with self._condition:

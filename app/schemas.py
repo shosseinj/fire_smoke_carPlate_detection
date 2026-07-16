@@ -54,3 +54,47 @@ class SourceResponse(BaseModel):
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
+
+
+class CameraCreate(BaseModel):
+    camera_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=300)
+    enabled: bool = True
+    tasks: set[TaskName] = Field(default_factory=set)
+    source_uri: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("camera_id")
+    @classmethod
+    def clean_camera_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("camera_id cannot be blank")
+        return value
+
+
+class CameraUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    enabled: bool | None = None
+    tasks: set[TaskName] | None = None
+    source_uri: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class CameraReplace(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    enabled: bool = True
+    tasks: set[TaskName] = Field(default_factory=set)
+    source_uri: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CameraResponse(BaseModel):
+    camera_id: str
+    name: str
+    enabled: bool
+    tasks: list[TaskName]
+    source_uri: str | None
+    metadata: dict[str, Any]
+    created_at_utc: str
+    updated_at_utc: str

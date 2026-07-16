@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
+from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
 from app.api.sources import router as sources_router
@@ -35,6 +36,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(sources_router)
+app.include_router(cameras_router)
 app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)

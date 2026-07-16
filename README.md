@@ -131,7 +131,7 @@ examples/main_project_integration.py
 
 ## Built-in video camera ingestion
 
-At application startup, enabled local video records and `rtsp://`/`rtsps://` sources are opened automatically. An RTSP URI is recognized directly, so `metadata` may be empty. Local files loop at end-of-stream; RTSP readers reconnect after a failure. Both are sampled at 5 FPS by default. The ingestor follows live registry changes: disabling a source closes its reader, enabling it reopens the source, and changing its assigned tasks affects the next submitted frame.
+At application startup, enabled camera rows containing local video paths or `rtsp://`/`rtsps://` URIs are opened automatically. An RTSP URI is recognized directly, so `metadata` may be empty. Local files loop at end-of-stream; RTSP readers reconnect after a failure. Both are sampled at 5 FPS by default. The ingestor follows live registry changes: disabling or deleting a camera closes its reader, creating or enabling it opens the source, changing its URI replaces the pipeline, and changing assigned tasks affects the next submitted frame.
 
 Two ingestion backends are available:
 
@@ -154,6 +154,8 @@ DEEPSTREAM_RTSP_LATENCY_MS=500
 ```
 
 With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. TCP is the default for reliable LAN camera delivery. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
+
+Camera configuration is stored in the SQLite `cameras` table. `CAMERA_DB_PATH` defaults to `data/cameras.sqlite3`. On the first run only, when the table is empty, records are imported from `SOURCE_REGISTRY_PATH` (default `data/sources.json`). After import, SQLite is authoritative and the JSON file is not rewritten.
 
 ### Run the DeepStream service
 
@@ -255,7 +257,43 @@ Content-Type: application/json
 
 Stored records can be read with `GET /api/v1/plate-logs`. Optional query parameters are `camera_id`, `plate`, and `limit`.
 
-## Source and routing API
+## Camera and routing API
+
+The camera API provides full online CRUD. Changes are persisted before the API returns and are also published as secret-free `camera_changed` JSON messages over `/api/v1/broadcast/ws`. Binary messages on the same socket remain annotated JPEG frames.
+
+### Create a camera
+
+```http
+POST /api/v1/cameras
+Content-Type: application/json
+
+{
+  "camera_id": "camera-09",
+  "name": "Gate camera",
+  "enabled": true,
+  "tasks": ["fire_smoke", "plate_recognition"],
+  "source_uri": "rtsp://user:password@camera-host/live",
+  "metadata": {"area": "gate"}
+}
+```
+
+### Read, update, replace, or delete cameras
+
+```http
+GET    /api/v1/cameras
+GET    /api/v1/cameras/camera-09
+PATCH  /api/v1/cameras/camera-09
+PUT    /api/v1/cameras/camera-09
+DELETE /api/v1/cameras/camera-09
+POST   /api/v1/cameras/camera-09/enable
+POST   /api/v1/cameras/camera-09/disable
+```
+
+RTSP credentials are stored for ingestion but redacted from REST responses and WebSocket events.
+
+## Backward-compatible source API
+
+`/api/v1/sources` operates on the same SQLite camera rows and remains available to existing integrations.
 
 ### List sources
 

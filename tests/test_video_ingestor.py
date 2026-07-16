@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -225,3 +226,57 @@ def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -
     assert callback(None, None, FakeCaps("audio/mpeg, mpegversion=(int)4")) is False
     assert callback(None, None, FakeCaps("video/x-h264")) is True
     assert other.connections == []
+
+
+def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
+    tmp_path: Path,
+) -> None:
+    registry = SourceRegistry()
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    opened: list[tuple[str, str | None]] = []
+    closed: list[str] = []
+
+    def open_source(record: SourceRecord) -> None:
+        opened.append((record.source_id, record.source_uri))
+        ingestor._states[record.source_id] = SimpleNamespace(
+            source_uri=record.source_uri
+        )
+
+    def close_source(source_id: str) -> None:
+        closed.append(source_id)
+        ingestor._states.pop(source_id, None)
+
+    ingestor._open_source = open_source  # type: ignore[method-assign]
+    ingestor._close_source = close_source  # type: ignore[method-assign]
+
+    registry.create(
+        SourceRecord(
+            source_id="camera-live",
+            name="Live camera",
+            tasks={TaskName.FIRE_SMOKE},
+            source_uri="rtsp://example.test/first",
+        )
+    )
+    ingestor._sync_sources()
+    assert opened == [("camera-live", "rtsp://example.test/first")]
+
+    registry.update("camera-live", source_uri="rtsp://example.test/second")
+    ingestor._sync_sources()
+    assert closed == ["camera-live"]
+    assert opened[-1] == ("camera-live", "rtsp://example.test/second")
+
+    registry.update("camera-live", enabled=False)
+    ingestor._sync_sources()
+    assert closed == ["camera-live", "camera-live"]
+
+    registry.update("camera-live", enabled=True)
+    ingestor._sync_sources()
+    assert opened[-1] == ("camera-live", "rtsp://example.test/second")
+
+    registry.delete("camera-live")
+    ingestor._sync_sources()
+    assert closed == ["camera-live", "camera-live", "camera-live"]

@@ -48,6 +48,7 @@ class Runtime:
         if self.video_ingestor is not None:
             self.video_ingestor.close()
         self.router.close()
+        self.registry.close()
 
     def status(self) -> dict:
         value = self.router.status()
@@ -61,24 +62,38 @@ class Runtime:
         return value
 
 
-def _seed_registry(registry: SourceRegistry, project_root: Path) -> None:
+def _seed_registry(
+    registry: SourceRegistry,
+    source_registry_path: Path,
+    project_root: Path,
+) -> None:
     if registry.list():
         return
-    seed_path = project_root / "examples" / "initial_sources.json"
-    if not seed_path.is_file():
+    seed_paths = (
+        source_registry_path,
+        project_root / "examples" / "initial_sources.json",
+    )
+    for seed_path in seed_paths:
+        if not seed_path.is_file():
+            continue
+        payload = json.loads(seed_path.read_text(encoding="utf-8"))
+        registry.import_if_empty(SourceRecord.from_dict(item) for item in payload)
         return
-    for item in json.loads(seed_path.read_text(encoding="utf-8")):
-        registry.create(SourceRecord.from_dict(item))
 
 
 def build_runtime(app_settings: Settings = settings) -> Runtime:
-    registry = SourceRegistry(app_settings.source_registry_path)
-    _seed_registry(registry, Path(__file__).resolve().parents[1])
+    registry = SourceRegistry(app_settings.camera_db_path)
+    _seed_registry(
+        registry,
+        app_settings.source_registry_path,
+        Path(__file__).resolve().parents[1],
+    )
     results = ResultStore(app_settings.recent_results_limit)
     broadcast = AnnotatedBroadcastHub(
         enabled=app_settings.broadcast_enabled,
         jpeg_quality=app_settings.broadcast_jpeg_quality,
     )
+    registry.add_listener(broadcast.publish_source_change)
     plate_logs = PlateLogStore(app_settings.plate_log_db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
 
     if app_settings.processor_mode == "mock":
