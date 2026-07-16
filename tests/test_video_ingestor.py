@@ -62,6 +62,34 @@ class RecordingRouter:
         }
 
 
+class FakeCaps:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def to_string(self) -> str:
+        return self.value
+
+
+class FakeElementFactory:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def get_name(self) -> str:
+        return self.name
+
+
+class FakeElement:
+    def __init__(self, factory_name: str) -> None:
+        self.factory = FakeElementFactory(factory_name)
+        self.connections: list[tuple[str, object]] = []
+
+    def get_factory(self) -> FakeElementFactory:
+        return self.factory
+
+    def connect(self, signal: str, callback: object) -> None:
+        self.connections.append((signal, callback))
+
+
 def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
     registry = SourceRegistry()
     registry.create(
@@ -175,3 +203,25 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(tmp_path: Path) -
     )
 
     assert [record.source_id for record in ingestor._active_records()] == ["camera-02"]
+
+
+def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -> None:
+    registry = SourceRegistry()
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    decodebin = FakeElement("uridecodebin")
+    other = FakeElement("nvv4l2decoder")
+
+    ingestor._on_deep_element_added(None, None, decodebin)
+    ingestor._on_deep_element_added(None, None, other)
+
+    assert len(decodebin.connections) == 1
+    signal, callback = decodebin.connections[0]
+    assert signal == "autoplug-continue"
+    assert callable(callback)
+    assert callback(None, None, FakeCaps("audio/mpeg, mpegversion=(int)4")) is False
+    assert callback(None, None, FakeCaps("video/x-h264")) is True
+    assert other.connections == []

@@ -157,6 +157,16 @@ class DeepStreamIngestor:
         if result != Gst.PadLinkReturn.OK:
             LOGGER.error("DeepStream source pad could not be linked: %s", result)
 
+    @staticmethod
+    def _on_autoplug_continue(_: Any, __: Any, caps: Any) -> bool:
+        """Keep decodebin from searching for decoders for unused audio tracks."""
+        return caps is None or not caps.to_string().startswith("audio/")
+
+    def _on_deep_element_added(self, _: Any, __: Any, element: Any) -> None:
+        factory = element.get_factory()
+        if factory is not None and factory.get_name() == "uridecodebin":
+            element.connect("autoplug-continue", self._on_autoplug_continue)
+
     def _redact_error(self, source_id: str, message: str) -> str:
         with self._lock:
             state = self._states.get(source_id)
@@ -271,6 +281,12 @@ class DeepStreamIngestor:
             cpu_convert = self._make("videoconvert", f"cpu_convert_{safe_id}")
             bgr_caps = self._make("capsfilter", f"bgr_caps_{safe_id}")
             sink = self._make("appsink", f"appsink_{safe_id}")
+
+            # DeepStream 7.1 still lets its internal uridecodebin autoplug AAC
+            # even with disable-audio=true. Hook it before the source bin is
+            # added so encoded audio pads are ignored without requiring an AAC
+            # decoder or spending CPU on an unused audio stream.
+            pipeline.connect("deep-element-added", self._on_deep_element_added)
 
             source.set_property("uri", gst_uri)
             self._set_if_supported(source, "disable-audio", True)

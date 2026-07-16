@@ -140,6 +140,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "rtsp_reconnect_seconds": app_settings.rtsp_reconnect_seconds,
         }
         if app_settings.video_ingest_backend == "deepstream":
+            print('\n\n\n\ningest video with deepstream\n\n')
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
