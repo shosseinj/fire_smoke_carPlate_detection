@@ -60,6 +60,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
         },
         "fire_smoke_policy": runtime.fire_smoke_logs.settings(),
         "plate_detection_policy": runtime.plate_settings.general(),
+        "model_management": runtime.models.snapshot(),
         "fire_smoke_logs": status["fire_smoke_logs"],
         "plate_log_count": status["plate_log_count"],
         "broadcast": status["broadcast"],

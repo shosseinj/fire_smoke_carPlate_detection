@@ -66,7 +66,12 @@ class CameraCreate(BaseModel):
     camera_id: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=300)
     enabled: bool = True
-    tasks: set[TaskName] = Field(default_factory=set)
+    tasks: set[TaskName] = Field(
+        default_factory=set,
+        description=(
+            "AI tasks. Use [] for play-only, one task for one detector, or both tasks."
+        ),
+    )
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
@@ -84,7 +89,10 @@ class CameraCreate(BaseModel):
 class CameraUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=300)
     enabled: bool | None = None
-    tasks: set[TaskName] | None = None
+    tasks: set[TaskName] | None = Field(
+        default=None,
+        description="Use [] to keep streaming this camera without AI inference.",
+    )
     source_uri: str | None = None
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
@@ -94,7 +102,10 @@ class CameraUpdate(BaseModel):
 class CameraReplace(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     enabled: bool = True
-    tasks: set[TaskName] = Field(default_factory=set)
+    tasks: set[TaskName] = Field(
+        default_factory=set,
+        description="Use [] for play-only mode.",
+    )
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
@@ -112,3 +123,13 @@ class CameraResponse(BaseModel):
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
+
+
+class CameraTaskUpdate(BaseModel):
+    tasks: set[TaskName] = Field(
+        default_factory=set,
+        description=(
+            "Choose [], [fire_smoke], [plate_recognition], or both values. "
+            "An empty list keeps video playback active and disables AI work."
+        ),
+    )

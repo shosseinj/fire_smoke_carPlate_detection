@@ -43,6 +43,18 @@ class Settings:
     camera_db_path: Path = _path("CAMERA_DB_PATH", "data/cameras.sqlite3")
     source_registry_path: Path = _path("SOURCE_REGISTRY_PATH", "data/sources.json")
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)
+    model_root_path: Path = _path("MODEL_ROOT_PATH", "weights")
+    model_preferred_format: str = os.getenv(
+        "MODEL_PREFERRED_FORMAT", "engine"
+    ).strip().lower()
+    model_allow_onnx_fallback: bool = _env_bool("MODEL_ALLOW_ONNX_FALLBACK", True)
+    model_allow_pt_fallback: bool = _env_bool("MODEL_ALLOW_PT_FALLBACK", True)
+    model_export_imgsz: int = _env_int("MODEL_EXPORT_IMGSZ", 640)
+    model_export_batch_size: int = _env_int("MODEL_EXPORT_BATCH_SIZE", 16)
+    model_export_workspace_gb: float = _env_float("MODEL_EXPORT_WORKSPACE_GB", 4.0)
+    model_export_half: bool = _env_bool("MODEL_EXPORT_HALF", True)
+    model_export_dynamic: bool = _env_bool("MODEL_EXPORT_DYNAMIC", True)
+    model_export_timeout_seconds: int = _env_int("MODEL_EXPORT_TIMEOUT_SECONDS", 300)
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
     video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()

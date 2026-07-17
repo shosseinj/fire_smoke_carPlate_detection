@@ -105,12 +105,19 @@ class FireSmokeProcessor(BatchProcessor):
         *,
         model: Any | None = None,
         policy_provider: Callable[[], tuple[int, FireSmokePolicyConfig]] | None = None,
+        model_provider: Callable[[], tuple[int, list[Path]]] | None = None,
     ) -> None:
         self.settings = settings
         self._model = model
         self._policy_provider = policy_provider
+        self._model_provider = model_provider
         self._load_lock = threading.Lock()
         self._load_error: Exception | None = None
+        self._model_revision = -1
+        self._model_candidates = [settings.model_path]
+        self._model_candidate_index = 0
+        self._active_model_path = settings.model_path
+        self._model_fallbacks = 0
         self._states: dict[str, PerSourceState] = {}
         self._processed_batches = 0
         self._processed_frames = 0
@@ -197,64 +204,106 @@ class FireSmokeProcessor(BatchProcessor):
         state.analyzer.smoke_policy = self._severity_policy("smoke", dynamic)
         state.policy_revision = revision
 
+    def _sync_model_selection(self) -> None:
+        if self._model_provider is None:
+            return
+        revision, candidates = self._model_provider()
+        if revision == self._model_revision:
+            return
+        if not candidates:
+            raise FileNotFoundError("No usable fire/smoke model artifact is available")
+        with self._load_lock:
+            self._model_candidates = list(candidates)
+            self._model_candidate_index = 0
+            self._active_model_path = self._model_candidates[0]
+            self._model = None
+            self._load_error = None
+            self._model_revision = revision
+
+    def _advance_model_fallback(self, error: Exception) -> bool:
+        with self._load_lock:
+            self._load_error = error
+            next_index = self._model_candidate_index + 1
+            if next_index >= len(self._model_candidates):
+                return False
+            self._model_candidate_index = next_index
+            self._active_model_path = self._model_candidates[next_index]
+            self._model = None
+            self._load_error = None
+            self._model_fallbacks += 1
+            return True
+
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
-        if self._load_error is not None:
-            raise RuntimeError(f"Fire/smoke model loading previously failed: {self._load_error}")
         with self._load_lock:
             if self._model is not None:
                 return
-            with serialized_model_load():
+            while self._model_candidate_index < len(self._model_candidates):
+                path = self._model_candidates[self._model_candidate_index]
                 try:
-                    if not self.settings.model_path.is_file():
+                    if not path.is_file():
                         raise FileNotFoundError(
-                            f"Fire/smoke model was not found: {self.settings.model_path}"
+                            f"Fire/smoke model was not found: {path}"
                         )
-                    YOLO = load_yolo_class()
-                    self._model = YOLO(str(self.settings.model_path), task="detect")
+                    with serialized_model_load():
+                        YOLO = load_yolo_class()
+                        self._model = YOLO(str(path), task="detect")
+                    self._active_model_path = path
+                    self._load_error = None
+                    return
                 except Exception as exc:
                     self._load_error = exc
-                    raise
+                    self._model_candidate_index += 1
+                    self._model_fallbacks += 1
+            raise RuntimeError(
+                f"All fire/smoke model candidates failed: {self._load_error}"
+            )
 
     def _predict(self, frames: list[np.ndarray]) -> list[Any]:
-        self._ensure_model()
-        assert self._model is not None
-        real_count = len(frames)
-        source = list(frames)
-        fixed_batch = self.settings.engine_fixed_batch
-        if self.settings.model_path.suffix.lower() == ".engine" and fixed_batch:
-            if real_count > fixed_batch:
-                raise ValueError(f"Fire/smoke engine accepts at most {fixed_batch} frames")
-            template = frames[0]
-            while len(source) < fixed_batch:
-                source.append(np.zeros_like(template))
+        self._sync_model_selection()
+        while True:
+            self._ensure_model()
+            assert self._model is not None
+            real_count = len(frames)
+            source = list(frames)
+            fixed_batch = self.settings.engine_fixed_batch
+            if self._active_model_path.suffix.lower() == ".engine" and fixed_batch:
+                if real_count > fixed_batch:
+                    raise ValueError(f"Fire/smoke engine accepts at most {fixed_batch} frames")
+                template = frames[0]
+                while len(source) < fixed_batch:
+                    source.append(np.zeros_like(template))
 
-        kwargs: dict[str, Any] = {
-            "source": source,
-            "batch": fixed_batch or self.settings.batch_size,
-            "imgsz": self.settings.imgsz,
-            "conf": min(
-                self.settings.fire_candidate_confidence,
-                self.settings.smoke_candidate_confidence,
-            ),
-            "iou": self.settings.iou,
-            "max_det": self.settings.max_detections,
-            "classes": [self.settings.fire_class_id, self.settings.smoke_class_id],
-            "device": self.settings.device,
-            "augment": False,
-            "rect": False,
-            "stream": False,
-            "verbose": False,
-        }
-        if self.settings.model_path.suffix.lower() == ".pt" and self.settings.device != "cpu":
-            kwargs["quantize"] = 16
-        started = time.perf_counter()
-        results = list(self._model.predict(**kwargs))
-        self._last_inference_ms = (time.perf_counter() - started) * 1000.0
-        if len(results) < real_count:
-            raise RuntimeError("Fire/smoke model returned fewer results than input frames")
-        return results[:real_count]
+            kwargs: dict[str, Any] = {
+                "source": source,
+                "batch": fixed_batch or self.settings.batch_size,
+                "imgsz": self.settings.imgsz,
+                "conf": min(
+                    self.settings.fire_candidate_confidence,
+                    self.settings.smoke_candidate_confidence,
+                ),
+                "iou": self.settings.iou,
+                "max_det": self.settings.max_detections,
+                "classes": [self.settings.fire_class_id, self.settings.smoke_class_id],
+                "device": self.settings.device,
+                "augment": False,
+                "rect": False,
+                "stream": False,
+                "verbose": False,
+            }
+            if self._active_model_path.suffix.lower() == ".pt" and self.settings.device != "cpu":
+                kwargs["quantize"] = 16
+            started = time.perf_counter()
+            try:
+                results = list(self._model.predict(**kwargs))
+                self._last_inference_ms = (time.perf_counter() - started) * 1000.0
+                if len(results) < real_count:
+                    raise RuntimeError("Fire/smoke model returned fewer results than input frames")
+                return results[:real_count]
+            except Exception as exc:
+                if not self._advance_model_fallback(exc):
+                    raise
 
     def _extract_detections(self, result: Any) -> list[Detection]:
         boxes = getattr(result, "boxes", None)
@@ -456,8 +505,11 @@ class FireSmokeProcessor(BatchProcessor):
     def status(self) -> dict[str, Any]:
         return {
             "task": self.task.value,
-            "model_path": str(self.settings.model_path),
-            "model_exists": self.settings.model_path.is_file(),
+            "model_path": str(self._active_model_path),
+            "model_exists": self._active_model_path.is_file(),
+            "model_candidates": [str(path) for path in self._model_candidates],
+            "model_revision": self._model_revision,
+            "model_fallbacks": self._model_fallbacks,
             "model_loaded": self._model is not None,
             "model_load_error": str(self._load_error) if self._load_error else None,
             "processed_batches": self._processed_batches,

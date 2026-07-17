@@ -141,3 +141,40 @@ def test_fire_below_configured_score_is_not_a_detection(tmp_path: Path) -> None:
     assert result.data["tracks"] == []
     assert result.data["fire"]["positive_count"] == 0
     assert result.data["severity"] == "none"
+
+
+def test_fire_engine_runtime_failure_uses_onnx_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = tmp_path / "fire.engine"
+    onnx = tmp_path / "fire.onnx"
+    engine.write_bytes(b"engine")
+    onnx.write_bytes(b"onnx")
+
+    class FailingModel:
+        def predict(self, *args, **kwargs):
+            raise RuntimeError("incompatible TensorRT engine")
+
+    def fake_yolo(path: str, task: str | None = None):
+        return FailingModel() if Path(path).suffix == ".engine" else FakeModel()
+
+    monkeypatch.setattr(
+        "app.processors.fire_smoke.load_yolo_class",
+        lambda: fake_yolo,
+    )
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=engine,
+            device="cpu",
+            engine_fixed_batch=None,
+            evidence_min_track_hits=1,
+        ),
+        model_provider=lambda: (1, [engine, onnx]),
+    )
+
+    result = processor.process_batch([packet("camera-fallback", 1)])[0]
+
+    assert result.error is None
+    assert processor.status()["model_path"] == str(onnx)
+    assert processor.status()["model_fallbacks"] == 1

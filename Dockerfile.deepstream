@@ -19,6 +19,13 @@ WORKDIR /workspace
 #     --no-cache-dir \
 #     -r /workspace/requirements.txt
 
+# Required for explicit ONNX export and runtime fallback. TensorRT is supplied
+# by the NVIDIA DeepStream base image.
+RUN python3 -m pip install --no-cache-dir \
+    "onnx>=1.12.0,<2.0.0" \
+    "onnxruntime-gpu>=1.18.0,<2.0.0" \
+    "onnxslim>=0.1.71"
+
 COPY . /workspace
 
 # RUN python3 -m pip install \

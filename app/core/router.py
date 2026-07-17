@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -21,16 +21,19 @@ class TaskRouter:
         registry: SourceRegistry,
         workers: Mapping[TaskName, TaskWorker],
         result_store: ResultStore,
+        play_only_callback: Callable[[FramePacket], None] | None = None,
     ) -> None:
         self.registry = registry
         self.workers = dict(workers)
         self.result_store = result_store
+        self.play_only_callback = play_only_callback
         self.rounds_received = 0
         self.frames_received = 0
         self.frames_disabled = 0
         self.frames_unregistered = 0
         self.task_submissions = 0
         self.task_submission_rejections = 0
+        self.play_only_frames = 0
         self.last_round_sequence: int | None = None
         self.started = False
 
@@ -96,6 +99,10 @@ class TaskRouter:
                 source_time_seconds=(source_times_seconds[index] if source_times_seconds is not None else None),
                 metadata=packet_metadata,
             )
+            if not source.tasks:
+                self.play_only_frames += 1
+                if self.play_only_callback is not None:
+                    self.play_only_callback(packet)
             for task in source.tasks:
                 worker = self.workers.get(task)
                 if worker is None:
@@ -125,6 +132,7 @@ class TaskRouter:
             "frames_unregistered": self.frames_unregistered,
             "task_submissions": self.task_submissions,
             "task_submission_rejections": self.task_submission_rejections,
+            "play_only_frames": self.play_only_frames,
             "last_round_sequence": self.last_round_sequence,
             "enabled_source_ids": self.registry.enabled_source_ids(),
             "workers": {task.value: worker.status() for task, worker in self.workers.items()},

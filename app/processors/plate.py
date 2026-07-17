@@ -93,14 +93,28 @@ class PlateRecognitionProcessor(BatchProcessor):
         detector: Any | None = None,
         recognizer: Any | None = None,
         settings_provider: Callable[[str], PlateDetectionPolicy] | None = None,
+        vehicle_model_provider: Callable[[], tuple[int, list[Path]]] | None = None,
+        plate_model_provider: Callable[[], tuple[int, list[Path]]] | None = None,
     ) -> None:
         self.settings = settings
         self._vehicle_detector = vehicle_detector
         self._detector = detector
         self._recognizer = recognizer
         self._settings_provider = settings_provider
+        self._vehicle_model_provider = vehicle_model_provider
+        self._plate_model_provider = plate_model_provider
         self._load_lock = threading.Lock()
         self._load_error: Exception | None = None
+        self._vehicle_model_revision = -1
+        self._plate_model_revision = -1
+        self._vehicle_candidates = [settings.vehicle_detector_weights]
+        self._plate_candidates = [settings.detector_weights]
+        self._vehicle_candidate_index = 0
+        self._plate_candidate_index = 0
+        self._active_vehicle_path = settings.vehicle_detector_weights
+        self._active_plate_path = settings.detector_weights
+        self._vehicle_fallbacks = 0
+        self._plate_fallbacks = 0
         self._processed_batches = 0
         self._processed_frames = 0
         self._last_inference_ms = 0.0
@@ -132,60 +146,127 @@ class PlateRecognitionProcessor(BatchProcessor):
             return f"cuda:{configured}"
         return configured
 
-    def _ensure_models(self) -> None:
-        if (
-            self._vehicle_detector is not None
-            and self._detector is not None
-            and self._recognizer is not None
-        ):
+    def _sync_model_selection(self) -> None:
+        selections = (
+            (
+                "vehicle",
+                self._vehicle_model_provider,
+                self._vehicle_model_revision,
+            ),
+            ("plate", self._plate_model_provider, self._plate_model_revision),
+        )
+        for kind, provider, current_revision in selections:
+            if provider is None:
+                continue
+            revision, candidates = provider()
+            if revision == current_revision:
+                continue
+            if not candidates:
+                raise FileNotFoundError(f"No usable {kind} model artifact is available")
+            with self._load_lock:
+                if kind == "vehicle":
+                    self._vehicle_candidates = list(candidates)
+                    self._vehicle_candidate_index = 0
+                    self._active_vehicle_path = candidates[0]
+                    self._vehicle_detector = None
+                    self._vehicle_model_revision = revision
+                else:
+                    self._plate_candidates = list(candidates)
+                    self._plate_candidate_index = 0
+                    self._active_plate_path = candidates[0]
+                    self._detector = None
+                    self._plate_model_revision = revision
+                self._load_error = None
+
+    def _ensure_yolo(self, kind: str) -> None:
+        current = self._vehicle_detector if kind == "vehicle" else self._detector
+        if current is not None:
             return
-        if self._load_error is not None:
-            raise RuntimeError(f"Plate models loading previously failed: {self._load_error}")
         with self._load_lock:
-            if (
-                self._vehicle_detector is not None
-                and self._detector is not None
-                and self._recognizer is not None
-            ):
+            current = self._vehicle_detector if kind == "vehicle" else self._detector
+            if current is not None:
                 return
-            with serialized_model_load():
+            candidates = (
+                self._vehicle_candidates if kind == "vehicle" else self._plate_candidates
+            )
+            index = (
+                self._vehicle_candidate_index
+                if kind == "vehicle"
+                else self._plate_candidate_index
+            )
+            while index < len(candidates):
+                path = candidates[index]
                 try:
-                    if not self.settings.detector_weights.is_file():
-                        raise FileNotFoundError(
-                            f"Plate detector checkpoint was not found: {self.settings.detector_weights}"
-                        )
-                    if not self.settings.vehicle_detector_weights.is_file():
-                        raise FileNotFoundError(
-                            "Vehicle detector checkpoint was not found: "
-                            f"{self.settings.vehicle_detector_weights}"
-                        )
-                    if not self.settings.recognizer_model_dir.is_dir():
-                        raise FileNotFoundError(
-                            f"Plate recognizer directory was not found: {self.settings.recognizer_model_dir}"
-                        )
-                    missing = self.recognizer_missing_files()
-                    if missing:
-                        raise FileNotFoundError(
-                            "Plate recognizer directory is incomplete. Missing: "
-                            + ", ".join(str(path) for path in missing)
-                        )
-                    YOLO = load_yolo_class()
-                    Model = load_hezar_model_class()
-                    vehicle_detector = YOLO(
-                        str(self.settings.vehicle_detector_weights)
-                    )
-                    detector = YOLO(str(self.settings.detector_weights))
-                    recognizer = Model.load(
-                        str(self.settings.recognizer_model_dir), load_locally=True
-                    )
-                    recognizer.eval()
-                    recognizer.to(self._torch_device())
-                    self._vehicle_detector = vehicle_detector
-                    self._detector = detector
-                    self._recognizer = recognizer
+                    if not path.is_file():
+                        raise FileNotFoundError(f"{kind} detector was not found: {path}")
+                    with serialized_model_load():
+                        YOLO = load_yolo_class()
+                        model = YOLO(str(path))
+                    if kind == "vehicle":
+                        self._vehicle_detector = model
+                        self._vehicle_candidate_index = index
+                        self._active_vehicle_path = path
+                    else:
+                        self._detector = model
+                        self._plate_candidate_index = index
+                        self._active_plate_path = path
+                    self._load_error = None
+                    return
                 except Exception as exc:
                     self._load_error = exc
-                    raise
+                    index += 1
+                    if kind == "vehicle":
+                        self._vehicle_fallbacks += 1
+                    else:
+                        self._plate_fallbacks += 1
+            raise RuntimeError(f"All {kind} model candidates failed: {self._load_error}")
+
+    def _advance_yolo_fallback(self, kind: str, error: Exception) -> bool:
+        with self._load_lock:
+            self._load_error = error
+            if kind == "vehicle":
+                next_index = self._vehicle_candidate_index + 1
+                if next_index >= len(self._vehicle_candidates):
+                    return False
+                self._vehicle_candidate_index = next_index
+                self._active_vehicle_path = self._vehicle_candidates[next_index]
+                self._vehicle_detector = None
+                self._vehicle_fallbacks += 1
+            else:
+                next_index = self._plate_candidate_index + 1
+                if next_index >= len(self._plate_candidates):
+                    return False
+                self._plate_candidate_index = next_index
+                self._active_plate_path = self._plate_candidates[next_index]
+                self._detector = None
+                self._plate_fallbacks += 1
+            self._load_error = None
+            return True
+
+    def _ensure_recognizer(self) -> None:
+        if self._recognizer is not None:
+            return
+        with self._load_lock:
+            if self._recognizer is not None:
+                return
+            if not self.settings.recognizer_model_dir.is_dir():
+                raise FileNotFoundError(
+                    f"Plate recognizer directory was not found: {self.settings.recognizer_model_dir}"
+                )
+            missing = self.recognizer_missing_files()
+            if missing:
+                raise FileNotFoundError(
+                    "Plate recognizer directory is incomplete. Missing: "
+                    + ", ".join(str(path) for path in missing)
+                )
+            with serialized_model_load():
+                Model = load_hezar_model_class()
+                recognizer = Model.load(
+                    str(self.settings.recognizer_model_dir), load_locally=True
+                )
+            recognizer.eval()
+            recognizer.to(self._torch_device())
+            self._recognizer = recognizer
 
     @staticmethod
     def _normalize_class_name(value: Any) -> str:
@@ -254,42 +335,52 @@ class PlateRecognitionProcessor(BatchProcessor):
         frames: list[np.ndarray],
         confidence: float,
     ) -> list[Any]:
-        self._ensure_models()
-        assert self._vehicle_detector is not None
-        results, self._last_vehicle_inference_ms = self._predict_yolo(
-            model=self._vehicle_detector,
-            frames=frames,
-            confidence=confidence,
-            iou=self.settings.vehicle_iou,
-            imgsz=self.settings.vehicle_imgsz,
-            classes=list(self.settings.vehicle_class_ids),
-        )
-        return results
+        while True:
+            self._ensure_yolo("vehicle")
+            assert self._vehicle_detector is not None
+            try:
+                results, self._last_vehicle_inference_ms = self._predict_yolo(
+                    model=self._vehicle_detector,
+                    frames=frames,
+                    confidence=confidence,
+                    iou=self.settings.vehicle_iou,
+                    imgsz=self.settings.vehicle_imgsz,
+                    classes=list(self.settings.vehicle_class_ids),
+                )
+                return results
+            except Exception as exc:
+                if not self._advance_yolo_fallback("vehicle", exc):
+                    raise
 
     def _predict_plates(
         self,
         vehicle_crops: list[np.ndarray],
         confidence: float,
     ) -> list[Any]:
-        self._ensure_models()
-        assert self._detector is not None
-        results: list[Any] = []
-        self._last_plate_inference_ms = 0.0
-        chunk_size = max(1, self.settings.plate_crop_batch_size)
-        for start in range(0, len(vehicle_crops), chunk_size):
-            chunk_results, elapsed_ms = self._predict_yolo(
-                model=self._detector,
-                frames=vehicle_crops[start : start + chunk_size],
-                confidence=confidence,
-                iou=self.settings.detector_iou,
-                imgsz=self.settings.detector_imgsz,
-            )
-            results.extend(chunk_results)
-            self._last_plate_inference_ms += elapsed_ms
-        self._last_inference_ms = (
-            self._last_vehicle_inference_ms + self._last_plate_inference_ms
-        )
-        return results
+        while True:
+            self._ensure_yolo("plate")
+            assert self._detector is not None
+            results: list[Any] = []
+            self._last_plate_inference_ms = 0.0
+            chunk_size = max(1, self.settings.plate_crop_batch_size)
+            try:
+                for start in range(0, len(vehicle_crops), chunk_size):
+                    chunk_results, elapsed_ms = self._predict_yolo(
+                        model=self._detector,
+                        frames=vehicle_crops[start : start + chunk_size],
+                        confidence=confidence,
+                        iou=self.settings.detector_iou,
+                        imgsz=self.settings.detector_imgsz,
+                    )
+                    results.extend(chunk_results)
+                    self._last_plate_inference_ms += elapsed_ms
+                self._last_inference_ms = (
+                    self._last_vehicle_inference_ms + self._last_plate_inference_ms
+                )
+                return results
+            except Exception as exc:
+                if not self._advance_yolo_fallback("plate", exc):
+                    raise
 
     @staticmethod
     def _read_output(output: Any) -> tuple[str, float]:
@@ -308,9 +399,10 @@ class PlateRecognitionProcessor(BatchProcessor):
         return str(text), confidence
 
     def _recognize_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
-        assert self._recognizer is not None
         if not crops:
             return []
+        self._ensure_recognizer()
+        assert self._recognizer is not None
         rgb = [cv2.cvtColor(crop, cv2.COLOR_BGR2RGB) for crop in crops]
         try:
             outputs = self._recognizer.predict(
@@ -345,6 +437,7 @@ class PlateRecognitionProcessor(BatchProcessor):
     def process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
         if not packets:
             return []
+        self._sync_model_selection()
         policies = [self._policy(packet.source_id) for packet in packets]
         vehicle_results = self._predict_vehicles(
             [packet.frame for packet in packets],
@@ -571,15 +664,19 @@ class PlateRecognitionProcessor(BatchProcessor):
         return {
             "task": self.task.value,
             "pipeline": "vehicle -> plate -> OCR",
-            "vehicle_detector_weights": str(
-                self.settings.vehicle_detector_weights
-            ),
+            "vehicle_detector_weights": str(self._active_vehicle_path),
             "vehicle_detector_exists": (
-                self.settings.vehicle_detector_weights.is_file()
+                self._active_vehicle_path.is_file()
             ),
+            "vehicle_model_candidates": [str(path) for path in self._vehicle_candidates],
+            "vehicle_model_revision": self._vehicle_model_revision,
+            "vehicle_model_fallbacks": self._vehicle_fallbacks,
             "vehicle_confidence": self.settings.vehicle_confidence,
-            "detector_weights": str(self.settings.detector_weights),
-            "detector_exists": self.settings.detector_weights.is_file(),
+            "detector_weights": str(self._active_plate_path),
+            "detector_exists": self._active_plate_path.is_file(),
+            "plate_model_candidates": [str(path) for path in self._plate_candidates],
+            "plate_model_revision": self._plate_model_revision,
+            "plate_model_fallbacks": self._plate_fallbacks,
             "plate_confidence": self.settings.detector_confidence,
             "ocr_confidence": self.settings.ocr_confidence,
             "strict_iranian_plate_format": "2 digits + 1 Persian letter + 5 digits",

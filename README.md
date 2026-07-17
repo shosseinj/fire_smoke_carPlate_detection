@@ -338,6 +338,17 @@ Open `/docs`. The API is ordered into diagnostics, camera CRUD, frame/model test
 
 The camera API provides full online CRUD. Changes are persisted before the API returns and are also published as secret-free `camera_changed` JSON messages over `/api/v1/broadcast/ws`. Binary messages on the same socket remain annotated JPEG frames.
 
+An enabled camera may use any of four processing modes. Use `PUT /api/v1/cameras/{camera_id}/tasks` in Swagger with one of these arrays:
+
+```json
+[]
+["fire_smoke"]
+["plate_recognition"]
+["fire_smoke", "plate_recognition"]
+```
+
+An empty array is play-only mode. DeepStream continues decoding and the dashboard/WebSocket continues receiving frames, but the router submits no fire/smoke, vehicle, plate, or OCR work for that camera.
+
 ### Create a camera
 
 ```http
@@ -457,7 +468,73 @@ weights/plate_recognizer/model_config.yaml
 weights/plate_recognizer/preprocessor/image_processor_config.yaml
 ```
 
-The fire/smoke processor accepts a TensorRT engine or an Ultralytics `.pt` model. The default assumes a fixed batch-8 TensorRT engine and pads incomplete batches before inference.
+The fire/smoke processor accepts TensorRT `.engine`, ONNX `.onnx`, or Ultralytics `.pt` models. A fixed-batch TensorRT engine is padded according to `FIRE_SMOKE_ENGINE_FIXED_BATCH`.
+
+## Model catalog, conversion, and selection
+
+Swagger contains a `model-management` section:
+
+- `GET /api/v1/models/artifacts` lists `.pt`, `.engine`, and `.onnx` files. Filter by `role` or `format=pt`.
+- `POST /api/v1/models/conversions` queues a background PT-to-TensorRT export and, by default, also creates an ONNX fallback.
+- `GET /api/v1/models/conversions/{job_id}` reports progress, output artifacts, and per-format errors.
+- `GET/PATCH /api/v1/models/settings` selects the fire/smoke, vehicle, and plate models.
+
+Model files are organized by role below `MODEL_ROOT_PATH`:
+
+```text
+weights/fire_smoke/
+weights/vehicle_detector/
+weights/plate_detector/
+```
+
+Names containing `nano`, `tiny`, `small`, `medium`, or `large` are identified in the catalog. YOLO suffixes such as `yolo11n`, `yolo11s`, `yolo11m`, and `yolo11l` are mapped to the corresponding variants. Only installed choices are returned.
+
+Example conversion request:
+
+```json
+{
+  "source_model": "vehicle_detector/yolo11n.pt",
+  "output_directory": "vehicle_detector/exports",
+  "imgsz": 640,
+  "batch": 16,
+  "workspace_gb": 4,
+  "half": true,
+  "dynamic": true,
+  "device": "0",
+  "create_onnx_fallback": true,
+  "overwrite": false,
+  "timeout_seconds": 300
+}
+```
+
+Conversion runs in a single background queue and does not block FastAPI or DeepStream ingestion threads. Dynamic TensorRT export is the default because vehicle and plate crop batches vary at runtime.
+
+Runtime resolution defaults to:
+
+```text
+TensorRT .engine -> ONNX .onnx -> PyTorch .pt
+```
+
+Fallback requires the files to have the same directory and stem, such as `fire_small.engine`, `fire_small.onnx`, and `fire_small.pt`. When a custom output directory is requested, the conversion job copies the source PT into that directory to keep the model family complete. Runtime inference errors also advance to the next available format. Model selection changes are persisted and applied at the next inference batch without restarting the camera pipelines.
+
+The `general-settings` Swagger section provides `GET/PATCH /api/v1/settings/general`. It combines model selection/export settings, plate thresholds, fire/smoke incident policy, all startup environment configuration, and the camera processing modes in one response.
+
+Relevant startup defaults are:
+
+```text
+MODEL_ROOT_PATH=weights
+MODEL_PREFERRED_FORMAT=engine
+MODEL_ALLOW_ONNX_FALLBACK=true
+MODEL_ALLOW_PT_FALLBACK=true
+MODEL_EXPORT_IMGSZ=640
+MODEL_EXPORT_BATCH_SIZE=16
+MODEL_EXPORT_WORKSPACE_GB=4
+MODEL_EXPORT_HALF=true
+MODEL_EXPORT_DYNAMIC=true
+MODEL_EXPORT_TIMEOUT_SECONDS=300
+```
+
+TensorRT engines are GPU/driver/TensorRT-specific. Build them in the deployment container on the target GPU. The DeepStream image installs `onnx`, `onnxruntime-gpu`, and `onnxslim` so ONNX export and inference do not depend on Ultralytics attempting a package installation at runtime.
 
 The plate processor performs:
 

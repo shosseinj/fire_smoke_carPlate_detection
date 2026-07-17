@@ -106,3 +106,17 @@ def test_positive_results_print_detection_logs(capsys) -> None:
     assert '"fire": 1' in output
     assert "task=plate_recognition" in output
     assert "12B34567" in output
+
+
+def test_play_only_frame_is_broadcast_without_ai_result() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    source_packet = packet([])
+
+    hub.publish_passthrough(source_packet)
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.tasks == ()
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert int(image.sum()) > 0

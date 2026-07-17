@@ -232,9 +232,13 @@ class AnnotatedBroadcastHub:
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (width, header_height), (9, 13, 22), -1)
         cv2.addWeighted(overlay, 0.86, frame, 0.14, 0, frame)
-        task_text = " + ".join(
-            TASK_LABELS[task]
-            for task in sorted(pending.expected_tasks, key=lambda item: item.value)
+        task_text = (
+            " + ".join(
+                TASK_LABELS[task]
+                for task in sorted(pending.expected_tasks, key=lambda item: item.value)
+            )
+            if pending.expected_tasks
+            else "PLAY ONLY"
         )
 
         def fitted_scale(text: str, preferred: float, available: int) -> float:
@@ -247,7 +251,7 @@ class AnnotatedBroadcastHub:
 
         title = f"{source_id.upper()} | FRAME {frame_index}"
         tasks_line = f"AI TASKS: {task_text}"
-        status_line = " | ".join(statuses)
+        status_line = " | ".join(statuses) if statuses else "LIVE VIEW - AI DISABLED"
         cv2.putText(
             frame,
             title,
@@ -325,6 +329,44 @@ class AnnotatedBroadcastHub:
                 frame_index=packet.frame_index,
                 jpeg=jpeg,
                 tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
+                updated_monotonic=time.monotonic(),
+            )
+            self._latest[packet.source_id] = encoded_frame
+            for target in self._subscribers.values():
+                try:
+                    target.put_nowait(encoded_frame)
+                except queue.Full:
+                    try:
+                        target.get_nowait()
+                        target.task_done()
+                        target.put_nowait(encoded_frame)
+                    except (queue.Empty, queue.Full):
+                        pass
+            self._condition.notify_all()
+
+    def publish_passthrough(self, packet: FramePacket) -> None:
+        """Broadcast an enabled camera frame without submitting any AI work."""
+        with self._condition:
+            if not self._enabled:
+                return
+            pending = PendingAnnotatedFrame(
+                frame=packet.frame,
+                expected_tasks=set(),
+            )
+            jpeg = self._render(packet.source_id, packet.frame_index, pending)
+            if jpeg is None:
+                return
+            latest = self._latest.get(packet.source_id)
+            if latest is not None and packet.frame_index < latest.frame_index:
+                return
+            self._version += 1
+            self._rendered_frames += 1
+            encoded_frame = EncodedBroadcastFrame(
+                version=self._version,
+                source_id=packet.source_id,
+                frame_index=packet.frame_index,
+                jpeg=jpeg,
+                tasks=(),
                 updated_monotonic=time.monotonic(),
             )
             self._latest[packet.source_id] = encoded_frame

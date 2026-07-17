@@ -5,6 +5,8 @@ from pathlib import Path
 import json
 import sqlite3
 
+import numpy as np
+
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -324,8 +326,82 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert "/api/v1/frame-rounds/jpeg" in schema["paths"]
             assert "/api/v1/plate-settings/general" in schema["paths"]
             assert "/api/v1/plate-settings/cameras/{camera_id}" in schema["paths"]
+            assert "/api/v1/settings/general" in schema["paths"]
+            assert "/api/v1/models/artifacts" in schema["paths"]
+            assert "/api/v1/models/conversions" in schema["paths"]
+            assert "/api/v1/cameras/{camera_id}/tasks" in schema["paths"]
             assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
             assert schema["tags"][0]["name"] == "system-diagnostics"
+    finally:
+        main_module.runtime = old_runtime
+
+
+def test_general_model_settings_and_play_only_camera_api(tmp_path: Path) -> None:
+    import app.main as main_module
+
+    model_root = tmp_path / "weights"
+    fire_model = model_root / "fire_smoke/fire_nano.pt"
+    vehicle_model = model_root / "vehicle_detector/yolo11n.pt"
+    plate_model = model_root / "plate_detector/plate_small.pt"
+    for model in (fire_model, vehicle_model, plate_model):
+        model.parent.mkdir(parents=True, exist_ok=True)
+        model.write_bytes(b"test")
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing.json",
+            plate_log_db_path=tmp_path / "logs.sqlite3",
+            saved_media_path=tmp_path / "media",
+            model_root_path=model_root,
+            fire_model_path=fire_model,
+            vehicle_detector_weights=vehicle_model,
+            plate_detector_weights=plate_model,
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            artifacts = client.get("/api/v1/models/artifacts", params={"format": "pt"})
+            assert artifacts.status_code == 200
+            assert {item["variant"] for item in artifacts.json()} == {
+                "nano",
+                "small",
+            }
+
+            updated = client.patch(
+                "/api/v1/settings/general",
+                json={
+                    "models": {"preferred_format": "pt"},
+                    "plate_detection": {"plate_confidence": 0.52},
+                },
+            )
+            assert updated.status_code == 200
+            assert updated.json()["models"]["preferred_format"] == "pt"
+            assert updated.json()["plate_detection"]["plate_confidence"] == 0.52
+            assert updated.json()["camera_processing"]["modes"]["play_only"] == []
+
+            camera_id = test_runtime.registry.list()[0].source_id
+            play_only = client.put(
+                f"/api/v1/cameras/{camera_id}/tasks",
+                json={"tasks": []},
+            )
+            assert play_only.status_code == 200
+            assert play_only.json()["tasks"] == []
+
+            summary = test_runtime.router.submit_round(
+                frames=[np.zeros((64, 64, 3), dtype=np.uint8)],
+                source_ids=[camera_id],
+                round_sequence=999,
+            )
+            assert summary["task_submissions"] == 0
+            latest = test_runtime.broadcast.latest(camera_id)
+            assert latest is not None
+            assert latest.tasks == ()
     finally:
         main_module.runtime = old_runtime
 

@@ -5,7 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.core.source_registry import SourceRecord
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
-from app.schemas import CameraCreate, CameraReplace, CameraResponse, CameraUpdate
+from app.schemas import (
+    CameraCreate,
+    CameraReplace,
+    CameraResponse,
+    CameraTaskUpdate,
+    CameraUpdate,
+)
 
 
 router = APIRouter(prefix="/api/v1/cameras", tags=["cameras"])
@@ -72,6 +78,26 @@ def get_camera(
     if record is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     return _response(record)
+
+
+@router.put(
+    "/{camera_id}/tasks",
+    response_model=CameraResponse,
+    summary="Select AI tasks or play-only mode",
+    description=(
+        "Send an empty tasks array for video playback with zero inference. "
+        "The camera remains enabled and continues through DeepStream."
+    ),
+)
+def update_camera_tasks(
+    camera_id: str,
+    payload: CameraTaskUpdate,
+    runtime: Runtime = Depends(get_runtime),
+) -> CameraResponse:
+    try:
+        return _response(runtime.registry.update(camera_id, tasks=payload.tasks))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Camera not found") from exc
 
 
 @router.patch("/{camera_id}", response_model=CameraResponse)

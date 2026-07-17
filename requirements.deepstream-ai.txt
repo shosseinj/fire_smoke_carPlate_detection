@@ -10,3 +10,6 @@ torch==2.5.1+cu124
 torchvision==0.20.1+cu124
 transformers==5.13.1
 ultralytics==8.4.83
+onnx>=1.12.0,<2.0.0
+onnxruntime-gpu>=1.18.0,<2.0.0
+onnxslim>=0.1.71

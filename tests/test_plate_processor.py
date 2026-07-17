@@ -303,3 +303,38 @@ def test_each_camera_plate_threshold_is_applied_after_shared_gpu_batch(
     assert accepted.data["plate_count"] == 1
     assert rejected.data["plate_count"] == 0
     assert rejected.data["rejected_plate_scores"] == 1
+
+
+def test_vehicle_engine_runtime_failure_uses_onnx_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = tmp_path / "vehicle.engine"
+    onnx = tmp_path / "vehicle.onnx"
+    engine.write_bytes(b"engine")
+    onnx.write_bytes(b"onnx")
+
+    class FailingVehicleModel:
+        names = FakeVehicleDetector.names
+
+        def predict(self, *args, **kwargs):
+            raise RuntimeError("incompatible TensorRT engine")
+
+    def fake_yolo(path: str):
+        if Path(path).suffix == ".engine":
+            return FailingVehicleModel()
+        return FakeVehicleDetector()
+
+    monkeypatch.setattr("app.processors.plate.load_yolo_class", lambda: fake_yolo)
+    processor = PlateRecognitionProcessor(
+        settings(tmp_path, device="cpu"),
+        detector=FakePlateDetector(),
+        recognizer=FakeRecognizer(),
+        vehicle_model_provider=lambda: (1, [engine, onnx]),
+    )
+
+    result = processor.process_batch([make_packet("camera-fallback")])[0]
+
+    assert result.data["plate_count"] == 1
+    assert processor.status()["vehicle_detector_weights"] == str(onnx)
+    assert processor.status()["vehicle_model_fallbacks"] == 1

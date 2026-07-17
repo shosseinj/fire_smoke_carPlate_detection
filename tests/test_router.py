@@ -108,6 +108,29 @@ def test_dynamic_disable_and_task_change_apply_without_restart(tmp_path: Path) -
         router.close()
 
 
+def test_enabled_camera_with_no_tasks_uses_play_only_callback(tmp_path: Path) -> None:
+    router, results, registry, _, _ = build_router(tmp_path)
+    packets = []
+    router.play_only_callback = packets.append
+    registry.update("camera-06", enabled=True, tasks=set())
+    router.start()
+    try:
+        summary = router.submit_round(
+            frames=[np.zeros((16, 16, 3), dtype=np.uint8)],
+            source_ids=["camera-06"],
+            round_sequence=3,
+        )
+
+        assert summary["accepted_sources"] == 1
+        assert summary["task_submissions"] == 0
+        assert len(packets) == 1
+        assert packets[0].metadata["assigned_tasks"] == []
+        assert results.recent(limit=10) == []
+        assert router.status()["play_only_frames"] == 1
+    finally:
+        router.close()
+
+
 def test_fifty_sources_can_be_routed_without_global_camera_limit(tmp_path: Path) -> None:
     registry = SourceRegistry(tmp_path / "fifty.json")
     for index in range(1, 51):

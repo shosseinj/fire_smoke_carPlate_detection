@@ -9,6 +9,11 @@ from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
 from app.core.plate_settings_store import PlateDetectionPolicy, PlateSettingsStore
+from app.core.model_management import (
+    ModelConversionManager,
+    ModelManager,
+    ModelSelectionConfig,
+)
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
@@ -32,6 +37,8 @@ class Runtime:
     broadcast: AnnotatedBroadcastHub
     plate_logs: PlateLogStore
     plate_settings: PlateSettingsStore
+    models: ModelManager
+    model_conversions: ModelConversionManager
     fire_smoke_logs: FireSmokeLogStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
@@ -50,6 +57,7 @@ class Runtime:
         # End long-lived MJPEG responses first so Uvicorn reload/shutdown cannot
         # wait forever for frontend clients that still have streams open.
         self.broadcast.set_enabled(False)
+        self.model_conversions.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
         self.router.close()
@@ -114,6 +122,39 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ),
     )
     registry.add_listener(plate_settings.on_source_change)
+    model_root = app_settings.model_root_path.resolve()
+
+    def model_relative(path: Path) -> str:
+        try:
+            return path.resolve().relative_to(model_root).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"Configured model must be inside MODEL_ROOT_PATH: {path}"
+            ) from exc
+
+    models = ModelManager(
+        app_settings.camera_db_path,
+        model_root,
+        default_config=ModelSelectionConfig(
+            fire_smoke_model=model_relative(app_settings.fire_model_path),
+            vehicle_detector_model=model_relative(
+                app_settings.vehicle_detector_weights
+            ),
+            plate_detector_model=model_relative(
+                app_settings.plate_detector_weights
+            ),
+            preferred_format=app_settings.model_preferred_format,
+            allow_onnx_fallback=app_settings.model_allow_onnx_fallback,
+            allow_pt_fallback=app_settings.model_allow_pt_fallback,
+            export_imgsz=app_settings.model_export_imgsz,
+            export_batch_size=app_settings.model_export_batch_size,
+            export_workspace_gb=app_settings.model_export_workspace_gb,
+            export_half=app_settings.model_export_half,
+            export_dynamic=app_settings.model_export_dynamic,
+            export_timeout_seconds=app_settings.model_export_timeout_seconds,
+        ),
+    )
+    model_conversions = ModelConversionManager(models)
     plate_logs = PlateLogStore(app_settings.plate_log_db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
     fire_smoke_logs = FireSmokeLogStore(
         app_settings.plate_log_db_path,
@@ -141,6 +182,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 smoke_candidate_confidence=app_settings.smoke_confidence,
             ),
             policy_provider=fire_smoke_logs.policy_snapshot,
+            model_provider=models.provider("fire_smoke"),
         )
         plate_processor = PlateRecognitionProcessor(
             PlateSettings(
@@ -165,6 +207,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 use_fp16=app_settings.plate_use_fp16,
             ),
             settings_provider=plate_settings.resolve,
+            vehicle_model_provider=models.provider("vehicle_detector"),
+            plate_model_provider=models.provider("plate_detector"),
         )
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")
@@ -187,7 +231,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             result_observer=plate_logs.insert_result,
         ),
     }
-    router = TaskRouter(registry=registry, workers=workers, result_store=results)
+    router = TaskRouter(
+        registry=registry,
+        workers=workers,
+        result_store=results,
+        play_only_callback=broadcast.publish_passthrough,
+    )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
     if app_settings.video_ingestion_enabled:
@@ -223,6 +272,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         broadcast=broadcast,
         plate_logs=plate_logs,
         plate_settings=plate_settings,
+        models=models,
+        model_conversions=model_conversions,
         fire_smoke_logs=fire_smoke_logs,
         video_ingestor=video_ingestor,
     )

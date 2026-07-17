@@ -12,6 +12,8 @@ from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
 from app.api.plate_settings import router as plate_settings_router
+from app.api.models import router as models_router
+from app.api.general_settings import router as general_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.sources import router as sources_router
@@ -24,6 +26,14 @@ OPENAPI_TAGS = [
     {
         "name": "system-diagnostics",
         "description": "Maintenance checks, configuration visibility, and controlled pipeline restart.",
+    },
+    {
+        "name": "general-settings",
+        "description": "One place for model selection, dynamic policies, startup config, and camera modes.",
+    },
+    {
+        "name": "model-management",
+        "description": "Model catalog, TensorRT and ONNX conversion jobs, selection, and fallback order.",
     },
     {
         "name": "cameras",
@@ -80,6 +90,8 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
 )
 app.include_router(diagnostics_router)
+app.include_router(general_settings_router)
+app.include_router(models_router)
 app.include_router(sources_router)
 app.include_router(cameras_router)
 app.include_router(frames_router)
