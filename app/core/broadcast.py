@@ -350,10 +350,17 @@ class AnnotatedBroadcastHub:
             while len(source_pending) > self.pending_frames_per_source:
                 source_pending.popitem(last=False)
 
-            if not pending.expected_tasks.issubset(pending.results):
+            complete = pending.expected_tasks.issubset(pending.results)
+            # Fire/smoke is latency-sensitive. Publish its result immediately on
+            # the exact source frame instead of waiting for the slower face and
+            # plate workers to also finish that frame. If they do, the same frame
+            # is rendered again below with the complete result set.
+            eager_fire_smoke = result.task == TaskName.FIRE_SMOKE
+            if not complete and not eager_fire_smoke:
                 return
             jpeg = self._render(packet.source_id, packet.frame_index, pending)
-            source_pending.pop(packet.frame_index, None)
+            if complete:
+                source_pending.pop(packet.frame_index, None)
             if jpeg is None:
                 return
             latest = self._latest.get(packet.source_id)

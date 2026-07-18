@@ -35,7 +35,7 @@ def result(task: TaskName, data: dict) -> TaskResult:
     )
 
 
-def test_dual_task_frame_is_broadcast_only_after_both_exact_results() -> None:
+def test_fire_frame_is_eager_then_upgraded_with_both_exact_results() -> None:
     hub = AnnotatedBroadcastHub(enabled=True)
     subscriber_id, target = hub.subscribe()
     source_packet = packet(["fire_smoke", "plate_recognition"])
@@ -62,11 +62,19 @@ def test_dual_task_frame_is_broadcast_only_after_both_exact_results() -> None:
     )
 
     hub.publish_result(source_packet, fire_result)
-    assert hub.latest("camera-07") is None
+    fire_encoded = hub.latest("camera-07")
+    assert fire_encoded is not None
+    first_version = fire_encoded.version
+    fire_delivered = target.get(timeout=1.0)
+    assert fire_delivered is not None
+    assert fire_delivered.frame_index == source_packet.frame_index
+    target.task_done()
 
     hub.publish_result(source_packet, plate_result)
     encoded = hub.latest("camera-07")
     assert encoded is not None
+    assert encoded.version > first_version
+    assert encoded.frame_index == source_packet.frame_index
     assert encoded.tasks == ("fire_smoke", "plate_recognition")
     delivered = target.get(timeout=1.0)
     assert delivered is not None

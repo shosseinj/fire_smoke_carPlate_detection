@@ -81,12 +81,15 @@ class Settings:
     fire_medium_incident_count: int = _env_int("FIRE_MEDIUM_INCIDENT_COUNT", 10)
     fire_high_incident_count: int = _env_int("FIRE_HIGH_INCIDENT_COUNT", 20)
 
-    fire_model_path: Path = _path("FIRE_SMOKE_MODEL_PATH", "weights/fire_smoke/best_nano_111.pt")
+    fire_model_path: Path = _path(
+        "FIRE_SMOKE_MODEL_PATH",
+        "weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_640_linux.engine",
+    )
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")
     fire_batch_size: int = _env_int("FIRE_SMOKE_BATCH_SIZE", 8)
     fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 25.0)
     fire_imgsz: int = _env_int("FIRE_SMOKE_IMGSZ", 640)
-    fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 8)
+    fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 0)
     fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
     smoke_confidence: float = _env_float("SMOKE_CONFIDENCE", 0.30)
 

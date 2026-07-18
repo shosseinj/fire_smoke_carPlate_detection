@@ -35,7 +35,8 @@ services:
       MODEL_EXPORT_TIMEOUT_SECONDS: ${MODEL_EXPORT_TIMEOUT_SECONDS:-300}
       FIRE_CONFIDENCE: ${FIRE_CONFIDENCE:-0.30}
       SMOKE_CONFIDENCE: ${SMOKE_CONFIDENCE:-0.30}
-      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/workspace/weights/fire_smoke/best_nano_111.pt}
+      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/workspace/weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_640_linux.engine}
+      FIRE_SMOKE_ENGINE_FIXED_BATCH: ${FIRE_SMOKE_ENGINE_FIXED_BATCH:-0}
       PLATE_CONFIDENCE: ${PLATE_CONFIDENCE:-0.30}
       PLATE_DETECTOR_WEIGHTS: ${PLATE_DETECTOR_WEIGHTS:-/workspace/weights/plate_detector/model.pt}
       PLATE_CLASS_IDS: ${PLATE_CLASS_IDS:-0}
