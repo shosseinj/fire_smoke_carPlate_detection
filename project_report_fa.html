@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="description" content="گزارش فنی و قابل ارائه سامانه یکپارچه تشخیص آتش، دود و پلاک خودرو" />
+  <title>گزارش سامانه یکپارچه تحلیل ویدئوی هوشمند</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg-2: #0b1728;
+      --panel: rgba(15, 29, 48, .82);
+      --panel-solid: #101e31;
+      --panel-soft: rgba(255,255,255,.045);
+      --text: #edf6ff;
+      --muted: #9fb1c5;
+      --line: rgba(171, 205, 234, .16);
+      --primary: #39d6c7;
+      --primary-2: #6be6dc;
+      --blue: #56a8ff;
+      --amber: #ffbd5b;
+      --red: #ff6d77;
+      --green: #62df93;
+      --purple: #ad8cff;
+      --shadow: 0 24px 70px rgba(0,0,0,.28);
+      --radius: 22px;
+      --code: #091522;
+    }
+    html[data-theme="light"] {
+      --bg: #eef4f9;
+      --bg-2: #f8fbfd;
+      --panel: rgba(255,255,255,.88);
+      --panel-solid: #ffffff;
+      --panel-soft: rgba(7, 28, 49, .045);
+      --text: #12243a;
+      --muted: #5d7085;
+      --line: rgba(22, 58, 89, .13);
+      --primary: #008f86;
+      --primary-2: #006f68;
+      --blue: #176fc1;
+      --amber: #a96400;
+      --red: #c53945;
+      --green: #16834a;
+      --purple: #6741c7;
+      --shadow: 0 24px 70px rgba(25,55,80,.13);
+      --code: #edf3f7;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 92% 2%, rgba(57,214,199,.14), transparent 30%),
+        radial-gradient(circle at 8% 18%, rgba(86,168,255,.12), transparent 27%),
+        linear-gradient(180deg, var(--bg), var(--bg-2));
+      color: var(--text);
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      line-height: 1.9;
+      min-height: 100vh;
+    }
+    body::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; opacity: .22;
+      background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, #000, transparent 70%);
+      z-index: -1;
+    }
+    a { color: inherit; }
+    .layout { display: grid; grid-template-columns: 285px minmax(0, 1fr); max-width: 1600px; margin: auto; }
+    aside {
+      position: sticky; top: 0; height: 100vh; padding: 26px 20px;
+      border-left: 1px solid var(--line); background: rgba(5,14,26,.58); backdrop-filter: blur(18px); z-index: 20;
+    }
+    html[data-theme="light"] aside { background: rgba(248,251,253,.75); }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 8px 8px 22px; border-bottom: 1px solid var(--line); }
+    .brand-mark { width: 44px; height: 44px; border-radius: 14px; display:grid; place-items:center; background: linear-gradient(145deg, var(--primary), var(--blue)); color:#04131c; font-weight:900; box-shadow: 0 12px 35px rgba(57,214,199,.25); }
+    .brand strong { display:block; font-size: 14px; }
+    .brand small { display:block; color:var(--muted); font-size:11px; margin-top:2px; }
+    nav { margin-top: 18px; display: grid; gap: 4px; max-height: calc(100vh - 210px); overflow:auto; padding-left:4px; }
+    nav a { text-decoration:none; color:var(--muted); padding:9px 11px; border-radius:11px; font-size:12.5px; transition:.2s ease; border:1px solid transparent; }
+    nav a:hover, nav a.active { color:var(--text); background:var(--panel-soft); border-color:var(--line); transform:translateX(-2px); }
+    nav a.active { box-shadow: inset -3px 0 var(--primary); }
+    .side-actions { position:absolute; bottom:20px; right:20px; left:20px; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    button { font: inherit; }
+    .action-btn { border:1px solid var(--line); color:var(--text); background:var(--panel-soft); border-radius:12px; padding:9px 8px; cursor:pointer; transition:.2s; }
+    .action-btn:hover { border-color:var(--primary); transform:translateY(-1px); }
+    main { min-width:0; }
+    .topbar { display:none; position:sticky; top:0; z-index:30; border-bottom:1px solid var(--line); background:rgba(7,17,31,.82); backdrop-filter:blur(14px); padding:10px 16px; justify-content:space-between; align-items:center; }
+    html[data-theme="light"] .topbar { background:rgba(248,251,253,.86); }
+    .topbar .mini-brand { font-size:12px; font-weight:700; }
+    .topbar-actions { display:flex; gap:7px; }
+    .topbar button { width:38px; height:38px; padding:0; }
+    .progress { position:fixed; top:0; right:0; height:3px; width:0; background:linear-gradient(90deg,var(--primary),var(--blue)); z-index:100; }
+    .hero { min-height: 720px; display:flex; align-items:center; position:relative; overflow:hidden; padding:70px clamp(25px,6vw,95px); border-bottom:1px solid var(--line); }
+    .hero::after { content:""; position:absolute; width:540px; height:540px; left:-150px; top:60px; border:1px solid rgba(57,214,199,.22); border-radius:50%; box-shadow:0 0 0 80px rgba(57,214,199,.025),0 0 0 160px rgba(86,168,255,.02); }
+    .hero-content { position:relative; z-index:2; max-width:1080px; }
+    .eyebrow { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); background:var(--panel-soft); color:var(--primary-2); padding:6px 12px; border-radius:999px; font-size:12px; margin-bottom:20px; }
+    .pulse { width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 6px rgba(98,223,147,.12); }
+    h1 { font-size:clamp(38px,5.3vw,76px); line-height:1.3; margin:0 0 20px; letter-spacing:-2px; max-width:1000px; }
+    h1 span { background:linear-gradient(90deg,var(--primary-2),var(--blue)); -webkit-background-clip:text; color:transparent; }
+    .lead { color:var(--muted); font-size:clamp(16px,1.6vw,21px); max-width:900px; margin:0; }
+    .hero-tags { display:flex; flex-wrap:wrap; gap:9px; margin-top:28px; }
+    .tag { border:1px solid var(--line); border-radius:999px; padding:6px 11px; font-size:11px; color:var(--muted); background:rgba(255,255,255,.025); }
+    .hero-metrics { display:grid; grid-template-columns:repeat(6,minmax(105px,1fr)); gap:10px; margin-top:42px; max-width:1100px; }
+    .hero-metric { padding:16px 14px; border:1px solid var(--line); background:var(--panel); backdrop-filter:blur(10px); border-radius:16px; box-shadow:var(--shadow); }
+    .hero-metric strong { display:block; font-size:23px; line-height:1.2; color:var(--text); direction:ltr; text-align:right; }
+    .hero-metric span { display:block; color:var(--muted); font-size:10.5px; margin-top:6px; }
+    .content { max-width:1220px; margin:auto; padding:10px clamp(22px,5vw,78px) 100px; }
+    section { scroll-margin-top:24px; padding:72px 0 10px; }
+    .section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:26px; }
+    .kicker { color:var(--primary); font-weight:700; font-size:12px; letter-spacing:.5px; margin-bottom:6px; }
+    h2 { font-size:clamp(27px,3vw,42px); line-height:1.4; margin:0; letter-spacing:-.7px; }
+    h3 { font-size:20px; margin:0 0 12px; line-height:1.55; }
+    h4 { margin:0 0 8px; font-size:15px; }
+    .section-desc { color:var(--muted); max-width:760px; margin:12px 0 0; }
+    .section-no { color:var(--muted); font-size:54px; line-height:1; opacity:.2; font-weight:900; direction:ltr; }
+    .grid { display:grid; gap:16px; }
+    .grid-2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .grid-3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .grid-4 { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .card { border:1px solid var(--line); background:var(--panel); backdrop-filter:blur(12px); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); overflow:hidden; position:relative; }
+    .card::after { content:""; position:absolute; inset:auto -60px -90px auto; width:180px; height:180px; border-radius:50%; background:var(--glow,rgba(57,214,199,.07)); pointer-events:none; }
+    .card p { color:var(--muted); margin:0; font-size:14px; }
+    .icon { width:42px; height:42px; border-radius:13px; display:grid; place-items:center; margin-bottom:15px; border:1px solid var(--line); background:var(--panel-soft); color:var(--accent,var(--primary)); }
+    .icon svg { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.8; }
+    .feature-list { list-style:none; margin:14px 0 0; padding:0; display:grid; gap:8px; }
+    .feature-list li { color:var(--muted); font-size:13px; padding-right:18px; position:relative; }
+    .feature-list li::before { content:""; position:absolute; right:0; top:.78em; width:7px; height:7px; border-radius:50%; background:var(--accent,var(--primary)); box-shadow:0 0 0 4px color-mix(in srgb, var(--accent,var(--primary)) 15%, transparent); }
+    .notice { display:flex; gap:14px; border:1px solid color-mix(in srgb,var(--amber) 35%,var(--line)); background:color-mix(in srgb,var(--amber) 8%,var(--panel)); padding:18px 20px; border-radius:16px; margin-top:18px; }
+    .notice strong { color:var(--amber); white-space:nowrap; }
+    .notice p { margin:0; color:var(--muted); font-size:13px; }
+    .figure { border:1px solid var(--line); background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.02)); border-radius:26px; padding:25px; box-shadow:var(--shadow); overflow:hidden; }
+    .figure figcaption { color:var(--muted); font-size:11px; margin-top:16px; text-align:center; }
+    .architecture { display:grid; grid-template-columns:1fr 58px 1.05fr 58px 1.35fr 58px 1.05fr; align-items:center; gap:8px; min-height:360px; direction:rtl; }
+    .arch-col { display:grid; gap:10px; }
+    .arch-node { border:1px solid var(--line); border-radius:16px; padding:14px; background:var(--panel-solid); text-align:center; position:relative; }
+    .arch-node.primary { border-color:color-mix(in srgb,var(--primary) 46%,var(--line)); box-shadow:inset 0 0 28px rgba(57,214,199,.06); }
+    .arch-node.blue { border-color:color-mix(in srgb,var(--blue) 42%,var(--line)); }
+    .arch-node.amber { border-color:color-mix(in srgb,var(--amber) 42%,var(--line)); }
+    .arch-node strong { display:block; font-size:13px; }
+    .arch-node span { display:block; color:var(--muted); font-size:10px; line-height:1.65; margin-top:5px; }
+    .arrow { display:grid; place-items:center; color:var(--primary); font-size:28px; direction:ltr; }
+    .flow { display:flex; align-items:stretch; gap:8px; direction:rtl; overflow-x:auto; padding:6px 2px 14px; }
+    .flow-node { flex:1 0 130px; min-height:116px; border:1px solid var(--line); border-radius:15px; padding:14px 11px; display:flex; flex-direction:column; justify-content:center; text-align:center; background:var(--panel-solid); }
+    .flow-node b { font-size:12px; }
+    .flow-node small { color:var(--muted); font-size:9.7px; line-height:1.7; margin-top:6px; }
+    .flow-arrow { flex:0 0 22px; display:grid; place-items:center; color:var(--primary); font-size:23px; }
+    .model-card { min-height:310px; }
+    .model-card .model-type { color:var(--accent,var(--primary)); font-size:11px; font-weight:700; margin-bottom:7px; }
+    .model-card .model-name { font-size:22px; line-height:1.4; font-weight:800; direction:ltr; text-align:right; }
+    .model-card .why { border-top:1px solid var(--line); margin-top:15px; padding-top:14px; }
+    .model-card .why strong { font-size:12px; }
+    .model-card .why p { font-size:12px; margin-top:5px; }
+    .pipeline-label { display:inline-flex; direction:ltr; gap:4px; align-items:center; border:1px solid var(--line); border-radius:999px; padding:5px 9px; font-size:10px; color:var(--muted); margin-top:12px; }
+    .split { display:grid; grid-template-columns:1.1fr .9fr; gap:16px; }
+    .table-wrap { border:1px solid var(--line); border-radius:18px; overflow:auto; background:var(--panel); box-shadow:var(--shadow); }
+    table { width:100%; border-collapse:collapse; min-width:680px; }
+    th, td { padding:13px 15px; text-align:right; border-bottom:1px solid var(--line); vertical-align:top; font-size:12px; }
+    th { color:var(--text); background:var(--panel-soft); position:sticky; top:0; }
+    td { color:var(--muted); }
+    tr:last-child td { border-bottom:0; }
+    code, .ltr { direction:ltr; unicode-bidi:embed; text-align:left; }
+    code { font-family:Consolas,"Courier New",monospace; background:var(--code); border:1px solid var(--line); padding:2px 6px; border-radius:7px; color:var(--primary-2); font-size:11px; }
+    pre { direction:ltr; text-align:left; white-space:pre-wrap; background:var(--code); color:var(--text); border:1px solid var(--line); border-radius:16px; padding:18px; overflow:auto; font:12px/1.8 Consolas,"Courier New",monospace; }
+    .stat-bars { display:grid; gap:15px; }
+    .bar-row { display:grid; grid-template-columns:165px 1fr 55px; gap:12px; align-items:center; }
+    .bar-row label { color:var(--muted); font-size:11px; }
+    .bar-track { height:8px; background:var(--panel-soft); border-radius:99px; overflow:hidden; border:1px solid var(--line); }
+    .bar-fill { height:100%; width:var(--w); border-radius:99px; background:linear-gradient(90deg,var(--primary),var(--blue)); }
+    .bar-row output { color:var(--text); font-size:11px; direction:ltr; }
+    .camera-wall { display:grid; grid-template-columns:repeat(4,1fr); gap:9px; direction:ltr; }
+    .camera { aspect-ratio:16/10; background:linear-gradient(145deg,#182738,#0b1522); border:1px solid var(--line); border-radius:13px; position:relative; overflow:hidden; }
+    html[data-theme="light"] .camera { background:linear-gradient(145deg,#dbe6ee,#becbd5); }
+    .camera::before { content:""; position:absolute; inset:0; background:linear-gradient(135deg,transparent 45%,rgba(255,255,255,.04) 46%,transparent 47%),radial-gradient(circle at 70% 35%,rgba(86,168,255,.14),transparent 20%); }
+    .cam-head { position:absolute; top:0; right:0; left:0; padding:6px 8px; font-size:8px; background:rgba(5,10,17,.72); color:#dcecff; display:flex; justify-content:space-between; }
+    .bbox { position:absolute; border:2px solid var(--c); border-radius:3px; }
+    .bbox::before { content:attr(data-label); position:absolute; bottom:100%; right:-2px; background:var(--c); color:#07111f; font-size:7px; font-weight:800; padding:1px 4px; white-space:nowrap; }
+    .cam-status { position:absolute; bottom:5px; left:6px; font-size:7px; color:#d9e9f8; background:rgba(5,10,17,.7); border-radius:5px; padding:2px 5px; }
+    .layers { display:grid; gap:0; }
+    .layer { border:1px solid var(--line); background:var(--panel); padding:20px; display:grid; grid-template-columns:150px 1fr; gap:20px; align-items:center; }
+    .layer:first-child { border-radius:18px 18px 0 0; }
+    .layer:last-child { border-radius:0 0 18px 18px; }
+    .layer + .layer { border-top:0; }
+    .layer-title { color:var(--primary); font-weight:800; font-size:12px; }
+    .layer-items { display:flex; gap:7px; flex-wrap:wrap; }
+    .pill { border:1px solid var(--line); background:var(--panel-soft); color:var(--muted); border-radius:999px; padding:5px 9px; font-size:10px; }
+    .check-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .check { display:flex; gap:10px; align-items:flex-start; border:1px solid var(--line); border-radius:14px; background:var(--panel-soft); padding:13px; }
+    .check-mark { width:22px; height:22px; flex:0 0 22px; border-radius:50%; display:grid; place-items:center; background:rgba(98,223,147,.13); color:var(--green); font-size:12px; font-weight:900; }
+    .check strong { font-size:12px; display:block; }
+    .check span { font-size:10px; color:var(--muted); display:block; margin-top:3px; }
+    .risk { border-right:3px solid var(--accent,var(--amber)); }
+    .risk .level { display:inline-flex; color:var(--accent,var(--amber)); border:1px solid color-mix(in srgb,var(--accent,var(--amber)) 35%,var(--line)); border-radius:999px; padding:3px 8px; font-size:9px; margin-bottom:9px; }
+    .timeline { display:grid; grid-template-columns:repeat(4,1fr); gap:0; position:relative; margin-top:20px; }
+    .timeline::before { content:""; position:absolute; top:16px; right:12.5%; left:12.5%; height:2px; background:var(--line); }
+    .step { text-align:center; position:relative; z-index:2; }
+    .step-no { width:34px; height:34px; margin:auto; border-radius:50%; display:grid; place-items:center; background:var(--panel-solid); border:2px solid var(--primary); color:var(--primary); font-size:11px; font-weight:800; }
+    .step strong { display:block; font-size:11px; margin-top:9px; }
+    .step span { color:var(--muted); font-size:9px; display:block; margin-top:4px; padding:0 5px; }
+    .presentation { counter-reset:pstep; }
+    .presentation .pstep { display:grid; grid-template-columns:50px 1fr; gap:14px; padding:16px 0; border-bottom:1px solid var(--line); }
+    .presentation .pstep:last-child { border-bottom:0; }
+    .pnum { width:42px; height:42px; border-radius:13px; display:grid; place-items:center; background:linear-gradient(145deg,var(--primary),var(--blue)); color:#061521; font-weight:900; direction:ltr; }
+    .pstep strong { font-size:13px; }
+    .pstep p { font-size:11px; margin-top:4px; }
+    .source-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    .source-item { border:1px solid var(--line); border-radius:12px; padding:10px 12px; color:var(--muted); font-size:10px; direction:ltr; text-align:left; background:var(--panel-soft); }
+    footer { border-top:1px solid var(--line); color:var(--muted); text-align:center; font-size:11px; padding:30px 20px 45px; }
+    .mobile-menu { display:none; position:fixed; top:59px; right:12px; left:12px; max-height:75vh; overflow:auto; background:var(--panel-solid); border:1px solid var(--line); border-radius:16px; padding:10px; box-shadow:var(--shadow); z-index:50; }
+    .mobile-menu.open { display:grid; }
+    .mobile-menu a { padding:9px 10px; border-bottom:1px solid var(--line); text-decoration:none; font-size:12px; color:var(--muted); }
+    .mobile-menu a:last-child { border-bottom:0; }
+    @media (max-width:1180px) {
+      .layout { grid-template-columns:235px minmax(0,1fr); }
+      .hero-metrics { grid-template-columns:repeat(3,1fr); }
+      .grid-4 { grid-template-columns:repeat(2,1fr); }
+      .architecture { grid-template-columns:1fr 36px 1fr; }
+      .architecture .arrow:nth-of-type(4), .architecture .arrow:nth-of-type(6) { display:none; }
+      .architecture > :nth-child(n+4) { margin-top:8px; }
+    }
+    @media (max-width:900px) {
+      .layout { display:block; }
+      aside { display:none; }
+      .topbar { display:flex; }
+      .hero { min-height:auto; padding:75px 24px 55px; }
+      .hero::after { width:360px; height:360px; left:-200px; }
+      .content { padding:0 18px 70px; }
+      section { padding-top:58px; }
+      .grid-3, .grid-2, .split { grid-template-columns:1fr; }
+      .architecture { display:flex; flex-direction:column; }
+      .architecture > * { width:100%; }
+      .architecture .arrow { transform:rotate(90deg); height:30px; }
+      .camera-wall { grid-template-columns:repeat(2,1fr); }
+      .layer { grid-template-columns:1fr; gap:8px; }
+      .timeline { grid-template-columns:1fr; gap:14px; }
+      .timeline::before { top:16px; bottom:16px; right:16px; left:auto; width:2px; height:auto; }
+      .step { display:grid; grid-template-columns:38px 1fr; text-align:right; align-items:center; gap:10px; }
+      .step-no { margin:0; }
+      .step strong, .step span { margin:0; }
+      .section-no { display:none; }
+    }
+    @media (max-width:590px) {
+      h1 { font-size:37px; letter-spacing:-1px; }
+      .hero-metrics { grid-template-columns:repeat(2,1fr); }
+      .grid-4 { grid-template-columns:1fr; }
+      .card, .figure { padding:19px; border-radius:18px; }
+      .check-grid, .source-list { grid-template-columns:1fr; }
+      .bar-row { grid-template-columns:120px 1fr 42px; }
+      .camera-wall { grid-template-columns:1fr; }
+      .section-head { display:block; }
+    }
+    @media print {
+      :root, html[data-theme="dark"], html[data-theme="light"] {
+        --bg:#fff; --bg-2:#fff; --panel:#fff; --panel-solid:#fff; --panel-soft:#f5f7f9; --text:#10243a; --muted:#52677b; --line:#d9e1e8; --shadow:none; --code:#f2f5f7;
+      }
+      body { background:#fff; font-size:11pt; }
+      body::before, aside, .topbar, .progress, .hero::after { display:none !important; }
+      .layout { display:block; }
+      .hero { min-height:auto; padding:35px 25px; break-after:page; }
+      .content { max-width:none; padding:0 20px; }
+      section { padding-top:34px; break-inside:auto; }
+      .card, .figure, .table-wrap { box-shadow:none; break-inside:avoid; }
+      .hero-metrics { grid-template-columns:repeat(3,1fr); }
+      .grid-3 { grid-template-columns:repeat(3,1fr); }
+      .grid-4 { grid-template-columns:repeat(2,1fr); }
+      .tag { color:#43586c; }
+      footer { padding-bottom:10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" id="progress"></div>
+  <div class="topbar">
+    <div class="mini-brand">گزارش سامانه تحلیل ویدئوی هوشمند</div>
+    <div class="topbar-actions">
+      <button class="action-btn" id="mobileMenuBtn" aria-label="فهرست">☰</button>
+      <button class="action-btn theme-toggle" aria-label="تغییر پوسته">◐</button>
+      <button class="action-btn print-btn" aria-label="چاپ">⎙</button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobileMenu"></div>
+
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div><strong>Video Intelligence</strong><small>گزارش فنی و مدیریتی پروژه</small></div>
+      </div>
+      <nav id="nav">
+        <a href="#overview">خلاصه مدیریتی</a>
+        <a href="#capabilities">قابلیت‌های سامانه</a>
+        <a href="#architecture">معماری کلان</a>
+        <a href="#realtime">طراحی بلادرنگ</a>
+        <a href="#models">مدل‌های هوش مصنوعی</a>
+        <a href="#fire">تشخیص آتش و دود</a>
+        <a href="#plate">تشخیص پلاک ایران</a>
+        <a href="#broadcast">نمایش و خروجی زنده</a>
+        <a href="#data">داده و ماندگاری</a>
+        <a href="#api">API و مدیریت</a>
+        <a href="#deployment">استقرار و زیرساخت</a>
+        <a href="#quality">آزمون و کیفیت</a>
+        <a href="#assessment">ارزیابی و محدودیت‌ها</a>
+        <a href="#roadmap">نقشه راه</a>
+        <a href="#presentation">سناریوی ارائه</a>
+        <a href="#appendix">ضمیمه فنی</a>
+      </nav>
+      <div class="side-actions">
+        <button class="action-btn theme-toggle">پوسته</button>
+        <button class="action-btn print-btn">چاپ / PDF</button>
+      </div>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <div class="hero-content">
+          <div class="eyebrow"><span class="pulse"></span> تحلیل مستقیم نسخه بارگذاری‌شده پروژه — ۱۸ ژوئیه ۲۰۲۶</div>
+          <h1>سامانه یکپارچه <span>تحلیل بلادرنگ ویدئو</span> برای تشخیص آتش، دود و پلاک خودرو</h1>
+          <p class="lead">یک پلتفرم مبتنی بر FastAPI، NVIDIA DeepStream و چند زنجیره هوش مصنوعی که دوربین‌های RTSP و فایل‌های ویدئویی را دریافت می‌کند، هر منبع را به وظیفه مناسب می‌فرستد، نتایج را روی همان فریم ترسیم می‌کند و رخدادها را به‌صورت زنده و ماندگار در اختیار سامانه‌های دیگر قرار می‌دهد.</p>
+          <div class="hero-tags">
+            <span class="tag">FastAPI</span><span class="tag">NVIDIA DeepStream</span><span class="tag">Ultralytics YOLO</span><span class="tag">Hezar CRNN OCR</span><span class="tag">TensorRT / ONNX / PyTorch</span><span class="tag">WebSocket + MJPEG</span><span class="tag">SQLite</span><span class="tag">Docker + GPU</span>
+          </div>
+          <div class="hero-metrics">
+            <div class="hero-metric"><strong>۲</strong><span>وظیفه مستقل هوش مصنوعی</span></div>
+            <div class="hero-metric"><strong>۴</strong><span>مولفه مدل در زنجیره‌های AI</span></div>
+            <div class="hero-metric"><strong>۸</strong><span>منبع نمونه در Seed پروژه</span></div>
+            <div class="hero-metric"><strong>۵۲</strong><span>مسیر HTTP و WebSocket</span></div>
+            <div class="hero-metric"><strong>۴۷/۴۷</strong><span>تست موفق در اجرای فعلی</span></div>
+            <div class="hero-metric"><strong>8 / 25ms</strong><span>Micro-batch پیش‌فرض</span></div>
+          </div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="overview">
+          <div class="section-head"><div><div class="kicker">EXECUTIVE SUMMARY</div><h2>خلاصه مدیریتی پروژه</h2><p class="section-desc">هدف اصلی، تبدیل مجموعه‌ای از دوربین‌ها به یک زیرساخت قابل توسعه برای اجرای هم‌زمان چند مدل هوش مصنوعی با تأخیر کنترل‌شده است.</p></div><div class="section-no">۰۱</div></div>
+          <div class="grid grid-3">
+            <article class="card" style="--accent:var(--primary)"><div class="icon"><svg viewBox="0 0 24 24"><path d="M4 7h11a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H4z"/><path d="m18 11 3-2v6l-3-2"/><circle cx="9" cy="12" r="2.5"/></svg></div><h3>مسئله‌ای که حل می‌شود</h3><p>دریافت چندین جریان ویدئویی، تخصیص متفاوت وظایف به هر دوربین، جلوگیری از عقب‌ماندن صف پردازش و ارائه نتیجه قابل مصرف برای داشبورد، API و پایگاه داده.</p></article>
+            <article class="card" style="--accent:var(--blue);--glow:rgba(86,168,255,.08)"><div class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5-2-2m11 11-2-2m0-7 2-2m-11 11 2-2"/></svg></div><h3>راهکار اصلی</h3><p>یک Task Router با Worker مستقل برای هر وظیفه، صف Latest-only منصفانه، Micro-batching و اتصال مستقیم به DeepStream؛ بنابراین OCR کند، مسیر آتش و دود را متوقف نمی‌کند.</p></article>
+            <article class="card" style="--accent:var(--green);--glow:rgba(98,223,147,.07)"><div class="icon"><svg viewBox="0 0 24 24"><path d="M5 12.5 9.2 17 19 7"/><path d="M4 4h16v16H4z"/></svg></div><h3>وضعیت فعلی</h3><p>ساختار نرم‌افزار کامل، تست‌پذیر و دارای Dashboard، Swagger، ثبت رخداد، مدیریت مدل و تنظیمات آنلاین است. آزمون‌های کد موفق‌اند؛ اما سنجه‌های دقت مدل بدون وزن و مجموعه ارزیابی قابل ادعا نیستند.</p></article>
+          </div>
+          <div class="notice"><strong>دامنه گزارش</strong><p>این گزارش بر اساس کد منبع، تنظیمات، تست‌ها و مستندات داخل فایل ZIP تهیه شده است. وزن‌های کامل مدل و گزارش آموزش/اعتبارسنجی داخل آرشیو نبودند؛ بنابراین درباره mAP، Precision، Recall یا نرخ OCR عدد ساختگی ارائه نشده است.</p></div>
+        </section>
+
+        <section id="capabilities">
+          <div class="section-head"><div><div class="kicker">CAPABILITIES</div><h2>قابلیت‌های کلیدی سامانه</h2><p class="section-desc">قابلیت‌ها از چهار منظر دریافت ویدئو، هوش مصنوعی، مدیریت عملیاتی و یکپارچه‌سازی قابل ارائه هستند.</p></div><div class="section-no">۰۲</div></div>
+          <div class="grid grid-4">
+            <article class="card"><h3>مدیریت دوربین</h3><ul class="feature-list"><li>CRUD کامل دوربین‌ها</li><li>فعال/غیرفعال‌سازی آنلاین</li><li>تغییر URI و ابعاد خروجی</li><li>پنهان‌سازی رمز RTSP در پاسخ‌ها</li></ul></article>
+            <article class="card" style="--accent:var(--blue)"><h3>مسیریابی وظایف</h3><ul class="feature-list"><li>آتش/دود</li><li>تشخیص پلاک</li><li>اجرای هر دو روی یک فریم</li><li>حالت فقط نمایش بدون AI</li></ul></article>
+            <article class="card" style="--accent:var(--amber)"><h3>پردازش بلادرنگ</h3><ul class="feature-list"><li>صف Latest-only</li><li>Micro-batch مستقل</li><li>جایگزینی فریم‌های قدیمی</li><li>عدالت میان دوربین‌های سریع و کند</li></ul></article>
+            <article class="card" style="--accent:var(--purple)"><h3>پخش و مشاهده</h3><ul class="feature-list"><li>Dashboard چنددوربینه</li><li>WebSocket باینری Multiplexed</li><li>MJPEG برای هر دوربین</li><li>Snapshot آخرین فریم</li></ul></article>
+            <article class="card" style="--accent:var(--red)"><h3>مدیریت رخداد</h3><ul class="feature-list"><li>سطح‌بندی Low/Medium/High</li><li>تشکیل Incident پایدار</li><li>Snapshot رخداد</li><li>فیلتر و مشاهده لاگ‌ها</li></ul></article>
+            <article class="card" style="--accent:var(--green)"><h3>مدیریت مدل</h3><ul class="feature-list"><li>کاتالوگ PT/ONNX/Engine</li><li>تبدیل پس‌زمینه‌ای TensorRT</li><li>Fallback خودکار فرمت</li><li>تعویض مدل بدون Restart دوربین</li></ul></article>
+            <article class="card"><h3>تنظیمات پویا</h3><ul class="feature-list"><li>Threshold عمومی</li><li>Override مخصوص هر دوربین</li><li>Policy شدت آتش/دود</li><li>اعمال از Batch بعدی</li></ul></article>
+            <article class="card" style="--accent:var(--blue)"><h3>تشخیص و نگهداری</h3><ul class="feature-list"><li>Health و Runtime counters</li><li>Restart یک Pipeline</li><li>آمار Worker و Buffer</li><li>Swagger دسته‌بندی‌شده</li></ul></article>
+          </div>
+        </section>
+
+        <section id="architecture">
+          <div class="section-head"><div><div class="kicker">SYSTEM ARCHITECTURE</div><h2>معماری کلان سامانه</h2><p class="section-desc">معماری میان Data Plane و Control Plane جداسازی منطقی ایجاد می‌کند: فریم‌ها با مسیر سریع پردازش می‌شوند و تنظیمات/مدیریت از طریق API اعمال می‌گردد.</p></div><div class="section-no">۰۳</div></div>
+          <figure class="figure">
+            <div class="architecture">
+              <div class="arch-col">
+                <div class="arch-node blue"><strong>دوربین‌های RTSP</strong><span>شبکه محلی، TCP، Reconnect</span></div>
+                <div class="arch-node"><strong>فایل‌های MP4</strong><span>Loop و Frame Index یکنواخت</span></div>
+                <div class="arch-node"><strong>Extractor خارجی</strong><span>اتصال مستقیم Python Bridge</span></div>
+              </div>
+              <div class="arrow">←</div>
+              <div class="arch-col">
+                <div class="arch-node primary"><strong>DeepStream Ingestor</strong><span>NVDEC + nvvideoconvert + Appsink</span></div>
+                <div class="arch-node"><strong>Source Registry</strong><span>Camera DB، وضعیت، Taskها و ابعاد</span></div>
+              </div>
+              <div class="arrow">←</div>
+              <div class="arch-col">
+                <div class="arch-node primary"><strong>Task Router</strong><span>ساخت FramePacket و انتخاب Worker</span></div>
+                <div class="grid grid-2" style="gap:8px"><div class="arch-node amber"><strong>Fire/Smoke Worker</strong><span>Latest-only + Batch</span></div><div class="arch-node blue"><strong>Plate Worker</strong><span>Latest-only + Batch</span></div></div>
+                <div class="arch-node"><strong>AI Processors</strong><span>YOLO، Tracker، Severity، CRNN OCR</span></div>
+              </div>
+              <div class="arrow">←</div>
+              <div class="arch-col">
+                <div class="arch-node blue"><strong>Broadcast Hub</strong><span>ترکیب نتیجه دقیقاً روی همان فریم</span></div>
+                <div class="arch-node amber"><strong>SQLite + Media</strong><span>لاگ، تنظیمات و Snapshot</span></div>
+                <div class="arch-node"><strong>FastAPI</strong><span>REST، WebSocket، Swagger و Dashboard</span></div>
+              </div>
+            </div>
+            <figcaption>شکل ۱ — معماری سرتاسری دریافت، مسیریابی، استنتاج، ذخیره‌سازی و ارائه خروجی</figcaption>
+          </figure>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>قرارداد فریم</h3><p>هر دور استخراج شامل لیست فریم‌ها و لیست دقیق Source ID است. سامانه هویت دوربین را از موقعیت آرایه حدس نمی‌زند؛ در نتیجه فعال/غیرفعال شدن دوربین ترتیب را خراب نمی‌کند.</p><pre>round N → [frame_cam1, frame_cam2, ...]
+source_ids → ["camera-01", "camera-02", ...]</pre></article>
+            <article class="card" style="--accent:var(--blue)"><h3>یک فریم، چند وظیفه</h3><p>اگر دوربین هر دو Task را داشته باشد، همان آرایه NumPy به دو Worker ارجاع داده می‌شود. کپی فقط هنگام رسم یا نیاز مدل انجام می‌شود و هزینه حافظه کنترل می‌گردد.</p></article>
+            <article class="card" style="--accent:var(--green)"><h3>اعمال تغییرات آنلاین</h3><p>تغییر Task، فعال‌سازی، URI، ابعاد، Threshold و انتخاب مدل بدون Restart کل سرویس اعمال می‌شود؛ Pipeline همان دوربین فقط در صورت نیاز بازسازی می‌گردد.</p></article>
+          </div>
+        </section>
+
+        <section id="realtime">
+          <div class="section-head"><div><div class="kicker">REAL-TIME DESIGN</div><h2>چرا طراحی برای بلادرنگ بودن مناسب است؟</h2><p class="section-desc">در سامانه‌های دوربین، تازه‌ترین فریم معمولاً ارزش بیشتری از پردازش همه فریم‌های قدیمی دارد. معماری پروژه دقیقاً بر این اصل ساخته شده است.</p></div><div class="section-no">۰۴</div></div>
+          <figure class="figure">
+            <div class="flow">
+              <div class="flow-node"><b>ورود فریم جدید</b><small>فریم با Source ID و Frame Index وارد Router می‌شود.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>انتخاب Task</b><small>بر اساس تنظیم همان دوربین؛ صفر، یک یا دو وظیفه.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Latest-only Buffer</b><small>برای هر منبع فقط تازه‌ترین فریم منتظر باقی می‌ماند.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Batch تا ۸ فریم</b><small>Batch کامل فوراً یا حداکثر پس از ۲۵ میلی‌ثانیه ارسال می‌شود.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>استنتاج مستقل</b><small>Worker آتش/دود و پلاک به‌طور جداگانه فعالیت می‌کنند.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>خروجی و آمار</b><small>ResultStore، لاگ، Broadcast و Counterهای عملکرد.</small></div>
+            </div>
+            <figcaption>شکل ۲ — چرخه Micro-batching با صف محدود به تازه‌ترین فریم هر دوربین</figcaption>
+          </figure>
+          <div class="split" style="margin-top:16px">
+            <div class="card"><h3>مکانیزم‌های کنترل تأخیر</h3><div class="check-grid"><div class="check"><div class="check-mark">✓</div><div><strong>جایگزینی فریم قدیمی</strong><span>صف بدون رشد نامحدود و جلوگیری از تأخیر چندثانیه‌ای.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>عدالت منبع</strong><span>هر Source ID فقط یک بار در صف ترتیب قرار می‌گیرد.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Queue و Appsink کم‌عمق</strong><span>DeepStream با max-buffer=1 و drop فریم‌های عقب‌مانده.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Worker جدا</strong><span>کندی OCR مسیر ایمنی آتش و دود را مسدود نمی‌کند.</span></div></div></div></div>
+            <div class="card" style="--accent:var(--amber)"><h3>اعداد پیش‌فرض</h3><div class="stat-bars"><div class="bar-row"><label>Fire/Smoke batch</label><div class="bar-track"><div class="bar-fill" style="--w:50%"></div></div><output>8</output></div><div class="bar-row"><label>Plate batch</label><div class="bar-track"><div class="bar-fill" style="--w:50%"></div></div><output>8</output></div><div class="bar-row"><label>Plate crop batch</label><div class="bar-track"><div class="bar-fill" style="--w:100%"></div></div><output>16</output></div><div class="bar-row"><label>Maximum wait</label><div class="bar-track"><div class="bar-fill" style="--w:25%"></div></div><output>25ms</output></div><div class="bar-row"><label>Ingest sample rate</label><div class="bar-track"><div class="bar-fill" style="--w:31%"></div></div><output>5 FPS</output></div></div></div>
+          </div>
+        </section>
+
+        <section id="models">
+          <div class="section-head"><div><div class="kicker">AI MODELS</div><h2>مدل‌های استفاده‌شده و دلیل انتخاب آن‌ها</h2><p class="section-desc">پروژه یک زنجیره چندمرحله‌ای دارد؛ هر مدل فقط کاری را انجام می‌دهد که برای آن بهینه‌تر است. این تفکیک هم سرعت را بالا می‌برد و هم خطاهای زنجیره را قابل کنترل می‌کند.</p></div><div class="section-no">۰۵</div></div>
+          <div class="grid grid-4">
+            <article class="card model-card" style="--accent:var(--red)"><div class="model-type">DETECTION · مدل سفارشی</div><div class="model-name">Ultralytics YOLO<br>Fire / Smoke</div><span class="pipeline-label">Frame → Fire/Smoke Boxes</span><div class="why"><strong>چرا مناسب است؟</strong><p>YOLO یک آشکارساز تک‌مرحله‌ای سریع است، مکان و کلاس را هم‌زمان می‌دهد، Batch و GPU را پشتیبانی می‌کند و برای TensorRT/ONNX قابل خروجی‌گیری است. نام وزن فعلی به خانواده Nano اشاره دارد که برای تأخیر پایین انتخاب مناسبی است.</p></div></article>
+            <article class="card model-card" style="--accent:var(--blue)"><div class="model-type">VEHICLE GATE · مدل عمومی</div><div class="model-name">YOLO11n<br>COCO Vehicle</div><span class="pipeline-label">Full Frame → Vehicle Crops</span><div class="why"><strong>چرا قبل از پلاک؟</strong><p>نسخه n سبک و سریع است. فقط کلاس‌های خودرو، موتورسیکلت، اتوبوس و کامیون بررسی می‌شوند؛ در نتیجه مدل تخصصی پلاک روی تمام تصویر اجرا نمی‌شود و بار محاسباتی و False Positive کاهش می‌یابد.</p></div></article>
+            <article class="card model-card" style="--accent:var(--green)"><div class="model-type">DETECTION · مدل تخصصی</div><div class="model-name">Ultralytics YOLO<br>Plate Detector</div><span class="pipeline-label">Vehicle Crop → Plate Box</span><div class="why"><strong>چرا مدل جداگانه؟</strong><p>پلاک نسبت به کل فریم شیء کوچک‌تری است. ابتدا Crop خودرو ساخته می‌شود تا رزولوشن مؤثر پلاک افزایش یابد، سپس آشکارساز تخصصی مختصات دقیق پلاک را استخراج می‌کند.</p></div></article>
+            <article class="card model-card" style="--accent:var(--purple)"><div class="model-type">OCR · تشخیص توالی</div><div class="model-name">Hezar<br>CRNN Image2Text</div><span class="pipeline-label">Plate Crop → Persian Text</span><div class="why"><strong>چرا CRNN؟</strong><p>CRNN برای خواندن توالی کاراکترها از تصویر مناسب است. پیکربندی پروژه ورودی خاکستری، حروف فارسی و ارقام را تعریف کرده و خروجی را با قالب سخت‌گیرانه پلاک ایران اعتبارسنجی می‌کند.</p></div></article>
+          </div>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>ترتیب فرمت اجرا</h3><p>مدیر مدل ابتدا TensorRT Engine را انتخاب می‌کند، سپس در صورت خطا ONNX و در نهایت PyTorch PT را امتحان می‌کند.</p><pre>TensorRT .engine
+      ↓ fallback
+ONNX .onnx
+      ↓ fallback
+PyTorch .pt</pre></article>
+            <article class="card" style="--accent:var(--green)"><h3>بهینه‌سازی GPU</h3><p>FP16 برای مسیر پلاک فعال است، Cropها Batch می‌شوند و تبدیل PT به Engine/ONNX به‌صورت Job پس‌زمینه انجام می‌شود. Engine باید روی GPU و محیط مقصد ساخته شود.</p></article>
+            <article class="card" style="--accent:var(--amber)"><h3>محدودیت اثبات مدل</h3><p>کد رابط Ultralytics و نام Nano را نشان می‌دهد، اما فایل وزن و Training Config مدل‌های سفارشی در آرشیو موجود نیست. بنابراین نسخه دقیق پایه YOLO و سنجه‌های دقت باید از تیم آموزش مدل دریافت شود.</p></article>
+          </div>
+        </section>
+
+        <section id="fire">
+          <div class="section-head"><div><div class="kicker">FIRE & SMOKE PIPELINE</div><h2>زنجیره تشخیص آتش و دود</h2><p class="section-desc">تصمیم نهایی بر پایه یک Detection منفرد نیست. مدل، رهگیری زمانی و تحلیل شدت به‌صورت لایه‌ای عمل می‌کنند تا هشدارهای لحظه‌ای و ناپایدار فیلتر شوند.</p></div><div class="section-no">۰۶</div></div>
+          <figure class="figure">
+            <div class="flow">
+              <div class="flow-node"><b>YOLO Detection</b><small>کلاس ۰ آتش، کلاس ۱ دود؛ Confidence اولیه ۰٫۳۰.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>فیلتر دوباره خروجی</b><small>کنترل مستقل Threshold هنگام Parse نتایج.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Stable Tracker</b><small>تطبیق بر اساس IoU یا فاصله مرکز و هموارسازی Bounding Box.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>تأیید شواهد</b><small>History، تعداد Hit، نسبت مثبت، توالی و میانگین Confidence.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Severity Window</b><small>محاسبه Low/Medium/High در پنجره زمانی لغزان.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Incident Lifecycle</b><small>شروع رخداد، هشدار شدید، پایان با Grace Period.</small></div>
+            </div>
+            <figcaption>شکل ۳ — فلوچارت تشخیص پایدار خطر و مدیریت چرخه رخداد</figcaption>
+          </figure>
+          <div class="split" style="margin-top:16px">
+            <div class="table-wrap"><table><thead><tr><th>پارامتر</th><th>مقدار پیش‌فرض</th><th>نقش</th></tr></thead><tbody><tr><td>Fire / Smoke confidence</td><td class="ltr">0.30 / 0.30</td><td>حداقل Detection کاندید</td></tr><tr><td>Rolling history</td><td class="ltr">15</td><td>تعداد مشاهده نگهداری‌شده برای Track</td></tr><tr><td>Positive detections</td><td class="ltr">8</td><td>حداقل Hit برای تأیید Track</td></tr><tr><td>Positive ratio</td><td class="ltr">0.60</td><td>پایداری حضور در تاریخچه</td></tr><tr><td>Consecutive detections</td><td class="ltr">3</td><td>جلوگیری از تأیید Detection پراکنده</td></tr><tr><td>Severity window</td><td class="ltr">3 sec</td><td>بازه تحلیل رخداد</td></tr><tr><td>Low / Medium / High</td><td class="ltr">5 / 10 / 20</td><td>تعداد فریم مثبت در پنجره</td></tr><tr><td>Incident / Alert start</td><td class="ltr">Medium / High</td><td>تفکیک رخداد از هشدار بحرانی</td></tr><tr><td>End grace</td><td class="ltr">10 sec</td><td>جلوگیری از قطع و وصل مکرر رخداد</td></tr></tbody></table></div>
+            <div class="grid">
+              <article class="card" style="--accent:var(--red)"><h3>منطق شدت ترکیبی</h3><p>شدت آتش و دود جداگانه محاسبه می‌شود. اگر هر دو حداقل به Medium برسند، شدت کلی به High ارتقا می‌یابد. کاهش شدت نیز ۵ ثانیه Hold دارد تا خروجی نوسانی نشود.</p></article>
+              <article class="card" style="--accent:var(--amber)"><h3>ثبت رخداد غیرمسدودکننده</h3><p>Snapshot، JPEG encoding و نوشتن Database از مسیر Worker اصلی جدا شده‌اند. Incident با ارتقا به High همان رکورد را به‌روزرسانی می‌کند و Alert تکراری نمی‌سازد.</p></article>
+              <article class="card" style="--accent:var(--blue)"><h3>خروجی قابل توضیح</h3><p>علاوه بر Severity، تعداد Track، Confidence، نسبت مساحت، Positive Count، تغییر شدت و Eventهای شروع/پایان در نتیجه ثبت می‌شوند.</p></article>
+            </div>
+          </div>
+        </section>
+
+        <section id="plate">
+          <div class="section-head"><div><div class="kicker">IRANIAN LPR PIPELINE</div><h2>زنجیره تشخیص و خواندن پلاک ایران</h2><p class="section-desc">زنجیره سه‌مرحله‌ای باعث می‌شود OCR فقط روی Cropهای مناسب اجرا شود و نتیجه نهایی از نظر Confidence و ساختار پلاک کنترل گردد.</p></div><div class="section-no">۰۷</div></div>
+          <figure class="figure">
+            <div class="flow">
+              <div class="flow-node"><b>فریم کامل</b><small>ورودی BGR با Source ID و Frame Index.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>YOLO11n Vehicle</b><small>کلاس‌های COCO: ۲، ۳، ۵ و ۷.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>فیلتر فاصله</b><small>حداقل عرض ۱۲۰، ارتفاع ۸۰ و مساحت ۲٫۵٪ فریم.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>YOLO Plate</b><small>Batch تا ۱۶ Crop و بازگردانی مختصات به فریم اصلی.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Hezar CRNN OCR</b><small>خواندن گروهی و Fallback به Crop تکی.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Validation + Dedupe</b><small>۲ رقم + ۱ حرف فارسی + ۵ رقم؛ انتخاب بهترین Score.</small></div>
+            </div>
+            <figcaption>شکل ۴ — زنجیره Vehicle Gate، مکان‌یابی پلاک، OCR و اعتبارسنجی پلاک ایرانی</figcaption>
+          </figure>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>کاهش بار محاسباتی</h3><p>فریم‌های بدون وسیله نقلیه وارد Plate Detector نمی‌شوند. خودروهای بسیار کوچک نیز قبل از مرحله پلاک حذف می‌شوند؛ بنابراین GPU روی نواحی محتمل‌تر مصرف می‌شود.</p></article>
+            <article class="card" style="--accent:var(--green)"><h3>کنترل کیفیت OCR</h3><p>حداقل Confidence برای Vehicle برابر ۰٫۳۵، Plate برابر ۰٫۳۰ و OCR برابر ۰٫۵۰ است. خروجی ناقص، دارای حرف لاتین یا خارج از قالب ثبت نمی‌شود.</p></article>
+            <article class="card" style="--accent:var(--blue)"><h3>مختصات دقیق خروجی</h3><p>Bounding Box پلاک از مختصات Crop خودرو به مختصات فریم اصلی تبدیل می‌شود؛ به همین دلیل رسم، Snapshot و WebSocket روی همان مکان واقعی انجام می‌گیرد.</p></article>
+          </div>
+          <div class="table-wrap" style="margin-top:16px"><table><thead><tr><th>مرحله</th><th>مدل/قانون</th><th>خروجی</th><th>فیلتر خطا</th></tr></thead><tbody><tr><td>تشخیص وسیله</td><td class="ltr">YOLO11n, COCO IDs 2,3,5,7</td><td>Vehicle bbox و confidence</td><td>Threshold، حداقل ابعاد، مساحت و حداکثر ۱۲ خودرو</td></tr><tr><td>تشخیص پلاک</td><td class="ltr">Custom Ultralytics YOLO</td><td>Plate bbox داخل Crop خودرو</td><td>Class discovery و Plate confidence</td></tr><tr><td>خواندن متن</td><td class="ltr">Hezar CRNN image2text</td><td>رشته و OCR score</td><td>OCR confidence و نرمال‌سازی رقم/حرف</td></tr><tr><td>اعتبارسنجی</td><td>قانون پلاک شخصی ایران</td><td>رشته ۸ کاراکتری</td><td>۲ رقم + حرف فارسی + ۵ رقم</td></tr><tr><td>ثبت</td><td>SQLite + Snapshot</td><td>camera، time، plate، URL</td><td>حذف تکرار داخل همان فریم بر اساس Score</td></tr></tbody></table></div>
+        </section>
+
+        <section id="broadcast">
+          <div class="section-head"><div><div class="kicker">LIVE OUTPUT</div><h2>نمایش زنده و ترکیب نتیجه روی فریم صحیح</h2><p class="section-desc">Broadcast Hub نتیجه هر Task را با Frame Index نگه می‌دارد و زمانی فریم را منتشر می‌کند که تمام وظایف مورد انتظار همان فریم تکمیل شده باشند.</p></div><div class="section-no">۰۸</div></div>
+          <div class="split">
+            <figure class="figure">
+              <div class="camera-wall">
+                <div class="camera"><div class="cam-head"><span>CAMERA-01</span><span>FIRE + PLATE</span></div><span class="bbox" data-label="FIRE 87%" style="--c:#ff6d77;right:18%;top:28%;width:28%;height:48%"></span><span class="bbox" data-label="PLATE" style="--c:#62df93;left:12%;top:60%;width:22%;height:14%"></span><div class="cam-status">FRAME 18342</div></div>
+                <div class="camera"><div class="cam-head"><span>CAMERA-02</span><span>SMOKE</span></div><span class="bbox" data-label="SMOKE 72%" style="--c:#ffbd5b;right:28%;top:24%;width:42%;height:52%"></span><div class="cam-status">MEDIUM</div></div>
+                <div class="camera"><div class="cam-head"><span>CAMERA-03</span><span>PLATE</span></div><span class="bbox" data-label="23ن92917" style="--c:#62df93;right:38%;top:63%;width:26%;height:13%"></span><div class="cam-status">VEHICLE 1</div></div>
+                <div class="camera"><div class="cam-head"><span>CAMERA-04</span><span>PLAY ONLY</span></div><div class="cam-status">AI DISABLED</div></div>
+              </div>
+              <figcaption>شکل ۵ — نمای شماتیک دیوار دوربین‌ها؛ این تصویر نمونه رابط است و Snapshot واقعی پروژه نیست.</figcaption>
+            </figure>
+            <div class="grid">
+              <article class="card"><h3>WebSocket واحد برای همه دوربین‌ها</h3><p>فریم‌های JPEG باینری و Eventهای تغییر دوربین از یک اتصال Multiplexed ارسال می‌شوند؛ این روش محدودیت اتصال‌های هم‌زمان مرورگر را دور می‌زند.</p></article>
+              <article class="card" style="--accent:var(--blue)"><h3>مسیرهای خروجی</h3><ul class="feature-list"><li><code>/api/v1/broadcast/ws</code></li><li><code>/streams/{source_id}.mjpg</code></li><li><code>/snapshots/{source_id}.jpg</code></li><li><code>/dashboard</code></li></ul></article>
+              <article class="card" style="--accent:var(--green)"><h3>حالت نمایش بدون AI</h3><p>با Task خالی، DeepStream همچنان Decode و Broadcast را انجام می‌دهد، ولی هیچ مدل آتش، وسیله، پلاک یا OCR اجرا نمی‌شود.</p></article>
+            </div>
+          </div>
+        </section>
+
+        <section id="data">
+          <div class="section-head"><div><div class="kicker">DATA & PERSISTENCE</div><h2>مدیریت داده، لاگ و تنظیمات</h2><p class="section-desc">اطلاعات کنترلی و رخدادها در SQLite و فایل‌های تصویری در فضای Media ذخیره می‌شوند. نتایج اخیر نیز در حافظه برای مصرف سریع نگهداری می‌شوند.</p></div><div class="section-no">۰۹</div></div>
+          <div class="layers">
+            <div class="layer"><div class="layer-title">In-memory Layer</div><div class="layer-items"><span class="pill">ResultStore — آخرین ۲۰۰۰ نتیجه</span><span class="pill">Latest annotated frames</span><span class="pill">Worker counters</span><span class="pill">Per-source tracker state</span></div></div>
+            <div class="layer"><div class="layer-title">SQLite Layer</div><div class="layer-items"><span class="pill">cameras</span><span class="pill">plate_logs</span><span class="pill">fire_smoke_logs</span><span class="pill">fire_smoke_settings</span><span class="pill">plate_general_settings</span><span class="pill">plate_camera_settings</span><span class="pill">model_general_settings</span></div></div>
+            <div class="layer"><div class="layer-title">Media Layer</div><div class="layer-items"><span class="pill">plate_snapshots/*.jpg</span><span class="pill">fire_smoke_snapshots/*.jpg</span><span class="pill">StaticFiles /media</span><span class="pill">JPEG quality controls</span></div></div>
+          </div>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>لاگ پلاک</h3><p>هر پلاک معتبر با شناسه دوربین، زمان UTC، متن پلاک و URL تصویر ثبت می‌شود. Bounding Box و متن می‌توانند روی Snapshot رسم شوند.</p></article>
+            <article class="card" style="--accent:var(--red)"><h3>لاگ آتش و دود</h3><p>شامل Incident ID، Severity، تعداد و Confidence آتش/دود، طول پنجره، جزئیات JSON و Snapshot است. ارتقای رخداد یک رکورد موجود را به‌روزرسانی می‌کند.</p></article>
+            <article class="card" style="--accent:var(--blue)"><h3>Inheritance تنظیمات</h3><p>Thresholdهای پلاک ابتدا عمومی هستند و هر دوربین می‌تواند فقط برخی فیلدها را Override کند. حذف Override باعث ارث‌بری دوباره از مقدار عمومی می‌شود.</p></article>
+          </div>
+        </section>
+
+        <section id="api">
+          <div class="section-head"><div><div class="kicker">API & OPERATIONS</div><h2>API، Swagger و مدیریت عملیاتی</h2><p class="section-desc">پروژه ۵۲ مسیر HTTP/WebSocket دارد و Swagger آن بر اساس حوزه‌های عملیاتی سازمان‌دهی شده است.</p></div><div class="section-no">۱۰</div></div>
+          <div class="table-wrap"><table><thead><tr><th>حوزه</th><th>قابلیت‌ها</th><th>نمونه مسیرها</th></tr></thead><tbody><tr><td>Diagnostics</td><td>Health، Overview، Check و Restart دوربین</td><td class="ltr">/health · /diagnostics/overview · /cameras/{id}/restart</td></tr><tr><td>Camera CRUD</td><td>ایجاد، خواندن، ویرایش، حذف، فعال‌سازی و Task assignment</td><td class="ltr">/api/v1/cameras · /{id}/tasks · /bulk</td></tr><tr><td>Frame Routing</td><td>ارسال JPEG/PNG برای تست مدل از Swagger</td><td class="ltr">POST /api/v1/frame-rounds/jpeg</td></tr><tr><td>Results</td><td>نتایج اخیر، وضعیت Router و WebSocket نتیجه</td><td class="ltr">/results/recent · /router/status · /results/ws</td></tr><tr><td>Broadcast</td><td>Dashboard، State، WebSocket، MJPEG و Snapshot</td><td class="ltr">/dashboard · /broadcast/ws · /streams/*.mjpg</td></tr><tr><td>Fire/Smoke</td><td>لاگ رخداد و Policy شدت آنلاین</td><td class="ltr">/fire-smoke-logs · /fire-smoke/settings</td></tr><tr><td>Plate</td><td>لاگ پلاک، تنظیم عمومی و Override دوربین</td><td class="ltr">/plate-logs · /plate-settings/general · /cameras/{id}</td></tr><tr><td>Model Management</td><td>کاتالوگ، انتخاب و Job تبدیل مدل</td><td class="ltr">/models/artifacts · /settings · /conversions</td></tr><tr><td>Compatibility</td><td>API قدیمی Sources روی همان Camera Registry</td><td class="ltr">/api/v1/sources · /bulk/task-assignment</td></tr></tbody></table></div>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>تست مدل از Swagger</h3><p>برای تست مستقل، چند تصویر به همراه Source ID ارسال می‌شود. این مسیر برای نگهداری و Debug مناسب است، ولی به دلیل Encode/Network/Decode مسیر اصلی بلادرنگ نیست.</p></article>
+            <article class="card" style="--accent:var(--green)"><h3>Counterهای قابل پایش</h3><p>Pending source، stale replacement، batch count، frame count، failure، batch size، inference duration، reconnect و frame age در دسترس‌اند.</p></article>
+            <article class="card" style="--accent:var(--blue)"><h3>رویداد تغییر دوربین</h3><p>تغییرات CRUD علاوه بر ذخیره در Database، به‌صورت Event فاقد Secret روی همان WebSocket Dashboard منتشر می‌شوند.</p></article>
+          </div>
+        </section>
+
+        <section id="deployment">
+          <div class="section-head"><div><div class="kicker">DEPLOYMENT</div><h2>استقرار، DeepStream و زیرساخت GPU</h2><p class="section-desc">مسیر تولید برای Linux/NVIDIA طراحی شده است. OpenCV نقش Fallback توسعه‌ای دارد و برای تعداد زیاد RTSP گزینه اصلی نیست.</p></div><div class="section-no">۱۱</div></div>
+          <figure class="figure">
+            <div class="flow">
+              <div class="flow-node"><b>nvurisrcbin</b><small>باز کردن RTSP/MP4، NVDEC و حذف Audio.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>identity + queue</b><small>Queue leaky با حداکثر یک Buffer.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>nvvideoconvert</b><small>Resize روی GPU به Width/Height دوربین.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>BGRx → BGR</b><small>تبدیل برای مصرف NumPy/OpenCV.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>appsink</b><small>drop=true، max-buffers=1 و Callback فریم.</small></div><div class="flow-arrow">←</div>
+              <div class="flow-node"><b>Task Router</b><small>انتخاب تازه‌ترین فریم هر Source.</small></div>
+            </div>
+            <figcaption>شکل ۶ — Pipeline مستقل DeepStream برای هر منبع ویدئویی</figcaption>
+          </figure>
+          <div class="grid grid-3" style="margin-top:16px">
+            <article class="card"><h3>Docker و NVIDIA</h3><p>Compose دسترسی GPU، حافظه اشتراکی ۲GB، Volume برای Data/Weights/Media و Port 8000 را تنظیم می‌کند. قابلیت‌های compute، utility و video فعال‌اند.</p></article>
+            <article class="card" style="--accent:var(--blue)"><h3>پایداری Stream</h3><p>RTSP با TCP، latency پیش‌فرض ۵۰۰ms، reconnect نامحدود و Retry سه‌ثانیه‌ای اجرا می‌شود. خرابی یک دوربین Pipeline سایر منابع را متوقف نمی‌کند.</p></article>
+            <article class="card" style="--accent:var(--green)"><h3>Lazy Loading</h3><p>سرویس حتی بدون وزن مدل بالا می‌آید و مدل در نخستین Batch بارگذاری می‌شود. Mock Mode امکان تست Router بدون GPU و وزن را فراهم می‌کند.</p></article>
+          </div>
+          <div class="notice"><strong>مقیاس ۱۰۰+ دوربین</strong><p>معماری از نظر Registry و Router محدودیت ثابت هشت دوربین ندارد، اما ظرفیت واقعی به GPU، رزولوشن، FPS و درصد دوربین‌های دووظیفه‌ای وابسته است. برای ۱۰۰ دوربین با ۵ FPS، ۵۰۰ فریم ورودی در ثانیه ایجاد می‌شود؛ اگر همه دووظیفه‌ای باشند، تا ۱۰۰۰ Task submission در ثانیه باید مدیریت شود. Benchmark روی سخت‌افزار مقصد و Sharding چند GPU ضروری است.</p></div>
+        </section>
+
+        <section id="quality">
+          <div class="section-head"><div><div class="kicker">QUALITY ASSURANCE</div><h2>آزمون‌ها و شواهد کیفیت نرم‌افزار</h2><p class="section-desc">تست‌ها مسیر Router، Buffer، Broadcast، Model Loader، Processorها، Database Store، API و Ingestor را پوشش می‌دهند.</p></div><div class="section-no">۱۲</div></div>
+          <div class="grid grid-3">
+            <article class="card" style="--accent:var(--green)"><div class="model-name" style="color:var(--green)">۴۷ / ۴۷</div><h3>Pytest موفق</h3><p>تمام تست‌های موجود در اجرای این گزارش عبور کردند. دو دسته هشدار Deprecation درباره <code>datetime.utcnow()</code> مشاهده شد که Failure نیست.</p></article>
+            <article class="card" style="--accent:var(--blue)"><div class="model-name" style="color:var(--blue)">SMOKE TEST PASSED</div><h3>تست یکپارچه مسیر</h3><p>ورود ۸ فریم، پذیرش ۸ Source و تولید ۱۰ Task submission مطابق سناریوی نمونه تأیید شد.</p></article>
+            <article class="card" style="--accent:var(--purple)"><div class="model-name" style="color:var(--purple)">8,281 + 2,226</div><h3>اندازه کد</h3><p>۴۳ فایل Python برنامه با حدود ۸٬۲۸۱ خط و ۱۲ فایل تست با حدود ۲٬۲۲۶ خط در نسخه تحلیل‌شده وجود دارد.</p></article>
+          </div>
+          <div class="check-grid" style="margin-top:16px"><div class="check"><div class="check-mark">✓</div><div><strong>Router و Fair Buffer</strong><span>مسیریابی، جایگزینی stale و ترتیب منصفانه.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Fire/Smoke Processor</strong><span>Tracking، Severity و Model loading.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Plate Processor</strong><span>Vehicle gate، OCR، validation و تنظیمات.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>API و Persistence</strong><span>Camera، logs، settings و model management.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Broadcast</strong><span>ترکیب دقیق Taskها روی Frame Index مشترک.</span></div></div><div class="check"><div class="check-mark">✓</div><div><strong>Video Ingestion</strong><span>Loop، reconnect، sizing و counterها.</span></div></div></div>
+          <div class="notice"><strong>تفسیر درست</strong><p>موفق بودن تست نرم‌افزار یعنی منطق کد مطابق تست‌های نوشته‌شده عمل می‌کند؛ این نتیجه جایگزین ارزیابی دقت مدل روی Dataset مستقل و سنجش تأخیر روی GPU هدف نیست.</p></div>
+        </section>
+
+        <section id="assessment">
+          <div class="section-head"><div><div class="kicker">ASSESSMENT</div><h2>نقاط قوت، بدهی فنی و محدودیت‌های فعلی</h2><p class="section-desc">برای یک ارائه حرفه‌ای، علاوه بر قابلیت‌ها باید مرزهای واقعی سامانه و اقدامات لازم برای Production نیز مشخص باشند.</p></div><div class="section-no">۱۳</div></div>
+          <div class="grid grid-3">
+            <article class="card risk" style="--accent:var(--green)"><div class="level">نقطه قوت</div><h3>معماری ماژولار و قابل توسعه</h3><p>افزودن Task جدید با Processor و Worker مستقل ممکن است. Registry، Router و Broadcast از مدل خاصی وابستگی مستقیم ندارند.</p></article>
+            <article class="card risk" style="--accent:var(--green)"><div class="level">نقطه قوت</div><h3>تمرکز واقعی بر Latency</h3><p>Latest-only buffer، queue کم‌عمق، worker مستقل و Exact-frame composition نشان می‌دهد طراحی فقط برای Throughput نیست.</p></article>
+            <article class="card risk" style="--accent:var(--green)"><div class="level">نقطه قوت</div><h3>قابلیت عملیات آنلاین</h3><p>CRUD دوربین، Threshold، Override، Restart pipeline، Model fallback و diagnostics بدون توقف کل سامانه فراهم‌اند.</p></article>
+            <article class="card risk" style="--accent:var(--red)"><div class="level">ریسک امنیتی</div><h3>Secretهای RTSP در فایل نمونه</h3><p>در نسخه بارگذاری‌شده URIهای دارای نام کاربری/رمز داخل فایل‌های پیکربندی دیده شد. هرچند API آن‌ها را Redact می‌کند، باید Secretها منتقل و Credentialهای فعلی Rotate شوند.</p></article>
+            <article class="card risk" style="--accent:var(--amber)"><div class="level">تنظیم نیازمند اصلاح</div><h3>High Severity و نرخ ۵ FPS</h3><p>با پنجره ۳ ثانیه و نرخ ۵ FPS، حداکثر حدود ۱۵ مشاهده در پنجره وجود دارد؛ بنابراین Threshold پیش‌فرض High=20 عملاً دست‌نیافتنی است. FPS یا Policy باید هماهنگ شود.</p></article>
+            <article class="card risk" style="--accent:var(--amber)"><div class="level">محدودیت دامنه</div><h3>قالب پلاک شخصی</h3><p>Validator فعلی فقط الگوی ۲ رقم، یک حرف فارسی و ۵ رقم را می‌پذیرد. انواع موتورسیکلت، دیپلماتیک، عمومی یا مناطق آزاد نیازمند Rule جدا هستند.</p></article>
+            <article class="card risk" style="--accent:var(--amber)"><div class="level">بازتولید مدل</div><h3>وزن‌ها و متریک‌ها ناقص‌اند</h3><p>آرشیو شامل تنظیمات CRNN است، ولی وزن کامل مدل‌ها و گزارش Train/Validation را ندارد؛ استقرار Real Mode به Artifactهای خارجی وابسته است.</p></article>
+            <article class="card risk" style="--accent:var(--amber)"><div class="level">قابل حمل بودن</div><h3>Requirements نیازمند پاک‌سازی</h3><p>فایل اصلی requirements با Encoding غیرمعمول و یک مسیر Wheel محلی Windows دیده شد. بهتر است dependency lock تمیز و جدا برای CPU/GPU/DeepStream تولید شود.</p></article>
+            <article class="card risk" style="--accent:var(--red)"><div class="level">Production Hardening</div><h3>Auth، TLS و Database</h3><p>در Routeهای موجود لایه احراز هویت دیده نمی‌شود. برای شبکه غیرایزوله باید RBAC/TLS اضافه شود؛ برای چند Node نیز PostgreSQL و Object Storage مناسب‌تر از SQLite محلی‌اند.</p></article>
+          </div>
+        </section>
+
+        <section id="roadmap">
+          <div class="section-head"><div><div class="kicker">ROADMAP</div><h2>نقشه راه پیشنهادی برای نسخه سازمانی</h2><p class="section-desc">نقشه راه بر پایه ریسک‌های واقعی کد و هدف اتصال تعداد زیاد دوربین تدوین شده است.</p></div><div class="section-no">۱۴</div></div>
+          <div class="timeline">
+            <div class="step"><div class="step-no">۱</div><div><strong>Production Readiness</strong><span>Secret management، Auth/RBAC، TLS، پاک‌سازی dependencies و اصلاح Policy/FPS.</span></div></div>
+            <div class="step"><div class="step-no">۲</div><div><strong>Benchmark و Calibration</strong><span>Dataset واقعی، Precision/Recall، OCR accuracy، p95 latency و ظرفیت هر GPU.</span></div></div>
+            <div class="step"><div class="step-no">۳</div><div><strong>Scale-out</strong><span>GPU sharding، گروه‌بندی دوربین، PostgreSQL، Object Storage و Observability مرکزی.</span></div></div>
+            <div class="step"><div class="step-no">۴</div><div><strong>Taskهای جدید</strong><span>تشخیص انسان/چهره، شمارش، عبور از خط، PPE و Router چند GPU.</span></div></div>
+          </div>
+          <div class="grid grid-2" style="margin-top:22px">
+            <article class="card"><h3>شاخص‌هایی که باید اندازه‌گیری شوند</h3><ul class="feature-list"><li>End-to-end latency به تفکیک p50/p95/p99</li><li>Stale replacements و dropped frames هر دوربین</li><li>GPU utilization، VRAM و batch occupancy</li><li>Reconnect rate و Frame age</li><li>Precision/Recall آتش و دود در سناریوهای واقعی</li><li>Exact-match accuracy و Character accuracy پلاک</li></ul></article>
+            <article class="card" style="--accent:var(--blue)"><h3>معماری پیشنهادی برای ۱۰۰+ دوربین</h3><ul class="feature-list"><li>Control Plane مرکزی برای Camera/Model/Policy</li><li>چند Inference Node، هرکدام متصل به یک GPU</li><li>Shard دوربین‌ها بر اساس Task و بار واقعی</li><li>Log Database مرکزی و Media Object Storage</li><li>Prometheus/Grafana برای Counterها و Alertها</li><li>Failover و Health-based reassignment دوربین</li></ul></article>
+          </div>
+        </section>
+
+        <section id="presentation">
+          <div class="section-head"><div><div class="kicker">PRESENTATION GUIDE</div><h2>سناریوی پیشنهادی برای ارائه پروژه</h2><p class="section-desc">این ترتیب برای یک ارائه ۱۰ تا ۱۵ دقیقه‌ای مناسب است و از مسئله شروع می‌کند، سپس ارزش فنی و نتیجه را نشان می‌دهد.</p></div><div class="section-no">۱۵</div></div>
+          <div class="card presentation">
+            <div class="pstep"><div class="pnum">۱</div><div><strong>مسئله را تعریف کنید — ۱ دقیقه</strong><p>تعداد زیاد دوربین، Taskهای متفاوت و مشکل تأخیر ناشی از صف فریم‌های قدیمی.</p></div></div>
+            <div class="pstep"><div class="pnum">۲</div><div><strong>راهکار کلان را نشان دهید — ۲ دقیقه</strong><p>از شکل معماری استفاده کنید: DeepStream، Registry، Router، Workerهای مستقل، مدل‌ها و خروجی.</p></div></div>
+            <div class="pstep"><div class="pnum">۳</div><div><strong>نوآوری بلادرنگ را توضیح دهید — ۲ دقیقه</strong><p>Latest-only fair buffer، batch ۸ و انتظار ۲۵ms؛ تأکید کنید هدف پردازش فریم تازه است نه انباشتن تاریخچه.</p></div></div>
+            <div class="pstep"><div class="pnum">۴</div><div><strong>مدل‌ها را معرفی کنید — ۳ دقیقه</strong><p>YOLO آتش/دود، YOLO11n دروازه خودرو، YOLO پلاک و CRNN فارسی؛ دلیل تفکیک هر مرحله را بیان کنید.</p></div></div>
+            <div class="pstep"><div class="pnum">۵</div><div><strong>خروجی عملیاتی را نمایش دهید — ۲ دقیقه</strong><p>Dashboard، Bounding Box روی همان فریم، لاگ رخداد، Snapshot، Swagger و تغییر آنلاین Task.</p></div></div>
+            <div class="pstep"><div class="pnum">۶</div><div><strong>کیفیت و ادامه مسیر — ۲ دقیقه</strong><p>۴۷ تست موفق، محدودیت نبود متریک مدل، سپس Benchmark، امنیت و Scale-out چند GPU.</p></div></div>
+          </div>
+          <div class="notice"><strong>جمله جمع‌بندی پیشنهادی</strong><p>«ارزش اصلی پروژه فقط تشخیص آتش یا پلاک نیست؛ ارزش آن یک زیرساخت مشترک، بلادرنگ و قابل مدیریت است که می‌تواند چند مدل را روی تعداد زیادی دوربین اجرا کند و نتیجه قابل استفاده سازمانی تحویل دهد.»</p></div>
+        </section>
+
+        <section id="appendix">
+          <div class="section-head"><div><div class="kicker">TECHNICAL APPENDIX</div><h2>ضمیمه فنی و مبنای تحلیل</h2><p class="section-desc">فایل‌های زیر مهم‌ترین منابع استفاده‌شده برای استخراج معماری و قابلیت‌ها بوده‌اند.</p></div><div class="section-no">۱۶</div></div>
+          <div class="source-list">
+            <div class="source-item">README.md — architecture, APIs, integration and scaling notes</div>
+            <div class="source-item">MERGE_AUDIT.md — original systems, tradeoffs and merge decisions</div>
+            <div class="source-item">app/runtime.py — component wiring and worker construction</div>
+            <div class="source-item">app/core/router.py — source/task routing contract</div>
+            <div class="source-item">app/core/latest_buffer.py — latest-only fair buffering</div>
+            <div class="source-item">app/core/deepstream_ingestor.py — per-source GStreamer pipeline</div>
+            <div class="source-item">app/processors/fire_smoke.py — YOLO, tracking, severity and incidents</div>
+            <div class="source-item">app/fire_core/tracking.py — stable object tracking rules</div>
+            <div class="source-item">app/fire_core/severity.py — rolling risk calculation</div>
+            <div class="source-item">app/processors/plate.py — vehicle, plate and OCR cascade</div>
+            <div class="source-item">weights/plate_recognizer/model_config.yaml — CRNN alphabet and dimensions</div>
+            <div class="source-item">app/core/broadcast.py — exact-frame annotation and streaming</div>
+            <div class="source-item">app/core/*_store.py — SQLite schemas, policies and logs</div>
+            <div class="source-item">app/api/*.py — 52 HTTP/WebSocket route definitions</div>
+            <div class="source-item">tests/*.py — 47 successful automated tests</div>
+            <div class="source-item">docker-compose.yml / Dockerfile.deepstream — GPU deployment</div>
+          </div>
+          <div class="grid grid-2" style="margin-top:16px">
+            <article class="card"><h3>تنظیمات مهم اجرا</h3><pre>PROCESSOR_MODE=real
+VIDEO_INGEST_BACKEND=deepstream
+VIDEO_INGEST_FPS=5
+FIRE_SMOKE_BATCH_SIZE=8
+PLATE_BATCH_SIZE=8
+FIRE_SMOKE_MAX_WAIT_MS=25
+PLATE_MAX_WAIT_MS=25
+MODEL_PREFERRED_FORMAT=engine
+BROADCAST_JPEG_QUALITY=82</pre></article>
+            <article class="card" style="--accent:var(--blue)"><h3>مسیرهای شروع سریع</h3><pre>Dashboard: http://HOST:8000/dashboard
+Swagger:   http://HOST:8000/docs
+Health:    http://HOST:8000/health
+Status:    /api/v1/router/status
+Results:   /api/v1/results/recent
+Broadcast: /api/v1/broadcast/ws</pre></article>
+          </div>
+        </section>
+      </div>
+      <footer>گزارش تولیدشده بر پایه نسخه بارگذاری‌شده پروژه fire_smoke_carPlate_detection — اطلاعات محرمانه دوربین‌ها عمداً در این گزارش نمایش داده نشده‌اند.</footer>
+    </main>
+  </div>
+
+  <script>
+    const root = document.documentElement;
+    let savedTheme = null;
+    try { savedTheme = localStorage.getItem('report-theme'); } catch (_) {}
+    if (savedTheme) root.dataset.theme = savedTheme;
+    document.querySelectorAll('.theme-toggle').forEach(btn => btn.addEventListener('click', () => {
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('report-theme', root.dataset.theme); } catch (_) {}
+    }));
+    document.querySelectorAll('.print-btn').forEach(btn => btn.addEventListener('click', () => window.print()));
+    const nav = document.getElementById('nav');
+    const mobileMenu = document.getElementById('mobileMenu');
+    mobileMenu.innerHTML = nav.innerHTML;
+    document.getElementById('mobileMenuBtn').addEventListener('click', () => mobileMenu.classList.toggle('open'));
+    mobileMenu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => mobileMenu.classList.remove('open')));
+    const sections = [...document.querySelectorAll('section[id]')];
+    const links = [...document.querySelectorAll('nav a')];
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + entry.target.id));
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+    sections.forEach(section => observer.observe(section));
+    window.addEventListener('scroll', () => {
+      const max = document.documentElement.scrollHeight - innerHeight;
+      document.getElementById('progress').style.width = (max > 0 ? scrollY / max * 100 : 0) + '%';
+    }, { passive:true });
+  </script>
+</body>
+</html>

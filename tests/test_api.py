@@ -289,6 +289,10 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             assert "synchronizeDashboard" in response.text
             assert "/api/v1/cameras" in response.text
             assert "/api/v1/broadcast/ws" in response.text
+            assert "Fullscreen wall" in response.text
+            assert "data-fullscreen-source" in response.text
+            assert "Browser RX: 0.0 FPS" in response.text
+            assert "function receivedFps" in response.text
 
             response = client.get("/", follow_redirects=False)
             assert response.status_code in {302, 307}
