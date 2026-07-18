@@ -7,6 +7,7 @@ from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
 from app.schemas import (
     CameraCreate,
+    CameraBulkUpdate,
     CameraReplace,
     CameraResponse,
     CameraTaskUpdate,
@@ -25,8 +26,10 @@ def get_runtime() -> Runtime:
 
 def _response(record: SourceRecord) -> CameraResponse:
     source_uri = record.source_uri
+
     if source_uri:
         source_uri = VideoFileIngestor.redact_uri(source_uri)
+
     return CameraResponse(
         camera_id=record.source_id,
         name=record.name,
@@ -42,11 +45,17 @@ def _response(record: SourceRecord) -> CameraResponse:
 
 
 @router.get("", response_model=list[CameraResponse])
-def list_cameras(runtime: Runtime = Depends(get_runtime)) -> list[CameraResponse]:
+def list_cameras(
+    runtime: Runtime = Depends(get_runtime),
+) -> list[CameraResponse]:
     return [_response(item) for item in runtime.registry.list()]
 
 
-@router.post("", response_model=CameraResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=CameraResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_camera(
     payload: CameraCreate,
     runtime: Runtime = Depends(get_runtime),
@@ -65,7 +74,11 @@ def create_camera(
             )
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
     return _response(record)
 
 
@@ -75,8 +88,13 @@ def get_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     record = runtime.registry.get(camera_id)
+
     if record is None:
-        raise HTTPException(status_code=404, detail="Camera not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        )
+
     return _response(record)
 
 
@@ -95,9 +113,94 @@ def update_camera_tasks(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     try:
-        return _response(runtime.registry.update(camera_id, tasks=payload.tasks))
+        record = runtime.registry.update(
+            camera_id,
+            tasks=payload.tasks,
+        )
+        return _response(record)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Camera not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        ) from exc
+
+
+@router.patch(
+    "/bulk",
+    response_model=list[CameraResponse],
+    summary="Update multiple cameras",
+    description=(
+        "Partially update multiple cameras in one request. Every item must contain "
+        "a camera_id and at least one field to update. The request is rejected before "
+        "applying changes if any camera ID is missing or duplicated."
+    ),
+)
+def update_cameras_bulk(
+    payload: list[CameraBulkUpdate],
+    runtime: Runtime = Depends(get_runtime),
+) -> list[CameraResponse]:
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="At least one camera must be provided",
+        )
+
+    camera_ids = [item.camera_id for item in payload]
+
+    if len(camera_ids) != len(set(camera_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Duplicate camera IDs are not allowed",
+        )
+
+    missing_camera_ids = [
+        camera_id
+        for camera_id in camera_ids
+        if runtime.registry.get(camera_id) is None
+    ]
+
+    if missing_camera_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Some cameras were not found",
+                "camera_ids": missing_camera_ids,
+            },
+        )
+
+    prepared_updates: list[tuple[str, dict]] = []
+
+    for item in payload:
+        values = item.model_dump(
+            exclude_unset=True,
+            exclude={"camera_id"},
+        )
+
+        if not values:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"No update fields provided for camera: {item.camera_id}",
+            )
+
+        prepared_updates.append((item.camera_id, values))
+
+    updated_cameras: list[CameraResponse] = []
+
+    for camera_id, values in prepared_updates:
+        try:
+            record = runtime.registry.update(
+                camera_id,
+                **values,
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Camera not found: {camera_id}",
+            ) from exc
+
+        updated_cameras.append(_response(record))
+
+    return updated_cameras
 
 
 @router.patch("/{camera_id}", response_model=CameraResponse)
@@ -107,10 +210,18 @@ def update_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     values = payload.model_dump(exclude_unset=True)
+
     try:
-        return _response(runtime.registry.update(camera_id, **values))
+        record = runtime.registry.update(
+            camera_id,
+            **values,
+        )
+        return _response(record)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Camera not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        ) from exc
 
 
 @router.put("/{camera_id}", response_model=CameraResponse)
@@ -120,20 +231,22 @@ def replace_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     try:
-        return _response(
-            runtime.registry.update(
-                camera_id,
-                name=payload.name,
-                enabled=payload.enabled,
-                tasks=payload.tasks,
-                source_uri=payload.source_uri,
-                frame_width=payload.frame_width,
-                frame_height=payload.frame_height,
-                metadata=payload.metadata,
-            )
+        record = runtime.registry.update(
+            camera_id,
+            name=payload.name,
+            enabled=payload.enabled,
+            tasks=payload.tasks,
+            source_uri=payload.source_uri,
+            frame_width=payload.frame_width,
+            frame_height=payload.frame_height,
+            metadata=payload.metadata,
         )
+        return _response(record)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Camera not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        ) from exc
 
 
 @router.post("/{camera_id}/enable", response_model=CameraResponse)
@@ -142,9 +255,16 @@ def enable_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     try:
-        return _response(runtime.registry.update(camera_id, enabled=True))
+        record = runtime.registry.update(
+            camera_id,
+            enabled=True,
+        )
+        return _response(record)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Camera not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        ) from exc
 
 
 @router.post("/{camera_id}/disable", response_model=CameraResponse)
@@ -153,16 +273,30 @@ def disable_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     try:
-        return _response(runtime.registry.update(camera_id, enabled=False))
+        record = runtime.registry.update(
+            camera_id,
+            enabled=False,
+        )
+        return _response(record)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Camera not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        ) from exc
 
 
-@router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{camera_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 def delete_camera(
     camera_id: str,
     runtime: Runtime = Depends(get_runtime),
 ) -> Response:
     if not runtime.registry.delete(camera_id):
-        raise HTTPException(status_code=404, detail="Camera not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found",
+        )
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

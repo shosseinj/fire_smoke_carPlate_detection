@@ -629,3 +629,40 @@ docker run --rm -it `
 docker compose build video-ai-router
 docker compose up -d --force-recreate video-ai-router
 ```
+
+```
+[
+  {
+    "camera_id": "camera-01",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101"
+  },
+  {
+    "camera_id": "camera-02",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101"
+  },
+  {
+    "camera_id": "camera-03",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/101"
+  },
+  {
+    "camera_id": "camera-04",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/201"
+  },
+  {
+    "camera_id": "camera-05",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/301"
+  },
+  {
+    "camera_id": "camera-06",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/401"
+  },
+  {
+    "camera_id": "camera-07",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/501"
+  },
+  {
+    "camera_id": "camera-08",
+    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.29:554/Streaming/Channels/101"
+  }
+]
+```

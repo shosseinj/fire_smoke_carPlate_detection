@@ -174,6 +174,94 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
         main_module.runtime = old_runtime
 
 
+def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing-sources.json",
+            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            camera_ids = [record.source_id for record in test_runtime.registry.list()[:2]]
+
+            single = client.patch(
+                f"/api/v1/cameras/{camera_ids[0]}",
+                json={"name": "Single update", "enabled": False},
+            )
+            assert single.status_code == 200
+            assert single.json()["name"] == "Single update"
+            assert single.json()["enabled"] is False
+            assert "metadata" in single.json()
+            assert "updated_at_utc" in single.json()
+
+            bulk = client.patch(
+                "/api/v1/cameras/bulk",
+                json=[
+                    {
+                        "camera_id": f"  {camera_ids[0]}  ",
+                        "enabled": True,
+                        "tasks": [],
+                    },
+                    {
+                        "camera_id": camera_ids[1],
+                        "name": "Bulk update",
+                        "frame_width": 960,
+                        "frame_height": 544,
+                    },
+                ],
+            )
+            assert bulk.status_code == 200
+            assert [item["camera_id"] for item in bulk.json()] == camera_ids
+            assert bulk.json()[0]["enabled"] is True
+            assert bulk.json()[0]["tasks"] == []
+            assert bulk.json()[1]["name"] == "Bulk update"
+            assert bulk.json()[1]["frame_width"] == 960
+            assert bulk.json()[1]["frame_height"] == 544
+
+            rejected = client.patch(
+                "/api/v1/cameras/bulk",
+                json=[
+                    {"camera_id": camera_ids[0], "name": "Must not apply"},
+                    {"camera_id": "missing-camera", "enabled": False},
+                ],
+            )
+            assert rejected.status_code == 404
+            assert client.get(f"/api/v1/cameras/{camera_ids[0]}").json()["name"] == (
+                "Single update"
+            )
+
+            duplicate = client.patch(
+                "/api/v1/cameras/bulk",
+                json=[
+                    {"camera_id": camera_ids[0], "enabled": False},
+                    {"camera_id": camera_ids[0], "enabled": True},
+                ],
+            )
+            assert duplicate.status_code == 422
+
+            no_changes = client.patch(
+                "/api/v1/cameras/bulk",
+                json=[{"camera_id": camera_ids[0]}],
+            )
+            assert no_changes.status_code == 422
+
+            schema = client.get("/openapi.json")
+            assert schema.status_code == 200
+            assert "/api/v1/cameras/bulk" in schema.json()["paths"]
+    finally:
+        main_module.runtime = old_runtime
+        test_runtime.close()
+
+
 def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
     import app.main as main_module
 

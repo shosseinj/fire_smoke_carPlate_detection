@@ -99,6 +99,18 @@ class CameraUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class CameraBulkUpdate(CameraUpdate):
+    camera_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("camera_id")
+    @classmethod
+    def clean_camera_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("camera_id cannot be blank")
+        return value
+
+
 class CameraReplace(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     enabled: bool = True
