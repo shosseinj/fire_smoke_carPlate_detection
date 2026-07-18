@@ -23,6 +23,11 @@ from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
+from app.processors.base import BatchProcessor
+from app.processors.face_recognition import (
+    FaceRecognitionProcessor,
+    FaceRecognitionSettings,
+)
 from app.fire_core.policy import FireSmokePolicyConfig
 from app.processors.mock import MockProcessor
 from app.processors.plate import PlateRecognitionProcessor, PlateSettings
@@ -44,6 +49,7 @@ class Runtime:
     models: ModelManager
     model_conversions: ModelConversionManager
     fire_smoke_logs: FireSmokeLogStore
+    face_processor: BatchProcessor
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -73,6 +79,19 @@ class Runtime:
                 "fallbacks": [],
             }
         )
+        for role, path in (
+            ("face_human_detector", self.settings.face_human_model_path),
+            ("face_detector", self.settings.face_detector_model_path),
+            ("face_embedding", self.settings.face_embedding_model_path),
+        ):
+            records.append(
+                {
+                    "role": role,
+                    "selected": str(path.resolve()),
+                    "active": str(path.resolve()) if path.is_file() else None,
+                    "fallbacks": [],
+                }
+            )
         return records
 
     def _log_selected_models(self) -> None:
@@ -89,6 +108,11 @@ class Runtime:
         self._log_selected_models()
         if self.settings.processor_mode == "real":
             preload_model_dependencies()
+            if isinstance(self.face_processor, FaceRecognitionProcessor):
+                try:
+                    self.face_processor.preload()
+                except Exception as exc:
+                    LOGGER.warning("FACE_RECOGNITION_NOT_READY %s", exc)
         self.router.start()
         try:
             if self.video_ingestor is not None:
@@ -214,6 +238,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
         plate_processor = MockProcessor(TaskName.PLATE_RECOGNITION)
+        face_processor: BatchProcessor = MockProcessor(TaskName.FACE_RECOGNITION)
     elif app_settings.processor_mode == "real":
         fire_processor = FireSmokeProcessor(
             FireSmokeSettings(
@@ -255,6 +280,35 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             vehicle_model_provider=models.provider("vehicle_detector"),
             plate_model_provider=models.provider("plate_detector"),
         )
+        face_processor = FaceRecognitionProcessor(
+            FaceRecognitionSettings(
+                human_model_path=app_settings.face_human_model_path,
+                face_model_path=app_settings.face_detector_model_path,
+                embedding_model_path=app_settings.face_embedding_model_path,
+                device=app_settings.face_device,
+                batch_size=app_settings.face_batch_size,
+                human_imgsz=app_settings.face_human_imgsz,
+                face_imgsz=app_settings.face_detector_imgsz,
+                human_engine_fixed_batch=app_settings.face_human_engine_fixed_batch,
+                face_engine_fixed_batch=app_settings.face_detector_engine_fixed_batch,
+                human_confidence=app_settings.face_human_confidence,
+                face_confidence=app_settings.face_detection_confidence,
+                recognition_threshold=app_settings.face_recognition_threshold,
+                min_face_size=app_settings.face_min_size,
+                blur_threshold=app_settings.face_blur_threshold,
+                min_eye_distance=app_settings.face_min_eye_distance,
+                tracker_iou_threshold=app_settings.face_tracker_iou,
+                tracker_max_missed=app_settings.face_tracker_max_missed,
+                history_size=app_settings.face_history_size,
+                stable_min_hits=app_settings.face_stable_min_hits,
+                embedding_batch_size=app_settings.face_embedding_batch_size,
+                vector_size=app_settings.face_vector_size,
+                qdrant_collection=app_settings.face_qdrant_collection,
+                qdrant_url=app_settings.face_qdrant_url,
+                qdrant_path=app_settings.face_qdrant_path,
+                qdrant_api_key=app_settings.face_qdrant_api_key,
+            )
+        )
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")
 
@@ -274,6 +328,13 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             max_wait_ms=app_settings.plate_max_wait_ms,
             result_callback=broadcast.publish_result,
             result_observer=plate_logs.insert_result,
+        ),
+        TaskName.FACE_RECOGNITION: TaskWorker(
+            processor=face_processor,
+            result_store=results,
+            batch_size=app_settings.face_batch_size,
+            max_wait_ms=app_settings.face_max_wait_ms,
+            result_callback=broadcast.publish_result,
         ),
     }
     router = TaskRouter(
@@ -324,5 +385,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         models=models,
         model_conversions=model_conversions,
         fire_smoke_logs=fire_smoke_logs,
+        face_processor=face_processor,
         video_ingestor=video_ingestor,
     )

@@ -101,11 +101,19 @@ def test_positive_results_print_detection_logs(capsys) -> None:
             {"plates": [{"plate": "12B34567"}]},
         )
     )
+    TaskWorker._print_positive_detection(
+        result(
+            TaskName.FACE_RECOGNITION,
+            {"faces": [{"person": "Alice"}, {"person": "Unknown"}]},
+        )
+    )
     output = capsys.readouterr().out
     assert "task=fire_smoke" in output
     assert '"fire": 1' in output
     assert "task=plate_recognition" in output
     assert "12B34567" in output
+    assert "task=face_recognition" in output
+    assert "Alice" in output
 
 
 def test_play_only_frame_is_broadcast_without_ai_result() -> None:
@@ -117,6 +125,33 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert encoded.tasks == ()
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert int(image.sum()) > 0
+
+
+def test_face_result_draws_recognized_identity() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(
+            TaskName.FACE_RECOGNITION,
+            {
+                "faces": [
+                    {
+                        "bbox": [60, 45, 130, 135],
+                        "person": "Alice",
+                        "recognition_score": 0.92,
+                        "track_id": 4,
+                    }
+                ]
+            },
+        ),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.tasks == ("face_recognition",)
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     assert int(image.sum()) > 0

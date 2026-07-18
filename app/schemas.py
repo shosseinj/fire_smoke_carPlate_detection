@@ -69,7 +69,7 @@ class CameraCreate(BaseModel):
     tasks: set[TaskName] = Field(
         default_factory=set,
         description=(
-            "AI tasks. Use [] for play-only, one task for one detector, or both tasks."
+            "AI tasks. Use [] for play-only or select any combination of tasks."
         ),
     )
     source_uri: str | None = None
@@ -141,7 +141,7 @@ class CameraTaskUpdate(BaseModel):
     tasks: set[TaskName] = Field(
         default_factory=set,
         description=(
-            "Choose [], [fire_smoke], [plate_recognition], or both values. "
+            "Choose [], [fire_smoke], [plate_recognition], [face_recognition], or any combination. "
             "An empty list keeps video playback active and disables AI work."
         ),
     )

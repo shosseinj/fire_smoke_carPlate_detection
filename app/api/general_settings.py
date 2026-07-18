@@ -55,21 +55,26 @@ def _json_safe(value: Any) -> Any:
 
 
 def _snapshot(runtime: Runtime) -> dict[str, Any]:
+    application_values = asdict(runtime.settings)
+    if application_values.get("face_qdrant_api_key"):
+        application_values["face_qdrant_api_key"] = "***"
     return {
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
         "fire_smoke_detection": runtime.fire_smoke_logs.settings(),
         "application_config": {
             "source": "environment/startup defaults; use dynamic sections above for online changes",
-            "values": _json_safe(asdict(runtime.settings)),
+            "values": _json_safe(application_values),
         },
         "camera_processing": {
-            "allowed_tasks": ["fire_smoke", "plate_recognition"],
+            "allowed_tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
             "modes": {
                 "play_only": [],
                 "fire_smoke_only": ["fire_smoke"],
                 "plate_only": ["plate_recognition"],
+                "face_recognition_only": ["face_recognition"],
                 "both": ["fire_smoke", "plate_recognition"],
+                "all": ["fire_smoke", "plate_recognition", "face_recognition"],
             },
             "note": "An enabled camera with tasks=[] is decoded and broadcast without AI inference.",
         },
@@ -81,7 +86,7 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
     summary="Read all general configuration in one place",
     description=(
         "Combines model choices, dynamic detection policies, startup configuration, "
-        "and the four supported camera processing modes."
+        "and the supported camera processing modes."
     ),
 )
 def get_general_settings(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:

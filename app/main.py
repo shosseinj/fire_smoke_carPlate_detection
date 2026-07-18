@@ -17,6 +17,7 @@ from app.api.general_settings import router as general_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.sources import router as sources_router
+from app.api.faces import router as faces_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -46,6 +47,10 @@ OPENAPI_TAGS = [
     {
         "name": "fire-smoke",
         "description": "Stable incident logs and online rolling-window severity configuration.",
+    },
+    {
+        "name": "face-recognition",
+        "description": "Face model status plus Swagger enrollment and Qdrant identity management.",
     },
     {
         "name": "plate-settings",
@@ -83,7 +88,7 @@ app = FastAPI(
     title=settings.app_name,
     version="2.0.0",
     description=(
-        "Dynamic source/task routing for batched fire/smoke and Iranian plate "
+        "Dynamic source/task routing for batched fire/smoke, face recognition, and Iranian plate "
         "recognition. Open [/dashboard](/dashboard) for the synchronized annotated camera wall."
     ),
     lifespan=lifespan,
@@ -99,6 +104,7 @@ app.include_router(results_router)
 app.include_router(broadcast_router)
 app.include_router(plate_logs_router)
 app.include_router(fire_smoke_logs_router)
+app.include_router(faces_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 

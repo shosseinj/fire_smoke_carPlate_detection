@@ -426,12 +426,15 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert "/api/v1/models/artifacts/content" in schema["paths"]
             assert "/api/v1/models/conversions" in schema["paths"]
             assert "/api/v1/models/engine-exports" in schema["paths"]
+            assert "/api/v1/faces/enroll" in schema["paths"]
+            assert "/api/v1/faces/identities" in schema["paths"]
             export_body = schema["paths"]["/api/v1/models/engine-exports"]["post"][
                 "requestBody"
             ]["content"]
             assert "multipart/form-data" in export_body
             assert "/api/v1/cameras/{camera_id}/tasks" in schema["paths"]
             assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
+            assert any(tag["name"] == "face-recognition" for tag in schema["tags"])
             assert schema["tags"][0]["name"] == "system-diagnostics"
     finally:
         main_module.runtime = old_runtime
@@ -480,6 +483,9 @@ def test_general_model_settings_and_play_only_camera_api(
             assert any("role=vehicle_detector" in message for message in selected_logs)
             assert any("role=plate_detector" in message for message in selected_logs)
             assert any("role=plate_recognizer" in message for message in selected_logs)
+            assert any("role=face_human_detector" in message for message in selected_logs)
+            assert any("role=face_detector" in message for message in selected_logs)
+            assert any("role=face_embedding" in message for message in selected_logs)
 
             artifacts = client.get("/api/v1/models/artifacts", params={"format": "pt"})
             assert artifacts.status_code == 200

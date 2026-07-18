@@ -137,6 +137,12 @@ class TaskWorker:
                 "plate_count": len(plates),
                 "plates": [plate.get("plate") or "unreadable" for plate in plates],
             }
+        elif result.task == TaskName.FACE_RECOGNITION:
+            faces = result.data.get("faces", [])
+            known = [face.get("person") for face in faces if face.get("person") not in {None, "Unknown"}]
+            if not known:
+                return
+            details = {"recognized_count": len(known), "people": known}
         else:
             return
         print(

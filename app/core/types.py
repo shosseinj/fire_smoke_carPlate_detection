@@ -13,6 +13,7 @@ class TaskName(str, Enum):
 
     PLATE_RECOGNITION = "plate_recognition"
     FIRE_SMOKE = "fire_smoke"
+    FACE_RECOGNITION = "face_recognition"
 
     def __str__(self) -> str:
         return self.value

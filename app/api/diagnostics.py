@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
+from app.core.types import TaskName
 from app.runtime import Runtime
 
 router = APIRouter(
@@ -58,6 +59,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
                 "exists": runtime.settings.vehicle_detector_weights.is_file(),
                 "class_ids": list(runtime.settings.vehicle_class_ids),
             },
+            "face_recognition": runtime.face_processor.status(),
         },
         "fire_smoke_policy": runtime.fire_smoke_logs.settings(),
         "plate_detection_policy": runtime.plate_settings.general(),
@@ -82,6 +84,17 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
     video = status["video_ingestor"]
     enabled = [camera for camera in runtime.registry.list() if camera.enabled]
     active = set(video.get("sources", {}))
+    face_assigned = any(
+        TaskName.FACE_RECOGNITION in camera.tasks for camera in enabled
+    )
+    face_models_ready = all(
+        path.is_file()
+        for path in (
+            runtime.settings.face_human_model_path,
+            runtime.settings.face_detector_model_path,
+            runtime.settings.face_embedding_model_path,
+        )
+    )
     local_missing = []
     project_root = runtime.settings.camera_db_path.parents[1]
     for camera in enabled:
@@ -137,6 +150,20 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
                 else "fail"
             ),
             "detail": {"minimum_score": runtime.settings.plate_confidence},
+        },
+        {
+            "section": "face_recognition_models",
+            "status": (
+                "pass"
+                if runtime.settings.processor_mode == "mock" or face_models_ready
+                else "fail" if face_assigned else "warn"
+            ),
+            "detail": {
+                "assigned_to_enabled_camera": face_assigned,
+                "human_model": runtime.settings.face_human_model_path.is_file(),
+                "face_model": runtime.settings.face_detector_model_path.is_file(),
+                "embedding_model": runtime.settings.face_embedding_model_path.is_file(),
+            },
         },
         {
             "section": "persistent_logs",

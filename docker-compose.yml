@@ -19,11 +19,11 @@ services:
       DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS: ${DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS:-30}
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
-      CAMERA_DB_PATH: /app/data/cameras.sqlite3
-      SOURCE_REGISTRY_PATH: /app/data/sources.json
-      PLATE_LOG_DB_PATH: /app/data/plate_logs.sqlite3
-      SAVED_MEDIA_PATH: /app/saved_media
-      MODEL_ROOT_PATH: /app/weights
+      CAMERA_DB_PATH: /workspace/data/cameras.sqlite3
+      SOURCE_REGISTRY_PATH: /workspace/data/sources.json
+      PLATE_LOG_DB_PATH: /workspace/data/plate_logs.sqlite3
+      SAVED_MEDIA_PATH: /workspace/saved_media
+      MODEL_ROOT_PATH: /workspace/weights
       MODEL_PREFERRED_FORMAT: ${MODEL_PREFERRED_FORMAT:-engine}
       MODEL_ALLOW_ONNX_FALLBACK: ${MODEL_ALLOW_ONNX_FALLBACK:-true}
       MODEL_ALLOW_PT_FALLBACK: ${MODEL_ALLOW_PT_FALLBACK:-true}
@@ -35,14 +35,14 @@ services:
       MODEL_EXPORT_TIMEOUT_SECONDS: ${MODEL_EXPORT_TIMEOUT_SECONDS:-300}
       FIRE_CONFIDENCE: ${FIRE_CONFIDENCE:-0.30}
       SMOKE_CONFIDENCE: ${SMOKE_CONFIDENCE:-0.30}
-      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/app/weights/fire_smoke/best_nano_111.pt}
+      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/workspace/weights/fire_smoke/best_nano_111.pt}
       PLATE_CONFIDENCE: ${PLATE_CONFIDENCE:-0.30}
-      PLATE_DETECTOR_WEIGHTS: ${PLATE_DETECTOR_WEIGHTS:-/app/weights/plate_detector/model.pt}
+      PLATE_DETECTOR_WEIGHTS: ${PLATE_DETECTOR_WEIGHTS:-/workspace/weights/plate_detector/model.pt}
       PLATE_CLASS_IDS: ${PLATE_CLASS_IDS:-0}
-      PLATE_RECOGNIZER_DIR: ${PLATE_RECOGNIZER_DIR:-/app/weights/plate_recognizer}
+      PLATE_RECOGNIZER_DIR: ${PLATE_RECOGNIZER_DIR:-/workspace/weights/plate_recognizer}
       PLATE_CROP_BATCH_SIZE: ${PLATE_CROP_BATCH_SIZE:-16}
       VEHICLE_CONFIDENCE: ${VEHICLE_CONFIDENCE:-0.35}
-      VEHICLE_DETECTOR_WEIGHTS: ${VEHICLE_DETECTOR_WEIGHTS:-/app/weights/vehicle_detector/yolo11n.pt}
+      VEHICLE_DETECTOR_WEIGHTS: ${VEHICLE_DETECTOR_WEIGHTS:-/workspace/weights/vehicle_detector/yolo11n.pt}
       VEHICLE_IOU: ${VEHICLE_IOU:-0.45}
       VEHICLE_IMGSZ: ${VEHICLE_IMGSZ:-640}
       VEHICLE_MAX_PER_FRAME: ${VEHICLE_MAX_PER_FRAME:-12}
@@ -52,12 +52,29 @@ services:
       MIN_VEHICLE_WIDTH_PIXELS: ${MIN_VEHICLE_WIDTH_PIXELS:-120}
       MIN_VEHICLE_HEIGHT_PIXELS: ${MIN_VEHICLE_HEIGHT_PIXELS:-80}
       MIN_VEHICLE_AREA_RATIO: ${MIN_VEHICLE_AREA_RATIO:-0.025}
+      FACE_HUMAN_MODEL: ${FACE_HUMAN_MODEL:-/workspace/weights/face_recognition/yolo26s-pose_batch8.pt}
+      FACE_DETECTOR_MODEL: ${FACE_DETECTOR_MODEL:-/workspace/weights/face_recognition/yolov8n-face_batch8.pt}
+      FACE_EMBEDDING_MODEL: ${FACE_EMBEDDING_MODEL:-/workspace/weights/face_recognition/arcface_fp16.onnx}
+      FACE_DEVICE: ${FACE_DEVICE:-0}
+      FACE_BATCH_SIZE: ${FACE_BATCH_SIZE:-8}
+      FACE_MAX_WAIT_MS: ${FACE_MAX_WAIT_MS:-25}
+      FACE_HUMAN_ENGINE_FIXED_BATCH: ${FACE_HUMAN_ENGINE_FIXED_BATCH:-8}
+      FACE_DETECTOR_ENGINE_FIXED_BATCH: ${FACE_DETECTOR_ENGINE_FIXED_BATCH:-8}
+      FACE_RECOGNITION_THRESHOLD: ${FACE_RECOGNITION_THRESHOLD:-0.45}
+      FACE_HISTORY_SIZE: ${FACE_HISTORY_SIZE:-30}
+      FACE_STABLE_MIN_HITS: ${FACE_STABLE_MIN_HITS:-3}
+      FACE_EMBEDDING_BATCH_SIZE: ${FACE_EMBEDDING_BATCH_SIZE:-64}
+      FACE_QDRANT_COLLECTION: ${FACE_QDRANT_COLLECTION:-faces}
+      FACE_QDRANT_PATH: /workspace/data/qdrant
+      FACE_QDRANT_URL: ${FACE_QDRANT_URL:-}
+      FACE_QDRANT_API_KEY: ${FACE_QDRANT_API_KEY:-}
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      - ./weights:/app/weights:ro
-      - ./saved_media:/app/saved_media
+      - ./app:/workspace/app:ro
+      - ./data:/workspace/data
+      - ./weights:/workspace/weights:ro
+      - ./saved_media:/workspace/saved_media
     shm_size: "2gb"
     deploy:
       resources:

@@ -170,3 +170,41 @@ def test_fifty_sources_can_be_routed_without_global_camera_limit(tmp_path: Path)
         assert max(plate.batch_sizes) <= 8
     finally:
         router.close()
+
+
+def test_face_recognition_has_an_independent_worker(tmp_path: Path) -> None:
+    registry = SourceRegistry(tmp_path / "face.json")
+    registry.create(
+        SourceRecord(
+            source_id="face-camera",
+            name="Face camera",
+            tasks={TaskName.FACE_RECOGNITION},
+        )
+    )
+    results = ResultStore(10)
+    face = MockProcessor(TaskName.FACE_RECOGNITION)
+    router = TaskRouter(
+        registry=registry,
+        result_store=results,
+        workers={
+            TaskName.FACE_RECOGNITION: TaskWorker(
+                processor=face,
+                result_store=results,
+                batch_size=8,
+                max_wait_ms=5,
+            )
+        },
+    )
+    router.start()
+    try:
+        summary = router.submit_round(
+            frames=[np.zeros((16, 16, 3), dtype=np.uint8)],
+            source_ids=["face-camera"],
+            round_sequence=1,
+        )
+        values = wait_for_results(results, 1)
+        assert summary["task_submissions"] == 1
+        assert values[0]["task"] == "face_recognition"
+        assert face.batch_sizes == [1]
+    finally:
+        router.close()
