@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import cv2
 import numpy as np
 
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ class DeepStreamSourceState:
     sink_handler_id: int
     frame_width: int
     frame_height: int
+    preserve_source_resolution: bool
     delivery_target_fps: float
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
@@ -61,6 +64,8 @@ class DeepStreamSourceState:
     last_error: str | None = None
     warnings: int = 0
     loop_count: int = 0
+    source_frame_width: int = 0
+    source_frame_height: int = 0
 
 
 class DeepStreamIngestor:
@@ -319,6 +324,8 @@ class DeepStreamIngestor:
             if state is None:
                 return Gst.FlowReturn.OK
             state.latest_frame = frame
+            state.source_frame_width = int(frame.shape[1])
+            state.source_frame_height = int(frame.shape[0])
             state.latest_version += 1
             state.frame_index = self._next_frame_index_locked(source_id)
             state.source_time_seconds = source_time
@@ -398,12 +405,15 @@ class DeepStreamIngestor:
             queue.set_property("max-size-bytes", 0)
             queue.set_property("max-size-time", 0)
             pacer.set_property("sync", not is_rtsp)
+            preserve_source_resolution = TaskName.FACE_RECOGNITION in record.tasks
+            bgrx_caps_value = "video/x-raw,format=BGRx"
+            if not preserve_source_resolution:
+                bgrx_caps_value += (
+                    f",width={record.frame_width},height={record.frame_height}"
+                )
             bgrx_caps.set_property(
                 "caps",
-                Gst.Caps.from_string(
-                    "video/x-raw,format=BGRx,"
-                    f"width={record.frame_width},height={record.frame_height}"
-                ),
+                Gst.Caps.from_string(bgrx_caps_value),
             )
             bgr_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGR"))
             sink.set_property("emit-signals", True)
@@ -460,6 +470,7 @@ class DeepStreamIngestor:
                 sink_handler_id=sink_handler_id,
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
+                preserve_source_resolution=preserve_source_resolution,
                 delivery_target_fps=(
                     self.target_fps if record.tasks else self.preview_fps
                 ),
@@ -567,6 +578,8 @@ class DeepStreamIngestor:
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
                 or state.frame_height != record.frame_height
+                or getattr(state, "preserve_source_resolution", False)
+                != (TaskName.FACE_RECOGNITION in record.tasks)
             ):
                 self._close_source(record.source_id)
                 state = None
@@ -594,7 +607,20 @@ class DeepStreamIngestor:
                 if state.latest_frame is not None
                 and state.latest_version > state.submitted_version
             ]
-            frames = [state.latest_frame for state in selected]
+            source_frames = [state.latest_frame for state in selected]
+            frames = [
+                (
+                    frame
+                    if frame.shape[1] == state.frame_width
+                    and frame.shape[0] == state.frame_height
+                    else cv2.resize(
+                        frame,
+                        (state.frame_width, state.frame_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                )
+                for state, frame in zip(selected, source_frames)
+            ]
             source_ids = [state.source_id for state in selected]
             frame_indexes = [state.frame_index for state in selected]
             source_times = [state.source_time_seconds for state in selected]
@@ -604,9 +630,12 @@ class DeepStreamIngestor:
                     "source_type": state.source_type,
                     "frame_width": state.frame_width,
                     "frame_height": state.frame_height,
+                    "source_frame_width": state.source_frame_width,
+                    "source_frame_height": state.source_frame_height,
+                    "source_frame": source_frame,
                     "ingest_backend": "deepstream",
                 }
-                for state in selected
+                for state, source_frame in zip(selected, source_frames)
             ]
             versions = {state.source_id: state.latest_version for state in selected}
         if not frames:
@@ -718,6 +747,9 @@ class DeepStreamIngestor:
                         "source_type": state.source_type,
                         "frame_width": state.frame_width,
                         "frame_height": state.frame_height,
+                        "source_frame_width": state.source_frame_width,
+                        "source_frame_height": state.source_frame_height,
+                        "preserve_source_resolution": state.preserve_source_resolution,
                         "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
                         "received_frames": state.received_frames,

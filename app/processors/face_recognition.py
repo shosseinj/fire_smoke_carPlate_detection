@@ -920,6 +920,48 @@ class FaceRecognitionProcessor(BatchProcessor):
             )
         return faces
 
+    @staticmethod
+    def _scale_bbox(
+        bbox: Sequence[float],
+        inference_shape: Sequence[int],
+        source_shape: Sequence[int],
+    ) -> list[float]:
+        inference_height, inference_width = (
+            int(inference_shape[0]),
+            int(inference_shape[1]),
+        )
+        source_height, source_width = int(source_shape[0]), int(source_shape[1])
+        scale_x = source_width / max(float(inference_width), 1.0)
+        scale_y = source_height / max(float(inference_height), 1.0)
+        return [
+            float(bbox[0]) * scale_x,
+            float(bbox[1]) * scale_y,
+            float(bbox[2]) * scale_x,
+            float(bbox[3]) * scale_y,
+        ]
+
+    @classmethod
+    def _source_face(
+        cls,
+        face: dict[str, Any],
+        inference_frame: np.ndarray,
+        source_frame: np.ndarray,
+    ) -> dict[str, Any]:
+        landmarks = np.asarray(face.get("landmarks", []), dtype=np.float32)
+        scale_x = source_frame.shape[1] / max(float(inference_frame.shape[1]), 1.0)
+        scale_y = source_frame.shape[0] / max(float(inference_frame.shape[0]), 1.0)
+        source_landmarks = landmarks.copy()
+        if source_landmarks.ndim == 2 and source_landmarks.shape[1] >= 2:
+            source_landmarks[:, 0] *= scale_x
+            source_landmarks[:, 1] *= scale_y
+        return {
+            **face,
+            "bbox": cls._scale_bbox(
+                face["bbox"], inference_frame.shape, source_frame.shape
+            ),
+            "landmarks": source_landmarks,
+        }
+
     def _quality(
         self,
         frame: np.ndarray,
@@ -942,6 +984,8 @@ class FaceRecognitionProcessor(BatchProcessor):
             "pose_score": 0.0,
             "face_width": 0,
             "face_height": 0,
+            "quality_frame_width": int(width),
+            "quality_frame_height": int(height),
         }
         if crop.size == 0:
             return False, 0.0, "empty_crop", None, metrics
@@ -1155,6 +1199,7 @@ class FaceRecognitionProcessor(BatchProcessor):
             assert self._embedder is not None
             assert self._vector_store is not None
             frames = [packet.frame for packet in packets]
+            source_frames = [packet.source_frame for packet in packets]
             detection_started = time.perf_counter()
             human_results = self._predict_yolo(
                 self._human_detector,
@@ -1177,12 +1222,20 @@ class FaceRecognitionProcessor(BatchProcessor):
             frame_payloads: list[dict[str, Any]] = []
             face_crops: list[np.ndarray] = []
             face_locations: list[tuple[int, int]] = []
-            for frame_index, (packet, human_result, face_result) in enumerate(
-                zip(packets, human_results, face_results)
+            for frame_index, (
+                packet,
+                source_frame,
+                human_result,
+                face_result,
+            ) in enumerate(
+                zip(packets, source_frames, human_results, face_results)
             ):
                 humans = self._boxes(human_result, self.settings.human_confidence)
                 for human in humans:
                     human.pop("_result_index", None)
+                    human["source_bbox"] = self._scale_bbox(
+                        human["bbox"], packet.frame.shape, source_frame.shape
+                    )
                 faces = self._faces(face_result)
                 tracker = self._tracker(packet.source_id)
                 track_ids = tracker.update(
@@ -1205,13 +1258,20 @@ class FaceRecognitionProcessor(BatchProcessor):
                 prepared_faces: list[dict[str, Any]] = []
                 for face_index, face in enumerate(faces):
                     track_id = tracker.track_for_face(face["bbox"])
+                    source_face = self._source_face(
+                        face, packet.frame, source_frame
+                    )
                     valid, quality, reason, crop, quality_metrics = self._quality(
-                        packet.frame, face
+                        source_frame, source_face
                     )
                     prepared = {
                         "bbox": face["bbox"],
+                        "source_bbox": source_face["bbox"],
                         "landmarks": np.asarray(
                             face["landmarks"], dtype=np.float32
+                        ).round(3).tolist(),
+                        "source_landmarks": np.asarray(
+                            source_face["landmarks"], dtype=np.float32
                         ).round(3).tolist(),
                         "detection_confidence": face["confidence"],
                         "track_id": track_id,
@@ -1301,6 +1361,14 @@ class FaceRecognitionProcessor(BatchProcessor):
                 )
                 data = {
                     **payload,
+                    "inference_frame_size": {
+                        "width": int(packet.frame.shape[1]),
+                        "height": int(packet.frame.shape[0]),
+                    },
+                    "source_frame_size": {
+                        "width": int(packet.source_frame.shape[1]),
+                        "height": int(packet.source_frame.shape[0]),
+                    },
                     "tracking_session_id": self._tracking_session_id,
                     "human_count": len(payload["humans"]),
                     "face_count": len(faces),

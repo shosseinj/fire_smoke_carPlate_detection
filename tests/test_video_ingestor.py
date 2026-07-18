@@ -141,6 +141,12 @@ def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
     assert router.calls[0]["frame_indexes"] == [0, 0]
     assert router.calls[0]["source_times_seconds"] == [0.1, 0.1]
     assert all(frame.shape == (640, 640, 3) for frame in router.calls[0]["frames"])
+    assert all(
+        item["source_frame"].shape == (4, 6, 3)
+        for item in router.calls[0]["metadata"]
+    )
+    assert router.calls[0]["metadata"][0]["source_frame_width"] == 6
+    assert router.calls[0]["metadata"][0]["source_frame_height"] == 4
     assert ingestor.status()["sources"]["camera-01"]["stride"] == 2
     ingestor.close()
 
@@ -221,6 +227,52 @@ def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
     assert ingestor._next_frame_index_locked("camera-loop") == 1
     # A replacement Gst pipeline uses the same per-camera sequence.
     assert ingestor._next_frame_index_locked("camera-loop") == 2
+
+
+def test_deepstream_submits_640_inference_view_with_native_source_frame(
+    tmp_path: Path,
+) -> None:
+    registry = SourceRegistry()
+    registry.create(
+        SourceRecord(
+            source_id="camera-face",
+            name="2K face camera",
+            tasks={TaskName.FACE_RECOGNITION},
+            source_uri="data/face.mp4",
+            frame_width=640,
+            frame_height=640,
+        )
+    )
+    router = RecordingRouter(registry)
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=router,  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    source_frame = np.full((1080, 2048, 3), 31, dtype=np.uint8)
+    ingestor._states["camera-face"] = SimpleNamespace(
+        latest_frame=source_frame,
+        latest_version=1,
+        submitted_version=0,
+        source_id="camera-face",
+        frame_width=640,
+        frame_height=640,
+        frame_index=7,
+        source_time_seconds=1.5,
+        display_uri="data/face.mp4",
+        source_type="video_file",
+        source_frame_width=2048,
+        source_frame_height=1080,
+        submitted_frames=0,
+    )
+
+    ingestor._submit_latest_round()
+
+    call = router.calls[0]
+    assert call["frames"][0].shape == (640, 640, 3)
+    assert call["metadata"][0]["source_frame"] is source_frame
+    assert call["metadata"][0]["source_frame_width"] == 2048
+    assert call["metadata"][0]["source_frame_height"] == 1080
 
 
 def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(

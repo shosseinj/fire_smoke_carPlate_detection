@@ -41,6 +41,7 @@ class TrackMediaState:
     full_frame_writer: cv2.VideoWriter | None = None
     face_writer: cv2.VideoWriter | None = None
     full_frame_size: tuple[int, int] | None = None
+    face_size: tuple[int, int] | None = None
     video_url: str = ""
     face_video_url: str = ""
     last_event_monotonic: float = 0.0
@@ -48,8 +49,6 @@ class TrackMediaState:
 
 class HumanLogStore:
     """Non-blocking per-ByteTrack best snapshot and independent video recorder."""
-
-    FACE_VIDEO_SIZE = (224, 224)
 
     def __init__(
         self,
@@ -207,7 +206,11 @@ class HumanLogStore:
         values = np.asarray(landmarks, dtype=np.float32)
         if values.shape[0] < 5:
             return None
-        reference = 2.0 * np.asarray(
+        x1, y1, x2, y2 = (float(value) for value in bbox[:4])
+        side = max(112, int(round(max(x2 - x1, y2 - y1))))
+        if side % 2:
+            side += 1
+        reference = (side / 112.0) * np.asarray(
             [
                 [38.2946, 51.6963],
                 [73.5318, 51.5014],
@@ -224,11 +227,12 @@ class HumanLogStore:
         )
         if transform is None:
             return None
-        return cv2.warpAffine(frame, transform, cls.FACE_VIDEO_SIZE)
+        return cv2.warpAffine(frame, transform, (side, side))
 
     def observe_result(self, packet: FramePacket, result: TaskResult) -> None:
         if result.error:
             return
+        source_frame = packet.source_frame
         session_id = str(result.data.get("tracking_session_id") or "unknown-session")
         faces_by_track: dict[int, dict[str, Any]] = {}
         for face in result.data.get("faces", []):
@@ -248,13 +252,18 @@ class HumanLogStore:
             track_id = int(track_id)
             key = (session_id, packet.source_id, track_id)
             name = str(human.get("person") or "Unknown").strip() or "Unknown"
-            bbox = [float(value) for value in human.get("bbox", [0, 0, 0, 0])[:4]]
-            human_crop = self._human_crop(packet.frame, bbox)
+            bbox = [
+                float(value)
+                for value in human.get(
+                    "source_bbox", human.get("bbox", [0, 0, 0, 0])
+                )[:4]
+            ]
+            human_crop = self._human_crop(source_frame, bbox)
             if human_crop is None:
                 continue
             face = faces_by_track.get(track_id)
             face_quality = float(face.get("quality_score", 0.0)) if face else 0.0
-            frame_area = max(1.0, float(packet.frame.shape[0] * packet.frame.shape[1]))
+            frame_area = max(1.0, float(source_frame.shape[0] * source_frame.shape[1]))
             human_area = max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
             if face is not None:
                 snapshot_quality = 0.70 + 0.30 * face_quality
@@ -268,9 +277,14 @@ class HumanLogStore:
             face_frame = None
             if face is not None:
                 face_frame = self._aligned_face(
-                    packet.frame,
-                    [float(value) for value in face.get("bbox", [0, 0, 0, 0])[:4]],
-                    list(face.get("landmarks", [])),
+                    source_frame,
+                    [
+                        float(value)
+                        for value in face.get(
+                            "source_bbox", face.get("bbox", [0, 0, 0, 0])
+                        )[:4]
+                    ],
+                    list(face.get("source_landmarks", face.get("landmarks", []))),
                 )
             with self._lock:
                 previous_name = self._observed_names.get(key)
@@ -326,7 +340,7 @@ class HumanLogStore:
                 snapshot_frame=human_crop if better_snapshot else None,
                 snapshot_quality=snapshot_quality,
                 full_frame_video_frame=(
-                    packet.frame.copy() if full_frame_due else None
+                    source_frame.copy() if full_frame_due else None
                 ),
                 face_video_frame=face_frame if face_due else None,
                 face_quality=face_quality,
@@ -411,11 +425,13 @@ class HumanLogStore:
             )
             self._created_human_videos += 1
         if event.face_video_frame is not None and state.face_writer is None:
+            face_height, face_width = event.face_video_frame.shape[:2]
+            state.face_size = (face_width, face_height)
             state.face_writer, state.face_video_url = self._new_writer(
                 self.face_video_dir,
                 "human_face_videos",
                 f"{stem}_faces",
-                self.FACE_VIDEO_SIZE,
+                state.face_size,
             )
             self._created_face_videos += 1
         return state
@@ -447,7 +463,13 @@ class HumanLogStore:
             state.full_frame_writer.write(frame)
             wrote_full_frame = True
         if event.face_video_frame is not None and state.face_writer is not None:
-            state.face_writer.write(event.face_video_frame)
+            face_frame = event.face_video_frame
+            if (
+                state.face_size is not None
+                and (face_frame.shape[1], face_frame.shape[0]) != state.face_size
+            ):
+                face_frame = cv2.resize(face_frame, state.face_size)
+            state.face_writer.write(face_frame)
             wrote_face = True
 
         old_snapshot_url = ""

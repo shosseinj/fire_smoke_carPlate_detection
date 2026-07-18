@@ -34,6 +34,8 @@ class VideoState:
     loop_count: int = 0
     read_failures: int = 0
     last_error: str | None = None
+    source_frame_width: int = 0
+    source_frame_height: int = 0
 
 
 class VideoFileIngestor:
@@ -279,11 +281,14 @@ class VideoFileIngestor:
                 elif not self.loop:
                     self._release(record.source_id)
                 continue
+            state.source_frame_width = int(frame.shape[1])
+            state.source_frame_height = int(frame.shape[0])
+            source_frame = frame
             if frame.shape[1] != state.frame_width or frame.shape[0] != state.frame_height:
                 frame = cv2.resize(
-                    frame,
+                    source_frame,
                     (state.frame_width, state.frame_height),
-                    interpolation=cv2.INTER_LINEAR,
+                    interpolation=cv2.INTER_AREA,
                 )
             frames.append(frame)
             source_ids.append(record.source_id)
@@ -295,6 +300,9 @@ class VideoFileIngestor:
                     "source_type": "rtsp" if state.is_live else "video_file",
                     "frame_width": state.frame_width,
                     "frame_height": state.frame_height,
+                    "source_frame_width": state.source_frame_width,
+                    "source_frame_height": state.source_frame_height,
+                    "source_frame": source_frame,
                     "video_loop_count": state.loop_count,
                 }
             )
@@ -361,6 +369,10 @@ class VideoFileIngestor:
                     "source_type": "rtsp" if state.is_live else "video_file",
                     "source_fps": state.fps,
                     "stride": state.stride,
+                    "frame_width": state.frame_width,
+                    "frame_height": state.frame_height,
+                    "source_frame_width": state.source_frame_width,
+                    "source_frame_height": state.source_frame_height,
                     "frame_index": state.frame_index,
                     "submitted_frames": state.submitted_frames,
                     "loop_count": state.loop_count,

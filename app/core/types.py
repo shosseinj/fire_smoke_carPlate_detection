@@ -30,6 +30,14 @@ class FramePacket:
     source_time_seconds: float | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    @property
+    def source_frame(self) -> np.ndarray:
+        """Native decoded frame retained for high-resolution evidence crops."""
+        value = self.metadata.get("source_frame")
+        if isinstance(value, np.ndarray) and value.ndim in (2, 3):
+            return value
+        return self.frame
+
 
 @dataclass(slots=True)
 class TaskResult:

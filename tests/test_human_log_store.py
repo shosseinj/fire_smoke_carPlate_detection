@@ -116,7 +116,7 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(tmp_path: Path) -
                 if video == human_video:
                     assert frame.shape[:2] == (120, 160)
                 else:
-                    assert frame.shape[:2] == (224, 224)
+                    assert frame.shape[:2] == (112, 112)
             finally:
                 capture.release()
         assert store.status()["saved_snapshots"] == 2
@@ -154,7 +154,7 @@ def test_best_face_is_saved_when_full_frame_sample_is_not_due(tmp_path: Path) ->
             ok, saved_face = capture.read()
             assert ok is True
             assert saved_face is not None
-            assert saved_face.shape[:2] == (224, 224)
+            assert saved_face.shape[:2] == (112, 112)
         finally:
             capture.release()
     finally:
@@ -214,5 +214,58 @@ def test_legacy_human_log_schema_removes_pose_and_crop_video_fields(
         assert "best_face_yaw" not in columns
         assert "best_face_pitch" not in columns
         assert "best_face_roll" not in columns
+    finally:
+        store.close()
+
+
+def test_media_is_cropped_and_encoded_from_native_source_resolution(
+    tmp_path: Path,
+) -> None:
+    source_frame = np.zeros((360, 480, 3), dtype=np.uint8)
+    source_frame[30:330, 60:420] = (40, 160, 240)
+    inference = replace(packet(1), metadata={"source_frame": source_frame})
+    detected = result(inference, "Alice", 0.95, face_quality=0.95)
+    detected.data["humans"][0]["source_bbox"] = [30, 30, 330, 330]
+    detected.data["faces"][0]["source_bbox"] = [120, 60, 270, 225]
+    detected.data["faces"][0]["source_landmarks"] = [
+        [150, 105],
+        [225, 105],
+        [189, 144],
+        [159, 189],
+        [219, 189],
+    ]
+    store = HumanLogStore(tmp_path / "logs.sqlite3", tmp_path / "media")
+    try:
+        store.observe_result(inference, detected)
+        store.flush()
+        store.close()
+
+        row = store.list(track_id=13)[0]
+        snapshot_path = tmp_path / "media" / "human_snapshots" / Path(
+            row["snapshot_url"]
+        ).name
+        snapshot = cv2.imread(str(snapshot_path))
+        assert snapshot is not None
+        assert snapshot.shape[0] > inference.frame.shape[0]
+        assert snapshot.shape[1] > inference.frame.shape[1]
+
+        full_video = tmp_path / "media" / "human_videos" / Path(
+            row["video_url"]
+        ).name
+        full_capture = cv2.VideoCapture(str(full_video))
+        face_video = tmp_path / "media" / "human_face_videos" / Path(
+            row["face_video_url"]
+        ).name
+        face_capture = cv2.VideoCapture(str(face_video))
+        try:
+            full_ok, full_frame = full_capture.read()
+            face_ok, face_frame = face_capture.read()
+            assert full_ok is True
+            assert full_frame.shape[:2] == (360, 480)
+            assert face_ok is True
+            assert face_frame.shape[:2] == (166, 166)
+        finally:
+            full_capture.release()
+            face_capture.release()
     finally:
         store.close()

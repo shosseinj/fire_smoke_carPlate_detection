@@ -24,9 +24,11 @@ class FakeDetector:
             dtype=np.float32,
         )
         self.calls: list[int] = []
+        self.input_shapes: list[list[tuple[int, ...]]] = []
 
     def predict(self, *, source, **_kwargs):
         self.calls.append(len(source))
+        self.input_shapes.append([tuple(frame.shape) for frame in source])
         results = []
         for _ in source:
             if not self.enabled:
@@ -192,6 +194,51 @@ def test_human_keeps_track_identity_when_face_is_no_longer_visible(tmp_path: Pat
     assert rotated.data["humans"][0]["person"] == "Alice"
     assert rotated.data["humans"][0]["identity_stable"] is True
     assert rotated.data["humans"][0]["face_visible"] is False
+
+
+def test_detection_stays_low_resolution_but_quality_uses_native_frame(
+    tmp_path: Path,
+) -> None:
+    processor, human, face, embedder, store = build_processor(tmp_path)
+    processor.update_quality_settings(
+        {
+            "quality_threshold": 0.0,
+            "blur_threshold": 0.0,
+            "max_abs_yaw": 90.0,
+            "max_abs_pitch": 90.0,
+            "max_abs_roll": 90.0,
+        }
+    )
+    inference_packet = packet("cam-2k", 1)
+    source_checker = np.indices((360, 240)).sum(axis=0) % 2
+    source_frame = np.repeat(
+        (source_checker * 255).astype(np.uint8)[:, :, None], 3, axis=2
+    )
+    inference_packet = FramePacket(
+        source_id=inference_packet.source_id,
+        frame=inference_packet.frame,
+        round_sequence=inference_packet.round_sequence,
+        frame_index=inference_packet.frame_index,
+        captured_monotonic=inference_packet.captured_monotonic,
+        captured_at_utc=inference_packet.captured_at_utc,
+        metadata={"source_frame": source_frame},
+    )
+
+    output = processor.process_batch([inference_packet])[0]
+
+    assert human.input_shapes[0][0] == (120, 120, 3)
+    assert face.input_shapes[0][0] == (120, 120, 3)
+    detected_face = output.data["faces"][0]
+    assert detected_face["bbox"] == [25.0, 20.0, 75.0, 75.0]
+    assert detected_face["source_bbox"] == [50.0, 60.0, 150.0, 225.0]
+    assert detected_face["quality_metrics"]["face_width"] == 100
+    assert detected_face["quality_metrics"]["face_height"] == 165
+    assert detected_face["quality_metrics"]["quality_frame_width"] == 240
+    assert detected_face["quality_metrics"]["quality_frame_height"] == 360
+    assert output.data["inference_frame_size"] == {"width": 120, "height": 120}
+    assert output.data["source_frame_size"] == {"width": 240, "height": 360}
+    assert embedder.batch_sizes == [1]
+    assert store.search_batch_sizes == [1]
 
 
 def test_quality_gate_blocks_low_score_and_out_of_pose_faces(tmp_path: Path) -> None:
