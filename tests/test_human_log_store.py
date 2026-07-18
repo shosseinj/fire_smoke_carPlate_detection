@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from app.core.human_log_store import HumanLogStore
@@ -19,13 +20,32 @@ def packet(frame_index: int) -> FramePacket:
     )
 
 
-def result(source: FramePacket, name: str, score: float) -> TaskResult:
+def result(
+    source: FramePacket,
+    name: str,
+    score: float,
+    *,
+    face_quality: float | None = None,
+) -> TaskResult:
+    faces = []
+    if face_quality is not None:
+        faces.append(
+            {
+                "track_id": 13,
+                "bbox": [40, 20, 90, 75],
+                "landmarks": [[50, 35], [75, 35], [63, 48], [53, 63], [73, 63]],
+                "quality_valid": True,
+                "quality_score": face_quality,
+                "quality_metrics": {"yaw": 2.0, "pitch": 8.0, "roll": 1.0},
+            }
+        )
     return TaskResult.success(
         task=TaskName.FACE_RECOGNITION,
         packet=source,
         processing_ms=1.0,
         data={
             "tracking_session_id": "session-a",
+            "faces": faces,
             "humans": [
                 {
                     "track_id": 13,
@@ -44,21 +64,53 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(tmp_path: Path) -
     try:
         first = packet(1)
         recognized = packet(2)
+        later_lower_quality = packet(3)
         store.observe_result(first, result(first, "Unknown", 0.0))
-        store.observe_result(recognized, result(recognized, "Alice", 0.93))
+        store.observe_result(
+            recognized,
+            result(recognized, "Alice", 0.93, face_quality=0.90),
+        )
+        store.observe_result(
+            later_lower_quality,
+            result(later_lower_quality, "Alice", 0.80, face_quality=0.60),
+        )
         store.flush()
+        store.close()
 
         rows = store.list(camera="camera-01", track_id=13)
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice"
         assert rows[0]["first_seen"] == "2026-07-18T00:00:01+00:00"
-        assert rows[0]["last_seen"] == "2026-07-18T00:00:02+00:00"
+        assert rows[0]["last_seen"] == "2026-07-18T00:00:03+00:00"
         assert rows[0]["recognition_score"] == 0.93
+        assert rows[0]["snapshot_quality"] == 0.97
+        assert rows[0]["best_face_quality"] == 0.90
+        assert rows[0]["best_face_pitch"] == 8.0
         assert rows[0]["snapshot_url"].startswith("/media/human_snapshots/")
+        assert rows[0]["video_url"].startswith("/media/human_videos/")
+        assert rows[0]["face_video_url"].startswith("/media/human_face_videos/")
+        assert rows[0]["human_video_frames"] == 3
+        assert rows[0]["accepted_face_frames"] == 2
         snapshot = tmp_path / "media" / "human_snapshots" / Path(
             rows[0]["snapshot_url"]
         ).name
         assert snapshot.is_file()
+        human_video = tmp_path / "media" / "human_videos" / Path(
+            rows[0]["video_url"]
+        ).name
+        face_video = tmp_path / "media" / "human_face_videos" / Path(
+            rows[0]["face_video_url"]
+        ).name
+        for video in (human_video, face_video):
+            assert video.is_file()
+            assert video.stat().st_size > 0
+            capture = cv2.VideoCapture(str(video))
+            try:
+                ok, frame = capture.read()
+                assert ok is True
+                assert frame is not None
+            finally:
+                capture.release()
         assert store.status()["saved_snapshots"] == 2
     finally:
         store.close()

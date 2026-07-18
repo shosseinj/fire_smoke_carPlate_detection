@@ -141,6 +141,11 @@ class Settings:
     face_min_size: int = _env_int("FACE_MIN_SIZE", 24)
     face_blur_threshold: float = _env_float("FACE_BLUR_THRESHOLD", 20.0)
     face_min_eye_distance: float = _env_float("FACE_MIN_EYE_DISTANCE", 8.0)
+    face_quality_threshold: float = _env_float("FACE_QUALITY_THRESHOLD", 0.55)
+    face_max_abs_yaw: float = _env_float("FACE_MAX_ABS_YAW", 45.0)
+    face_max_abs_pitch: float = _env_float("FACE_MAX_ABS_PITCH", 55.0)
+    face_max_abs_roll: float = _env_float("FACE_MAX_ABS_ROLL", 35.0)
+    face_require_landmarks: bool = _env_bool("FACE_REQUIRE_LANDMARKS", True)
     face_tracker_high_threshold: float = _env_float(
         "FACE_TRACKER_HIGH_THRESHOLD", 0.40
     )
@@ -162,6 +167,12 @@ class Settings:
     face_qdrant_url: str | None = os.getenv("FACE_QDRANT_URL") or None
     face_qdrant_path: Path = _path("FACE_QDRANT_PATH", "data/qdrant")
     face_qdrant_api_key: str | None = os.getenv("FACE_QDRANT_API_KEY") or None
+
+    human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 10.0)
+    human_video_idle_seconds: float = _env_float("HUMAN_VIDEO_IDLE_SECONDS", 5.0)
+    human_snapshot_min_improvement: float = _env_float(
+        "HUMAN_SNAPSHOT_MIN_IMPROVEMENT", 0.01
+    )
 
     draw_info: bool = _env_bool("draw_info", True)
     save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)

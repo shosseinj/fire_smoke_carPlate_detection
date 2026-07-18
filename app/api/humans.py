@@ -15,7 +15,10 @@ def get_runtime() -> Runtime:
     return runtime
 
 
-@router.get("/logs", summary="List persistent per-human track logs and snapshots")
+@router.get(
+    "/logs",
+    summary="List human tracks with best snapshot, human video, and face video links",
+)
 def logs(
     camera_id: str | None = Query(default=None),
     name: str | None = Query(default=None),

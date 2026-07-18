@@ -19,6 +19,10 @@ class FakeDetector:
     def __init__(self, *, face: bool) -> None:
         self.face = face
         self.enabled = True
+        self.landmarks = np.asarray(
+            [[38, 38], [62, 38], [50, 50], [41, 63], [59, 63]],
+            dtype=np.float32,
+        )
         self.calls: list[int] = []
 
     def predict(self, *, source, **_kwargs):
@@ -43,10 +47,7 @@ class FakeDetector:
                 conf=np.asarray([0.95], dtype=np.float32),
                 cls=np.asarray([0], dtype=np.float32),
             )
-            landmarks = np.asarray(
-                [[[38, 38], [62, 38], [50, 50], [41, 63], [59, 63]]],
-                dtype=np.float32,
-            )
+            landmarks = self.landmarks.reshape(1, 5, 2)
             results.append(
                 SimpleNamespace(
                     boxes=boxes,
@@ -191,6 +192,35 @@ def test_human_keeps_track_identity_when_face_is_no_longer_visible(tmp_path: Pat
     assert rotated.data["humans"][0]["person"] == "Alice"
     assert rotated.data["humans"][0]["identity_stable"] is True
     assert rotated.data["humans"][0]["face_visible"] is False
+
+
+def test_quality_gate_blocks_low_score_and_out_of_pose_faces(tmp_path: Path) -> None:
+    processor, _human, face, embedder, store = build_processor(tmp_path)
+    processor.update_quality_settings({"quality_threshold": 0.99})
+
+    low_quality = processor.process_batch([packet("cam-a", 1)])[0]
+
+    assert low_quality.data["faces"][0]["quality_valid"] is False
+    assert low_quality.data["faces"][0]["quality_reason"] == (
+        "quality_below_threshold"
+    )
+    assert low_quality.data["faces"][0]["quality_metrics"]["yaw"] is not None
+    assert embedder.batch_sizes == []
+    assert store.search_batch_sizes == []
+
+    processor.update_quality_settings(
+        {"quality_threshold": 0.0, "max_abs_roll": 10.0}
+    )
+    face.landmarks = np.asarray(
+        [[38, 30], [62, 55], [50, 50], [41, 63], [59, 63]],
+        dtype=np.float32,
+    )
+    bad_roll = processor.process_batch([packet("cam-a", 2)])[0]
+
+    assert bad_roll.data["faces"][0]["quality_valid"] is False
+    assert bad_roll.data["faces"][0]["quality_reason"] == "roll_out_of_range"
+    assert abs(bad_roll.data["faces"][0]["quality_metrics"]["roll"]) > 10.0
+    assert embedder.batch_sizes == []
 
 
 def test_enrollment_uses_same_detector_embedder_and_store(tmp_path: Path) -> None:

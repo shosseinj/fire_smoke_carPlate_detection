@@ -51,11 +51,11 @@ OPENAPI_TAGS = [
     },
     {
         "name": "face-recognition",
-        "description": "Face model status plus Swagger enrollment and Qdrant identity management.",
+        "description": "Enrollment, identity management, and persistent landmark/pose quality gates.",
     },
     {
         "name": "human-tracking",
-        "description": "ByteTrack human identities, active track history, durable logs, and snapshots.",
+        "description": "ByteTrack identity history, best snapshots, human videos, and accepted-face videos.",
     },
     {
         "name": "plate-settings",

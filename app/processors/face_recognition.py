@@ -5,7 +5,7 @@ import time
 import uuid
 import sqlite3
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Protocol, Sequence
@@ -35,6 +35,11 @@ class FaceRecognitionSettings:
     min_face_size: int = 24
     blur_threshold: float = 20.0
     min_eye_distance: float = 8.0
+    quality_threshold: float = 0.55
+    max_abs_yaw: float = 45.0
+    max_abs_pitch: float = 55.0
+    max_abs_roll: float = 35.0
+    require_landmarks: bool = True
     tracker_high_threshold: float = 0.40
     tracker_low_threshold: float = 0.10
     tracker_new_threshold: float = 0.40
@@ -918,34 +923,167 @@ class FaceRecognitionProcessor(BatchProcessor):
         self,
         frame: np.ndarray,
         face: dict[str, Any],
-    ) -> tuple[bool, float, str, np.ndarray | None]:
+    ) -> tuple[bool, float, str, np.ndarray | None, dict[str, Any]]:
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = [int(round(value)) for value in face["bbox"]]
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(width, x2), min(height, y2)
         crop = frame[y1:y2, x1:x2]
+        metrics: dict[str, Any] = {
+            "blur": 0.0,
+            "eye_distance": 0.0,
+            "yaw": None,
+            "pitch": None,
+            "roll": None,
+            "landmark_count": 0,
+            "size_score": 0.0,
+            "blur_score": 0.0,
+            "pose_score": 0.0,
+        }
         if crop.size == 0:
-            return False, 0.0, "empty_crop", None
-        if min(crop.shape[:2]) < self.settings.min_face_size:
-            return False, 0.0, "face_too_small", crop
+            return False, 0.0, "empty_crop", None, metrics
+        face_size = min(crop.shape[:2])
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        if blur < self.settings.blur_threshold:
-            return False, blur, "blurry", crop
         landmarks = np.asarray(face["landmarks"], dtype=np.float32)
+        metrics["blur"] = round(blur, 4)
+        metrics["landmark_count"] = int(len(landmarks))
+        metrics["size_score"] = round(
+            min(1.0, face_size / max(float(self.settings.min_face_size * 2), 1.0)),
+            6,
+        )
+        metrics["blur_score"] = round(
+            min(1.0, blur / max(self.settings.blur_threshold * 4.0, 1.0)),
+            6,
+        )
+        eye_distance = 0.0
         if len(landmarks) >= 2:
             eye_distance = float(np.linalg.norm(landmarks[0] - landmarks[1]))
-            if eye_distance < self.settings.min_eye_distance:
-                return False, eye_distance, "eyes_too_close", crop
-        quality = min(1.0, blur / max(self.settings.blur_threshold * 4.0, 1.0))
-        return True, quality, "ok", self._align_face(frame, face["bbox"], landmarks)
+        metrics["eye_distance"] = round(eye_distance, 4)
+        eye_score = min(
+            1.0,
+            eye_distance / max(float(self.settings.min_eye_distance * 2), 1.0),
+        )
+
+        yaw = pitch = roll = None
+        if len(landmarks) >= 5:
+            yaw, pitch, roll = self._head_pose(landmarks[:5], frame.shape)
+        metrics.update(
+            {
+                "yaw": None if yaw is None else round(yaw, 4),
+                "pitch": None if pitch is None else round(pitch, 4),
+                "roll": None if roll is None else round(roll, 4),
+            }
+        )
+        pose_parts = []
+        for value, maximum in (
+            (yaw, self.settings.max_abs_yaw),
+            (pitch, self.settings.max_abs_pitch),
+            (roll, self.settings.max_abs_roll),
+        ):
+            if value is not None:
+                pose_parts.append(max(0.0, 1.0 - abs(value) / max(maximum, 1e-6)))
+        pose_score = sum(pose_parts) / len(pose_parts) if pose_parts else 0.0
+        metrics["pose_score"] = round(pose_score, 6)
+        confidence = float(face.get("confidence", 0.0) or 0.0)
+        quality = (
+            0.30 * float(metrics["blur_score"])
+            + 0.20 * float(metrics["size_score"])
+            + 0.15 * eye_score
+            + 0.25 * pose_score
+            + 0.10 * confidence
+        )
+        quality = max(0.0, min(1.0, quality))
+
+        reason = "ok"
+        if face_size < self.settings.min_face_size:
+            reason = "face_too_small"
+        elif self.settings.require_landmarks and len(landmarks) < 5:
+            reason = "missing_landmarks"
+        elif blur < self.settings.blur_threshold:
+            reason = "blurry"
+        elif eye_distance < self.settings.min_eye_distance:
+            reason = "eyes_too_close"
+        elif self.settings.require_landmarks and None in (yaw, pitch, roll):
+            reason = "pose_unavailable"
+        elif yaw is not None and abs(yaw) > self.settings.max_abs_yaw:
+            reason = "yaw_out_of_range"
+        elif pitch is not None and abs(pitch) > self.settings.max_abs_pitch:
+            reason = "pitch_out_of_range"
+        elif roll is not None and abs(roll) > self.settings.max_abs_roll:
+            reason = "roll_out_of_range"
+        elif quality < self.settings.quality_threshold:
+            reason = "quality_below_threshold"
+        valid = reason == "ok"
+        aligned = crop
+        if valid:
+            corrected = self._align_face(frame, face["bbox"], landmarks)
+            if corrected is None:
+                valid = False
+                reason = "alignment_failed"
+            else:
+                aligned = corrected
+        return valid, quality, reason, aligned, metrics
+
+    @staticmethod
+    def _head_pose(
+        landmarks: np.ndarray,
+        frame_shape: Sequence[int],
+    ) -> tuple[float | None, float | None, float | None]:
+        """Estimate yaw, pitch, and roll in degrees from five face landmarks."""
+        if landmarks.shape[0] < 5:
+            return None, None, None
+        height, width = int(frame_shape[0]), int(frame_shape[1])
+        model_points = np.asarray(
+            [
+                [-30.0, 35.0, 30.0],
+                [30.0, 35.0, 30.0],
+                [0.0, 0.0, 0.0],
+                [-25.0, -30.0, 30.0],
+                [25.0, -30.0, 30.0],
+            ],
+            dtype=np.float64,
+        )
+        focal_length = float(max(width, height))
+        camera_matrix = np.asarray(
+            [
+                [focal_length, 0.0, width / 2.0],
+                [0.0, focal_length, height / 2.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        try:
+            success, rotation_vector, _ = cv2.solvePnP(
+                model_points,
+                landmarks[:5].astype(np.float64),
+                camera_matrix,
+                np.zeros((4, 1), dtype=np.float64),
+                flags=cv2.SOLVEPNP_SQPNP,
+            )
+            if not success:
+                return None, None, None
+            rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+            pitch, yaw, roll = cv2.RQDecomp3x3(rotation_matrix)[0]
+
+            def normalized(value: float) -> float:
+                value = ((float(value) + 180.0) % 360.0) - 180.0
+                if value > 90.0:
+                    return 180.0 - value
+                if value < -90.0:
+                    return -180.0 - value
+                return value
+
+            return normalized(yaw), normalized(pitch), normalized(roll)
+        except cv2.error:
+            return None, None, None
 
     @staticmethod
     def _align_face(
         frame: np.ndarray,
         bbox: Sequence[float],
         landmarks: np.ndarray,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         if landmarks.shape[0] >= 5:
             reference = np.array(
                 [
@@ -964,10 +1102,11 @@ class FaceRecognitionProcessor(BatchProcessor):
             )
             if transform is not None:
                 return cv2.warpAffine(frame, transform, (112, 112))
+            return None
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = [int(round(value)) for value in bbox[:4]]
         crop = frame[max(0, y1) : min(height, y2), max(0, x1) : min(width, x2)]
-        return cv2.resize(crop, (112, 112))
+        return cv2.resize(crop, (112, 112)) if crop.size else None
 
     def _tracker(self, source_id: str) -> SourceFaceTracker:
         tracker = self._trackers.get(source_id)
@@ -1050,12 +1189,19 @@ class FaceRecognitionProcessor(BatchProcessor):
                 prepared_faces: list[dict[str, Any]] = []
                 for face_index, face in enumerate(faces):
                     track_id = tracker.track_for_face(face["bbox"])
-                    valid, quality, reason, crop = self._quality(packet.frame, face)
+                    valid, quality, reason, crop, quality_metrics = self._quality(
+                        packet.frame, face
+                    )
                     prepared = {
                         "bbox": face["bbox"],
+                        "landmarks": np.asarray(
+                            face["landmarks"], dtype=np.float32
+                        ).round(3).tolist(),
                         "detection_confidence": face["confidence"],
                         "track_id": track_id,
-                        "quality": round(float(quality), 4),
+                        "quality": round(float(quality), 6),
+                        "quality_score": round(float(quality), 6),
+                        "quality_metrics": quality_metrics,
                         "quality_valid": valid,
                         "quality_reason": reason,
                         "person": "Unknown",
@@ -1192,16 +1338,16 @@ class FaceRecognitionProcessor(BatchProcessor):
             fixed_batch=self.settings.face_engine_fixed_batch,
         )
         faces = self._faces(results[0])
-        valid: list[tuple[dict[str, Any], np.ndarray, float]] = []
+        valid: list[tuple[dict[str, Any], np.ndarray, float, dict[str, Any]]] = []
         for face in faces:
-            accepted, quality, _, crop = self._quality(image, face)
+            accepted, quality, _, crop, metrics = self._quality(image, face)
             if accepted and crop is not None:
-                valid.append((face, crop, quality))
+                valid.append((face, crop, quality, metrics))
         if len(valid) != 1:
             raise ValueError(
                 f"Enrollment requires exactly one valid face; found {len(valid)}"
             )
-        face, crop, quality = valid[0]
+        face, crop, quality, metrics = valid[0]
         embedding = self._embedder.embed([crop])[0]
         point_id = self._vector_store.enroll(person, embedding, ref_img_id)
         return {
@@ -1209,7 +1355,8 @@ class FaceRecognitionProcessor(BatchProcessor):
             "person": person,
             "ref_img_id": ref_img_id,
             "bbox": face["bbox"],
-            "quality": round(float(quality), 4),
+            "quality": round(float(quality), 6),
+            "quality_metrics": metrics,
         }
 
     def identities(self, limit: int = 1000) -> list[dict[str, Any]]:
@@ -1221,6 +1368,27 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._ensure_dependencies()
         assert self._vector_store is not None
         return self._vector_store.delete_person(person.strip())
+
+    def quality_settings(self) -> dict[str, Any]:
+        return {
+            "quality_threshold": self.settings.quality_threshold,
+            "blur_threshold": self.settings.blur_threshold,
+            "min_face_size": self.settings.min_face_size,
+            "min_eye_distance": self.settings.min_eye_distance,
+            "max_abs_yaw": self.settings.max_abs_yaw,
+            "max_abs_pitch": self.settings.max_abs_pitch,
+            "max_abs_roll": self.settings.max_abs_roll,
+            "require_landmarks": self.settings.require_landmarks,
+        }
+
+    def update_quality_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+        allowed = set(self.quality_settings())
+        unexpected = set(values) - allowed
+        if unexpected:
+            raise ValueError(f"Unsupported face quality settings: {sorted(unexpected)}")
+        with self._load_lock:
+            self.settings = replace(self.settings, **values)
+        return self.quality_settings()
 
     def status(self) -> dict[str, Any]:
         vector_status: dict[str, Any] | None = None
@@ -1258,6 +1426,7 @@ class FaceRecognitionProcessor(BatchProcessor):
             "embedding_backend": getattr(self._embedder, "backend", None),
             "qdrant": vector_status,
             "tracker": "ByteTrack",
+            "quality_gate": self.quality_settings(),
             "tracking_session_id": self._tracking_session_id,
             "active_sources": len(self._trackers),
             "active_humans": sum(

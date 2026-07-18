@@ -62,6 +62,7 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
         "fire_smoke_detection": runtime.fire_smoke_logs.settings(),
+        "face_recognition_quality": runtime.face_quality_settings.as_dict(),
         "application_config": {
             "source": "environment/startup defaults; use dynamic sections above for online changes",
             "values": _json_safe(application_values),

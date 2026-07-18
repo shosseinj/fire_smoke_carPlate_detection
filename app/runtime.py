@@ -17,6 +17,7 @@ from app.core.model_management import (
 )
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
+from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
@@ -51,6 +52,7 @@ class Runtime:
     model_conversions: ModelConversionManager
     fire_smoke_logs: FireSmokeLogStore
     human_logs: HumanLogStore
+    face_quality_settings: FaceQualitySettingsStore
     face_processor: BatchProcessor
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
@@ -194,6 +196,20 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ),
     )
     registry.add_listener(plate_settings.on_source_change)
+    face_quality_settings = FaceQualitySettingsStore(
+        app_settings.plate_log_db_path,
+        FaceQualityPolicy(
+            quality_threshold=app_settings.face_quality_threshold,
+            blur_threshold=app_settings.face_blur_threshold,
+            min_face_size=app_settings.face_min_size,
+            min_eye_distance=app_settings.face_min_eye_distance,
+            max_abs_yaw=app_settings.face_max_abs_yaw,
+            max_abs_pitch=app_settings.face_max_abs_pitch,
+            max_abs_roll=app_settings.face_max_abs_roll,
+            require_landmarks=app_settings.face_require_landmarks,
+        ),
+    )
+    face_quality_policy = face_quality_settings.get()
     model_root = app_settings.model_root_path.resolve()
 
     def model_relative(path: Path) -> str:
@@ -241,6 +257,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     human_logs = HumanLogStore(
         app_settings.plate_log_db_path,
         app_settings.saved_media_path,
+        video_fps=app_settings.human_video_fps,
+        video_idle_seconds=app_settings.human_video_idle_seconds,
+        snapshot_min_improvement=app_settings.human_snapshot_min_improvement,
     )
 
     if app_settings.processor_mode == "mock":
@@ -302,9 +321,14 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 human_confidence=app_settings.face_human_confidence,
                 face_confidence=app_settings.face_detection_confidence,
                 recognition_threshold=app_settings.face_recognition_threshold,
-                min_face_size=app_settings.face_min_size,
-                blur_threshold=app_settings.face_blur_threshold,
-                min_eye_distance=app_settings.face_min_eye_distance,
+                min_face_size=face_quality_policy.min_face_size,
+                blur_threshold=face_quality_policy.blur_threshold,
+                min_eye_distance=face_quality_policy.min_eye_distance,
+                quality_threshold=face_quality_policy.quality_threshold,
+                max_abs_yaw=face_quality_policy.max_abs_yaw,
+                max_abs_pitch=face_quality_policy.max_abs_pitch,
+                max_abs_roll=face_quality_policy.max_abs_roll,
+                require_landmarks=face_quality_policy.require_landmarks,
                 tracker_high_threshold=app_settings.face_tracker_high_threshold,
                 tracker_low_threshold=app_settings.face_tracker_low_threshold,
                 tracker_new_threshold=app_settings.face_tracker_new_threshold,
@@ -398,6 +422,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         model_conversions=model_conversions,
         fire_smoke_logs=fire_smoke_logs,
         human_logs=human_logs,
+        face_quality_settings=face_quality_settings,
         face_processor=face_processor,
         video_ingestor=video_ingestor,
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.processors.face_recognition import FaceRecognitionProcessor
@@ -10,6 +11,17 @@ from app.runtime import Runtime
 
 
 router = APIRouter(prefix="/api/v1/faces", tags=["face-recognition"])
+
+
+class FaceQualitySettingsPatch(BaseModel):
+    quality_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    blur_threshold: float | None = Field(default=None, ge=0.0)
+    min_face_size: int | None = Field(default=None, ge=1, le=4096)
+    min_eye_distance: float | None = Field(default=None, ge=0.0)
+    max_abs_yaw: float | None = Field(default=None, gt=0.0, le=90.0)
+    max_abs_pitch: float | None = Field(default=None, gt=0.0, le=90.0)
+    max_abs_roll: float | None = Field(default=None, gt=0.0, le=90.0)
+    require_landmarks: bool | None = None
 
 
 def get_runtime() -> Runtime:
@@ -35,6 +47,32 @@ def _service_unavailable(exc: Exception) -> HTTPException:
 @router.get("/status", summary="Face model, tracker, batch, and Qdrant status")
 def status(runtime: Runtime = Depends(get_runtime)) -> dict:
     return runtime.face_processor.status()
+
+
+@router.get(
+    "/quality-settings",
+    summary="Read persistent landmark, blur, pose, and quality recognition gates",
+)
+def quality_settings(runtime: Runtime = Depends(get_runtime)) -> dict:
+    return runtime.face_quality_settings.as_dict()
+
+
+@router.patch(
+    "/quality-settings",
+    summary="Update best-face selection and recognition quality gates online",
+)
+def update_quality_settings(
+    payload: FaceQualitySettingsPatch,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict:
+    changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+    try:
+        runtime.face_quality_settings.update(changes)
+        if isinstance(runtime.face_processor, FaceRecognitionProcessor):
+            runtime.face_processor.update_quality_settings(changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return runtime.face_quality_settings.as_dict()
 
 
 @router.post("/enroll", summary="Enroll one face image in Qdrant")
