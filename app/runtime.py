@@ -258,6 +258,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     human_logs = HumanLogStore(
         app_settings.plate_log_db_path,
         app_settings.saved_media_path,
+        queue_size=app_settings.human_media_queue_size,
         video_fps=app_settings.human_video_fps,
         video_idle_seconds=app_settings.human_video_idle_seconds,
         snapshot_min_improvement=app_settings.human_snapshot_min_improvement,

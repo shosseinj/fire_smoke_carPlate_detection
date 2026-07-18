@@ -120,13 +120,16 @@ class Settings:
     plate_use_fp16: bool = _env_bool("PLATE_USE_FP16", True)
 
     face_human_model_path: Path = _path(
-        "FACE_HUMAN_MODEL", "weights/face_recognition/yolo26s-pose_batch8.pt"
+        "FACE_HUMAN_MODEL",
+        "weights/face_recognition/linux_trt10/yolo26s-pose_batch8_linux.engine",
     )
     face_detector_model_path: Path = _path(
-        "FACE_DETECTOR_MODEL", "weights/face_recognition/yolov8n-face_batch8.pt"
+        "FACE_DETECTOR_MODEL",
+        "weights/face_recognition/linux_trt10/yolov8n-face_batch8_linux.engine",
     )
     face_embedding_model_path: Path = _path(
-        "FACE_EMBEDDING_MODEL", "weights/face_recognition/arcface_fp16.onnx"
+        "FACE_EMBEDDING_MODEL",
+        "weights/face_recognition/linux_trt10/arcface_fp16_dynamic_b64_linux.engine",
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
     face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)
@@ -173,7 +176,8 @@ class Settings:
     face_qdrant_path: Path = _path("FACE_QDRANT_PATH", "data/qdrant")
     face_qdrant_api_key: str | None = os.getenv("FACE_QDRANT_API_KEY") or None
 
-    human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 10.0)
+    human_media_queue_size: int = _env_int("HUMAN_MEDIA_QUEUE_SIZE", 256)
+    human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 5.0)
     human_video_idle_seconds: float = _env_float("HUMAN_VIDEO_IDLE_SECONDS", 5.0)
     human_snapshot_min_improvement: float = _env_float(
         "HUMAN_SNAPSHOT_MIN_IMPROVEMENT", 0.01

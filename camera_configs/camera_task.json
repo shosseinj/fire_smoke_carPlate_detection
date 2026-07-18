@@ -3,7 +3,7 @@
     "camera_id": "camera-01",
     "name": "Fire and plate Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101",
     "frame_width": 640,
     "frame_height": 640
@@ -12,7 +12,7 @@
     "camera_id": "camera-02",
     "name": "Smoke Camera 2",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101",
     "frame_width": 640,
     "frame_height": 640
@@ -21,7 +21,7 @@
     "camera_id": "camera-03",
     "name": "Fire Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/101",
     "frame_width": 640,
     "frame_height": 640
@@ -30,7 +30,7 @@
     "camera_id": "camera-04",
     "name": "Vehicle Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/201",
     "frame_width": 640,
     "frame_height": 640
@@ -39,7 +39,7 @@
     "camera_id": "camera-05",
     "name": "Road Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/301",
     "frame_width": 640,
     "frame_height": 640
@@ -48,7 +48,7 @@
     "camera_id": "camera-06",
     "name": "Workshop Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/401",
     "frame_width": 640,
     "frame_height": 640
@@ -57,7 +57,7 @@
     "camera_id": "camera-07",
     "name": "Mixed Camera 1",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/501",
     "frame_width": 640,
     "frame_height": 640
@@ -66,7 +66,7 @@
     "camera_id": "camera-08",
     "name": "Fire and plate Camera",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.29:554/Streaming/Channels/101",
     "frame_width": 640,
     "frame_height": 640

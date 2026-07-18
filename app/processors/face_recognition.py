@@ -404,6 +404,7 @@ class TensorRTFaceEmbedder:
             raise RuntimeError("ArcFace TensorRT embeddings require a CUDA device")
         self.trt = trt
         self.torch = torch
+        self.backend = "tensorrt"
         self.device = torch.device(f"cuda:{int(device)}" if device.isdigit() else "cuda:0")
         self.lock = threading.RLock()
         self.logger = trt.Logger(trt.Logger.ERROR)
