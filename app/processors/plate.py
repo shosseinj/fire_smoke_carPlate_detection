@@ -319,6 +319,11 @@ class PlateRecognitionProcessor(BatchProcessor):
             "imgsz": imgsz,
             "device": self.settings.device,
             "quantize": quantize,
+            # TensorRT engines in this project use a dynamic batch dimension
+            # but fixed 640x640 spatial dimensions. Disable rectangular
+            # letterboxing so 16:9 inputs cannot become tensors such as
+            # 544x640, which the engine profile rejects.
+            "rect": False,
             "verbose": False,
         }
         if classes:

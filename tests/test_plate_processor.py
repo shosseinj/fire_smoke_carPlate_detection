@@ -150,7 +150,9 @@ def test_vehicle_plate_and_ocr_stages_are_batched(tmp_path: Path) -> None:
     assert len(results) == 2
     assert len(vehicle_detector.kwargs["source"]) == 2
     assert vehicle_detector.kwargs["classes"] == [2, 3, 5, 7]
+    assert vehicle_detector.kwargs["rect"] is False
     assert len(plate_detector.kwargs["source"]) == 2
+    assert plate_detector.kwargs["rect"] is False
     assert plate_detector.kwargs["quantize"] == 16
     assert "half" not in plate_detector.kwargs
     assert results[0].data["plates"][0]["plate"] == "12ب34567"
