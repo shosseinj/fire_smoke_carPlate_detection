@@ -209,7 +209,22 @@ def test_quality_gate_blocks_low_score_and_out_of_pose_faces(tmp_path: Path) -> 
     assert store.search_batch_sizes == []
 
     processor.update_quality_settings(
-        {"quality_threshold": 0.0, "max_abs_roll": 10.0}
+        {"quality_threshold": 0.0, "min_face_width": 100, "min_face_height": 100}
+    )
+    too_small = processor.process_batch([packet("cam-size", 1)])[0]
+
+    assert too_small.data["faces"][0]["quality_valid"] is False
+    assert too_small.data["faces"][0]["quality_reason"] == "face_too_small"
+    assert too_small.data["faces"][0]["quality_metrics"]["face_width"] < 100
+    assert too_small.data["faces"][0]["quality_metrics"]["face_height"] < 100
+
+    processor.update_quality_settings(
+        {
+            "quality_threshold": 0.0,
+            "min_face_width": 24,
+            "min_face_height": 24,
+            "max_abs_roll": 10.0,
+        }
     )
     face.landmarks = np.asarray(
         [[38, 30], [62, 55], [50, 50], [41, 63], [59, 63]],

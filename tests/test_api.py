@@ -443,10 +443,17 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
 
             quality = client.patch(
                 "/api/v1/faces/quality-settings",
-                json={"quality_threshold": 0.73, "max_abs_pitch": 70.0},
+                json={
+                    "quality_threshold": 0.73,
+                    "min_face_width": 40,
+                    "min_face_height": 48,
+                    "max_abs_pitch": 70.0,
+                },
             )
             assert quality.status_code == 200
             assert quality.json()["quality_threshold"] == 0.73
+            assert quality.json()["min_face_width"] == 40
+            assert quality.json()["min_face_height"] == 48
             assert quality.json()["max_abs_pitch"] == 70.0
             assert client.get("/api/v1/faces/quality-settings").json() == quality.json()
     finally:

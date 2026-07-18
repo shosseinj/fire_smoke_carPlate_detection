@@ -31,27 +31,24 @@ class HumanMediaEvent:
     ref_img_id: str | int | None
     snapshot_frame: np.ndarray | None
     snapshot_quality: float
-    human_video_frame: np.ndarray | None
+    full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
-    face_yaw: float | None
-    face_pitch: float | None
-    face_roll: float | None
 
 
 @dataclass(slots=True)
 class TrackMediaState:
-    human_writer: cv2.VideoWriter | None = None
+    full_frame_writer: cv2.VideoWriter | None = None
     face_writer: cv2.VideoWriter | None = None
+    full_frame_size: tuple[int, int] | None = None
     video_url: str = ""
     face_video_url: str = ""
     last_event_monotonic: float = 0.0
 
 
 class HumanLogStore:
-    """Non-blocking per-ByteTrack database, best snapshot, and video recorder."""
+    """Non-blocking per-ByteTrack best snapshot and independent video recorder."""
 
-    HUMAN_VIDEO_SIZE = (256, 384)
     FACE_VIDEO_SIZE = (224, 224)
 
     def __init__(
@@ -80,12 +77,14 @@ class HumanLogStore:
         )
         self._observed_names: dict[tuple[str, str, int], str] = {}
         self._candidate_scores: dict[tuple[str, str, int], float] = {}
-        self._last_video_at: dict[tuple[str, str, int], float] = {}
+        self._last_full_frame_at: dict[tuple[str, str, int], float] = {}
+        self._last_face_video_at: dict[tuple[str, str, int], float] = {}
+        self._best_face_scores: dict[tuple[str, str, int], float] = {}
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
         self._lock = threading.RLock()
         self._dropped_events = 0
         self._saved_snapshots = 0
-        self._human_video_frames = 0
+        self._full_frame_video_frames = 0
         self._accepted_face_video_frames = 0
         self._created_human_videos = 0
         self._created_face_videos = 0
@@ -125,10 +124,7 @@ class HumanLogStore:
                     face_video_url TEXT NOT NULL DEFAULT '',
                     snapshot_quality REAL NOT NULL DEFAULT 0,
                     best_face_quality REAL NOT NULL DEFAULT 0,
-                    best_face_yaw REAL,
-                    best_face_pitch REAL,
-                    best_face_roll REAL,
-                    human_video_frames INTEGER NOT NULL DEFAULT 0,
+                    full_frame_video_frames INTEGER NOT NULL DEFAULT 0,
                     accepted_face_frames INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(session_id, camera, track_id)
                 )
@@ -143,10 +139,7 @@ class HumanLogStore:
                 "face_video_url": "TEXT NOT NULL DEFAULT ''",
                 "snapshot_quality": "REAL NOT NULL DEFAULT 0",
                 "best_face_quality": "REAL NOT NULL DEFAULT 0",
-                "best_face_yaw": "REAL",
-                "best_face_pitch": "REAL",
-                "best_face_roll": "REAL",
-                "human_video_frames": "INTEGER NOT NULL DEFAULT 0",
+                "full_frame_video_frames": "INTEGER NOT NULL DEFAULT 0",
                 "accepted_face_frames": "INTEGER NOT NULL DEFAULT 0",
             }
             for column, definition in additions.items():
@@ -154,6 +147,22 @@ class HumanLogStore:
                     connection.execute(
                         f"ALTER TABLE human_logs ADD COLUMN {column} {definition}"
                     )
+            if (
+                "human_video_frames" in existing
+                and "full_frame_video_frames" not in existing
+            ):
+                connection.execute(
+                    "UPDATE human_logs SET "
+                    "full_frame_video_frames = human_video_frames"
+                )
+            for obsolete in (
+                "best_face_yaw",
+                "best_face_pitch",
+                "best_face_roll",
+                "human_video_frames",
+            ):
+                if obsolete in existing:
+                    connection.execute(f"ALTER TABLE human_logs DROP COLUMN {obsolete}")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_human_logs_camera ON human_logs(camera)"
             )
@@ -187,20 +196,6 @@ class HumanLogStore:
         x1, y1, x2, y2 = cls._bounded_box(frame, bbox, padding_ratio=0.05)
         crop = frame[y1:y2, x1:x2]
         return crop.copy() if crop.size else None
-
-    @staticmethod
-    def _letterbox(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-        target_width, target_height = size
-        height, width = image.shape[:2]
-        scale = min(target_width / max(width, 1), target_height / max(height, 1))
-        resized_width = max(1, int(round(width * scale)))
-        resized_height = max(1, int(round(height * scale)))
-        resized = cv2.resize(image, (resized_width, resized_height))
-        output = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-        x = (target_width - resized_width) // 2
-        y = (target_height - resized_height) // 2
-        output[y : y + resized_height, x : x + resized_width] = resized
-        return output
 
     @classmethod
     def _aligned_face(
@@ -270,10 +265,23 @@ class HumanLogStore:
                     + 0.25 * min(1.0, human_area / frame_area * 5.0),
                 )
             now = float(packet.captured_monotonic)
+            face_frame = None
+            if face is not None:
+                face_frame = self._aligned_face(
+                    packet.frame,
+                    [float(value) for value in face.get("bbox", [0, 0, 0, 0])[:4]],
+                    list(face.get("landmarks", [])),
+                )
             with self._lock:
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
-                previous_video_at = self._last_video_at.get(key, float("-inf"))
+                previous_full_frame_at = self._last_full_frame_at.get(
+                    key, float("-inf")
+                )
+                previous_face_video_at = self._last_face_video_at.get(
+                    key, float("-inf")
+                )
+                previous_best_face = self._best_face_scores.get(key, -1.0)
                 identity_changed = previous_name is None or (
                     previous_name == "Unknown" and name != "Unknown"
                 )
@@ -281,23 +289,32 @@ class HumanLogStore:
                     snapshot_quality
                     >= previous_score + self.snapshot_min_improvement
                 )
-                video_due = now - previous_video_at >= 1.0 / self.video_fps
-                if not (identity_changed or better_snapshot or video_due):
+                full_frame_due = (
+                    now - previous_full_frame_at >= 1.0 / self.video_fps
+                )
+                better_face = (
+                    face_frame is not None
+                    and face_quality
+                    >= previous_best_face + self.snapshot_min_improvement
+                )
+                face_due = face_frame is not None and (
+                    better_face
+                    or now - previous_face_video_at >= 1.0 / self.video_fps
+                )
+                if not (
+                    identity_changed or better_snapshot or full_frame_due or face_due
+                ):
                     continue
                 self._observed_names[key] = name
                 if better_snapshot:
                     self._candidate_scores[key] = snapshot_quality
-                if video_due:
-                    self._last_video_at[key] = now
+                if full_frame_due:
+                    self._last_full_frame_at[key] = now
+                if face_due:
+                    self._last_face_video_at[key] = now
+                if better_face:
+                    self._best_face_scores[key] = face_quality
 
-            quality_metrics = dict(face.get("quality_metrics", {})) if face else {}
-            face_frame = None
-            if face is not None and video_due:
-                face_frame = self._aligned_face(
-                    packet.frame,
-                    [float(value) for value in face.get("bbox", [0, 0, 0, 0])[:4]],
-                    list(face.get("landmarks", [])),
-                )
             event = HumanMediaEvent(
                 session_id=session_id,
                 camera=packet.source_id,
@@ -308,16 +325,11 @@ class HumanLogStore:
                 ref_img_id=human.get("ref_img_id"),
                 snapshot_frame=human_crop if better_snapshot else None,
                 snapshot_quality=snapshot_quality,
-                human_video_frame=(
-                    self._letterbox(human_crop, self.HUMAN_VIDEO_SIZE)
-                    if video_due
-                    else None
+                full_frame_video_frame=(
+                    packet.frame.copy() if full_frame_due else None
                 ),
-                face_video_frame=face_frame,
+                face_video_frame=face_frame if face_due else None,
                 face_quality=face_quality,
-                face_yaw=self._optional_float(quality_metrics.get("yaw")),
-                face_pitch=self._optional_float(quality_metrics.get("pitch")),
-                face_roll=self._optional_float(quality_metrics.get("roll")),
             )
             try:
                 self._queue.put_nowait(event)
@@ -333,16 +345,22 @@ class HumanLogStore:
                             self._candidate_scores.pop(key, None)
                         else:
                             self._candidate_scores[key] = previous_score
-                    if video_due:
-                        if previous_video_at == float("-inf"):
-                            self._last_video_at.pop(key, None)
+                    if full_frame_due:
+                        if previous_full_frame_at == float("-inf"):
+                            self._last_full_frame_at.pop(key, None)
                         else:
-                            self._last_video_at[key] = previous_video_at
+                            self._last_full_frame_at[key] = previous_full_frame_at
+                    if face_due:
+                        if previous_face_video_at == float("-inf"):
+                            self._last_face_video_at.pop(key, None)
+                        else:
+                            self._last_face_video_at[key] = previous_face_video_at
+                    if better_face:
+                        if previous_best_face < 0:
+                            self._best_face_scores.pop(key, None)
+                        else:
+                            self._best_face_scores[key] = previous_best_face
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
-
-    @staticmethod
-    def _optional_float(value: Any) -> float | None:
-        return None if value is None else float(value)
 
     @staticmethod
     def _safe_stem(camera: str, track_id: int) -> str:
@@ -379,12 +397,17 @@ class HumanLogStore:
             self._media[key] = state
         state.last_event_monotonic = time.monotonic()
         stem = self._safe_stem(event.camera, event.track_id)
-        if event.human_video_frame is not None and state.human_writer is None:
-            state.human_writer, state.video_url = self._new_writer(
+        if (
+            event.full_frame_video_frame is not None
+            and state.full_frame_writer is None
+        ):
+            height, width = event.full_frame_video_frame.shape[:2]
+            state.full_frame_size = (width, height)
+            state.full_frame_writer, state.video_url = self._new_writer(
                 self.video_dir,
                 "human_videos",
                 stem,
-                self.HUMAN_VIDEO_SIZE,
+                state.full_frame_size,
             )
             self._created_human_videos += 1
         if event.face_video_frame is not None and state.face_writer is None:
@@ -411,11 +434,18 @@ class HumanLogStore:
 
     def _write(self, event: HumanMediaEvent) -> None:
         state = self._media_state(event)
-        wrote_human = False
+        wrote_full_frame = False
         wrote_face = False
-        if event.human_video_frame is not None and state.human_writer is not None:
-            state.human_writer.write(event.human_video_frame)
-            wrote_human = True
+        if (
+            event.full_frame_video_frame is not None
+            and state.full_frame_writer is not None
+            and state.full_frame_size is not None
+        ):
+            frame = event.full_frame_video_frame
+            if (frame.shape[1], frame.shape[0]) != state.full_frame_size:
+                frame = cv2.resize(frame, state.full_frame_size)
+            state.full_frame_writer.write(frame)
+            wrote_full_frame = True
         if event.face_video_frame is not None and state.face_writer is not None:
             state.face_writer.write(event.face_video_frame)
             wrote_face = True
@@ -476,9 +506,8 @@ class HumanLogStore:
                         session_id, camera, track_id, name, first_seen, last_seen,
                         recognition_score, ref_img_id, snapshot_url, video_url,
                         face_video_url, snapshot_quality, best_face_quality,
-                        best_face_yaw, best_face_pitch, best_face_roll,
-                        human_video_frames, accepted_face_frames
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        full_frame_video_frames, accepted_face_frames
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.session_id,
@@ -494,10 +523,7 @@ class HumanLogStore:
                         state.face_video_url,
                         snapshot_quality,
                         event.face_quality,
-                        event.face_yaw,
-                        event.face_pitch,
-                        event.face_roll,
-                        int(wrote_human),
+                        int(wrote_full_frame),
                         int(wrote_face),
                     ),
                 )
@@ -509,10 +535,7 @@ class HumanLogStore:
                         snapshot_url = ?, video_url = ?, face_video_url = ?,
                         snapshot_quality = ?,
                         best_face_quality = CASE WHEN ? THEN ? ELSE best_face_quality END,
-                        best_face_yaw = CASE WHEN ? THEN ? ELSE best_face_yaw END,
-                        best_face_pitch = CASE WHEN ? THEN ? ELSE best_face_pitch END,
-                        best_face_roll = CASE WHEN ? THEN ? ELSE best_face_roll END,
-                        human_video_frames = human_video_frames + ?,
+                        full_frame_video_frames = full_frame_video_frames + ?,
                         accepted_face_frames = accepted_face_frames + ?
                     WHERE session_id = ? AND camera = ? AND track_id = ?
                     """,
@@ -527,13 +550,7 @@ class HumanLogStore:
                         snapshot_quality,
                         int(better_face),
                         event.face_quality,
-                        int(better_face),
-                        event.face_yaw,
-                        int(better_face),
-                        event.face_pitch,
-                        int(better_face),
-                        event.face_roll,
-                        int(wrote_human),
+                        int(wrote_full_frame),
                         int(wrote_face),
                         event.session_id,
                         event.camera,
@@ -544,14 +561,14 @@ class HumanLogStore:
             (self.snapshot_dir / Path(old_snapshot_url).name).unlink(missing_ok=True)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
-            self._human_video_frames += int(wrote_human)
+            self._full_frame_video_frames += int(wrote_full_frame)
             self._accepted_face_video_frames += int(wrote_face)
             self._last_error = None
 
     @staticmethod
     def _release_state(state: TrackMediaState) -> None:
-        if state.human_writer is not None:
-            state.human_writer.release()
+        if state.full_frame_writer is not None:
+            state.full_frame_writer.release()
         if state.face_writer is not None:
             state.face_writer.release()
 
@@ -611,8 +628,8 @@ class HumanLogStore:
                 SELECT id, session_id, camera, track_id, name, first_seen,
                        last_seen, recognition_score, ref_img_id, snapshot_url,
                        video_url, face_video_url, snapshot_quality,
-                       best_face_quality, best_face_yaw, best_face_pitch,
-                       best_face_roll, human_video_frames, accepted_face_frames
+                       best_face_quality, full_frame_video_frames,
+                       accepted_face_frames
                 FROM human_logs
                 """
                 + where
@@ -634,7 +651,7 @@ class HumanLogStore:
                 "queue_capacity": self._queue.maxsize,
                 "dropped_events": self._dropped_events,
                 "saved_snapshots": self._saved_snapshots,
-                "human_video_frames": self._human_video_frames,
+                "full_frame_video_frames": self._full_frame_video_frames,
                 "accepted_face_video_frames": self._accepted_face_video_frames,
                 "created_human_videos": self._created_human_videos,
                 "created_face_videos": self._created_face_videos,

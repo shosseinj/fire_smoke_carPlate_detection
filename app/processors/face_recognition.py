@@ -32,7 +32,8 @@ class FaceRecognitionSettings:
     human_confidence: float = 0.40
     face_confidence: float = 0.50
     recognition_threshold: float = 0.45
-    min_face_size: int = 24
+    min_face_width: int = 24
+    min_face_height: int = 24
     blur_threshold: float = 20.0
     min_eye_distance: float = 8.0
     quality_threshold: float = 0.55
@@ -939,17 +940,29 @@ class FaceRecognitionProcessor(BatchProcessor):
             "size_score": 0.0,
             "blur_score": 0.0,
             "pose_score": 0.0,
+            "face_width": 0,
+            "face_height": 0,
         }
         if crop.size == 0:
             return False, 0.0, "empty_crop", None, metrics
-        face_size = min(crop.shape[:2])
+        face_height, face_width = crop.shape[:2]
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         landmarks = np.asarray(face["landmarks"], dtype=np.float32)
         metrics["blur"] = round(blur, 4)
         metrics["landmark_count"] = int(len(landmarks))
+        metrics["face_width"] = int(face_width)
+        metrics["face_height"] = int(face_height)
+        width_score = min(
+            1.0,
+            face_width / max(float(self.settings.min_face_width * 2), 1.0),
+        )
+        height_score = min(
+            1.0,
+            face_height / max(float(self.settings.min_face_height * 2), 1.0),
+        )
         metrics["size_score"] = round(
-            min(1.0, face_size / max(float(self.settings.min_face_size * 2), 1.0)),
+            min(width_score, height_score),
             6,
         )
         metrics["blur_score"] = round(
@@ -996,7 +1009,10 @@ class FaceRecognitionProcessor(BatchProcessor):
         quality = max(0.0, min(1.0, quality))
 
         reason = "ok"
-        if face_size < self.settings.min_face_size:
+        if (
+            face_width < self.settings.min_face_width
+            or face_height < self.settings.min_face_height
+        ):
             reason = "face_too_small"
         elif self.settings.require_landmarks and len(landmarks) < 5:
             reason = "missing_landmarks"
@@ -1373,7 +1389,8 @@ class FaceRecognitionProcessor(BatchProcessor):
         return {
             "quality_threshold": self.settings.quality_threshold,
             "blur_threshold": self.settings.blur_threshold,
-            "min_face_size": self.settings.min_face_size,
+            "min_face_width": self.settings.min_face_width,
+            "min_face_height": self.settings.min_face_height,
             "min_eye_distance": self.settings.min_eye_distance,
             "max_abs_yaw": self.settings.max_abs_yaw,
             "max_abs_pitch": self.settings.max_abs_pitch,

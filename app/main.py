@@ -55,7 +55,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "human-tracking",
-        "description": "ByteTrack identity history, best snapshots, human videos, and accepted-face videos.",
+        "description": "ByteTrack identity history, best snapshots, full-frame videos, and quality-approved aligned-face videos.",
     },
     {
         "name": "plate-settings",

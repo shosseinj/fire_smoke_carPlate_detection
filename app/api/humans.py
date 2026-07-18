@@ -17,7 +17,7 @@ def get_runtime() -> Runtime:
 
 @router.get(
     "/logs",
-    summary="List human tracks with best snapshot, human video, and face video links",
+    summary="List tracks with best snapshot, full-frame video, and face video links",
 )
 def logs(
     camera_id: str | None = Query(default=None),
@@ -47,6 +47,6 @@ def active(runtime: Runtime = Depends(get_runtime)) -> dict:
     return {"items": items, "count": len(items)}
 
 
-@router.get("/status", summary="Human log queue, database, and snapshot status")
+@router.get("/status", summary="Human log queue, database, snapshot, and video status")
 def status(runtime: Runtime = Depends(get_runtime)) -> dict:
     return runtime.human_logs.status()

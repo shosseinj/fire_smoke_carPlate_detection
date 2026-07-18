@@ -138,7 +138,12 @@ class Settings:
     face_human_confidence: float = _env_float("FACE_HUMAN_CONFIDENCE", 0.40)
     face_detection_confidence: float = _env_float("FACE_DETECTION_CONFIDENCE", 0.50)
     face_recognition_threshold: float = _env_float("FACE_RECOGNITION_THRESHOLD", 0.45)
-    face_min_size: int = _env_int("FACE_MIN_SIZE", 24)
+    face_min_width: int = _env_int(
+        "FACE_MIN_WIDTH", _env_int("FACE_MIN_SIZE", 24)
+    )
+    face_min_height: int = _env_int(
+        "FACE_MIN_HEIGHT", _env_int("FACE_MIN_SIZE", 24)
+    )
     face_blur_threshold: float = _env_float("FACE_BLUR_THRESHOLD", 20.0)
     face_min_eye_distance: float = _env_float("FACE_MIN_EYE_DISTANCE", 8.0)
     face_quality_threshold: float = _env_float("FACE_QUALITY_THRESHOLD", 0.55)
