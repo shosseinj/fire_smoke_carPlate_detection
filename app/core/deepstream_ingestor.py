@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -86,6 +87,7 @@ class DeepStreamIngestor:
         rtsp_transport: str = "tcp",
         rtsp_latency_ms: int = 500,
         rtsp_reconnect_seconds: float = 3.0,
+        rtsp_stall_timeout_seconds: int = 30,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
     ) -> None:
         self.registry = registry
@@ -101,6 +103,9 @@ class DeepStreamIngestor:
         )
         self.rtsp_latency_ms = max(0, int(rtsp_latency_ms))
         self.rtsp_reconnect_seconds = max(0.5, float(rtsp_reconnect_seconds))
+        self.rtsp_stall_timeout_seconds = max(
+            0, int(rtsp_stall_timeout_seconds)
+        )
         self.gst_loader = gst_loader
 
         self._gst: Any | None = None
@@ -114,6 +119,7 @@ class DeepStreamIngestor:
         self._failed_sources: set[str] = set()
         self._frame_sequences: dict[str, int] = {}
         self._loop_counts: dict[str, int] = {}
+        self._gst_source_ids: dict[str, int] = {}
         self._round_sequence = 0
         self._rounds_submitted = 0
         self._frames_submitted = 0
@@ -146,6 +152,23 @@ class DeepStreamIngestor:
     @staticmethod
     def _safe_element_name(source_id: str) -> str:
         return "".join(character if character.isalnum() else "_" for character in source_id)
+
+    def _gst_source_id(self, source_id: str) -> int:
+        """Return a stable numeric ID so nvurisrcbin logs never show source -1."""
+        with self._lock:
+            assigned = self._gst_source_ids.get(source_id)
+            if assigned is not None:
+                return assigned
+
+            used = set(self._gst_source_ids.values())
+            trailing_number = re.search(r"(\d+)$", source_id)
+            preferred = int(trailing_number.group(1)) if trailing_number else -1
+            if preferred < 0 or preferred > 2_147_483_647 or preferred in used:
+                preferred = 0
+                while preferred in used:
+                    preferred += 1
+            self._gst_source_ids[source_id] = preferred
+            return preferred
 
     def _make(self, factory: str, name: str) -> Any:
         Gst, _ = self._require_runtime()
@@ -343,6 +366,9 @@ class DeepStreamIngestor:
             )
 
             source.set_property("uri", gst_uri)
+            self._set_if_supported(
+                source, "source-id", self._gst_source_id(record.source_id)
+            )
             self._set_if_supported(source, "disable-audio", True)
             if is_rtsp:
                 self._set_if_supported(source, "latency", self.rtsp_latency_ms)
@@ -350,7 +376,7 @@ class DeepStreamIngestor:
                 self._set_if_supported(
                     source,
                     "rtsp-reconnect-interval",
-                    max(1, int(round(self.rtsp_reconnect_seconds))),
+                    self.rtsp_stall_timeout_seconds,
                 )
                 self._set_if_supported(source, "rtsp-reconnect-attempts", -1)
                 self._set_if_supported(
@@ -511,10 +537,17 @@ class DeepStreamIngestor:
                 self._retry_after.pop(source_id, None)
                 self._frame_sequences.pop(source_id, None)
                 self._loop_counts.pop(source_id, None)
+                self._gst_source_ids.pop(source_id, None)
         with self._lock:
-            for source_id in set(self._frame_sequences) - set(by_id):
+            tracked_source_ids = (
+                set(self._frame_sequences)
+                | set(self._loop_counts)
+                | set(self._gst_source_ids)
+            )
+            for source_id in tracked_source_ids - set(by_id):
                 self._frame_sequences.pop(source_id, None)
                 self._loop_counts.pop(source_id, None)
+                self._gst_source_ids.pop(source_id, None)
 
         for record in records:
             with self._lock:
@@ -662,6 +695,7 @@ class DeepStreamIngestor:
                 "rtsp_enabled": self.rtsp_enabled,
                 "rtsp_transport": self.rtsp_transport,
                 "rtsp_latency_ms": self.rtsp_latency_ms,
+                "rtsp_stall_timeout_seconds": self.rtsp_stall_timeout_seconds,
                 "rounds_submitted": self._rounds_submitted,
                 "frames_submitted": self._frames_submitted,
                 "open_failures": self._open_failures,

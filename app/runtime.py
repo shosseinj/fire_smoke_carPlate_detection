@@ -255,6 +255,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 **common_ingestor_settings,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=app_settings.deepstream_rtsp_latency_ms,
+                rtsp_stall_timeout_seconds=(
+                    app_settings.deepstream_rtsp_stall_timeout_seconds
+                ),
             )
         elif app_settings.video_ingest_backend == "opencv":
             video_ingestor = VideoFileIngestor(

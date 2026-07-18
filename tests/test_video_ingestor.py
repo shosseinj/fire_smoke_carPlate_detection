@@ -223,6 +223,27 @@ def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
     assert ingestor._next_frame_index_locked("camera-loop") == 2
 
 
+def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(
+    tmp_path: Path,
+) -> None:
+    registry = SourceRegistry()
+    ingestor = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        rtsp_reconnect_seconds=3,
+        rtsp_stall_timeout_seconds=30,
+    )
+
+    assert ingestor.rtsp_reconnect_seconds == 3
+    assert ingestor.rtsp_stall_timeout_seconds == 30
+    assert ingestor._gst_source_id("camera-03") == 3
+    assert ingestor._gst_source_id("camera-03") == 3
+    assert ingestor._gst_source_id("warehouse") == 0
+    assert ingestor._gst_source_id("video-03") == 1
+    assert ingestor.status()["rtsp_stall_timeout_seconds"] == 30
+
+
 def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -> None:
     registry = SourceRegistry()
     ingestor = DeepStreamIngestor(

@@ -66,6 +66,9 @@ class Settings:
     rtsp_read_timeout_ms: int = _env_int("RTSP_READ_TIMEOUT_MS", 10000)
     rtsp_reconnect_seconds: float = _env_float("RTSP_RECONNECT_SECONDS", 3.0)
     deepstream_rtsp_latency_ms: int = _env_int("DEEPSTREAM_RTSP_LATENCY_MS", 500)
+    deepstream_rtsp_stall_timeout_seconds: int = _env_int(
+        "DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS", 30
+    )
     broadcast_enabled: bool = _env_bool("BROADCAST_ENABLED", True)
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
     plate_log_db_path: Path = _path("PLATE_LOG_DB_PATH", "plate_logs.sqlite3")
