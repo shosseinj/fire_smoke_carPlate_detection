@@ -65,6 +65,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
         "plate_detection_policy": runtime.plate_settings.general(),
         "model_management": runtime.models.snapshot(),
         "fire_smoke_logs": status["fire_smoke_logs"],
+        "human_logs": status["human_logs"],
         "plate_log_count": status["plate_log_count"],
         "broadcast": status["broadcast"],
         "workers": status["workers"],
@@ -171,6 +172,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
             "detail": {
                 "fire_smoke": status["fire_smoke_logs"]["count"],
                 "plates": status["plate_log_count"],
+                "humans": status["human_logs"]["count"],
             },
         },
     ]

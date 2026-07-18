@@ -18,6 +18,7 @@ from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.sources import router as sources_router
 from app.api.faces import router as faces_router
+from app.api.humans import router as humans_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -51,6 +52,10 @@ OPENAPI_TAGS = [
     {
         "name": "face-recognition",
         "description": "Face model status plus Swagger enrollment and Qdrant identity management.",
+    },
+    {
+        "name": "human-tracking",
+        "description": "ByteTrack human identities, active track history, durable logs, and snapshots.",
     },
     {
         "name": "plate-settings",
@@ -105,6 +110,7 @@ app.include_router(broadcast_router)
 app.include_router(plate_logs_router)
 app.include_router(fire_smoke_logs_router)
 app.include_router(faces_router)
+app.include_router(humans_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 
@@ -126,5 +132,6 @@ def health() -> dict:
         "broadcast": status["broadcast"],
         "plate_log_count": status["plate_log_count"],
         "fire_smoke_logs": status["fire_smoke_logs"],
+        "human_logs": status["human_logs"],
         "workers": status["workers"],
     }

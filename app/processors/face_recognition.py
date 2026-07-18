@@ -7,7 +7,8 @@ import sqlite3
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from types import SimpleNamespace
+from typing import Any, Callable, Protocol, Sequence
 
 import cv2
 import numpy as np
@@ -34,7 +35,10 @@ class FaceRecognitionSettings:
     min_face_size: int = 24
     blur_threshold: float = 20.0
     min_eye_distance: float = 8.0
-    tracker_iou_threshold: float = 0.25
+    tracker_high_threshold: float = 0.40
+    tracker_low_threshold: float = 0.10
+    tracker_new_threshold: float = 0.40
+    tracker_match_threshold: float = 0.80
     tracker_max_missed: int = 30
     history_size: int = 30
     stable_min_hits: int = 3
@@ -114,75 +118,136 @@ class TrackState:
     names: deque[str] = field(default_factory=deque)
     scores: deque[float] = field(default_factory=deque)
     ref_img_ids: deque[str | int | None] = field(default_factory=deque)
+    stable_person: str = "Unknown"
+    stable_score: float = 0.0
+    stable_ref_img_id: str | int | None = None
+
+
+class _ByteDetections:
+    """Minimal Results-like object consumed by Ultralytics BYTETracker."""
+
+    def __init__(self, boxes: np.ndarray, confidences: np.ndarray) -> None:
+        self.xyxy = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+        self.conf = np.asarray(confidences, dtype=np.float32).reshape(-1)
+        self.cls = np.zeros((len(self.xyxy),), dtype=np.float32)
+
+    @property
+    def xywh(self) -> np.ndarray:
+        values = self.xyxy.copy()
+        values[:, 0] = (self.xyxy[:, 0] + self.xyxy[:, 2]) / 2.0
+        values[:, 1] = (self.xyxy[:, 1] + self.xyxy[:, 3]) / 2.0
+        values[:, 2] = self.xyxy[:, 2] - self.xyxy[:, 0]
+        values[:, 3] = self.xyxy[:, 3] - self.xyxy[:, 1]
+        return values
+
+    def __len__(self) -> int:
+        return len(self.xyxy)
+
+    def __getitem__(self, index: Any) -> "_ByteDetections":
+        return _ByteDetections(self.xyxy[index], self.conf[index])
 
 
 class SourceFaceTracker:
-    """Small per-source IoU tracker with identity vote history."""
+    """One ByteTrack instance per source plus persistent face identity history."""
 
     def __init__(
         self,
         *,
-        iou_threshold: float,
+        high_threshold: float,
+        low_threshold: float,
+        new_threshold: float,
+        match_threshold: float,
         max_missed: int,
         history_size: int,
         stable_min_hits: int,
+        backend: Any | None = None,
     ) -> None:
-        self.iou_threshold = float(iou_threshold)
         self.max_missed = max(1, int(max_missed))
         self.history_size = max(1, int(history_size))
         self.stable_min_hits = max(1, int(stable_min_hits))
+        if backend is None:
+            try:
+                from ultralytics.trackers.byte_tracker import BYTETracker
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Ultralytics BYTETracker and its 'lap' dependency are required"
+                ) from exc
+            backend = BYTETracker(
+                SimpleNamespace(
+                    track_high_thresh=float(high_threshold),
+                    track_low_thresh=float(low_threshold),
+                    new_track_thresh=float(new_threshold),
+                    track_buffer=self.max_missed,
+                    match_thresh=float(match_threshold),
+                    fuse_score=True,
+                )
+            )
+        self._backend = backend
         self._next_id = 1
+        self._object_track_ids: dict[int, int] = {}
+        self._visible_boxes: dict[int, list[float]] = {}
         self.tracks: dict[int, TrackState] = {}
 
-    def update(self, boxes: Sequence[Sequence[float]]) -> list[int]:
-        for track in self.tracks.values():
-            track.missed += 1
-        assigned: list[int | None] = [None] * len(boxes)
-        candidates: list[tuple[float, int, int]] = []
-        for box_index, box in enumerate(boxes):
-            for track_id, track in self.tracks.items():
-                score = _iou(box, track.bbox)
-                if score >= self.iou_threshold:
-                    candidates.append((score, box_index, track_id))
-        used_boxes: set[int] = set()
-        used_tracks: set[int] = set()
-        for _, box_index, track_id in sorted(candidates, reverse=True):
-            if box_index in used_boxes or track_id in used_tracks:
+    def update(
+        self,
+        boxes: Sequence[Sequence[float]],
+        confidences: Sequence[float] | None = None,
+    ) -> list[int | None]:
+        box_values = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+        confidence_values = np.asarray(
+            confidences if confidences is not None else [1.0] * len(box_values),
+            dtype=np.float32,
+        )
+        detections = _ByteDetections(box_values, confidence_values)
+        self._backend.update(detections)
+
+        assigned: list[int | None] = [None] * len(box_values)
+        self._visible_boxes = {}
+        active_objects = list(getattr(self._backend, "tracked_stracks", []))
+        lost_objects = list(getattr(self._backend, "lost_stracks", []))
+        alive_object_ids = {id(track) for track in active_objects + lost_objects}
+        for object_id, local_id in list(self._object_track_ids.items()):
+            if object_id not in alive_object_ids:
+                self._object_track_ids.pop(object_id, None)
+                self.tracks.pop(local_id, None)
+
+        for track in active_objects:
+            if not bool(getattr(track, "is_activated", False)):
                 continue
-            track = self.tracks[track_id]
-            track.bbox = [float(value) for value in boxes[box_index][:4]]
-            track.missed = 0
-            assigned[box_index] = track_id
-            used_boxes.add(box_index)
-            used_tracks.add(track_id)
-        for box_index, box in enumerate(boxes):
-            if assigned[box_index] is not None:
+            detection_index = int(getattr(track, "idx", -1))
+            if not 0 <= detection_index < len(assigned):
                 continue
-            track_id = self._next_id
-            self._next_id += 1
-            self.tracks[track_id] = TrackState(
-                track_id=track_id,
-                bbox=[float(value) for value in box[:4]],
-                names=deque(maxlen=self.history_size),
-                scores=deque(maxlen=self.history_size),
-                ref_img_ids=deque(maxlen=self.history_size),
-            )
-            assigned[box_index] = track_id
-        expired = [
-            track_id
-            for track_id, track in self.tracks.items()
-            if track.missed > self.max_missed
-        ]
-        for track_id in expired:
-            self.tracks.pop(track_id, None)
-        return [int(track_id) for track_id in assigned if track_id is not None]
+            object_id = id(track)
+            track_id = self._object_track_ids.get(object_id)
+            if track_id is None:
+                track_id = self._next_id
+                self._next_id += 1
+                self._object_track_ids[object_id] = track_id
+                self.tracks[track_id] = TrackState(
+                    track_id=track_id,
+                    bbox=[float(value) for value in box_values[detection_index]],
+                    names=deque(maxlen=self.history_size),
+                    scores=deque(maxlen=self.history_size),
+                    ref_img_ids=deque(maxlen=self.history_size),
+                )
+            state = self.tracks[track_id]
+            state.bbox = [float(value) for value in box_values[detection_index]]
+            state.missed = 0
+            assigned[detection_index] = track_id
+            self._visible_boxes[track_id] = state.bbox
+
+        visible_ids = set(self._visible_boxes)
+        for track_id, state in self.tracks.items():
+            if track_id not in visible_ids:
+                state.missed += 1
+        return assigned
 
     def track_for_face(self, face_box: Sequence[float]) -> int | None:
         center_x = (float(face_box[0]) + float(face_box[2])) / 2.0
         center_y = (float(face_box[1]) + float(face_box[3])) / 2.0
         candidates: list[tuple[float, int]] = []
-        for track_id, track in self.tracks.items():
-            x1, y1, x2, y2 = track.bbox
+        for track_id, box in self._visible_boxes.items():
+            x1, y1, x2, y2 = box
             if x1 <= center_x <= x2 and y1 <= center_y <= y2:
                 candidates.append(((x2 - x1) * (y2 - y1), track_id))
         if candidates:
@@ -196,6 +261,12 @@ class SourceFaceTracker:
         track.names.append(match.person)
         track.scores.append(float(match.score))
         track.ref_img_ids.append(match.ref_img_id)
+        if track.stable_person != "Unknown":
+            return FaceMatch(
+                person=track.stable_person,
+                score=track.stable_score,
+                ref_img_id=track.stable_ref_img_id,
+            )
         known_counts = Counter(name for name in track.names if name != "Unknown")
         if not known_counts:
             return FaceMatch()
@@ -204,11 +275,37 @@ class SourceFaceTracker:
             return FaceMatch()
         indexes = [index for index, name in enumerate(track.names) if name == person]
         best_index = max(indexes, key=lambda index: track.scores[index])
+        track.stable_person = person
+        track.stable_score = float(track.scores[best_index])
+        track.stable_ref_img_id = track.ref_img_ids[best_index]
+        return self.identity(track_id)
+
+    def identity(self, track_id: int | None) -> FaceMatch:
+        if track_id is None:
+            return FaceMatch()
+        track = self.tracks.get(track_id)
+        if track is None or track.stable_person == "Unknown":
+            return FaceMatch()
         return FaceMatch(
-            person=person,
-            score=float(track.scores[best_index]),
-            ref_img_id=track.ref_img_ids[best_index],
+            person=track.stable_person,
+            score=track.stable_score,
+            ref_img_id=track.stable_ref_img_id,
         )
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "track_id": track.track_id,
+                "bbox": list(track.bbox),
+                "person": track.stable_person,
+                "recognition_score": round(track.stable_score, 6),
+                "ref_img_id": track.stable_ref_img_id,
+                "visible": track.track_id in self._visible_boxes,
+                "missed_frames": track.missed,
+                "identity_history": list(track.names),
+            }
+            for track in self.tracks.values()
+        ]
 
 
 class OnnxFaceEmbedder:
@@ -658,14 +755,17 @@ class FaceRecognitionProcessor(BatchProcessor):
         face_detector: Any | None = None,
         embedder: FaceEmbedder | None = None,
         vector_store: FaceVectorStore | None = None,
+        tracker_backend_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.settings = settings
         self._human_detector = human_detector
         self._face_detector = face_detector
         self._embedder = embedder
         self._vector_store = vector_store
+        self._tracker_backend_factory = tracker_backend_factory
         self._load_lock = threading.RLock()
         self._trackers: dict[str, SourceFaceTracker] = {}
+        self._tracking_session_id = uuid.uuid4().hex
         self._processed_batches = 0
         self._processed_frames = 0
         self._detected_faces = 0
@@ -733,6 +833,11 @@ class FaceRecognitionProcessor(BatchProcessor):
     def preload(self) -> None:
         try:
             self._ensure_dependencies()
+            # Import the tracker stack on the main startup thread. This repo
+            # intentionally avoids concurrent lazy Ultralytics imports because
+            # native ML dependencies have previously crashed during startup.
+            from ultralytics.trackers.byte_tracker import BYTETracker  # noqa: F401
+
             self._last_error = None
         except Exception as exc:
             self._last_error = f"{type(exc).__name__}: {exc}"
@@ -868,10 +973,18 @@ class FaceRecognitionProcessor(BatchProcessor):
         tracker = self._trackers.get(source_id)
         if tracker is None:
             tracker = SourceFaceTracker(
-                iou_threshold=self.settings.tracker_iou_threshold,
+                high_threshold=self.settings.tracker_high_threshold,
+                low_threshold=self.settings.tracker_low_threshold,
+                new_threshold=self.settings.tracker_new_threshold,
+                match_threshold=self.settings.tracker_match_threshold,
                 max_missed=self.settings.tracker_max_missed,
                 history_size=self.settings.history_size,
                 stable_min_hits=self.settings.stable_min_hits,
+                backend=(
+                    self._tracker_backend_factory()
+                    if self._tracker_backend_factory is not None
+                    else None
+                ),
             )
             self._trackers[source_id] = tracker
         return tracker
@@ -916,21 +1029,20 @@ class FaceRecognitionProcessor(BatchProcessor):
                 for human in humans:
                     human.pop("_result_index", None)
                 faces = self._faces(face_result)
-                tracking_boxes = [human["bbox"] for human in humans]
-                for face in faces:
-                    center_x = (face["bbox"][0] + face["bbox"][2]) / 2.0
-                    center_y = (face["bbox"][1] + face["bbox"][3]) / 2.0
-                    if not any(
-                        box[0] <= center_x <= box[2] and box[1] <= center_y <= box[3]
-                        for box in tracking_boxes
-                    ):
-                        tracking_boxes.append(face["bbox"])
                 tracker = self._tracker(packet.source_id)
-                track_ids = tracker.update(tracking_boxes)
+                track_ids = tracker.update(
+                    [human["bbox"] for human in humans],
+                    [human["confidence"] for human in humans],
+                )
                 tracked_humans = [
                     {
                         **human,
                         "track_id": track_ids[index],
+                        "person": "Unknown",
+                        "recognition_score": 0.0,
+                        "ref_img_id": None,
+                        "identity_stable": False,
+                        "face_visible": False,
                     }
                     for index, human in enumerate(humans)
                     if index < len(track_ids)
@@ -993,15 +1105,45 @@ class FaceRecognitionProcessor(BatchProcessor):
                 self._last_embedding_ms = 0.0
                 self._last_search_ms = 0.0
 
+            # Attach the stable identity to the human track itself. This is the
+            # critical lookup used when the person turns away and no face is
+            # visible in the current frame.
+            for frame_index, payload in enumerate(frame_payloads):
+                tracker = self._tracker(packets[frame_index].source_id)
+                faces_by_track = {
+                    face["track_id"]
+                    for face in payload["faces"]
+                    if face.get("track_id") is not None
+                }
+                for human in payload["humans"]:
+                    identity = tracker.identity(human.get("track_id"))
+                    human.update(
+                        {
+                            "person": identity.person,
+                            "recognition_score": round(identity.score, 6),
+                            "ref_img_id": identity.ref_img_id,
+                            "identity_stable": identity.person != "Unknown",
+                            "face_visible": human.get("track_id") in faces_by_track,
+                        }
+                    )
+
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             output: list[TaskResult] = []
             for packet, payload in zip(packets, frame_payloads):
                 faces = payload["faces"]
                 recognized = sum(1 for face in faces if face["person"] != "Unknown")
+                recognized_humans = sum(
+                    1
+                    for human in payload["humans"]
+                    if human["person"] != "Unknown"
+                )
                 data = {
                     **payload,
+                    "tracking_session_id": self._tracking_session_id,
+                    "human_count": len(payload["humans"]),
                     "face_count": len(faces),
                     "recognized_count": recognized,
+                    "recognized_human_count": recognized_humans,
                     "timings_ms": {
                         "detection_batch": round(self._last_detection_ms, 3),
                         "embedding_batch": round(self._last_embedding_ms, 3),
@@ -1115,7 +1257,12 @@ class FaceRecognitionProcessor(BatchProcessor):
             ),
             "embedding_backend": getattr(self._embedder, "backend", None),
             "qdrant": vector_status,
+            "tracker": "ByteTrack",
+            "tracking_session_id": self._tracking_session_id,
             "active_sources": len(self._trackers),
+            "active_humans": sum(
+                len(tracker.tracks) for tracker in self._trackers.values()
+            ),
             "processed_batches": self._processed_batches,
             "processed_frames": self._processed_frames,
             "detected_faces": self._detected_faces,
@@ -1126,6 +1273,13 @@ class FaceRecognitionProcessor(BatchProcessor):
             "last_search_ms": round(self._last_search_ms, 3),
             "last_error": self._last_error,
         }
+
+    def active_tracks(self) -> list[dict[str, Any]]:
+        return [
+            {"camera": source_id, **track}
+            for source_id, tracker in self._trackers.items()
+            for track in tracker.snapshot()
+        ]
 
     def close(self) -> None:
         if self._embedder is not None:

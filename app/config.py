@@ -141,7 +141,18 @@ class Settings:
     face_min_size: int = _env_int("FACE_MIN_SIZE", 24)
     face_blur_threshold: float = _env_float("FACE_BLUR_THRESHOLD", 20.0)
     face_min_eye_distance: float = _env_float("FACE_MIN_EYE_DISTANCE", 8.0)
-    face_tracker_iou: float = _env_float("FACE_TRACKER_IOU", 0.25)
+    face_tracker_high_threshold: float = _env_float(
+        "FACE_TRACKER_HIGH_THRESHOLD", 0.40
+    )
+    face_tracker_low_threshold: float = _env_float(
+        "FACE_TRACKER_LOW_THRESHOLD", 0.10
+    )
+    face_tracker_new_threshold: float = _env_float(
+        "FACE_TRACKER_NEW_THRESHOLD", 0.40
+    )
+    face_tracker_match_threshold: float = _env_float(
+        "FACE_TRACKER_MATCH_THRESHOLD", 0.80
+    )
     face_tracker_max_missed: int = _env_int("FACE_TRACKER_MAX_MISSED", 30)
     face_history_size: int = _env_int("FACE_HISTORY_SIZE", 30)
     face_stable_min_hits: int = _env_int("FACE_STABLE_MIN_HITS", 3)

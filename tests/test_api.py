@@ -428,6 +428,8 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert "/api/v1/models/engine-exports" in schema["paths"]
             assert "/api/v1/faces/enroll" in schema["paths"]
             assert "/api/v1/faces/identities" in schema["paths"]
+            assert "/api/v1/humans/logs" in schema["paths"]
+            assert "/api/v1/humans/active" in schema["paths"]
             export_body = schema["paths"]["/api/v1/models/engine-exports"]["post"][
                 "requestBody"
             ]["content"]
@@ -435,6 +437,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert "/api/v1/cameras/{camera_id}/tasks" in schema["paths"]
             assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
             assert any(tag["name"] == "face-recognition" for tag in schema["tags"])
+            assert any(tag["name"] == "human-tracking" for tag in schema["tags"])
             assert schema["tags"][0]["name"] == "system-diagnostics"
     finally:
         main_module.runtime = old_runtime

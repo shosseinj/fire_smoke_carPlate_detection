@@ -18,12 +18,25 @@ from app.processors.face_recognition import (
 class FakeDetector:
     def __init__(self, *, face: bool) -> None:
         self.face = face
+        self.enabled = True
         self.calls: list[int] = []
 
     def predict(self, *, source, **_kwargs):
         self.calls.append(len(source))
         results = []
         for _ in source:
+            if not self.enabled:
+                results.append(
+                    SimpleNamespace(
+                        boxes=SimpleNamespace(
+                            xyxy=np.empty((0, 4), dtype=np.float32),
+                            conf=np.empty((0,), dtype=np.float32),
+                            cls=np.empty((0,), dtype=np.float32),
+                        ),
+                        keypoints=None,
+                    )
+                )
+                continue
             box = [25, 20, 75, 75] if self.face else [5, 5, 100, 115]
             boxes = SimpleNamespace(
                 xyxy=np.asarray([box], dtype=np.float32),
@@ -86,6 +99,28 @@ class FakeStore:
         return None
 
 
+class FakeByteTrack:
+    def __init__(self) -> None:
+        self.idx = 0
+        self.is_activated = True
+
+
+class FakeByteTracker:
+    def __init__(self) -> None:
+        self.track = FakeByteTrack()
+        self.tracked_stracks = []
+        self.lost_stracks = []
+
+    def update(self, detections):
+        if len(detections):
+            self.track.idx = 0
+            self.tracked_stracks = [self.track]
+        else:
+            self.tracked_stracks = []
+            self.lost_stracks = [self.track]
+        return np.empty((0, 8), dtype=np.float32)
+
+
 def packet(source_id: str, frame_index: int) -> FramePacket:
     checker = np.indices((120, 120)).sum(axis=0) % 2
     frame = np.repeat((checker * 255).astype(np.uint8)[:, :, None], 3, axis=2)
@@ -118,6 +153,7 @@ def build_processor(tmp_path: Path):
         face_detector=face,
         embedder=embedder,
         vector_store=store,
+        tracker_backend_factory=FakeByteTracker,
     )
     return processor, human, face, embedder, store
 
@@ -137,6 +173,24 @@ def test_batches_across_sources_and_stabilizes_per_track(tmp_path: Path) -> None
     assert [item.data["faces"][0]["person"] for item in second] == ["Alice", "Alice"]
     assert all(item.data["faces"][0]["track_id"] == 1 for item in second)
     assert all(item.data["recognized_count"] == 1 for item in second)
+    assert all(item.data["humans"][0]["person"] == "Alice" for item in second)
+
+
+def test_human_keeps_track_identity_when_face_is_no_longer_visible(tmp_path: Path) -> None:
+    processor, _human, face, _embedder, _store = build_processor(tmp_path)
+
+    processor.process_batch([packet("cam-a", 1)])
+    recognized = processor.process_batch([packet("cam-a", 2)])[0]
+    face.enabled = False
+    rotated = processor.process_batch([packet("cam-a", 3)])[0]
+
+    assert recognized.data["humans"][0]["track_id"] == 1
+    assert recognized.data["humans"][0]["person"] == "Alice"
+    assert rotated.data["faces"] == []
+    assert rotated.data["humans"][0]["track_id"] == 1
+    assert rotated.data["humans"][0]["person"] == "Alice"
+    assert rotated.data["humans"][0]["identity_stable"] is True
+    assert rotated.data["humans"][0]["face_visible"] is False
 
 
 def test_enrollment_uses_same_detector_embedder_and_store(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from app.core.model_management import (
     ModelSelectionConfig,
 )
 from app.core.fire_smoke_log_store import FireSmokeLogStore
+from app.core.human_log_store import HumanLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
@@ -49,6 +50,7 @@ class Runtime:
     models: ModelManager
     model_conversions: ModelConversionManager
     fire_smoke_logs: FireSmokeLogStore
+    human_logs: HumanLogStore
     face_processor: BatchProcessor
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
@@ -130,6 +132,7 @@ class Runtime:
             self.video_ingestor.close()
         self.router.close()
         self.fire_smoke_logs.close()
+        self.human_logs.close()
         self.registry.close()
 
     def status(self) -> dict:
@@ -142,6 +145,7 @@ class Runtime:
         value["broadcast"] = self.broadcast.status()
         value["plate_log_count"] = self.plate_logs.count()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
+        value["human_logs"] = self.human_logs.status()
         return value
 
 
@@ -234,6 +238,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             high_count=app_settings.fire_high_incident_count,
         ),
     )
+    human_logs = HumanLogStore(
+        app_settings.plate_log_db_path,
+        app_settings.saved_media_path,
+    )
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
@@ -297,7 +305,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 min_face_size=app_settings.face_min_size,
                 blur_threshold=app_settings.face_blur_threshold,
                 min_eye_distance=app_settings.face_min_eye_distance,
-                tracker_iou_threshold=app_settings.face_tracker_iou,
+                tracker_high_threshold=app_settings.face_tracker_high_threshold,
+                tracker_low_threshold=app_settings.face_tracker_low_threshold,
+                tracker_new_threshold=app_settings.face_tracker_new_threshold,
+                tracker_match_threshold=app_settings.face_tracker_match_threshold,
                 tracker_max_missed=app_settings.face_tracker_max_missed,
                 history_size=app_settings.face_history_size,
                 stable_min_hits=app_settings.face_stable_min_hits,
@@ -335,6 +346,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             batch_size=app_settings.face_batch_size,
             max_wait_ms=app_settings.face_max_wait_ms,
             result_callback=broadcast.publish_result,
+            result_observer=human_logs.observe_result,
         ),
     }
     router = TaskRouter(
@@ -385,6 +397,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         models=models,
         model_conversions=model_conversions,
         fire_smoke_logs=fire_smoke_logs,
+        human_logs=human_logs,
         face_processor=face_processor,
         video_ingestor=video_ingestor,
     )

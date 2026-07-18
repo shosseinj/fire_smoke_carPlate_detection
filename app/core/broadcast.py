@@ -216,23 +216,38 @@ class AnnotatedBroadcastHub:
 
     def _draw_faces(self, frame: np.ndarray, result: TaskResult) -> str:
         if result.error:
-            return "FACE: ERROR"
+            return "HUMAN/FACE: ERROR"
+        humans = result.data.get("humans", [])
+        for human in humans:
+            box = self._bounded_box(human.get("bbox"), frame)
+            if box is None:
+                continue
+            person = str(human.get("person") or "Unknown")
+            track_id = human.get("track_id")
+            score = float(human.get("recognition_score", 0.0) or 0.0)
+            known = person != "Unknown"
+            color = (70, 230, 100) if known else (0, 190, 255)
+            x1, y1, x2, y2 = box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+            suffix = f" {score:.0%}" if known else ""
+            self._text(
+                frame,
+                f"HUMAN {person} #{track_id}{suffix}",
+                (x1, y1),
+                color,
+            )
         faces = result.data.get("faces", [])
         for face in faces:
             box = self._bounded_box(face.get("bbox"), frame)
             if box is None:
                 continue
-            person = str(face.get("person") or "Unknown")
-            track_id = face.get("track_id")
-            score = float(face.get("recognition_score", 0.0) or 0.0)
-            known = person != "Unknown"
-            color = (70, 230, 100) if known else (0, 190, 255)
+            color = (160, 220, 255)
             x1, y1, x2, y2 = box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            suffix = f" {score:.0%}" if known else ""
-            self._text(frame, f"{person} #{track_id}{suffix}", (x1, y1), color)
-        recognized = sum(1 for face in faces if face.get("person") not in {None, "Unknown"})
-        return f"FACE: {recognized}/{len(faces)} KNOWN"
+        recognized = sum(
+            1 for human in humans if human.get("person") not in {None, "Unknown"}
+        )
+        return f"HUMAN: {recognized}/{len(humans)} KNOWN | FACE: {len(faces)}"
 
     def _render(
         self,

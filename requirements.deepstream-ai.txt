@@ -16,3 +16,4 @@ onnxslim>=0.1.71
 nvidia-modelopt[onnx]>=0.44
 tensorrt-cu12==10.3.0
 qdrant-client==1.18.0
+lap==0.5.13

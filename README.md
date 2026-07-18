@@ -4,7 +4,7 @@
 
 The application supports Python 3.10 and newer. Python's `enum` module is part of the standard library; do not install the unrelated PyPI package named `enum`.
 
-This project combines fire/smoke detection, Iranian plate recognition, and batched face recognition in one FastAPI-compatible routing module. The included configuration runs eight MP4 files as looping cameras, while the router remains scalable to larger deployments.
+This project merges the uploaded fire/smoke detector and Iranian plate-recognition service into one FastAPI-compatible routing module. The included configuration runs eight MP4 files as looping cameras, while the router remains scalable to larger deployments.
 
 It is built around the frame contract already used by the main project:
 
@@ -21,7 +21,7 @@ The list must always be accompanied by the matching source-ID order. The router 
 - Enables or disables each camera/video independently.
 - Assigns zero, one, or multiple AI tasks to each source.
 - Routes the same captured frame to both models when a source has both tasks.
-- Creates separate real-time micro-batches for fire/smoke, plate recognition, and face recognition.
+- Creates separate real-time micro-batches for fire/smoke and plate recognition.
 - Keeps only the newest waiting frame for each source to avoid growing latency.
 - Uses fair source ordering so high-FPS cameras do not starve slower sources.
 - Supports dynamic task changes without restarting workers or reloading the API.
@@ -59,15 +59,17 @@ built-in video cameras or existing extractor
         |
         | one list + source IDs per extraction round
         v
-                    TaskRouter
-              /         |          \
-     fire/smoke       plate         face
-     latest-only   latest-only   latest-only
-        buffer        buffer        buffer
-          |             |             |
-     batch worker  batch worker  batch worker
-              \         |          /
-                   result store
+    TaskRouter
+      /    \
+     /      \
+fire/smoke   plate recognition
+latest-only  latest-only
+buffer       buffer
+     |          |
+micro-batch  micro-batch
+worker       worker
+     \          /
+      result store
           |
   REST + WebSocket
 ```
@@ -77,54 +79,10 @@ Default worker settings:
 ```text
 fire/smoke batch size: 8
 plate batch size:      8
-face batch size:       8
 maximum batch wait:    25 ms
 ```
 
 A batch is sent immediately when full. Otherwise, it is sent when the short wait window expires. When a source produces another frame while its previous frame is still waiting, the older waiting frame is replaced. This prevents an overloaded model from processing stale video seconds later.
-
-## Face recognition
-
-Assign `face_recognition` to any camera through camera CRUD in Swagger. The third
-worker batches human detection and face detection across cameras, aligns all valid
-faces, runs one batched ArcFace embedding call, and sends one batched Qdrant query.
-Tracking and identity history are isolated per camera; a name becomes stable after
-`FACE_STABLE_MIN_HITS` matching observations.
-
-The current deployment model files are:
-
-```text
-weights/face_recognition/yolo26s-pose_batch8.pt
-weights/face_recognition/yolov8n-face_batch8.pt
-weights/face_recognition/arcface_fp16.onnx
-```
-
-The two detection stages currently use PyTorch. The previous project does not
-contain a PT ArcFace checkpoint, so the embedding stage temporarily uses its ONNX
-file through ONNX Runtime when available, otherwise through the already-installed
-OpenCV DNN backend. TensorRT engines are not portable across operating systems,
-TensorRT versions, or arbitrary GPU environments; future engines must be built in
-the target Linux runtime. Startup logs print every selected path with
-`MODEL_SELECTED`; missing face models produce `FACE_RECOGNITION_NOT_READY` while
-the other workers continue.
-
-Qdrant runs locally at `data/qdrant` when `qdrant-client` is available. The
-current image does not include that package, so the processor automatically uses
-`data/face_embeddings.sqlite3` as a persistent cosine-search fallback without
-installing anything. Installing the declared Qdrant client later automatically
-restores Qdrant as the primary backend. Set `FACE_QDRANT_URL` and
-`FACE_QDRANT_API_KEY` for a remote server. Face administration is available in Swagger:
-
-```text
-GET    /api/v1/faces/status
-POST   /api/v1/faces/enroll       (person, optional ref_img_id, JPEG/PNG file)
-GET    /api/v1/faces/identities
-DELETE /api/v1/faces/identities/{person}
-```
-
-Enrollment requires exactly one valid face. Detection confidence, recognition
-threshold, face quality, tracker lifetime, history length, embedding batch size,
-and Qdrant settings are all exposed in `.env.example`.
 
 ## Integration into the existing main FastAPI project
 
@@ -351,7 +309,6 @@ VEHICLE_IMGSZ=640
 VEHICLE_MAX_PER_FRAME=12
 VEHICLE_CLASS_IDS=2,3,5,7
 VEHICLE_CROP_PADDING_RATIO=0.05
-PLATE_CLASS_IDS=0
 PLATE_CROP_BATCH_SIZE=16
 MIN_VEHICLE_WIDTH_PIXELS=120
 MIN_VEHICLE_HEIGHT_PIXELS=80
@@ -359,10 +316,6 @@ MIN_VEHICLE_AREA_RATIO=0.025
 ```
 
 Vehicles below any configured minimum width, height, or frame-area ratio are treated as too far from the camera and rejected before plate inference. Vehicle crops are grouped into bounded GPU batches instead of invoking the plate detector once per car.
-
-`PLATE_CLASS_IDS` explicitly identifies plate classes when a raw TensorRT engine
-does not include Ultralytics class-name metadata. The bundled plate detector is a
-single-class model whose plate class is ID `0`.
 
 OCR output is accepted only when it has the complete Iranian layout: two digits, one Persian letter, then five digits. This is exactly seven digits and one Persian character. Partial reads and Latin-letter reads are discarded and are not logged or broadcast as recognized plates.
 
@@ -582,11 +535,6 @@ path keeps the legacy `MODEL_PREFERRED_FORMAT` family resolution shown above.
 Conversion job history is stored in the same SQLite database as model settings;
 an export interrupted by application restart is retained and marked failed.
 
-At application startup, one `MODEL_SELECTED` log entry is emitted for each model
-role. Every entry shows the persisted selection, the first artifact that will be
-loaded, and its fallback files. These entries are written before model dependency
-preloading, so they remain visible if a model cannot be loaded.
-
 The `general-settings` Swagger section provides `GET/PATCH /api/v1/settings/general`. It combines model selection/export settings, plate thresholds, fire/smoke incident policy, all startup environment configuration, and the camera processing modes in one response.
 
 Relevant startup defaults are:
@@ -701,38 +649,8 @@ docker compose up -d --force-recreate video-ai-router
 ```
 
 ```
-[
-  {
-    "camera_id": "camera-01",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101"
-  },
-  {
-    "camera_id": "camera-02",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101"
-  },
-  {
-    "camera_id": "camera-03",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/101"
-  },
-  {
-    "camera_id": "camera-04",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/201"
-  },
-  {
-    "camera_id": "camera-05",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/301"
-  },
-  {
-    "camera_id": "camera-06",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/401"
-  },
-  {
-    "camera_id": "camera-07",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/501"
-  },
-  {
-    "camera_id": "camera-08",
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.29:554/Streaming/Channels/101"
-  }
-]
+docker build `                                                                                          --add-host=host.docker.internal:host-gateway                                                                                         --no-cache `
+  -f Dockerfile.deepstream `
+  -t merged-video-ai-router:v2 `
+  .
 ```

@@ -49,6 +49,9 @@ COPY . /workspace
 # RUN python3 -m pip install --no-cache-dir \
 #     "transformers==4.51.3"
 
+# ByteTrack uses LAP for its two-stage detection association.
+RUN python3 -m pip install --no-cache-dir "lap==0.5.13"
+
 # RUN  pip install --no-cache-dir "tensorrt-cu12>=7.0.0,!=10.2.0"
 RUN python3 -m pip install --no-cache-dir --force-reinstall \
   "tensorrt-cu12==10.3.0"
