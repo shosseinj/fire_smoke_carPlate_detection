@@ -231,17 +231,22 @@ def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]
         project_root=tmp_path,
+        target_fps=5,
+        preview_fps=25,
         rtsp_reconnect_seconds=3,
         rtsp_stall_timeout_seconds=30,
     )
 
     assert ingestor.rtsp_reconnect_seconds == 3
     assert ingestor.rtsp_stall_timeout_seconds == 30
+    assert ingestor.target_fps == 5
+    assert ingestor.preview_fps == 25
     assert ingestor._gst_source_id("camera-03") == 3
     assert ingestor._gst_source_id("camera-03") == 3
     assert ingestor._gst_source_id("warehouse") == 0
     assert ingestor._gst_source_id("video-03") == 1
     assert ingestor.status()["rtsp_stall_timeout_seconds"] == 30
+    assert ingestor.status()["preview_fps"] == 25
 
 
 def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -> None:
@@ -303,6 +308,13 @@ def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
     )
     ingestor._sync_sources()
     assert opened == [("camera-live", "rtsp://example.test/first")]
+
+    ingestor._sync_sources()
+    assert ingestor._states["camera-live"].delivery_target_fps == 5.0
+    registry.update("camera-live", tasks=set())
+    ingestor._sync_sources()
+    assert ingestor._states["camera-live"].delivery_target_fps == 25.0
+    assert closed == []
 
     registry.update("camera-live", source_uri="rtsp://example.test/second")
     ingestor._sync_sources()

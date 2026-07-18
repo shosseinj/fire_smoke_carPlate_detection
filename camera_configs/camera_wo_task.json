@@ -2,7 +2,7 @@
   {
     "camera_id": "camera-01",
     "name": "Fire and plate Camera",
-    "enabled": false,
+    "enabled": true,
     "tasks": [],
     "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101",
     "frame_width": 640,

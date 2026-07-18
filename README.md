@@ -144,6 +144,7 @@ The controls are:
 VIDEO_INGESTION_ENABLED=true
 VIDEO_INGEST_BACKEND=deepstream
 VIDEO_INGEST_FPS=5
+VIDEO_PREVIEW_FPS=25
 VIDEO_LOOP=true
 RTSP_TRANSPORT=tcp
 RTSP_INGESTION_ENABLED=true
@@ -154,7 +155,7 @@ DEEPSTREAM_RTSP_LATENCY_MS=500
 DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS=30
 ```
 
-With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. TCP is the default for reliable LAN camera delivery. `RTSP_RECONNECT_SECONDS` controls the application retry delay after a failed pipeline, while `DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS` controls how long DeepStream waits without receiving data before forcing its internal RTSP reconnection. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
+With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. Cameras with AI tasks use `VIDEO_INGEST_FPS`; play-only cameras with `tasks: []` use the higher `VIDEO_PREVIEW_FPS` without increasing inference load. TCP is the default for reliable LAN camera delivery. `RTSP_RECONNECT_SECONDS` controls the application retry delay after a failed pipeline, while `DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS` controls how long DeepStream waits without receiving data before forcing its internal RTSP reconnection. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
 
 Camera configuration is stored in the SQLite `cameras` table. `CAMERA_DB_PATH` defaults to `data/cameras.sqlite3`. On the first run only, when the table is empty, records are imported from `SOURCE_REGISTRY_PATH` (default `data/sources.json`). After import, SQLite is authoritative and the JSON file is not rewritten.
 

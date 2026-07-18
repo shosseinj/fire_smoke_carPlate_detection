@@ -48,6 +48,7 @@ class DeepStreamSourceState:
     sink_handler_id: int
     frame_width: int
     frame_height: int
+    delivery_target_fps: float
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
@@ -82,6 +83,7 @@ class DeepStreamIngestor:
         router: TaskRouter,
         project_root: Path,
         target_fps: float = 5.0,
+        preview_fps: float = 25.0,
         loop: bool = True,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
@@ -94,6 +96,7 @@ class DeepStreamIngestor:
         self.router = router
         self.project_root = project_root
         self.target_fps = max(0.1, float(target_fps))
+        self.preview_fps = max(0.1, float(preview_fps))
         self.loop = bool(loop)
         self.rtsp_enabled = bool(rtsp_enabled)
         self.rtsp_transport = (
@@ -280,7 +283,7 @@ class DeepStreamIngestor:
             if state is None or state.sink is not sink:
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
-            minimum_interval = 1.0 / self.target_fps
+            minimum_interval = 1.0 / state.delivery_target_fps
             if now - state.last_frame_monotonic < minimum_interval:
                 return Gst.FlowReturn.OK
 
@@ -457,6 +460,9 @@ class DeepStreamIngestor:
                 sink_handler_id=sink_handler_id,
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
+                delivery_target_fps=(
+                    self.target_fps if record.tasks else self.preview_fps
+                ),
                 loop_count=self._loop_counts.get(record.source_id, 0),
             )
             with self._lock:
@@ -553,6 +559,10 @@ class DeepStreamIngestor:
             with self._lock:
                 state = self._states.get(record.source_id)
                 retry_after = self._retry_after.get(record.source_id, 0.0)
+                if state is not None:
+                    state.delivery_target_fps = (
+                        self.target_fps if record.tasks else self.preview_fps
+                    )
             if state is not None and (
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
@@ -629,7 +639,7 @@ class DeepStreamIngestor:
 
     def _run(self) -> None:
         self._started.set()
-        submit_interval = 1.0 / self.target_fps
+        submit_interval = 1.0 / max(self.target_fps, self.preview_fps)
         next_sync = 0.0
         next_submit = 0.0
         registry_revision = -1
@@ -691,6 +701,7 @@ class DeepStreamIngestor:
                 "backend": "deepstream",
                 "running": self._thread is not None and self._thread.is_alive(),
                 "target_fps": self.target_fps,
+                "preview_fps": self.preview_fps,
                 "loop": self.loop,
                 "rtsp_enabled": self.rtsp_enabled,
                 "rtsp_transport": self.rtsp_transport,
@@ -707,6 +718,7 @@ class DeepStreamIngestor:
                         "source_type": state.source_type,
                         "frame_width": state.frame_width,
                         "frame_height": state.frame_height,
+                        "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
                         "received_frames": state.received_frames,
                         "submitted_frames": state.submitted_frames,

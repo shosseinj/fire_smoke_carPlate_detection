@@ -58,7 +58,8 @@ class Settings:
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
     video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()
-    video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 5.0)
+    video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 25.0)
+    video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 25.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)
