@@ -24,7 +24,7 @@ def main() -> None:
     target = Path(args.target).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     YOLO = load_yolo_class()
-    model = YOLO(str(source))
+    model = YOLO(str(source), task="detect")
     kwargs = {
         "format": args.format,
         "imgsz": args.imgsz,

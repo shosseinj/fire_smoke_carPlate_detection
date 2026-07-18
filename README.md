@@ -309,6 +309,7 @@ VEHICLE_IMGSZ=640
 VEHICLE_MAX_PER_FRAME=12
 VEHICLE_CLASS_IDS=2,3,5,7
 VEHICLE_CROP_PADDING_RATIO=0.05
+PLATE_CLASS_IDS=0
 PLATE_CROP_BATCH_SIZE=16
 MIN_VEHICLE_WIDTH_PIXELS=120
 MIN_VEHICLE_HEIGHT_PIXELS=80
@@ -316,6 +317,10 @@ MIN_VEHICLE_AREA_RATIO=0.025
 ```
 
 Vehicles below any configured minimum width, height, or frame-area ratio are treated as too far from the camera and rejected before plate inference. Vehicle crops are grouped into bounded GPU batches instead of invoking the plate detector once per car.
+
+`PLATE_CLASS_IDS` explicitly identifies plate classes when a raw TensorRT engine
+does not include Ultralytics class-name metadata. The bundled plate detector is a
+single-class model whose plate class is ID `0`.
 
 OCR output is accepted only when it has the complete Iranian layout: two digits, one Persian letter, then five digits. This is exactly seven digits and one Persian character. Partial reads and Latin-letter reads are discarded and are not logged or broadcast as recognized plates.
 
@@ -477,9 +482,18 @@ The fire/smoke processor accepts TensorRT `.engine`, ONNX `.onnx`, or Ultralytic
 Swagger contains a `model-management` section:
 
 - `GET /api/v1/models/artifacts` lists `.pt`, `.engine`, and `.onnx` files. Filter by `role` or `format=pt`.
+- `GET /api/v1/models/artifacts/content?path=...` downloads a catalog/export artifact by its returned URL.
 - `POST /api/v1/models/conversions` queues a background PT-to-TensorRT export and, by default, also creates an ONNX fallback.
+- `POST /api/v1/models/engine-exports` uploads a `.pt` directly from Swagger and queues the same background export.
 - `GET /api/v1/models/conversions/{job_id}` reports progress, output artifacts, and per-format errors.
 - `GET/PATCH /api/v1/models/settings` selects the fire/smoke, vehicle, and plate models.
+
+For direct Swagger upload, open `POST /api/v1/models/engine-exports`, choose the
+`.pt` file and its `role`, then execute. The response is `202 Accepted`; poll its
+`status_url`. With the default `select_when_ready=true`, the completed `.engine`
+(or successful ONNX fallback) becomes that role's persisted selection. Its
+downloadable `selected_url` is visible under
+`GET /api/v1/settings/general -> models -> resolved_models -> <role>`.
 
 Model files are organized by role below `MODEL_ROOT_PATH`:
 
@@ -504,6 +518,7 @@ Example conversion request:
   "dynamic": true,
   "device": "0",
   "create_onnx_fallback": true,
+  "select_when_ready": true,
   "overwrite": false,
   "timeout_seconds": 300
 }
@@ -518,6 +533,17 @@ TensorRT .engine -> ONNX .onnx -> PyTorch .pt
 ```
 
 Fallback requires the files to have the same directory and stem, such as `fire_small.engine`, `fire_small.onnx`, and `fire_small.pt`. When a custom output directory is requested, the conversion job copies the source PT into that directory to keep the model family complete. Runtime inference errors also advance to the next available format. Model selection changes are persisted and applied at the next inference batch without restarting the camera pipelines.
+
+Selecting a concrete `.engine` or `.onnx` path is an exact per-role format choice,
+so different roles may use different formats at the same time. Selecting a `.pt`
+path keeps the legacy `MODEL_PREFERRED_FORMAT` family resolution shown above.
+Conversion job history is stored in the same SQLite database as model settings;
+an export interrupted by application restart is retained and marked failed.
+
+At application startup, one `MODEL_SELECTED` log entry is emitted for each model
+role. Every entry shows the persisted selection, the first artifact that will be
+loaded, and its fallback files. These entries are written before model dependency
+preloading, so they remain visible if a model cannot be loaded.
 
 The `general-settings` Swagger section provides `GET/PATCH /api/v1/settings/general`. It combines model selection/export settings, plate thresholds, fire/smoke incident policy, all startup environment configuration, and the camera processing modes in one response.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +29,9 @@ from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 from app.processors.ultralytics_loader import preload_model_dependencies
 
 
+LOGGER = logging.getLogger("uvicorn.error")
+
+
 @dataclass(slots=True)
 class Runtime:
     settings: Settings
@@ -42,7 +46,47 @@ class Runtime:
     fire_smoke_logs: FireSmokeLogStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
+    def selected_model_records(self) -> list[dict[str, object]]:
+        """Return the exact startup model choices in runtime load order."""
+
+        snapshot = self.models.snapshot()
+        records: list[dict[str, object]] = []
+        for role in self.models.ROLE_FIELDS:
+            resolved = snapshot["resolved_models"][role]
+            candidates = list(resolved["candidates"])
+            records.append(
+                {
+                    "role": role,
+                    "selected": resolved["selected"],
+                    "active": resolved["active_choice"],
+                    "fallbacks": candidates[1:] if candidates else [],
+                }
+            )
+
+        recognizer_directory = self.settings.plate_recognizer_dir.resolve()
+        recognizer_model = recognizer_directory / "model.pt"
+        records.append(
+            {
+                "role": "plate_recognizer",
+                "selected": str(recognizer_directory),
+                "active": str(recognizer_model) if recognizer_model.is_file() else None,
+                "fallbacks": [],
+            }
+        )
+        return records
+
+    def _log_selected_models(self) -> None:
+        for record in self.selected_model_records():
+            LOGGER.info(
+                "MODEL_SELECTED role=%s selected=%s active=%s fallbacks=%s",
+                record["role"],
+                record["selected"],
+                record["active"] or "MISSING",
+                record["fallbacks"] or "none",
+            )
+
     def start(self) -> None:
+        self._log_selected_models()
         if self.settings.processor_mode == "real":
             preload_model_dependencies()
         self.router.start()
@@ -194,6 +238,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 detector_confidence=app_settings.plate_confidence,
                 detector_iou=app_settings.plate_iou,
                 plate_crop_batch_size=app_settings.plate_crop_batch_size,
+                plate_class_ids=app_settings.plate_class_ids,
                 vehicle_confidence=app_settings.vehicle_confidence,
                 vehicle_iou=app_settings.vehicle_iou,
                 vehicle_imgsz=app_settings.vehicle_imgsz,

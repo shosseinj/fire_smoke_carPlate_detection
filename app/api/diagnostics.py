@@ -43,6 +43,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
             "fire_minimum_score": runtime.settings.fire_confidence,
             "smoke_minimum_score": runtime.settings.smoke_confidence,
             "plate_minimum_score": runtime.settings.plate_confidence,
+            "plate_class_ids": list(runtime.settings.plate_class_ids),
             "vehicle_minimum_score": runtime.settings.vehicle_confidence,
             "fire_model": {
                 "path": str(runtime.settings.fire_model_path),

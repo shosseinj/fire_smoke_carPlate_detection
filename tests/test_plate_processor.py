@@ -320,7 +320,8 @@ def test_vehicle_engine_runtime_failure_uses_onnx_fallback(
         def predict(self, *args, **kwargs):
             raise RuntimeError("incompatible TensorRT engine")
 
-    def fake_yolo(path: str):
+    def fake_yolo(path: str, task: str | None = None):
+        assert task == "detect"
         if Path(path).suffix == ".engine":
             return FailingVehicleModel()
         return FakeVehicleDetector()

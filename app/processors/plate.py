@@ -201,7 +201,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                         raise FileNotFoundError(f"{kind} detector was not found: {path}")
                     with serialized_model_load():
                         YOLO = load_yolo_class()
-                        model = YOLO(str(path))
+                        model = YOLO(str(path), task="detect")
                     if kind == "vehicle":
                         self._vehicle_detector = model
                         self._vehicle_candidate_index = index

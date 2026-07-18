@@ -52,6 +52,20 @@ def test_catalog_selection_and_engine_onnx_pt_fallback(tmp_path: Path) -> None:
         ".pt",
     ]
 
+    explicitly_onnx = store.update(
+        {
+            "fire_smoke_model": "fire_smoke/fire_nano.onnx",
+            "preferred_format": "engine",
+        }
+    )
+    assert [path.suffix for path in store.candidates("fire_smoke")] == [
+        ".onnx",
+        ".pt",
+    ]
+    assert explicitly_onnx["resolved_models"]["fire_smoke"]["selected_url"] == (
+        "/api/v1/models/artifacts/content?path=fire_smoke%2Ffire_nano.onnx"
+    )
+
     updated = store.update(
         {
             "fire_smoke_model": "fire_smoke/fire_small.pt",
@@ -107,6 +121,7 @@ def test_conversion_job_falls_back_to_onnx_without_blocking_request(
             create_onnx_fallback=True,
             overwrite=False,
             timeout_seconds=300,
+            select_when_ready=True,
         )
         assert queued["status"] == "queued"
         deadline = time.monotonic() + 3.0
@@ -117,9 +132,55 @@ def test_conversion_job_falls_back_to_onnx_without_blocking_request(
             time.sleep(0.01)
         assert job["status"] == "completed_with_fallback"
         assert job["artifacts"] == ["fire_smoke/exports/fire_nano.onnx"]
+        assert job["artifact_urls"] == [
+            "/api/v1/models/artifacts/content?path="
+            "fire_smoke%2Fexports%2Ffire_nano.onnx"
+        ]
         assert job["errors"][0]["format"] == "engine"
         assert (root / job["artifacts"][0]).read_bytes() == b"exported"
         assert (root / "fire_smoke/exports/fire_nano.pt").is_file()
+        assert store.snapshot()["fire_smoke_model"] == (
+            "fire_smoke/exports/fire_nano.onnx"
+        )
+    finally:
+        manager.close()
+
+    reopened = ModelConversionManager(store, exporter_factory=FailingEngineExporter)
+    try:
+        assert reopened.get(queued["job_id"])["status"] == "completed_with_fallback"
+    finally:
+        reopened.close()
+
+
+def test_stage_uploaded_pt_rejects_paths_and_preserves_file(tmp_path: Path) -> None:
+    from io import BytesIO
+
+    root = tmp_path / "weights"
+    config = create_models(root)
+    store = ModelManager(tmp_path / "settings.sqlite3", root, default_config=config)
+    manager = ModelConversionManager(store, exporter_factory=FailingEngineExporter)
+    try:
+        staged = manager.stage_uploaded_pt(
+            BytesIO(b"uploaded-weights"),
+            "model.pt",
+            role="vehicle_detector",
+            output_directory="vehicle_detector/uploads",
+            output_name="uploaded_nano",
+        )
+        assert staged == "vehicle_detector/uploads/uploaded_nano.pt"
+        assert (root / staged).read_bytes() == b"uploaded-weights"
+
+        try:
+            manager.stage_uploaded_pt(
+                BytesIO(b"bad"),
+                "model.pt",
+                role="vehicle_detector",
+                output_directory="plate_detector",
+            )
+        except ValueError as exc:
+            assert "inside vehicle_detector/" in str(exc)
+        else:
+            raise AssertionError("cross-role upload path should be rejected")
     finally:
         manager.close()
 

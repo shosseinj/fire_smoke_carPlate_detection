@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import json
+import logging
 import sqlite3
+import time
 
 import numpy as np
 
@@ -400,6 +402,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert model_configuration["fire_minimum_score"] == 0.3
             assert model_configuration["smoke_minimum_score"] == 0.3
             assert model_configuration["plate_minimum_score"] == 0.3
+            assert model_configuration["plate_class_ids"] == [0]
             assert model_configuration["vehicle_minimum_score"] == 0.35
             assert model_configuration["vehicle_detector"]["class_ids"] == [2, 3, 5, 7]
             assert overview.json()["plate_detection_policy"]["plate_confidence"] == 0.3
@@ -420,7 +423,13 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             assert "/api/v1/plate-settings/cameras/{camera_id}" in schema["paths"]
             assert "/api/v1/settings/general" in schema["paths"]
             assert "/api/v1/models/artifacts" in schema["paths"]
+            assert "/api/v1/models/artifacts/content" in schema["paths"]
             assert "/api/v1/models/conversions" in schema["paths"]
+            assert "/api/v1/models/engine-exports" in schema["paths"]
+            export_body = schema["paths"]["/api/v1/models/engine-exports"]["post"][
+                "requestBody"
+            ]["content"]
+            assert "multipart/form-data" in export_body
             assert "/api/v1/cameras/{camera_id}/tasks" in schema["paths"]
             assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
             assert schema["tags"][0]["name"] == "system-diagnostics"
@@ -428,7 +437,10 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
         main_module.runtime = old_runtime
 
 
-def test_general_model_settings_and_play_only_camera_api(tmp_path: Path) -> None:
+def test_general_model_settings_and_play_only_camera_api(
+    tmp_path: Path,
+    caplog,
+) -> None:
     import app.main as main_module
 
     model_root = tmp_path / "weights"
@@ -457,7 +469,18 @@ def test_general_model_settings_and_play_only_camera_api(tmp_path: Path) -> None
     old_runtime = main_module.runtime
     main_module.runtime = test_runtime
     try:
+        caplog.set_level(logging.INFO, logger="uvicorn.error")
         with TestClient(main_module.app) as client:
+            selected_logs = [
+                record.getMessage()
+                for record in caplog.records
+                if "MODEL_SELECTED" in record.getMessage()
+            ]
+            assert any("role=fire_smoke" in message for message in selected_logs)
+            assert any("role=vehicle_detector" in message for message in selected_logs)
+            assert any("role=plate_detector" in message for message in selected_logs)
+            assert any("role=plate_recognizer" in message for message in selected_logs)
+
             artifacts = client.get("/api/v1/models/artifacts", params={"format": "pt"})
             assert artifacts.status_code == 200
             assert {item["variant"] for item in artifacts.json()} == {
@@ -476,6 +499,45 @@ def test_general_model_settings_and_play_only_camera_api(tmp_path: Path) -> None
             assert updated.json()["models"]["preferred_format"] == "pt"
             assert updated.json()["plate_detection"]["plate_confidence"] == 0.52
             assert updated.json()["camera_processing"]["modes"]["play_only"] == []
+
+            class UploadedEngineExporter:
+                def __init__(self, source: Path) -> None:
+                    self.source = source
+
+                def export(self, **kwargs):
+                    target = self.source.with_suffix(f".{kwargs['format']}")
+                    target.write_bytes(kwargs["format"].encode("ascii"))
+                    return str(target)
+
+            test_runtime.model_conversions._exporter_factory = UploadedEngineExporter
+            export = client.post(
+                "/api/v1/models/engine-exports",
+                data={
+                    "role": "fire_smoke",
+                    "output_name": "swagger_fire",
+                    "create_onnx_fallback": "false",
+                    "select_when_ready": "true",
+                },
+                files={"file": ("fire.pt", b"pt-weights", "application/octet-stream")},
+            )
+            assert export.status_code == 202
+            export_job = export.json()
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                export_job = client.get(export_job["status_url"]).json()
+                if export_job["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(0.01)
+            assert export_job["status"] == "completed"
+            assert export_job["artifacts"] == ["fire_smoke/swagger_fire.engine"]
+
+            general = client.get("/api/v1/settings/general").json()
+            fire_selection = general["models"]["resolved_models"]["fire_smoke"]
+            assert fire_selection["selected"] == "fire_smoke/swagger_fire.engine"
+            assert fire_selection["selected_url"] == export_job["artifact_urls"][0]
+            downloaded = client.get(fire_selection["selected_url"])
+            assert downloaded.status_code == 200
+            assert downloaded.content == b"engine"
 
             camera_id = test_runtime.registry.list()[0].source_id
             play_only = client.put(

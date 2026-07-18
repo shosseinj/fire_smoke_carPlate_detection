@@ -102,6 +102,7 @@ class Settings:
     plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)
     plate_crop_batch_size: int = _env_int("PLATE_CROP_BATCH_SIZE", 16)
+    plate_class_ids: tuple[int, ...] = _env_int_tuple("PLATE_CLASS_IDS", (0,))
     vehicle_confidence: float = _env_float("VEHICLE_CONFIDENCE", 0.35)
     vehicle_iou: float = _env_float("VEHICLE_IOU", 0.45)
     vehicle_imgsz: int = _env_int("VEHICLE_IMGSZ", 640)

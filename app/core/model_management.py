@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import re
 import shutil
@@ -11,7 +12,8 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
+from urllib.parse import quote
 
 MODEL_ROLE_DIRECTORIES = {
     "fire_smoke": "fire_smoke",
@@ -23,6 +25,10 @@ MODEL_FORMATS = ("engine", "onnx", "pt")
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _artifact_url(relative_path: str) -> str:
+    return f"/api/v1/models/artifacts/content?path={quote(relative_path, safe='')}"
 
 
 def _variant_from_name(name: str) -> str | None:
@@ -240,15 +246,27 @@ class ModelManager:
         for role, field in self.ROLE_FIELDS.items():
             self._validate_role_path(role, getattr(config, field))
 
-    def _format_order(self, config: ModelSelectionConfig) -> list[str]:
-        if config.preferred_format == "engine":
+    def _format_order(
+        self,
+        config: ModelSelectionConfig,
+        *,
+        selected_format: str | None = None,
+    ) -> list[str]:
+        # Selecting an .engine or .onnx path is an explicit per-model choice.
+        # A selected .pt keeps the legacy global preference/fallback behavior.
+        preferred_format = (
+            selected_format
+            if selected_format in {"engine", "onnx"}
+            else config.preferred_format
+        )
+        if preferred_format == "engine":
             formats = ["engine"]
             if config.allow_onnx_fallback:
                 formats.append("onnx")
             if config.allow_pt_fallback:
                 formats.append("pt")
             return formats
-        if config.preferred_format == "onnx":
+        if preferred_format == "onnx":
             formats = ["onnx"]
             if config.allow_pt_fallback:
                 formats.append("pt")
@@ -263,7 +281,10 @@ class ModelManager:
             selected = self.resolve_path(getattr(config, self.ROLE_FIELDS[role]))
             candidates = [
                 selected.with_suffix(f".{model_format}")
-                for model_format in self._format_order(config)
+                for model_format in self._format_order(
+                    config,
+                    selected_format=selected.suffix.lower().lstrip("."),
+                )
             ]
             if selected not in candidates:
                 candidates.append(selected)
@@ -304,6 +325,7 @@ class ModelManager:
                     {
                         "role": item_role,
                         "path": relative,
+                        "url": _artifact_url(relative),
                         "filename": path.name,
                         "format": suffix,
                         "variant": _variant_from_name(path.stem),
@@ -320,9 +342,21 @@ class ModelManager:
             resolved = {
                 role: {
                     "selected": value[field],
-                    "candidates": [self.relative_path(path) for path in self.candidates(role)],
+                    "selected_url": _artifact_url(value[field]),
+                    "candidates": [
+                        self.relative_path(path) for path in self.candidates(role)
+                    ],
+                    "candidate_urls": [
+                        _artifact_url(self.relative_path(path))
+                        for path in self.candidates(role)
+                    ],
                     "active_choice": (
                         self.relative_path(self.candidates(role)[0])
+                        if self.candidates(role)
+                        else None
+                    ),
+                    "active_url": (
+                        _artifact_url(self.relative_path(self.candidates(role)[0]))
                         if self.candidates(role)
                         else None
                     ),
@@ -387,6 +421,7 @@ class ModelManager:
 @dataclass(slots=True)
 class ConversionJob:
     job_id: str
+    role: str
     source_model: str
     output_directory: str
     status: str
@@ -412,12 +447,173 @@ class ModelConversionManager:
         self._jobs: dict[str, ConversionJob] = {}
         self._queue: queue.Queue[str | None] = queue.Queue(maxsize=16)
         self._closed = False
+        self._initialize_history()
+        self._load_history()
         self._thread = threading.Thread(
             target=self._run,
             name="model-conversion-worker",
             daemon=True,
         )
         self._thread.start()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.models.database_path, timeout=10.0)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _initialize_history(self) -> None:
+        with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_conversion_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    source_model TEXT NOT NULL,
+                    output_directory TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    options_json TEXT NOT NULL,
+                    artifacts_json TEXT NOT NULL,
+                    errors_json TEXT NOT NULL
+                )
+                """
+            )
+            stale = connection.execute(
+                """
+                SELECT job_id, errors_json FROM model_conversion_jobs
+                WHERE status IN ('queued', 'running')
+                """
+            ).fetchall()
+            for row in stale:
+                errors = json.loads(row["errors_json"])
+                errors.append(
+                    {
+                        "format": "job",
+                        "error": "Export interrupted by application restart",
+                    }
+                )
+                connection.execute(
+                    """
+                    UPDATE model_conversion_jobs
+                    SET status = 'failed', updated_at_utc = ?, errors_json = ?
+                    WHERE job_id = ?
+                    """,
+                    (_utc_now(), json.dumps(errors), row["job_id"]),
+                )
+            connection.commit()
+
+    def _load_history(self) -> None:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM model_conversion_jobs ORDER BY created_at_utc"
+            ).fetchall()
+        for row in rows:
+            job = ConversionJob(
+                job_id=row["job_id"],
+                role=row["role"],
+                source_model=row["source_model"],
+                output_directory=row["output_directory"],
+                status=row["status"],
+                created_at_utc=row["created_at_utc"],
+                updated_at_utc=row["updated_at_utc"],
+                options=json.loads(row["options_json"]),
+                artifacts=json.loads(row["artifacts_json"]),
+                errors=json.loads(row["errors_json"]),
+            )
+            self._jobs[job.job_id] = job
+
+    def _persist_job(self, job: ConversionJob) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO model_conversion_jobs (
+                    job_id, role, source_model, output_directory, status,
+                    created_at_utc, updated_at_utc, options_json,
+                    artifacts_json, errors_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status = excluded.status,
+                    updated_at_utc = excluded.updated_at_utc,
+                    options_json = excluded.options_json,
+                    artifacts_json = excluded.artifacts_json,
+                    errors_json = excluded.errors_json
+                """,
+                (
+                    job.job_id,
+                    job.role,
+                    job.source_model,
+                    job.output_directory,
+                    job.status,
+                    job.created_at_utc,
+                    job.updated_at_utc,
+                    json.dumps(job.options),
+                    json.dumps(job.artifacts),
+                    json.dumps(job.errors),
+                ),
+            )
+            connection.commit()
+
+    def stage_uploaded_pt(
+        self,
+        source: BinaryIO,
+        uploaded_filename: str | None,
+        *,
+        role: str,
+        output_directory: str | None = None,
+        output_name: str | None = None,
+        overwrite: bool = False,
+    ) -> str:
+        """Store an uploaded PT safely below the selected detector role."""
+
+        if role not in MODEL_ROLE_DIRECTORIES:
+            raise ValueError(f"Unknown model role: {role}")
+        if not uploaded_filename:
+            raise ValueError("A .pt model file is required")
+        clean_filename = Path(uploaded_filename.replace("\\", "/")).name
+        if Path(clean_filename).suffix.lower() != ".pt":
+            raise ValueError("Only .pt model uploads are accepted")
+        stem = (output_name or Path(clean_filename).stem).strip()
+        if (
+            not stem
+            or Path(stem).name != stem
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", stem)
+        ):
+            raise ValueError(
+                "output_name must start with a letter or number and contain only "
+                "letters, numbers, dots, underscores, or hyphens"
+            )
+
+        role_root = (self.models.model_root / MODEL_ROLE_DIRECTORIES[role]).resolve()
+        output = (
+            self.models.resolve_path(output_directory)
+            if output_directory
+            else role_root
+        )
+        try:
+            output.resolve().relative_to(role_root)
+        except ValueError as exc:
+            raise ValueError(f"output_directory must stay inside {role}/") from exc
+        output.mkdir(parents=True, exist_ok=True)
+        target = output / f"{stem}.pt"
+        if target.exists() and not overwrite:
+            raise FileExistsError(
+                f"Uploaded model already exists: {self.models.relative_path(target)}"
+            )
+
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.upload")
+        try:
+            source.seek(0)
+            with temporary.open("wb") as destination:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+            if temporary.stat().st_size <= 0:
+                raise ValueError("The uploaded .pt file is empty")
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return self.models.relative_path(target)
 
     def submit(
         self,
@@ -433,6 +629,7 @@ class ModelConversionManager:
         create_onnx_fallback: bool,
         overwrite: bool,
         timeout_seconds: int,
+        select_when_ready: bool = False,
     ) -> dict[str, Any]:
         source = self.models.resolve_path(source_model)
         if not source.is_file() or source.suffix.lower() != ".pt":
@@ -450,6 +647,7 @@ class ModelConversionManager:
         now = _utc_now()
         job = ConversionJob(
             job_id=job_id,
+            role=role,
             source_model=self.models.relative_path(source),
             output_directory=self.models.relative_path(output),
             status="queued",
@@ -465,6 +663,7 @@ class ModelConversionManager:
                 "create_onnx_fallback": create_onnx_fallback,
                 "overwrite": overwrite,
                 "timeout_seconds": timeout_seconds,
+                "select_when_ready": select_when_ready,
             },
             artifacts=[],
             errors=[],
@@ -473,10 +672,17 @@ class ModelConversionManager:
             if self._closed:
                 raise RuntimeError("Model conversion manager is closed")
             self._jobs[job_id] = job
+            self._persist_job(job)
             try:
                 self._queue.put_nowait(job_id)
             except queue.Full as exc:
                 self._jobs.pop(job_id, None)
+                with self._connect() as connection:
+                    connection.execute(
+                        "DELETE FROM model_conversion_jobs WHERE job_id = ?",
+                        (job_id,),
+                    )
+                    connection.commit()
                 raise RuntimeError("Model conversion queue is full") from exc
         return self.get(job_id)
 
@@ -486,6 +692,7 @@ class ModelConversionManager:
             for field, value in changes.items():
                 setattr(job, field, value)
             job.updated_at_utc = _utc_now()
+            self._persist_job(job)
 
     def _export_format(self, job: ConversionJob, exporter: Any, model_format: str) -> str:
         source = self.models.resolve_path(job.source_model)
@@ -608,6 +815,27 @@ class ModelConversionManager:
                 errors.append({"format": "onnx", "error": f"{type(exc).__name__}: {exc}"})
         if artifacts:
             status = "completed" if not errors else "completed_with_fallback"
+            if job.options.get("select_when_ready"):
+                try:
+                    selected = next(
+                        (
+                            artifact
+                            for artifact in artifacts
+                            if artifact.endswith(".engine")
+                        ),
+                        artifacts[0],
+                    )
+                    self.models.update(
+                        {self.models.ROLE_FIELDS[job.role]: selected}
+                    )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "format": "settings",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    status = "completed_with_fallback"
         else:
             status = "failed"
         self._set_job(job_id, status=status, artifacts=artifacts, errors=errors)
@@ -627,11 +855,21 @@ class ModelConversionManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            return asdict(job)
+            result = asdict(job)
+            result["artifact_urls"] = [_artifact_url(path) for path in job.artifacts]
+            result["status_url"] = f"/api/v1/models/conversions/{job.job_id}"
+            return result
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [asdict(job) for job in reversed(list(self._jobs.values()))]
+            return [
+                {
+                    **asdict(job),
+                    "artifact_urls": [_artifact_url(path) for path in job.artifacts],
+                    "status_url": f"/api/v1/models/conversions/{job.job_id}",
+                }
+                for job in reversed(list(self._jobs.values()))
+            ]
 
     def close(self) -> None:
         with self._lock:
