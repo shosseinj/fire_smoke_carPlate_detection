@@ -54,6 +54,11 @@ class FaceRecognitionSettings:
     qdrant_url: str | None = None
     qdrant_path: Path | None = None
     qdrant_api_key: str | None = None
+    human_crop_padding_ratio: float = 0.08
+    face_roi_mosaic_padding: int = 8
+    face_roi_mosaic_max_width: int = 1920
+    face_roi_mosaic_max_height: int = 1920
+    use_gpu_quality: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +132,34 @@ class TrackState:
     stable_person: str = "Unknown"
     stable_score: float = 0.0
     stable_ref_img_id: str | int | None = None
+
+
+@dataclass(slots=True)
+class HumanRoi:
+    frame_index: int
+    human_index: int
+    track_id: int | None
+    crop: np.ndarray
+    crop_bbox: list[int]
+
+
+@dataclass(slots=True)
+class HumanRoiMosaicEntry:
+    roi_index: int
+    frame_index: int
+    human_index: int
+    track_id: int | None
+    crop_bbox: list[int]
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass(slots=True)
+class HumanRoiMosaic:
+    image: np.ndarray
+    entries: list[HumanRoiMosaicEntry]
 
 
 class _ByteDetections:
@@ -779,6 +812,10 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._recognized_faces = 0
         self._last_batch_ms = 0.0
         self._last_detection_ms = 0.0
+        self._last_human_detection_ms = 0.0
+        self._last_face_roi_detection_ms = 0.0
+        self._last_quality_ms = 0.0
+        self._last_quality_backend = "cpu"
         self._last_embedding_ms = 0.0
         self._last_search_ms = 0.0
         self._last_error: str | None = None
@@ -860,31 +897,56 @@ class FaceRecognitionProcessor(BatchProcessor):
         confidence: float,
         fixed_batch: int | None,
     ) -> list[Any]:
+        """Run a YOLO model in chunks.
+
+        TensorRT engines in this project are often exported with a fixed batch
+        size. The old implementation raised an error when the real batch was
+        larger than that fixed size. For real-time multi-camera processing we
+        instead split the input into multiple chunks and still pad only the last
+        chunk when the engine requires a static batch.
+        """
         real_count = len(frames)
-        source = list(frames)
-        batch = real_count
-        if model_path.suffix.lower() == ".engine" and fixed_batch:
-            if real_count > fixed_batch:
-                raise ValueError(
-                    f"{model_path.name} accepts at most {fixed_batch} frames"
-                )
-            batch = fixed_batch
-            while len(source) < fixed_batch:
-                source.append(np.zeros_like(source[0]))
-        results = list(
-            model.predict(
-                source=source,
-                batch=batch,
-                imgsz=imgsz,
-                conf=confidence,
-                device=self.settings.device,
-                rect=False,
-                verbose=False,
-            )
+        if real_count == 0:
+            return []
+
+        engine_fixed_batch = (
+            int(fixed_batch)
+            if model_path.suffix.lower() == ".engine" and fixed_batch
+            else None
         )
-        if len(results) < real_count:
-            raise RuntimeError("Face model returned fewer results than input frames")
-        return results[:real_count]
+        max_real_batch = engine_fixed_batch or max(1, int(self.settings.batch_size))
+        output: list[Any] = []
+
+        for start in range(0, real_count, max_real_batch):
+            chunk = list(frames[start : start + max_real_batch])
+            chunk_real_count = len(chunk)
+            source = list(chunk)
+            batch = chunk_real_count
+
+            if engine_fixed_batch:
+                batch = engine_fixed_batch
+                while len(source) < engine_fixed_batch:
+                    source.append(np.zeros_like(source[0]))
+
+            results = list(
+                model.predict(
+                    source=source,
+                    batch=batch,
+                    imgsz=imgsz,
+                    conf=confidence,
+                    device=self.settings.device,
+                    rect=False,
+                    verbose=False,
+                )
+            )
+            if len(results) < chunk_real_count:
+                raise RuntimeError(
+                    f"{model_path.name} returned fewer results than input frames"
+                )
+            output.extend(results[:chunk_real_count])
+
+        return output[:real_count]
+
 
     @staticmethod
     def _boxes(result: Any, confidence: float) -> list[dict[str, Any]]:
@@ -1169,6 +1231,445 @@ class FaceRecognitionProcessor(BatchProcessor):
         crop = frame[max(0, y1) : min(height, y2), max(0, x1) : min(width, x2)]
         return cv2.resize(crop, (112, 112)) if crop.size else None
 
+    @staticmethod
+    def _clip_bbox_with_padding(
+        bbox: Sequence[float],
+        frame_shape: Sequence[int],
+        padding_ratio: float,
+    ) -> list[int]:
+        height, width = int(frame_shape[0]), int(frame_shape[1])
+        x1, y1, x2, y2 = [float(value) for value in bbox[:4]]
+        box_width = max(0.0, x2 - x1)
+        box_height = max(0.0, y2 - y1)
+        pad_x = box_width * max(0.0, float(padding_ratio))
+        pad_y = box_height * max(0.0, float(padding_ratio))
+        return [
+            max(0, int(np.floor(x1 - pad_x))),
+            max(0, int(np.floor(y1 - pad_y))),
+            min(width, int(np.ceil(x2 + pad_x))),
+            min(height, int(np.ceil(y2 + pad_y))),
+        ]
+
+    @staticmethod
+    def _landmarks_to_list(values: Any) -> list[list[float]]:
+        landmarks = np.asarray(values, dtype=np.float32)
+        if landmarks.ndim != 2 or landmarks.shape[1] < 2:
+            return []
+        return landmarks[:, :2].round(3).tolist()
+
+    def _build_human_rois(
+        self,
+        packets: Sequence[FramePacket],
+        frame_payloads: Sequence[dict[str, Any]],
+    ) -> list[HumanRoi]:
+        rois: list[HumanRoi] = []
+        padding_ratio = float(self.settings.human_crop_padding_ratio)
+        for frame_index, (packet, payload) in enumerate(zip(packets, frame_payloads)):
+            frame = packet.frame
+            for human_index, human in enumerate(payload["humans"]):
+                track_id = human.get("track_id")
+                if track_id is None:
+                    continue
+                x1, y1, x2, y2 = self._clip_bbox_with_padding(
+                    human["bbox"], frame.shape, padding_ratio
+                )
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+                rois.append(
+                    HumanRoi(
+                        frame_index=frame_index,
+                        human_index=human_index,
+                        track_id=int(track_id),
+                        crop=crop,
+                        crop_bbox=[x1, y1, x2, y2],
+                    )
+                )
+        return rois
+
+    def _build_human_roi_mosaics(self, rois: Sequence[HumanRoi]) -> list[HumanRoiMosaic]:
+        """Concatenate human crops into one or more mosaic images.
+
+        Every detected face is later mapped back from mosaic coordinates to the
+        original inference-frame coordinates using the entry metadata.
+        """
+        if not rois:
+            return []
+
+        padding = max(0, int(self.settings.face_roi_mosaic_padding))
+        max_width = max(1, int(self.settings.face_roi_mosaic_max_width))
+        max_height = max(1, int(self.settings.face_roi_mosaic_max_height))
+        mosaics: list[HumanRoiMosaic] = []
+        current_entries: list[HumanRoiMosaicEntry] = []
+        current_rows: list[tuple[HumanRoi, int, int, int]] = []
+        current_width = 1
+        current_height = padding
+
+        def flush() -> None:
+            nonlocal current_entries, current_rows, current_width, current_height
+            if not current_rows:
+                return
+            channels = int(current_rows[0][0].crop.shape[2]) if current_rows[0][0].crop.ndim == 3 else 1
+            image = np.zeros((max(current_height, 1), max(current_width, 1), channels), dtype=current_rows[0][0].crop.dtype)
+            if channels == 1:
+                image = image.reshape(max(current_height, 1), max(current_width, 1))
+            for roi, x, y, roi_index in current_rows:
+                crop_height, crop_width = roi.crop.shape[:2]
+                image[y : y + crop_height, x : x + crop_width] = roi.crop
+                current_entries.append(
+                    HumanRoiMosaicEntry(
+                        roi_index=roi_index,
+                        frame_index=roi.frame_index,
+                        human_index=roi.human_index,
+                        track_id=roi.track_id,
+                        crop_bbox=list(roi.crop_bbox),
+                        x=x,
+                        y=y,
+                        width=crop_width,
+                        height=crop_height,
+                    )
+                )
+            mosaics.append(HumanRoiMosaic(image=image, entries=current_entries))
+            current_entries = []
+            current_rows = []
+            current_width = 1
+            current_height = padding
+
+        for roi_index, roi in enumerate(rois):
+            crop_height, crop_width = roi.crop.shape[:2]
+            if crop_width <= 0 or crop_height <= 0:
+                continue
+
+            # If one crop is wider/taller than the configured mosaic limits,
+            # resize it while preserving aspect ratio. This keeps YOLO input
+            # bounded and still allows exact coordinate mapping through the
+            # stored resized crop bbox.
+            if crop_width > max_width - 2 * padding or crop_height > max_height - 2 * padding:
+                scale = min(
+                    (max_width - 2 * padding) / max(float(crop_width), 1.0),
+                    (max_height - 2 * padding) / max(float(crop_height), 1.0),
+                )
+                scale = max(scale, 1e-3)
+                new_width = max(1, int(round(crop_width * scale)))
+                new_height = max(1, int(round(crop_height * scale)))
+                resized = cv2.resize(roi.crop, (new_width, new_height))
+                roi = HumanRoi(
+                    frame_index=roi.frame_index,
+                    human_index=roi.human_index,
+                    track_id=roi.track_id,
+                    crop=resized,
+                    crop_bbox=roi.crop_bbox,
+                )
+                crop_height, crop_width = roi.crop.shape[:2]
+
+            next_height = current_height + crop_height + padding
+            next_width = max(current_width, crop_width + 2 * padding)
+            if current_rows and (next_height > max_height or next_width > max_width):
+                flush()
+                next_height = padding + crop_height + padding
+                next_width = crop_width + 2 * padding
+
+            x = padding
+            y = current_height
+            current_rows.append((roi, x, y, roi_index))
+            current_height = next_height
+            current_width = max(current_width, next_width)
+
+        flush()
+        return mosaics
+
+    def _faces_from_human_roi_mosaics(
+        self,
+        mosaics: Sequence[HumanRoiMosaic],
+        face_results: Sequence[Any],
+    ) -> list[dict[str, Any]]:
+        mapped_faces: list[dict[str, Any]] = []
+        for mosaic, result in zip(mosaics, face_results):
+            faces = self._faces(result)
+            for face in faces:
+                bbox = [float(value) for value in face["bbox"]]
+                center_x = (bbox[0] + bbox[2]) / 2.0
+                center_y = (bbox[1] + bbox[3]) / 2.0
+                entry = next(
+                    (
+                        item
+                        for item in mosaic.entries
+                        if item.x <= center_x <= item.x + item.width
+                        and item.y <= center_y <= item.y + item.height
+                    ),
+                    None,
+                )
+                if entry is None:
+                    continue
+
+                local_bbox = [
+                    max(0.0, min(float(entry.width), bbox[0] - entry.x)),
+                    max(0.0, min(float(entry.height), bbox[1] - entry.y)),
+                    max(0.0, min(float(entry.width), bbox[2] - entry.x)),
+                    max(0.0, min(float(entry.height), bbox[3] - entry.y)),
+                ]
+                if local_bbox[2] <= local_bbox[0] or local_bbox[3] <= local_bbox[1]:
+                    continue
+
+                crop_x1, crop_y1, crop_x2, crop_y2 = entry.crop_bbox
+                crop_width = max(1.0, float(entry.width))
+                crop_height = max(1.0, float(entry.height))
+                original_crop_width = max(1.0, float(crop_x2 - crop_x1))
+                original_crop_height = max(1.0, float(crop_y2 - crop_y1))
+                scale_x = original_crop_width / crop_width
+                scale_y = original_crop_height / crop_height
+
+                frame_bbox = [
+                    crop_x1 + local_bbox[0] * scale_x,
+                    crop_y1 + local_bbox[1] * scale_y,
+                    crop_x1 + local_bbox[2] * scale_x,
+                    crop_y1 + local_bbox[3] * scale_y,
+                ]
+
+                landmarks = np.asarray(face.get("landmarks", []), dtype=np.float32)
+                frame_landmarks = np.empty((0, 2), dtype=np.float32)
+                if landmarks.ndim == 2 and landmarks.shape[1] >= 2:
+                    frame_landmarks = landmarks[:, :2].copy()
+                    frame_landmarks[:, 0] = crop_x1 + (frame_landmarks[:, 0] - entry.x) * scale_x
+                    frame_landmarks[:, 1] = crop_y1 + (frame_landmarks[:, 1] - entry.y) * scale_y
+
+                mapped_faces.append(
+                    {
+                        "frame_index": entry.frame_index,
+                        "human_index": entry.human_index,
+                        "track_id": entry.track_id,
+                        "bbox": [float(value) for value in frame_bbox],
+                        "landmarks": frame_landmarks,
+                        "confidence": float(face.get("confidence", 0.0) or 0.0),
+                    }
+                )
+        return mapped_faces
+
+    def _quality_batch(
+        self,
+        items: Sequence[tuple[np.ndarray, dict[str, Any]]],
+    ) -> list[tuple[bool, float, str, np.ndarray | None, dict[str, Any]]]:
+        if not items:
+            return []
+        if self.settings.use_gpu_quality:
+            gpu_values = self._quality_batch_gpu(items)
+            if gpu_values is not None:
+                self._last_quality_backend = "torch-cuda"
+                return gpu_values
+        self._last_quality_backend = "cpu"
+        return [self._quality(frame, face) for frame, face in items]
+
+    def _quality_batch_gpu(
+        self,
+        items: Sequence[tuple[np.ndarray, dict[str, Any]]],
+    ) -> list[tuple[bool, float, str, np.ndarray | None, dict[str, Any]]] | None:
+        """GPU-assisted batched face-quality gate.
+
+        The expensive per-face blur and scoring math is batched on CUDA when
+        torch is available. Geometric values are approximated from landmarks to
+        avoid cv2.solvePnP in the real-time path. Face alignment still uses the
+        existing OpenCV affine transform for compatibility with the current
+        ArcFace preprocessing.
+        """
+        try:
+            import torch
+            import torch.nn.functional as F
+        except ImportError:
+            return None
+        if self.settings.device.lower() == "cpu" or not torch.cuda.is_available():
+            return None
+
+        device = torch.device(
+            f"cuda:{int(self.settings.device)}"
+            if str(self.settings.device).isdigit()
+            else "cuda:0"
+        )
+        prepared: list[dict[str, Any]] = []
+        tensors: list[np.ndarray] = []
+        for frame, face in items:
+            height, width = frame.shape[:2]
+            x1, y1, x2, y2 = [int(round(value)) for value in face["bbox"]]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width, x2), min(height, y2)
+            crop = frame[y1:y2, x1:x2]
+            landmarks = np.asarray(face.get("landmarks", []), dtype=np.float32)
+            base_metrics: dict[str, Any] = {
+                "blur": 0.0,
+                "eye_distance": 0.0,
+                "yaw": None,
+                "pitch": None,
+                "roll": None,
+                "landmark_count": int(len(landmarks)) if landmarks.ndim == 2 else 0,
+                "size_score": 0.0,
+                "blur_score": 0.0,
+                "pose_score": 0.0,
+                "face_width": int(max(0, x2 - x1)),
+                "face_height": int(max(0, y2 - y1)),
+                "quality_frame_width": int(width),
+                "quality_frame_height": int(height),
+            }
+            if crop.size == 0:
+                prepared.append(
+                    {
+                        "empty": True,
+                        "frame": frame,
+                        "face": face,
+                        "crop": None,
+                        "landmarks": landmarks,
+                        "metrics": base_metrics,
+                    }
+                )
+                continue
+            tensors.append(cv2.resize(crop, (112, 112)))
+            prepared.append(
+                {
+                    "empty": False,
+                    "frame": frame,
+                    "face": face,
+                    "crop": crop,
+                    "landmarks": landmarks,
+                    "metrics": base_metrics,
+                }
+            )
+
+        if not tensors:
+            return [(False, 0.0, "empty_crop", None, item["metrics"]) for item in prepared]
+
+        batch = torch.from_numpy(np.stack(tensors)).to(device=device, dtype=torch.float32)
+        # Input is BGR because frames come from OpenCV.
+        gray = (
+            0.114 * batch[..., 0]
+            + 0.587 * batch[..., 1]
+            + 0.299 * batch[..., 2]
+        ).unsqueeze(1)
+        kernel = torch.tensor(
+            [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+            device=device,
+            dtype=torch.float32,
+        ).view(1, 1, 3, 3)
+        laplacian = F.conv2d(gray, kernel, padding=1)
+        blur_values = laplacian.flatten(1).var(dim=1, unbiased=False).detach().cpu().numpy()
+
+        output: list[tuple[bool, float, str, np.ndarray | None, dict[str, Any]]] = []
+        blur_index = 0
+        for item in prepared:
+            metrics = dict(item["metrics"])
+            if item["empty"]:
+                output.append((False, 0.0, "empty_crop", None, metrics))
+                continue
+
+            frame = item["frame"]
+            face = item["face"]
+            crop = item["crop"]
+            assert crop is not None
+            landmarks = np.asarray(item["landmarks"], dtype=np.float32)
+            face_height, face_width = crop.shape[:2]
+            blur = float(blur_values[blur_index])
+            blur_index += 1
+
+            width_score = min(
+                1.0,
+                face_width / max(float(self.settings.min_face_width * 2), 1.0),
+            )
+            height_score = min(
+                1.0,
+                face_height / max(float(self.settings.min_face_height * 2), 1.0),
+            )
+            size_score = min(width_score, height_score)
+            blur_score = min(1.0, blur / max(self.settings.blur_threshold * 4.0, 1.0))
+
+            eye_distance = 0.0
+            yaw = pitch = roll = None
+            pose_score = 0.0
+            if landmarks.ndim == 2 and len(landmarks) >= 2:
+                left_eye, right_eye = landmarks[0], landmarks[1]
+                eye_delta = right_eye - left_eye
+                eye_distance = float(np.linalg.norm(eye_delta))
+                roll = float(np.degrees(np.arctan2(float(eye_delta[1]), float(eye_delta[0]))))
+                if len(landmarks) >= 5:
+                    nose = landmarks[2]
+                    mouth_center = (landmarks[3] + landmarks[4]) / 2.0
+                    eye_center = (left_eye + right_eye) / 2.0
+                    vertical = max(float(np.linalg.norm(mouth_center - eye_center)), 1e-6)
+                    yaw = float(((nose[0] - eye_center[0]) / max(eye_distance, 1e-6)) * 60.0)
+                    pitch = float((((nose[1] - eye_center[1]) / vertical) - 0.45) * 80.0)
+                    pose_parts = []
+                    for value, maximum in (
+                        (yaw, self.settings.max_abs_yaw),
+                        (pitch, self.settings.max_abs_pitch),
+                        (roll, self.settings.max_abs_roll),
+                    ):
+                        pose_parts.append(max(0.0, 1.0 - abs(value) / max(float(maximum), 1e-6)))
+                    pose_score = sum(pose_parts) / len(pose_parts)
+
+            eye_score = min(
+                1.0,
+                eye_distance / max(float(self.settings.min_eye_distance * 2), 1.0),
+            )
+            confidence = float(face.get("confidence", 0.0) or 0.0)
+            quality = (
+                0.30 * blur_score
+                + 0.20 * size_score
+                + 0.15 * eye_score
+                + 0.25 * pose_score
+                + 0.10 * confidence
+            )
+            quality = max(0.0, min(1.0, quality))
+            metrics.update(
+                {
+                    "blur": round(blur, 4),
+                    "eye_distance": round(eye_distance, 4),
+                    "yaw": None if yaw is None else round(yaw, 4),
+                    "pitch": None if pitch is None else round(pitch, 4),
+                    "roll": None if roll is None else round(roll, 4),
+                    "landmark_count": int(len(landmarks)) if landmarks.ndim == 2 else 0,
+                    "size_score": round(size_score, 6),
+                    "blur_score": round(blur_score, 6),
+                    "pose_score": round(pose_score, 6),
+                    "face_width": int(face_width),
+                    "face_height": int(face_height),
+                }
+            )
+
+            reason = "ok"
+            if (
+                face_width < self.settings.min_face_width
+                or face_height < self.settings.min_face_height
+            ):
+                reason = "face_too_small"
+            elif self.settings.require_landmarks and len(landmarks) < 5:
+                reason = "missing_landmarks"
+            elif blur < self.settings.blur_threshold:
+                reason = "blurry"
+            elif eye_distance < self.settings.min_eye_distance:
+                reason = "eyes_too_close"
+            elif self.settings.require_landmarks and None in (yaw, pitch, roll):
+                reason = "pose_unavailable"
+            elif yaw is not None and abs(yaw) > self.settings.max_abs_yaw:
+                reason = "yaw_out_of_range"
+            elif pitch is not None and abs(pitch) > self.settings.max_abs_pitch:
+                reason = "pitch_out_of_range"
+            elif roll is not None and abs(roll) > self.settings.max_abs_roll:
+                reason = "roll_out_of_range"
+            elif quality < self.settings.quality_threshold:
+                reason = "quality_below_threshold"
+
+            valid = reason == "ok"
+            aligned: np.ndarray | None = crop
+            if valid:
+                corrected = self._align_face(frame, face["bbox"], landmarks)
+                if corrected is None:
+                    valid = False
+                    reason = "alignment_failed"
+                    aligned = None
+                else:
+                    aligned = corrected
+            output.append((valid, quality, reason, aligned, metrics))
+
+        return output
+
     def _tracker(self, source_id: str) -> SourceFaceTracker:
         tracker = self._trackers.get(source_id)
         if tracker is None:
@@ -1199,8 +1700,11 @@ class FaceRecognitionProcessor(BatchProcessor):
             assert self._face_detector is not None
             assert self._embedder is not None
             assert self._vector_store is not None
+
             frames = [packet.frame for packet in packets]
             source_frames = [packet.source_frame for packet in packets]
+
+            # 1) Human detection still runs on every input frame.
             detection_started = time.perf_counter()
             human_results = self._predict_yolo(
                 self._human_detector,
@@ -1210,26 +1714,13 @@ class FaceRecognitionProcessor(BatchProcessor):
                 confidence=self.settings.human_confidence,
                 fixed_batch=self.settings.human_engine_fixed_batch,
             )
-            face_results = self._predict_yolo(
-                self._face_detector,
-                frames,
-                model_path=self.settings.face_model_path,
-                imgsz=self.settings.face_imgsz,
-                confidence=self.settings.face_confidence,
-                fixed_batch=self.settings.face_engine_fixed_batch,
-            )
-            self._last_detection_ms = (time.perf_counter() - detection_started) * 1000.0
+            self._last_human_detection_ms = (time.perf_counter() - detection_started) * 1000.0
 
+            # 2) Track humans before face recognition. Faces detected inside a
+            # human ROI inherit that human track_id directly.
             frame_payloads: list[dict[str, Any]] = []
-            face_crops: list[np.ndarray] = []
-            face_locations: list[tuple[int, int]] = []
-            for frame_index, (
-                packet,
-                source_frame,
-                human_result,
-                face_result,
-            ) in enumerate(
-                zip(packets, source_frames, human_results, face_results)
+            for frame_index, (packet, source_frame, human_result) in enumerate(
+                zip(packets, source_frames, human_results)
             ):
                 humans = self._boxes(human_result, self.settings.human_confidence)
                 for human in humans:
@@ -1237,7 +1728,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                     human["source_bbox"] = self._scale_bbox(
                         human["bbox"], packet.frame.shape, source_frame.shape
                     )
-                faces = self._faces(face_result)
+
                 tracker = self._tracker(packet.source_id)
                 track_ids = tracker.update(
                     [human["bbox"] for human in humans],
@@ -1256,48 +1747,91 @@ class FaceRecognitionProcessor(BatchProcessor):
                     for index, human in enumerate(humans)
                     if index < len(track_ids)
                 ]
-                prepared_faces: list[dict[str, Any]] = []
-                for face_index, face in enumerate(faces):
-                    track_id = tracker.track_for_face(face["bbox"])
-                    source_face = self._source_face(
-                        face, packet.frame, source_frame
-                    )
-                    valid, quality, reason, crop, quality_metrics = self._quality(
-                        source_frame, source_face
-                    )
-                    prepared = {
-                        "bbox": face["bbox"],
-                        "source_bbox": source_face["bbox"],
-                        "landmarks": np.asarray(
-                            face["landmarks"], dtype=np.float32
-                        ).round(3).tolist(),
-                        "source_landmarks": np.asarray(
-                            source_face["landmarks"], dtype=np.float32
-                        ).round(3).tolist(),
-                        "detection_confidence": face["confidence"],
-                        "track_id": track_id,
+                frame_payloads.append({"humans": tracked_humans, "faces": []})
+
+            # 3) Build human crops, concatenate them into batched mosaic images,
+            # and run face detection only on those human ROI mosaics.
+            face_roi_started = time.perf_counter()
+            human_rois = self._build_human_rois(packets, frame_payloads)
+            mosaics = self._build_human_roi_mosaics(human_rois)
+            face_results = self._predict_yolo(
+                self._face_detector,
+                [mosaic.image for mosaic in mosaics],
+                model_path=self.settings.face_model_path,
+                imgsz=self.settings.face_imgsz,
+                confidence=self.settings.face_confidence,
+                fixed_batch=self.settings.face_engine_fixed_batch,
+            )
+            detected_faces = self._faces_from_human_roi_mosaics(mosaics, face_results)
+            self._last_face_roi_detection_ms = (time.perf_counter() - face_roi_started) * 1000.0
+            self._last_detection_ms = self._last_human_detection_ms + self._last_face_roi_detection_ms
+
+            # 4) Prepare detected faces and run batched quality checks. Faces are
+            # already guaranteed to come from inside a detected human ROI.
+            quality_items: list[tuple[np.ndarray, dict[str, Any]]] = []
+            quality_locations: list[tuple[int, int]] = []
+            for detected in detected_faces:
+                frame_index = int(detected["frame_index"])
+                human_index = int(detected["human_index"])
+                packet = packets[frame_index]
+                source_frame = packet.source_frame
+                source_face = self._source_face(detected, packet.frame, source_frame)
+                prepared = {
+                    "bbox": [float(value) for value in detected["bbox"]],
+                    "source_bbox": source_face["bbox"],
+                    "landmarks": self._landmarks_to_list(detected.get("landmarks")),
+                    "source_landmarks": self._landmarks_to_list(source_face.get("landmarks")),
+                    "detection_confidence": float(detected.get("confidence", 0.0) or 0.0),
+                    "track_id": detected.get("track_id"),
+                    "human_index": human_index,
+                    "quality": 0.0,
+                    "quality_score": 0.0,
+                    "quality_metrics": {},
+                    "quality_valid": False,
+                    "quality_reason": "not_checked",
+                    "person": "Unknown",
+                    "recognition_score": 0.0,
+                    "ref_img_id": None,
+                    "stable": False,
+                }
+                face_index = len(frame_payloads[frame_index]["faces"])
+                frame_payloads[frame_index]["faces"].append(prepared)
+                quality_locations.append((frame_index, face_index))
+                quality_items.append((source_frame, source_face))
+
+            quality_started = time.perf_counter()
+            quality_results = self._quality_batch(quality_items)
+            self._last_quality_ms = (time.perf_counter() - quality_started) * 1000.0
+
+            face_crops: list[np.ndarray] = []
+            face_locations: list[tuple[int, int]] = []
+            for (frame_index, face_index), quality_result in zip(
+                quality_locations, quality_results
+            ):
+                valid, quality, reason, crop, quality_metrics = quality_result
+                face = frame_payloads[frame_index]["faces"][face_index]
+                face.update(
+                    {
                         "quality": round(float(quality), 6),
                         "quality_score": round(float(quality), 6),
                         "quality_metrics": quality_metrics,
                         "quality_valid": valid,
                         "quality_reason": reason,
-                        "person": "Unknown",
-                        "recognition_score": 0.0,
-                        "ref_img_id": None,
-                        "stable": False,
                     }
-                    prepared_faces.append(prepared)
-                    if valid and crop is not None:
-                        face_locations.append((frame_index, face_index))
-                        face_crops.append(crop)
-                frame_payloads.append({"humans": tracked_humans, "faces": prepared_faces})
+                )
+                if valid and crop is not None and face.get("track_id") is not None:
+                    face_locations.append((frame_index, face_index))
+                    face_crops.append(crop)
 
+            # 5) Recognition is batched: ArcFace embeddings are generated for all
+            # valid faces, then vector search is also performed as a batch.
             if face_crops:
                 embedding_started = time.perf_counter()
                 embeddings = self._embedder.embed(face_crops)
                 self._last_embedding_ms = (time.perf_counter() - embedding_started) * 1000.0
                 if len(embeddings) != len(face_crops):
                     raise RuntimeError("ArcFace embedding count does not match valid faces")
+
                 search_started = time.perf_counter()
                 matches = self._vector_store.search_batch(
                     embeddings,
@@ -1306,13 +1840,12 @@ class FaceRecognitionProcessor(BatchProcessor):
                 self._last_search_ms = (time.perf_counter() - search_started) * 1000.0
                 if len(matches) != len(face_crops):
                     raise RuntimeError("Qdrant match count does not match embeddings")
+
                 for (frame_index, face_index), match in zip(face_locations, matches):
                     face = frame_payloads[frame_index]["faces"][face_index]
-                    track_id = face["track_id"]
-                    stable = (
-                        self._tracker(packets[frame_index].source_id).observe(track_id, match)
-                        if track_id is not None
-                        else match
+                    track_id = face.get("track_id")
+                    stable = self._tracker(packets[frame_index].source_id).observe(
+                        int(track_id), match
                     )
                     face.update(
                         {
@@ -1328,9 +1861,8 @@ class FaceRecognitionProcessor(BatchProcessor):
                 self._last_embedding_ms = 0.0
                 self._last_search_ms = 0.0
 
-            # Attach the stable identity to the human track itself. This is the
-            # critical lookup used when the person turns away and no face is
-            # visible in the current frame.
+            # 6) Attach the stable identity to the tracked human. The human keeps
+            # the identity even when the face is not visible in a later frame.
             for frame_index, payload in enumerate(frame_payloads):
                 tracker = self._tracker(packets[frame_index].source_id)
                 faces_by_track = {
@@ -1376,7 +1908,11 @@ class FaceRecognitionProcessor(BatchProcessor):
                     "recognized_count": recognized,
                     "recognized_human_count": recognized_humans,
                     "timings_ms": {
+                        "human_detection_batch": round(self._last_human_detection_ms, 3),
+                        "face_roi_detection_batch": round(self._last_face_roi_detection_ms, 3),
                         "detection_batch": round(self._last_detection_ms, 3),
+                        "quality_batch": round(self._last_quality_ms, 3),
+                        "quality_backend": self._last_quality_backend,
                         "embedding_batch": round(self._last_embedding_ms, 3),
                         "qdrant_batch": round(self._last_search_ms, 3),
                     },
@@ -1524,6 +2060,10 @@ class FaceRecognitionProcessor(BatchProcessor):
             "recognized_faces": self._recognized_faces,
             "last_batch_ms": round(self._last_batch_ms, 3),
             "last_detection_ms": round(self._last_detection_ms, 3),
+            "last_human_detection_ms": round(self._last_human_detection_ms, 3),
+            "last_face_roi_detection_ms": round(self._last_face_roi_detection_ms, 3),
+            "last_quality_ms": round(self._last_quality_ms, 3),
+            "last_quality_backend": self._last_quality_backend,
             "last_embedding_ms": round(self._last_embedding_ms, 3),
             "last_search_ms": round(self._last_search_ms, 3),
             "last_error": self._last_error,
