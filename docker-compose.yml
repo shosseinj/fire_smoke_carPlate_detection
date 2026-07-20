@@ -35,15 +35,15 @@ services:
       MODEL_EXPORT_TIMEOUT_SECONDS: ${MODEL_EXPORT_TIMEOUT_SECONDS:-300}
       FIRE_CONFIDENCE: ${FIRE_CONFIDENCE:-0.30}
       SMOKE_CONFIDENCE: ${SMOKE_CONFIDENCE:-0.30}
-      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/workspace/weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_640_linux.engine}
+      FIRE_SMOKE_MODEL_PATH: ${FIRE_SMOKE_MODEL_PATH:-/workspace/weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_trt107.engine}
       FIRE_SMOKE_ENGINE_FIXED_BATCH: ${FIRE_SMOKE_ENGINE_FIXED_BATCH:-0}
       PLATE_CONFIDENCE: ${PLATE_CONFIDENCE:-0.30}
-      PLATE_DETECTOR_WEIGHTS: ${PLATE_DETECTOR_WEIGHTS:-/workspace/weights/plate_detector/model.pt}
+      PLATE_DETECTOR_WEIGHTS: ${PLATE_DETECTOR_WEIGHTS:-/workspace/weights/plate_detector/model_dynamic_b8_trt107.engine}
       PLATE_CLASS_IDS: ${PLATE_CLASS_IDS:-0}
       PLATE_RECOGNIZER_DIR: ${PLATE_RECOGNIZER_DIR:-/workspace/weights/plate_recognizer}
       PLATE_CROP_BATCH_SIZE: ${PLATE_CROP_BATCH_SIZE:-16}
       VEHICLE_CONFIDENCE: ${VEHICLE_CONFIDENCE:-0.35}
-      VEHICLE_DETECTOR_WEIGHTS: ${VEHICLE_DETECTOR_WEIGHTS:-/workspace/weights/vehicle_detector/yolo11n.pt}
+      VEHICLE_DETECTOR_WEIGHTS: ${VEHICLE_DETECTOR_WEIGHTS:-/workspace/weights/vehicle_detector/yolo11n_dynamic_b8_trt107.engine}
       VEHICLE_IOU: ${VEHICLE_IOU:-0.45}
       VEHICLE_IMGSZ: ${VEHICLE_IMGSZ:-640}
       VEHICLE_MAX_PER_FRAME: ${VEHICLE_MAX_PER_FRAME:-12}
@@ -53,14 +53,14 @@ services:
       MIN_VEHICLE_WIDTH_PIXELS: ${MIN_VEHICLE_WIDTH_PIXELS:-120}
       MIN_VEHICLE_HEIGHT_PIXELS: ${MIN_VEHICLE_HEIGHT_PIXELS:-80}
       MIN_VEHICLE_AREA_RATIO: ${MIN_VEHICLE_AREA_RATIO:-0.025}
-      FACE_HUMAN_MODEL: ${FACE_HUMAN_MODEL:-/workspace/weights/face_recognition/linux_trt10/yolo26s-pose_batch8_linux.engine}
-      FACE_DETECTOR_MODEL: ${FACE_DETECTOR_MODEL:-/workspace/weights/face_recognition/linux_trt10/yolov8n-face_batch8_linux.engine}
-      FACE_EMBEDDING_MODEL: ${FACE_EMBEDDING_MODEL:-/workspace/weights/face_recognition/linux_trt10/arcface_fp16_dynamic_b64_linux.engine}
+      FACE_HUMAN_MODEL: ${FACE_HUMAN_MODEL:-/workspace/weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b8_trt107.engine}
+      FACE_DETECTOR_MODEL: ${FACE_DETECTOR_MODEL:-/workspace/weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b8_trt107.engine}
+      FACE_EMBEDDING_MODEL: ${FACE_EMBEDDING_MODEL:-/workspace/weights/face_recognition/linux_trt10/arcface_dynamic_b64_trt107.engine}
       FACE_DEVICE: ${FACE_DEVICE:-0}
       FACE_BATCH_SIZE: ${FACE_BATCH_SIZE:-8}
       FACE_MAX_WAIT_MS: ${FACE_MAX_WAIT_MS:-25}
-      FACE_HUMAN_ENGINE_FIXED_BATCH: ${FACE_HUMAN_ENGINE_FIXED_BATCH:-8}
-      FACE_DETECTOR_ENGINE_FIXED_BATCH: ${FACE_DETECTOR_ENGINE_FIXED_BATCH:-8}
+      FACE_HUMAN_ENGINE_FIXED_BATCH: ${FACE_HUMAN_ENGINE_FIXED_BATCH:-0}
+      FACE_DETECTOR_ENGINE_FIXED_BATCH: ${FACE_DETECTOR_ENGINE_FIXED_BATCH:-0}
       FACE_RECOGNITION_THRESHOLD: ${FACE_RECOGNITION_THRESHOLD:-0.45}
       FACE_QUALITY_THRESHOLD: ${FACE_QUALITY_THRESHOLD:-0.55}
       FACE_MIN_WIDTH: ${FACE_MIN_WIDTH:-24}

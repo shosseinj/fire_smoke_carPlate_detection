@@ -83,7 +83,7 @@ class Settings:
 
     fire_model_path: Path = _path(
         "FIRE_SMOKE_MODEL_PATH",
-        "weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_640_linux.engine",
+        "weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_trt107.engine",
     )
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")
     fire_batch_size: int = _env_int("FIRE_SMOKE_BATCH_SIZE", 8)
@@ -93,9 +93,13 @@ class Settings:
     fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
     smoke_confidence: float = _env_float("SMOKE_CONFIDENCE", 0.30)
 
-    plate_detector_weights: Path = _path("PLATE_DETECTOR_WEIGHTS", "weights/plate_detector/model.pt")
+    plate_detector_weights: Path = _path(
+        "PLATE_DETECTOR_WEIGHTS",
+        "weights/plate_detector/model_dynamic_b8_trt107.engine",
+    )
     vehicle_detector_weights: Path = _path(
-        "VEHICLE_DETECTOR_WEIGHTS", "weights/vehicle_detector/yolo11n.pt"
+        "VEHICLE_DETECTOR_WEIGHTS",
+        "weights/vehicle_detector/yolo11n_dynamic_b8_trt107.engine",
     )
     plate_recognizer_dir: Path = _path("PLATE_RECOGNIZER_DIR", "weights/plate_recognizer")
     plate_device: str = os.getenv("PLATE_DEVICE", "0")
@@ -124,23 +128,23 @@ class Settings:
 
     face_human_model_path: Path = _path(
         "FACE_HUMAN_MODEL",
-        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_batch8.engine",
+        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b8_trt107.engine",
     )
     face_detector_model_path: Path = _path(
         "FACE_DETECTOR_MODEL",
-        "weights/face_recognition/linux_trt10/yolov8n-face_batch8_linux.engine",
+        "weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b8_trt107.engine",
     )
     face_embedding_model_path: Path = _path(
         "FACE_EMBEDDING_MODEL",
-        "weights/face_recognition/linux_trt10/arcface_fp16.onnx",
+        "weights/face_recognition/linux_trt10/arcface_dynamic_b64_trt107.engine",
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
     face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)
     face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 25.0)
     face_human_imgsz: int = _env_int("FACE_HUMAN_IMGSZ", 640)
     face_detector_imgsz: int = _env_int("FACE_DETECTOR_IMGSZ", 640)
-    face_human_engine_fixed_batch: int = _env_int("FACE_HUMAN_ENGINE_FIXED_BATCH", 8)
-    face_detector_engine_fixed_batch: int = _env_int("FACE_DETECTOR_ENGINE_FIXED_BATCH", 8)
+    face_human_engine_fixed_batch: int = _env_int("FACE_HUMAN_ENGINE_FIXED_BATCH", 0)
+    face_detector_engine_fixed_batch: int = _env_int("FACE_DETECTOR_ENGINE_FIXED_BATCH", 0)
     face_human_confidence: float = _env_float("FACE_HUMAN_CONFIDENCE", 0.40)
     face_detection_confidence: float = _env_float("FACE_DETECTION_CONFIDENCE", 0.50)
     face_recognition_threshold: float = _env_float("FACE_RECOGNITION_THRESHOLD", 0.45)

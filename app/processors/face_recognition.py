@@ -931,7 +931,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 batch = engine_fixed_batch
                 while len(source) < engine_fixed_batch:
                     source.append(np.zeros_like(source[0]))
-
+     
             results = list(
                 model.predict(
                     source=source,
