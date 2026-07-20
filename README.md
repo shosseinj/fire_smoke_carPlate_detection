@@ -640,7 +640,7 @@ docker run --rm -it `
   -e VIDEO_INGESTION_ENABLED=true `
   -e PROCESSOR_MODE=real `
   -v "${PWD}\:/workspace/" `
-  merged-video-ai-router:v2
+  merged-video-ai-router:v6
 ```
 
 ```
@@ -651,6 +651,38 @@ docker compose up -d --force-recreate video-ai-router
 ```
 docker build `                                                                                          --add-host=host.docker.internal:host-gateway                                                                                         --no-cache `
   -f Dockerfile.deepstream `
-  -t merged-video-ai-router:v2 `
+  -t merged-video-ai-router:v6 `
   .
+```
+
+```
+trtexec \
+--onnx=weights/face_recognition/yolo26s-pose_batch8.fp16.onnx \
+--fp16 \
+--minShapes=images:1x3x640x640 \
+--optShapes=images:4x3x640x640 \
+--maxShapes=images:8x3x640x640 \
+--saveEngine=weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_batch8.engine
+```
+
+```
+trtexec \
+  --onnx=weights/face_recognition/linux_trt10/arcface_fp16.onnx \
+  --fp16 \
+  --minShapes=input.1:1x3x112x112 \
+  --optShapes=input.1:32x3x112x112 \
+  --maxShapes=input.1:64x3x112x112 \
+  --saveEngine=weights/face_recognition/linux_trt10/arcface_fp16_dynamic_b64_linux.engine
+```
+
+trtexec \
+--onnx=weights/face_recognition/yolov8n_face_batch8.onnx \
+--fp16 \
+--minShapes=images:1x3x640x640 \
+--optShapes=images:4x3x640x640 \
+--maxShapes=images:8x3x640x640 \
+--saveEngine=weights/face_recognition/linux_trt10/yolov8n_face_dynamic_batch8.engine
+
+```
+
 ```

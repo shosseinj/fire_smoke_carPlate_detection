@@ -1,4 +1,4 @@
-FROM merged-video-ai-router:v4
+FROM merged-video-ai-router:v8
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -33,7 +33,7 @@ WORKDIR /workspace
 
 
 # RUN python3 -m pip install --no-cache-dir --no-deps "onnx" "onnxruntime-gpu"
-COPY . /workspace
+# COPY . /workspace
 
 # RUN python3 -m pip install \
 #     --no-deps \
@@ -50,11 +50,21 @@ COPY . /workspace
 #     "transformers==4.51.3"
 
 # ByteTrack uses LAP for its two-stage detection association.
-RUN python3 -m pip install --no-cache-dir "lap>=0.5.12"
+# TensorRT is supplied by the DeepStream base image (10.3).
+# RUN python3 -m pip install --no-cache-dir 'tensorrt-cu12==11.1.0.106' 
+# RUN python3 -m pip install --no-cache-dir \
+#     "onnx>=1.12.0,<2.0.0" \
+#     onnxruntime-gpu \
+#     "onnxslim>=0.1.82"
 
-# RUN  pip install --no-cache-dir "tensorrt-cu12>=7.0.0,!=10.2.0"
-# RUN python3 -m pip install --no-cache-dir --force-reinstall \
-#   "tensorrt-cu12==10.3.0"
+
+RUN python3 -m pip install --no-cache-dir  onnx \
+    onnxruntime-gpu \
+    onnx-graphsurgeon \
+    polygraphy \
+    onnxslim \
+    onnxscript \
+    lief
 
 RUN mkdir -p \
     /workspace/data \

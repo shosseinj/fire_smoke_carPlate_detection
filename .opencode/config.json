@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "id": "merged-video-ai-router",
+    "name": "Merged Video AI Router",
+    "description": "AI-powered video processing and routing system",
+    "workspace": "C:/Users/jafari.h/Desktop/ai_project/testing/merged_video_ai_router"
+  }
+}

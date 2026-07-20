@@ -1,0 +1,13 @@
+{
+  "name": "merged-video-ai-router",
+  "version": "1.0.0",
+  "description": "AI-powered video processing and routing system",
+  "main": "run.py",
+  "scripts": {
+    "start": "python run.py",
+    "dev": "python run.py"
+  },
+  "keywords": ["video", "ai", "processing", "router"],
+  "author": "Jafari.H",
+  "license": "MIT"
+}
