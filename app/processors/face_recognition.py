@@ -442,7 +442,11 @@ class TensorRTFaceEmbedder:
         self.lock = threading.RLock()
         self.logger = trt.Logger(trt.Logger.ERROR)
         self.runtime = trt.Runtime(self.logger)
-        self.engine = self.runtime.deserialize_cuda_engine(model_path.read_bytes())
+        with open(model_path, "rb") as f:
+            engine_data = f.read()
+
+        self.engine = self.runtime.deserialize_cuda_engine(engine_data)
+
         if self.engine is None:
             raise RuntimeError(f"Could not deserialize ArcFace engine: {model_path}")
         self.context = self.engine.create_execution_context()

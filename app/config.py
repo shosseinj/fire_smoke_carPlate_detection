@@ -124,7 +124,7 @@ class Settings:
 
     face_human_model_path: Path = _path(
         "FACE_HUMAN_MODEL",
-        "weights/face_recognition/linux_trt10/yolo26s-pose_batch8_linux.engine",
+        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_batch8.engine",
     )
     face_detector_model_path: Path = _path(
         "FACE_DETECTOR_MODEL",
@@ -132,7 +132,7 @@ class Settings:
     )
     face_embedding_model_path: Path = _path(
         "FACE_EMBEDDING_MODEL",
-        "weights/face_recognition/linux_trt10/arcface_fp16_dynamic_b64_linux.engine",
+        "weights/face_recognition/linux_trt10/arcface_fp16.onnx",
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
     face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)

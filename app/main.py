@@ -16,6 +16,7 @@ from app.api.models import router as models_router
 from app.api.general_settings import router as general_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
+from app.api.processor_tests import router as processor_tests_router
 from app.api.sources import router as sources_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
@@ -28,6 +29,10 @@ OPENAPI_TAGS = [
     {
         "name": "system-diagnostics",
         "description": "Maintenance checks, configuration visibility, and controlled pipeline restart.",
+    },
+    {
+        "name": "processor-tests",
+        "description": "Per-stage pipeline testing for face recognition, fire/smoke, and plate recognition. Upload images to test individual components from Swagger.",
     },
     {
         "name": "general-settings",
@@ -100,6 +105,7 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
 )
 app.include_router(diagnostics_router)
+app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
 app.include_router(models_router)
 app.include_router(sources_router)
