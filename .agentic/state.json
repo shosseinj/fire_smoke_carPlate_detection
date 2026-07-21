@@ -63,6 +63,15 @@
   },
   "verified_sections": [
     {
+      "id": "api-auth",
+      "status": "PASS",
+      "commands_passed": [
+        "python -m pytest tests/test_auth.py -q",
+        "python -m py_compile app/api/auth.py app/core/auth.py app/core/auth_store.py"
+      ],
+      "notes": "14 tests all pass. JWT-based login + profile. Default admin auto-seeded. Role hierarchy: admin > operator > viewer."
+    },
+    {
       "id": "project-bootstrap",
       "status": "PASS_WITH_WARNINGS",
       "warnings": ["opencode.jsonc exists; verify project-orchestration instruction manually"],
@@ -179,6 +188,7 @@
     "broadcast",
     "mock-mode",
     "deployment-docker",
+    "api-auth",
     "api-health",
     "api-cameras",
     "api-models",
@@ -196,6 +206,7 @@
     "face-processing",
     "model-management",
     "broadcast",
+    "api-auth",
     "api-health",
     "api-cameras",
     "api-sources",
@@ -217,10 +228,11 @@
     "agentic-workflow"
   ],
   "test_counts_verified": {
-    "total_tests": 65,
-    "total_files": 15,
+    "total_tests": 79,
+    "total_files": 16,
     "per_file": {
       "test_api.py": 8,
+      "test_auth.py": 14,
       "test_broadcast.py": 4,
       "test_face_quality_store.py": 2,
       "test_face_recognition.py": 7,
@@ -259,9 +271,9 @@
     "All TensorRT .engine files require verification on the target GPU before production use"
   ],
   "notes": [
-    "Bootstrap completed 2026-07-21. 28 sections registered in section-registry.json.",
-    "104 catalog items in legacy-endpoint-catalog.json, all PENDING, all selected_by_prompt=false.",
-    "65 tests across 15 test files (verified via pytest --collect-only).",
+    "Bootstrap completed 2026-07-21. 30 sections registered in section-registry.json.",
+    "104 catalog items in legacy-endpoint-catalog.json; 2 IMPLEMENTED (auth/login, auth/me), 102 PENDING.",
+    "79 tests across 16 test files (verified via pytest --collect-only).",
     "validate_agentic_workflow.py PASS with 1 warning (opencode.jsonc; verify project-orchestration instruction).",
     "14 routers registered in app/main.py (15 .py files in app/api/ including __init__.py).",
     "docker compose config --quiet PASS (compose file valid).",

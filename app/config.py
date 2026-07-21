@@ -193,5 +193,14 @@ class Settings:
     draw_info: bool = _env_bool("draw_info", True)
     save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)
 
+    # Authentication / JWT
+    jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "change-me-in-production-use-a-strong-random-secret")
+    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+    jwt_expiry_minutes: int = _env_int("JWT_EXPIRY_MINUTES", 1440)
+    jwt_refresh_expiry_minutes: int = _env_int("JWT_REFRESH_EXPIRY_MINUTES", 10080)
+    auth_db_path: Path = _path("AUTH_DB_PATH", "data/auth.sqlite3")
+    auth_default_admin_username: str = os.getenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    auth_default_admin_password: str = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "admin123")
+
 
 settings = Settings()

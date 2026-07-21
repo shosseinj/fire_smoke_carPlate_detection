@@ -517,6 +517,23 @@
       "notes": "Smoke test and mock load test run without GPU. Engine builders require GPU + TensorRT."
     },
     {
+      "id": "api-auth",
+      "name": "Authentication API (Login + Profile)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/api/auth.py", "app/api/auth_schemas.py", "app/core/auth.py", "app/core/auth_store.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface", "all-api-endpoints"],
+      "commands": [
+        "python -m pytest tests/test_auth.py -q",
+        "python -m py_compile app/api/auth.py app/core/auth.py app/core/auth_store.py"
+      ],
+      "metrics": ["login_count", "token_creations", "token_validations", "auth_errors"],
+      "acceptance": {},
+      "notes": "JWT-based auth with bcrypt password hashing. Default admin seeded on first startup. Role hierarchy: admin > operator > viewer."
+    },
+    {
       "id": "agentic-workflow",
       "name": "Agentic Workflow State",
       "enabled": true,

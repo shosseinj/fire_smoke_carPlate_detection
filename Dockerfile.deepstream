@@ -58,7 +58,7 @@ WORKDIR /workspace
 #     "onnxslim>=0.1.82"
 
 
-RUN python3 -m pip install --no-cache-dir   "tensorrt==10.7.0"
+RUN python3 -m pip install --no-cache-dir    bcrypt passlib
 RUN mkdir -p \
     /workspace/data \
     /workspace/saved_media \

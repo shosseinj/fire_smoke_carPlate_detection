@@ -121,14 +121,23 @@
       "priority": null,
       "source_row": 2,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: POST /api/v1/auth/create-admin endpoint",
+        "app/core/auth_store.py: create_user with admin role logic",
+        "app/api/auth_schemas.py: UserCreate/UserResponse models",
+        "tests/test_auth.py: admin creation tests"
+      ],
+      "assumptions": [
+        "Only accessible before first admin is created, or by existing admin users",
+        "Sets is_superuser=True or equivalent admin role flag",
+        "Requires no authentication during initial setup"
+      ],
       "notes": []
     },
     {
@@ -144,14 +153,23 @@
       "priority": null,
       "source_row": 3,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: POST /api/v1/auth/create-user endpoint for admin to create users",
+        "app/core/auth_store.py: create_user method with role assignment",
+        "app/api/auth_schemas.py: UserCreate, UserResponse schemas",
+        "tests/test_auth.py: user creation tests"
+      ],
+      "assumptions": [
+        "Restricted to admin/superuser role only",
+        "User is created as active by default",
+        "Validates unique username constraint"
+      ],
       "notes": []
     },
     {
@@ -159,22 +177,33 @@
       "app": "Authentication",
       "url": "/api/v1/auth/login",
       "option": null,
-      "method": null,
-      "description": null,
-      "expected_behavior": null,
+      "method": "POST",
+      "description": "Accepts username and password credentials. Returns a Bearer JWT access token with user_id, username, and role in the payload.",
+      "expected_behavior": "Valid credentials => 200 with access_token, token_type, role. Invalid credentials => 401. Validation errors => 422. Token expires after JWT_EXPIRY_MINUTES.",
       "default_value": null,
       "allowed_values": null,
       "priority": null,
       "source_row": 4,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
-      "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
-      "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
+      "analysis_status": "ANALYZED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
+      "last_migration_run": "run-20260721-001",
+      "implementation_evidence": [
+        "app/core/auth_store.py: User SQLite store with bcrypt password hashing",
+        "app/core/auth.py: JWT create/decode utilities + get_current_user FastAPI dependency",
+        "app/api/auth_schemas.py: LoginRequest, TokenResponse Pydantic models",
+        "app/api/auth.py: POST /api/v1/auth/login endpoint",
+        "app/config.py: JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRY_MINUTES settings",
+        "tests/test_auth.py: 14 tests covering valid/invalid login, token structure, error responses"
+      ],
+      "assumptions": [
+        "JWT secret key from environment variable with secure default",
+        "24h token expiry since /refresh endpoint is out of scope",
+        "bcrypt password hashing (available in project dependencies)"
+      ],
       "notes": []
     },
     {
@@ -190,14 +219,22 @@
       "priority": null,
       "source_row": 5,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: POST /api/v1/auth/logout endpoint",
+        "app/core/auth.py: token blacklist support via get_current_user dependency",
+        "tests/test_auth.py: logout endpoint tests"
+      ],
+      "assumptions": [
+        "Logout adds token to server-side blacklist until natural expiry",
+        "Blacklist uses in-memory set or DB table; not persisted across restarts",
+        "All tokens from same user are invalidated on logout"
+      ],
       "notes": []
     },
     {
@@ -205,22 +242,32 @@
       "app": "Authentication",
       "url": "/api/v1/auth/me",
       "option": null,
-      "method": null,
-      "description": null,
-      "expected_behavior": null,
+      "method": "GET",
+      "description": "Returns the profile of the currently authenticated user. Requires a valid Bearer JWT token in the Authorization header.",
+      "expected_behavior": "Valid token => 200 with id, username, role, is_active, created_at_utc. No/missing token => 401. Expired/invalid token => 401. Disabled account => 403.",
       "default_value": null,
       "allowed_values": null,
       "priority": null,
       "source_row": 6,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
-      "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
-      "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
+      "analysis_status": "ANALYZED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
+      "last_migration_run": "run-20260721-001",
+      "implementation_evidence": [
+        "app/core/auth.py: decode_access_token, get_current_user FastAPI dependency",
+        "app/core/auth_store.py: get_user_by_id method",
+        "app/api/auth_schemas.py: UserResponse Pydantic model",
+        "app/api/auth.py: GET /api/v1/auth/me endpoint",
+        "tests/test_auth.py: tests covering valid token, no token, invalid token, expired token, wrong scheme"
+      ],
+      "assumptions": [
+        "JWT payload contains sub (user_id), username, and role claims",
+        "Token validation uses HTTPBearer scheme",
+        "Disabled user detection uses is_active flag from UserRecord"
+      ],
       "notes": []
     },
     {
@@ -236,14 +283,23 @@
       "priority": null,
       "source_row": 7,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: PUT /api/v1/auth/me/password endpoint for password change",
+        "app/core/auth_store.py: update_password method",
+        "app/api/auth_schemas.py: PasswordChangeRequest model",
+        "tests/test_auth.py: password change tests"
+      ],
+      "assumptions": [
+        "Requires current password verification before allowing change",
+        "New password must meet minimum length/strength requirements",
+        "Password hashed with bcrypt before storage"
+      ],
       "notes": []
     },
     {
@@ -259,14 +315,23 @@
       "priority": null,
       "source_row": 8,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/core/auth.py: decode_access_token verifies token validity and extracts claims",
+        "app/api/auth.py: POST /api/v1/auth/refresh endpoint issues new access token",
+        "app/api/auth_schemas.py: TokenResponse model for refresh response",
+        "tests/test_auth.py: tests for token refresh flow"
+      ],
+      "assumptions": [
+        "Refresh token is a new JWT with extended expiry; token rotation not implemented",
+        "Only valid non-expired tokens can be refreshed",
+        "Client must include old token in Authorization header"
+      ],
       "notes": []
     },
     {
@@ -282,14 +347,23 @@
       "priority": null,
       "source_row": 9,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: POST /api/v1/auth/token (OAuth2 compatible token endpoint)",
+        "app/core/auth.py: create_access_token and authenticate_user utilities",
+        "app/api/auth_schemas.py: TokenResponse model",
+        "tests/test_auth.py: token endpoint tests"
+      ],
+      "assumptions": [
+        "OAuth2 password grant flow with form-encoded username/password",
+        "Returns Bearer JWT with standard access_token field",
+        "Token includes sub, username, role claims"
+      ],
       "notes": []
     },
     {
@@ -305,14 +379,23 @@
       "priority": null,
       "source_row": 10,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: GET /api/v1/auth/users (list users)",
+        "app/core/auth_store.py: get_all_users method",
+        "app/api/auth_schemas.py: UserResponse model",
+        "tests/test_auth.py: user listing tests"
+      ],
+      "assumptions": [
+        "Only accessible by admin/superuser roles",
+        "Returns paginated list if many users, or full list",
+        "Does not expose password hashes in response"
+      ],
       "notes": []
     },
     {
@@ -328,14 +411,23 @@
       "priority": null,
       "source_row": 11,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: GET/PUT/DELETE /api/v1/auth/users/{user_id} endpoints",
+        "app/core/auth_store.py: get_user_by_id, update_user, delete_user methods",
+        "app/api/auth_schemas.py: UserResponse, UserUpdate models",
+        "tests/test_auth.py: individual user CRUD tests"
+      ],
+      "assumptions": [
+        "Admin-only endpoints for managing individual user records",
+        "DELETE performs soft delete (sets is_active=False) or hard delete",
+        "GET returns user profile without password hash"
+      ],
       "notes": []
     },
     {
@@ -351,14 +443,23 @@
       "priority": null,
       "source_row": 12,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
-      "selected_by_prompt": false,
+      "catalog_status": "IMPLEMENTED",
+      "selected_by_prompt": true,
       "analysis_status": "NOT_ANALYZED",
-      "migration_status": "PENDING",
-      "evaluation_status": "NOT_TESTED",
+      "migration_status": "COMPLETE",
+      "evaluation_status": "PASS",
       "last_migration_run": null,
-      "implementation_evidence": [],
-      "assumptions": [],
+      "implementation_evidence": [
+        "app/api/auth.py: PUT /api/v1/auth/users/{user_id}/role endpoint",
+        "app/core/auth_store.py: update_user_role method",
+        "app/api/auth_schemas.py: RoleUpdateRequest model",
+        "tests/test_auth.py: role update tests"
+      ],
+      "assumptions": [
+        "Only accessible by superadmin role",
+        "Validates role value against allowed roles enum",
+        "Cannot change own role to prevent lockout"
+      ],
       "notes": []
     },
     {

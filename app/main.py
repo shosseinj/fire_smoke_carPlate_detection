@@ -18,6 +18,7 @@ from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.processor_tests import router as processor_tests_router
 from app.api.sources import router as sources_router
+from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
 from app.config import settings
@@ -82,6 +83,10 @@ OPENAPI_TAGS = [
         "name": "sources",
         "description": "Backward-compatible alias for the camera registry.",
     },
+    {
+        "name": "authentication",
+        "description": "JWT-based login, token lifecycle (OAuth2 token, refresh, logout), user creation, user management, and self-service password change. Obtain a token via /login or /token and use it as Bearer token in the Authorization header.",
+    },
 ]
 
 
@@ -104,6 +109,7 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_tags=OPENAPI_TAGS,
 )
+app.include_router(auth_router)
 app.include_router(diagnostics_router)
 app.include_router(processor_tests_router)
 app.include_router(general_settings_router)

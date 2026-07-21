@@ -33,5 +33,75 @@
     "NOT_EVALUATED"
   ],
   "forbidden_claim": "Do not claim previous-project behavioral parity without previous implementation evidence supplied by the user.",
-  "options": []
+  "options": [
+    {
+      "id": "authentication:/api/v1/auth/login",
+      "app": "Authentication",
+      "url": "/api/v1/auth/login",
+      "method": "POST",
+      "option_name": "login",
+      "description": "Authenticate user with username+password, return JWT access token",
+      "implementation": {
+        "type": "api_endpoint",
+        "module": "app.api.auth",
+        "router_prefix": "/api/v1/auth",
+        "handler": "login",
+        "schemas": {
+          "request": "LoginRequest (username: str, password: str)",
+          "response": "TokenResponse (access_token, token_type, role)",
+          "error": "HTTPException 401/422"
+        },
+        "auth": "none (login is public)",
+        "dependencies": ["app.core.auth_store.AuthStore", "app.core.auth.create_access_token"],
+        "configuration": ["app.config.Settings.jwt_secret_key", "jwt_algorithm", "jwt_expiry_minutes"]
+      },
+      "behavior": {
+        "valid_input": "200 with JWT token containing sub, username, role, iat, exp, type=access",
+        "invalid_password": "401 with detail='Invalid username or password'",
+        "unknown_user": "401 with detail='Invalid username or password'",
+        "validation_error": "422 with field-level errors (Pydantic)",
+        "expiry": "configurable via JWT_EXPIRY_MINUTES env var (default 1440 min = 24h)"
+      },
+      "tests": "test_auth.py: test_login_valid_credentials, test_login_invalid_password, test_login_nonexistent_user, test_login_empty_username, test_login_missing_fields, test_login_response_structure, test_token_contains_user_info",
+      "test_count": 7,
+      "migration_run": "run-20260721-001",
+      "status": "COMPLETE",
+      "evaluation": "PASS"
+    },
+    {
+      "id": "authentication:/api/v1/auth/me",
+      "app": "Authentication",
+      "url": "/api/v1/auth/me",
+      "method": "GET",
+      "option_name": "me",
+      "description": "Return authenticated user profile from Bearer token",
+      "implementation": {
+        "type": "api_endpoint",
+        "module": "app.api.auth",
+        "router_prefix": "/api/v1/auth",
+        "handler": "me",
+        "schemas": {
+          "request": "none (token via Authorization header)",
+          "response": "UserResponse (id, username, role, is_active, created_at_utc)",
+          "error": "HTTPException 401/403"
+        },
+        "auth": "Bearer token (get_current_user dependency)",
+        "dependencies": ["app.core.auth.get_current_user", "app.core.auth_store.AuthStore.get_user_by_id"],
+        "configuration": ["app.config.Settings.jwt_secret_key", "jwt_algorithm"]
+      },
+      "behavior": {
+        "valid_token": "200 with user profile fields",
+        "no_token": "401 with detail='Not authenticated'",
+        "invalid_token": "401 with detail='Invalid or expired token'",
+        "expired_token": "401 with detail='Invalid or expired token'",
+        "wrong_scheme": "401 (not Bearer scheme)",
+        "disabled_account": "403 with detail='Account is disabled'"
+      },
+      "tests": "test_auth.py: test_me_with_valid_token, test_me_without_token, test_me_with_invalid_token, test_me_with_expired_token, test_me_with_wrong_scheme",
+      "test_count": 5,
+      "migration_run": "run-20260721-001",
+      "status": "COMPLETE",
+      "evaluation": "PASS"
+    }
+  ]
 }

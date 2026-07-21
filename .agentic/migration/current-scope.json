@@ -1,21 +1,263 @@
 {
   "schema_version": 2,
   "migration_mode": "PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY",
-  "run_id": null,
-  "created_at": null,
-  "user_prompt": null,
-  "selected_apps": [],
-  "selected_routes": [],
-  "selected_catalog_rows": [],
-  "selected_options_or_behaviors": [],
-  "prompt_enrichment": [],
-  "confirmed_specification": [],
-  "target_convention_inferences": [],
-  "safe_assumptions": [],
+  "run_id": "run-20260721-002",
+  "created_at": "2026-07-21T00:00:00Z",
+  "user_prompt": "Implement Steps 2-5: Token lifecycle (/token, /refresh, /logout), User creation (/create-admin, /create-user), User management (/users, /users/{id}, /users/{id}/role), and Password change (/me/password). Reuse existing auth implementation.",
+  "status": "IMPLEMENTED_AND_EVALUATED",
+  "selected_apps": ["Authentication"],
+  "selected_routes": [
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/token",
+    "/api/v1/auth/create-admin",
+    "/api/v1/auth/create-user",
+    "/api/v1/auth/users",
+    "/api/v1/auth/users/{user_id}",
+    "/api/v1/auth/users/{user_id}/role",
+    "/api/v1/auth/me/password"
+  ],
+  "selected_catalog_rows": [2, 3, 5, 7, 8, 9, 10, 11, 12],
+  "selected_options_or_behaviors": [
+    "token: POST /api/v1/auth/token — OAuth2-compatible form-login endpoint returning access + refresh tokens",
+    "refresh: POST /api/v1/auth/refresh — refresh access token using single-use refresh token",
+    "logout: POST /api/v1/auth/logout — revoke refresh token",
+    "create-admin: POST /api/v1/auth/create-admin — admin-only admin user creation",
+    "create-user: POST /api/v1/auth/create-user — admin/operator user creation with role constraints",
+    "users: GET /api/v1/auth/users — paginated user listing (admin only)",
+    "users/{id}: GET /api/v1/auth/users/{id} — user detail (admin only)",
+    "users/{id}: PUT /api/v1/auth/users/{id} — update user fields (admin only)",
+    "users/{id}/role: PATCH /api/v1/auth/users/{id}/role — change user role (admin only)",
+    "me/password: POST /api/v1/auth/me/password — self-service password change"
+  ],
+  "prompt_enrichment": [
+    "/api/v1/auth/token implemented as OAuth2 password-grant form endpoint (separate from JSON /login), returning both access and refresh tokens",
+    "Refresh tokens are single-use with DB-backed revocation",
+    "Access tokens are short-lived (JWT_EXPIRY_MINUTES), refresh tokens are long-lived (JWT_REFRESH_EXPIRY_MINUTES)",
+    "Token type validation enforced: access tokens rejected by /refresh, refresh tokens rejected by protected endpoints",
+    "Admin role required for /create-admin; admin or operator for /create-user (operator cannot create admin or operator)",
+    "Last-active-admin protection prevents deactivation or role demotion of the final admin",
+    "Password change verifies current password, prevents reuse of same password, and does not revoke existing tokens"
+  ],
+  "confirmed_specification": [
+    {
+      "item_id": "authentication:/api/v1/auth/token",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "CATALOG: no method/schema specified — implemented as OAuth2 password grant per FastAPI convention"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/token"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/refresh",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "CATALOG: no method/schema specified — implemented as POST with JSON body per FastAPI convention"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/refresh"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/logout",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "CATALOG: no method/schema specified — implemented as POST with refresh_token revocation"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/logout"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/create-admin",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "Admin-only access enforced via role check"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/create-admin"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/create-user",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "Admin/operator access with role escalation protection"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/create-user"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/users",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "GET for listing with pagination (offset/limit)"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/users"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/users/{user_id}",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "GET for detail, PUT for update — both admin-only"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/users/{user_id}"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/users/{user_id}/role",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "PATCH for role change with last-admin protection"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/users/{user_id}/role"}
+    },
+    {
+      "item_id": "authentication:/api/v1/auth/me/password",
+      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
+      "evidence": [
+        "CURRENT_USER_PROMPT: route URL and app name match",
+        "POST with current/new/confirm password fields"
+      ],
+      "known_details": {"app": "Authentication", "url": "/api/v1/auth/me/password"}
+    }
+  ],
+  "target_convention_inferences": [
+    {
+      "item": "authentication:/api/v1/auth/token",
+      "field": "HTTP method",
+      "inference": "POST with form data (OAuth2 password grant)",
+      "source": "OAuth2 specification for token endpoint",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/refresh",
+      "field": "HTTP method",
+      "inference": "POST with JSON body",
+      "source": "FastAPI REST convention for token refresh",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/logout",
+      "field": "HTTP method",
+      "inference": "POST with JSON body",
+      "source": "FastAPI REST convention for state-changing operations",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/create-admin",
+      "field": "HTTP method",
+      "inference": "POST",
+      "source": "REST convention for resource creation",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/create-user",
+      "field": "HTTP method",
+      "inference": "POST",
+      "source": "REST convention for resource creation",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/users/{user_id}",
+      "field": "HTTP methods",
+      "inference": "GET for read, PUT for full update",
+      "source": "FastAPI REST convention for resource access",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/users/{user_id}/role",
+      "field": "HTTP method",
+      "inference": "PATCH for partial update",
+      "source": "REST convention for single-field updates",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    },
+    {
+      "item": "authentication:/api/v1/auth/me/password",
+      "field": "HTTP method",
+      "inference": "POST for password change action",
+      "source": "RPC-style action endpoint convention",
+      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
+    }
+  ],
+  "safe_assumptions": [
+    "Refresh token single-use pattern: old token revoked on each /refresh, new token issued",
+    "Token revocation persists in SQLite revoked_tokens table",
+    "JWT expiry: access=JWT_EXPIRY_MINUTES(1440), refresh=JWT_REFRESH_EXPIRY_MINUTES(10080)",
+    "Role hierarchy: admin > operator > viewer",
+    "Last-admin protection: cannot deactivate or demote the last active admin",
+    "Operators can create viewers only; admins can create any role",
+    "Password change does not invalidate existing tokens",
+    "Email is optional, validated with regex when provided, and unique when set"
+  ],
   "missing_critical_details": [],
-  "explicit_exclusions": [],
-  "resolved_work_items": [],
-  "allowed_dependency_changes": [],
-  "out_of_scope_items": [],
-  "status": "NO_ACTIVE_SCOPE"
+  "explicit_exclusions": [
+    "/api/v1/auth/login (already implemented in run-001)",
+    "/api/v1/auth/me (already implemented in run-001)",
+    "User creation via GET, PUT, DELETE on /users",
+    "Password reset by admin",
+    "User deletion endpoint"
+  ],
+  "resolved_work_items": [
+    {
+      "order": 1,
+      "action": "Update current-scope.json",
+      "detail": "Mark scope as ANALYSIS_COMPLETE with SELECTED items, excluded items, and prompt enrichment"
+    },
+    {
+      "order": 2,
+      "action": "Add jwt_refresh_expiry_minutes to app/config.py",
+      "detail": "Add JWT_REFRESH_EXPIRY_MINUTES env var with 10080 min (7 day) default"
+    },
+    {
+      "order": 3,
+      "action": "Extend app/core/auth_store.py",
+      "detail": "Add email field, UserRecord.email, token blacklist (revoked_tokens table), user CRUD (create/list/update/delete/set_role/update_password), count_active_admins, migration for email column"
+    },
+    {
+      "order": 4,
+      "action": "Extend app/core/auth.py",
+      "detail": "Add create_refresh_token, decode_refresh_token, revoke_refresh_token with jti-based revocation, _make_jwt_payload utility"
+    },
+    {
+      "order": 5,
+      "action": "Extend app/api/auth_schemas.py",
+      "detail": "Add TokenRequest, TokenExchangeResponse, RefreshRequest, RefreshResponse, LogoutRequest, LogoutResponse, CreateUserRequest, CreateUserResponse, UserUpdateRequest, RoleChangeRequest, PaginatedUserResponse, PasswordChangeRequest, PasswordChangeResponse, VALID_ROLES"
+    },
+    {
+      "order": 6,
+      "action": "Extend app/api/auth.py",
+      "detail": "Add POST /token (OAuth2 form), POST /refresh (single-use), POST /logout (revoke), POST /create-admin (admin-only), POST /create-user (admin/operator), GET /users, GET /users/{id}, PUT /users/{id}, PATCH /users/{id}/role, POST /me/password. Preserve existing /login and /me endpoints."
+    },
+    {
+      "order": 7,
+      "action": "Update app/main.py",
+      "detail": "Update OpenAPI tag description for authentication"
+    },
+    {
+      "order": 8,
+      "action": "Write tests",
+      "detail": "57 tests covering token lifecycle (OAuth2 token, refresh valid/single-use/expired/invalid, type mismatch, logout revocation, access-vs-refresh separation), user creation (admin create, operator create, permissions, duplicates, weak passwords, invalid roles), user management (list, detail, update, role change, not-found, last-admin protection), password change (success, wrong current, mismatch, same-as-old, without auth, weak new, old-token validity)"
+    },
+    {
+      "order": 9,
+      "action": "Run focused and regression tests",
+      "detail": "57/57 auth tests pass. Regression suite: 3 pre-existing failures in test_face_recognition.py (unrelated). Static validation passes."
+    }
+  ],
+  "allowed_dependency_changes": [
+    "Modified app/config.py: +jwt_refresh_expiry_minutes",
+    "Modified app/core/auth_store.py: +email, +revoked_tokens, +CRUD methods",
+    "Modified app/core/auth.py: +refresh token utilities",
+    "Modified app/api/auth_schemas.py: +11 new schemas",
+    "Modified app/api/auth.py: +9 new endpoints",
+    "Modified app/main.py: updated tag description",
+    "Modified tests/test_auth.py: 57 total tests"
+  ],
+  "out_of_scope_items": [
+    "User deletion (DELETE /users/{id})",
+    "Self-service profile update (PUT /me)",
+    "Password reset by admin",
+    "All 93 items from 19 non-Authentication apps"
+  ]
 }
