@@ -11,6 +11,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.personnel_store import PersonnelStore
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.processors.fire_smoke import FireSmokeProcessor
 from app.processors.plate import PlateRecognitionProcessor
@@ -335,6 +336,156 @@ async def test_plate_full_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# Personnel — smoke test (works in mock mode, tests store layer)
+# ---------------------------------------------------------------------------
+
+
+# A valid Iranian national code for testing: 1234567891 (checksum = 1)
+_TEST_NATIONAL_CODE = "1234567891"
+_TEST_NATIONAL_CODE_2 = "9876543210"
+
+
+def _personnel_store(runtime: Runtime) -> PersonnelStore:
+    return runtime.personnel_store
+
+
+@router.post(
+    "/personnel/smoke",
+    summary="Run a personnel module smoke test",
+    description=(
+        "Creates, reads, updates, searches, and deletes a personnel record with an image. "
+        "Works in both mock and real processor modes because it tests the store layer directly. "
+        "Returns pass/fail per step."
+    ),
+)
+async def personnel_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    store = _personnel_store(runtime)
+    steps: dict[str, Any] = {}
+    test_id = f"smoke-{int(time.time() * 1000)}"
+
+    try:
+        # 1. Create personnel
+        person = store.create(
+            fname="Test",
+            lname=f"User{test_id}",
+            national_code=_TEST_NATIONAL_CODE,
+            employee_type="employee",
+            degree="Smoke Test",
+        )
+        steps["create"] = {
+            "status": "PASS",
+            "id": person.id,
+            "national_code": person.national_code,
+        }
+        person_id = person.id
+
+        # 2. Get by ID
+        fetched = store.get(person_id)
+        if fetched is None or fetched.id != person_id:
+            steps["get_by_id"] = {"status": "FAIL", "detail": "Record not found after creation"}
+        else:
+            steps["get_by_id"] = {"status": "PASS", "fname": fetched.fname}
+
+        # 3. Search by national code
+        searched = store.get_by_national_code(_TEST_NATIONAL_CODE)
+        if searched is None or searched.id != person_id:
+            steps["search"] = {"status": "FAIL", "detail": "Search by national code failed"}
+        else:
+            steps["search"] = {"status": "PASS", "found": True}
+
+        # 4. Update
+        updated = store.update(person_id, fname="Updated")
+        if updated is None or updated.fname != "Updated":
+            steps["update"] = {"status": "FAIL", "detail": "Update failed"}
+        else:
+            steps["update"] = {"status": "PASS", "fname": updated.fname}
+
+        # 5. List (should include our test record)
+        records, total = store.list(limit=100)
+        if total < 1:
+            steps["list"] = {"status": "FAIL", "detail": "List returned zero records"}
+        else:
+            steps["list"] = {"status": "PASS", "total": total}
+
+        # 6. Create image record
+        storage_key = f"personnel_snapshots/test-{test_id}.jpg"
+        img = store.create_image(
+            personnel_id=person_id,
+            storage_key=storage_key,
+            description="Smoke test image",
+        )
+        if img is None or img.personnel_id != person_id:
+            steps["create_image"] = {"status": "FAIL", "detail": "Image creation failed"}
+        else:
+            steps["create_image"] = {
+                "status": "PASS",
+                "image_id": img.id,
+                "is_primary": img.is_primary,
+            }
+        image_id = img.id
+
+        # 7. List images
+        images = store.list_images(person_id)
+        if len(images) < 1:
+            steps["list_images"] = {"status": "FAIL", "detail": "No images returned"}
+        else:
+            steps["list_images"] = {"status": "PASS", "count": len(images)}
+
+        # 8. Set primary image
+        primary = store.set_primary_image(image_id)
+        if primary is None or not primary.is_primary:
+            steps["set_primary"] = {"status": "FAIL", "detail": "Set primary failed"}
+        else:
+            steps["set_primary"] = {"status": "PASS", "is_primary": primary.is_primary}
+
+        # 9. List with-images
+        with_images, wi_total = store.list_with_images(limit=100)
+        if wi_total < 1:
+            steps["list_with_images"] = {"status": "FAIL", "detail": "with-images returned zero"}
+        else:
+            steps["list_with_images"] = {"status": "PASS", "total": wi_total}
+
+        # 10. Delete image
+        deleted_img = store.delete_image(image_id)
+        if not deleted_img:
+            steps["delete_image"] = {"status": "FAIL", "detail": "Delete image returned False"}
+        else:
+            steps["delete_image"] = {"status": "PASS"}
+
+        # 11. Delete personnel
+        deleted = store.delete(person_id)
+        if not deleted:
+            steps["delete_personnel"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete_personnel"] = {"status": "PASS"}
+
+        # 12. Import template (generates Excel bytes)
+        template = store.generate_import_template()
+        if not template or len(template) < 100:
+            steps["import_template"] = {"status": "FAIL", "detail": "Template too small or empty"}
+        else:
+            steps["import_template"] = {"status": "PASS", "bytes": len(template)}
+
+        # Summary
+        failed = {k: v for k, v in steps.items() if v.get("status") == "FAIL"}
+        steps["_summary"] = {
+            "total": len(steps),
+            "passed": len(steps) - len(failed),
+            "failed": len(failed),
+        }
+        if failed:
+            steps["_summary"]["failed_steps"] = list(failed.keys())
+
+    except Exception as exc:
+        steps["_unexpected_error"] = f"{type(exc).__name__}: {exc}"
+        steps["_summary"] = {"total": len(steps), "passed": 0, "failed": 1}
+
+    return steps
+
+
+# ---------------------------------------------------------------------------
 # All-in-one
 # ---------------------------------------------------------------------------
 
@@ -348,4 +499,8 @@ def all_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]
         "face": face_models_status(runtime),
         "fire_smoke": fire_smoke_models_status(runtime),
         "plate": plate_models_status(runtime),
+        "personnel": {
+            "store_ready": True,
+            "count": runtime.personnel_store.count(),
+        },
     }

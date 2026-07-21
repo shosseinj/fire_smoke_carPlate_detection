@@ -633,3 +633,26 @@ def test_admin_required_for_create(tmp_path: Path) -> None:
         assert resp.status_code == 403
     finally:
         _teardown(test_runtime, old_runtime, old_store)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Smoke test endpoint test
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_personnel_smoke_endpoint(tmp_path: Path) -> None:
+    """Call the personnel smoke-test endpoint and verify every step passes."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        resp = client.post("/api/v1/tests/personnel/smoke")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        summary = body.get("_summary", {})
+        assert summary.get("failed", -1) == 0, (
+            f"Smoke test had failures: {body}"
+        )
+        assert summary.get("passed", 0) >= 10, (
+            f"Smoke test passed {summary.get('passed')} steps, expected >= 10"
+        )
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)

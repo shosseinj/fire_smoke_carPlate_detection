@@ -264,6 +264,21 @@ def get_runtime() -> Runtime:
 
 Use `Annotated` for FastAPI `UploadFile`, `Form`, `File`, and `Depends` parameters. Use Pydantic models for request and response contracts.
 
+## Smoke-test / processor-tests convention
+
+Every new app or feature module MUST add a smoke-test endpoint in `app/api/processor_tests.py` to
+validate that the module is wired correctly end-to-end. This is mandatory regardless of whether
+the module uses a real model pipeline or only a store layer.
+
+- For store-only modules (e.g. Personnel), add a `POST /api/v1/tests/<module>/smoke` endpoint that
+  exercises CRUD, search, image/asset operations, and import/export. The test must work in both
+  `PROCESSOR_MODE=mock` and `PROCESSOR_MODE=real`.
+- For pipeline modules (e.g. FaceRecognition, Plate, FireSmoke), add both `GET /api/v1/tests/<module>/models`
+  (model file existence check) and `POST /api/v1/tests/<module>/full-pipeline` (upload-image pipeline test).
+- Register the new test endpoint in the `GET /api/v1/tests/all` all-in-one status check.
+- Add corresponding unit/integration tests under `tests/` that call the smoke-test endpoint and
+  verify every step passes.
+
 ## Runtime and TensorRT constraints
 
 - TensorRT engines are version-, OS-, GPU-, and platform-specific.
