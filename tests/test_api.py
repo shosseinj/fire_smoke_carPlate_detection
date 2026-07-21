@@ -676,34 +676,26 @@ def test_get_all_sections_returns_all_groups(tmp_path: Path) -> None:
             assert resp.status_code == 200
             body = resp.json()
 
-            # Top-level groups
-            assert "models" in body, "Missing models group"
-            assert "stores" in body, "Missing stores group"
-            assert "services" in body, "Missing services group"
-            assert "data_stores" in body, "Missing data_stores group"
-            assert "settings" in body, "Missing settings group"
-            assert "infrastructure" in body, "Missing infrastructure group"
-            assert "model_management" in body, "Missing model_management group"
+            # Top-level groups (each must have a "tests" list)
+            for group in ("models", "stores", "services", "data_stores", "settings",
+                          "infrastructure", "model_management"):
+                assert group in body, f"Missing group: {group}"
+                assert "tests" in body[group], f"{group} missing tests list"
+                assert isinstance(body[group]["tests"], list), f"{group} tests is not a list"
+
             assert "_summary" in body, "Missing _summary"
 
-            # Stores sub-sections
-            stores = body["stores"]
-            for key in ("personnel", "locations", "shifts", "holidays", "requests"):
-                assert key in stores, f"Missing store: {key}"
-                assert stores[key]["ready"] is True, f"{key} store not ready"
+            # Every test must have name + status
+            for group in ("models", "stores", "services", "data_stores", "settings",
+                          "infrastructure", "model_management"):
+                for t in body[group]["tests"]:
+                    assert "name" in t, f"Test missing name in {group}: {t}"
+                    assert t.get("status") in ("PASS", "FAIL", "WARN", "SKIP"), \
+                        f"Unexpected status {t.get('status')} in {group}: {t['name']}"
 
-            # Services
-            assert "attendance" in body["services"]
-            assert body["services"]["attendance"]["ready"] is True
-
-            # Infrastructure
-            infra = body["infrastructure"]
-            for key in ("source_registry", "broadcast", "task_router", "video_ingestor"):
-                assert key in infra, f"Missing infrastructure: {key}"
-
-            # Summary
-            assert body["_summary"]["all_sections_ready"] is True
-            assert body["_summary"]["total_groups"] == 7
+            # Summary must have overall status
+            assert body["_summary"]["status"] in ("PASS", "FAIL", "WARN")
+            assert body["_summary"]["total_tests"] > 0
 
             # Check OpenAPI schema includes new endpoint
             schema = client.get("/openapi.json").json()

@@ -949,273 +949,270 @@ async def requests_smoke_test(
 
 
 # ---------------------------------------------------------------------------
-# All-in-one
+# All-in-one — comprehensive test runner
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Comprehensive overall section inventory
-# ---------------------------------------------------------------------------
+_TEST_PASS = "PASS"
+_TEST_FAIL = "FAIL"
+_TEST_WARN = "WARN"
+_TEST_SKIP = "SKIP"
 
 
-def _personnel_store_section(runtime: Runtime) -> dict[str, Any]:
-    store = runtime.personnel_store
-    return {
-        "ready": True,
-        "count": store.count(),
-        "can_create": True,
-        "can_import": True,
-    }
+def _test(name: str, status: str, detail: str = "") -> dict[str, Any]:
+    return {"name": name, "status": status, "detail": detail}
 
 
-def _location_store_section(runtime: Runtime) -> dict[str, Any]:
-    store = runtime.location_store
-    return {
-        "ready": True,
-        "buildings": store.count_buildings(),
-        "sections": store.count_sections(),
-        "rooms": store.count_rooms(),
-        "polygon_support": True,
-    }
-
-
-def _shift_store_section(runtime: Runtime) -> dict[str, Any]:
-    store = runtime.shift_store
+def _run_store_tests(store: Any, label: str) -> list[dict[str, Any]]:
+    """Read-only store validation: count + list."""
+    tests: list[dict[str, Any]] = []
+    # Test count
     try:
-        stats = store.statistics()
-        return {"ready": True, "count": store.count(), "statistics": stats}
-    except Exception:
-        return {"ready": True, "count": store.count(), "statistics": None}
-
-
-def _holiday_store_section(runtime: Runtime) -> dict[str, Any]:
-    store = runtime.holiday_store
-    return {
-        "ready": True,
-        "active_count": store.count_active(),
-        "supports_every_year": True,
-        "supports_jalali": True,
-    }
-
-
-def _request_store_section(runtime: Runtime) -> dict[str, Any]:
-    store = runtime.request_store
-    return {
-        "ready": True,
-        "count": store.count(),
-        "supports_leave_mission_overtime": True,
-    }
-
-
-def _attendance_service_section(runtime: Runtime) -> dict[str, Any]:
-    svc = runtime.attendance_service
-    return {
-        "ready": True,
-        "supports_daily": True,
-        "supports_monthly": True,
-        "supports_yearly": True,
-        "supports_jalali": True,
-        "supports_overnight_shifts": True,
-    }
-
-
-def _plate_logs_section(runtime: Runtime) -> dict[str, Any]:
-    return {"ready": True, "count": runtime.plate_logs.count()}
-
-
-def _fire_smoke_logs_section(runtime: Runtime) -> dict[str, Any]:
-    status = runtime.fire_smoke_logs.status()
-    return {
-        "ready": True,
-        "count": status.get("count", 0),
-        "active_incidents": status.get("incident_count", 0),
-    }
-
-
-def _human_logs_section(runtime: Runtime) -> dict[str, Any]:
-    status = runtime.human_logs.status()
-    return {
-        "ready": True,
-        "log_count": status.get("count", 0),
-        "active_sessions": status.get("active_sessions", 0),
-    }
-
-
-def _result_store_section(runtime: Runtime) -> dict[str, Any]:
-    return {"ready": True, "capacity": runtime.results._recent.maxlen}
-
-
-def _plate_settings_section(runtime: Runtime) -> dict[str, Any]:
-    try:
-        general = runtime.plate_settings.general()
-        return {
-            "ready": True,
-            "has_general_policy": general is not None,
-        }
-    except Exception:
-        return {"ready": True, "has_general_policy": False}
-
-
-def _face_quality_settings_section(runtime: Runtime) -> dict[str, Any]:
-    try:
-        policy = runtime.face_quality_settings.get()
-        return {
-            "ready": True,
-            "has_policy": policy is not None,
-        }
-    except Exception:
-        return {"ready": True, "has_policy": False}
-
-
-def _source_registry_section(runtime: Runtime) -> dict[str, Any]:
-    cameras = runtime.registry.list()
-    return {
-        "ready": True,
-        "total_cameras": len(cameras),
-        "enabled": sum(1 for c in cameras if c.enabled),
-        "revision": runtime.registry.revision,
-    }
-
-
-def _broadcast_section(runtime: Runtime) -> dict[str, Any]:
-    status = runtime.broadcast.status()
-    return {
-        "ready": True,
-        "enabled": runtime.broadcast.enabled,
-        "subscribers": status.get("subscribers", 0),
-        "rendered_frames": status.get("rendered_frames", 0),
-    }
-
-
-def _task_router_section(runtime: Runtime) -> dict[str, Any]:
-    status = runtime.router.status()
-    workers_ready: dict[str, Any] = {}
-    for task_name, worker_status in status.get("workers", {}).items():
-        workers_ready[task_name] = {
-            "started": status.get("started", False),
-            "counters": worker_status.get("counters", {}),
-            "buffer": worker_status.get("buffer", {}),
-        }
-    return {
-        "ready": True,
-        "started": status.get("started", False),
-        "rounds_received": status.get("rounds_received", 0),
-        "frames_received": status.get("frames_received", 0),
-        "workers": workers_ready,
-    }
-
-
-def _model_management_section(runtime: Runtime) -> dict[str, Any]:
-    try:
-        snapshot = runtime.models.snapshot()
-        return {
-            "ready": True,
-            "has_snapshot": True,
-            "resolved_models": list(snapshot.get("resolved_models", {}).keys()),
-        }
-    except Exception:
-        return {"ready": True, "has_snapshot": False}
-
-
-def _model_conversions_section(runtime: Runtime) -> dict[str, Any]:
-    return {"ready": True, "manager_active": True}
-
-
-def _video_ingestor_section(runtime: Runtime) -> dict[str, Any]:
-    ingestor = runtime.video_ingestor
-    if ingestor is None:
-        return {"ready": True, "enabled": False, "detail": "Video ingestion is disabled"}
-    try:
-        status = ingestor.status()
-        return {
-            "ready": True,
-            "enabled": True,
-            "backend": status.get("backend", "unknown"),
-            "running": status.get("running", False),
-            "active_sources": len(status.get("sources", {})),
-        }
+        count = store.count()
+        assert isinstance(count, int) and count >= 0
+        tests.append(_test(f"{label}_count", _TEST_PASS, f"count={count}"))
     except Exception as exc:
-        return {"ready": False, "enabled": True, "error": str(exc)}
+        tests.append(_test(f"{label}_count", _TEST_FAIL, str(exc)))
+    # Test list
+    try:
+        records, total = store.list(limit=5)
+        assert isinstance(total, int) and total >= 0
+        tests.append(_test(f"{label}_list", _TEST_PASS, f"total={total}"))
+    except Exception as exc:
+        tests.append(_test(f"{label}_list", _TEST_FAIL, str(exc)))
+    return tests
+
+
+def _run_service_tests(runtime: Runtime) -> list[dict[str, Any]]:
+    """Read-only attendance service validation."""
+    tests: list[dict[str, Any]] = []
+    try:
+        svc = runtime.attendance_service
+        assert svc is not None
+        tests.append(_test("attendance_init", _TEST_PASS))
+    except Exception as exc:
+        tests.append(_test("attendance_init", _TEST_FAIL, str(exc)))
+        return tests
+    # Try daily summary if a personnel exists
+    try:
+        records, total = runtime.personnel_store.list(limit=1)
+        if total > 0:
+            from datetime import date
+            daily = svc.compute_daily_summary(records[0].id, str(date.today()))
+            assert isinstance(daily, dict)
+            assert "status" in daily
+            tests.append(_test("attendance_daily", _TEST_PASS, f"status={daily['status']}"))
+        else:
+            tests.append(_test("attendance_daily", _TEST_SKIP, "no personnel records"))
+    except Exception as exc:
+        tests.append(_test("attendance_daily", _TEST_FAIL, str(exc)))
+    return tests
+
+
+def _run_model_tests(runtime: Runtime, model_paths: dict[str, Path]) -> list[dict[str, Any]]:
+    """Read-only model file validation."""
+    tests: list[dict[str, Any]] = []
+    for label, path in model_paths.items():
+        try:
+            resolved = path.resolve()
+            if resolved.is_file() and resolved.stat().st_size > 0:
+                tests.append(_test(f"model_{label}", _TEST_PASS, f"size={resolved.stat().st_size}"))
+            elif resolved.is_file():
+                tests.append(_test(f"model_{label}", _TEST_WARN, "file exists but is empty"))
+            else:
+                tests.append(_test(f"model_{label}", _TEST_FAIL, "file not found"))
+        except Exception as exc:
+            tests.append(_test(f"model_{label}", _TEST_FAIL, str(exc)))
+    return tests
 
 
 @router.get(
     "/all",
-    summary="Check every project section at once",
+    summary="Run read-only tests for every project section",
     description=(
-        "Comprehensive read-only status check for every section in the project: "
-        "model artifacts, stores, services, data stores, settings, infrastructure, "
-        "and model management. Use POST /api/v1/tests/all to run active smoke tests."
+        "Runs read-only validation tests across every section: models, stores, services, "
+        "data stores, settings, infrastructure, and model management. Each test returns "
+        "PASS/FAIL/WARN/SKIP. Use POST /api/v1/tests/all for active smoke tests "
+        "that create and delete test data."
     ),
 )
 def all_sections_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
-    sections: dict[str, Any] = {}
+    all_tests: dict[str, Any] = {}
+    all_results: list[dict[str, Any]] = []
 
-    # Model artifacts
-    sections["models"] = {
-        "face": face_models_status(runtime),
-        "fire_smoke": fire_smoke_models_status(runtime),
-        "plate": plate_models_status(runtime),
-    }
+    # ── Model artifact tests ──────────────────────────────────────────
+    model_results: list[dict[str, Any]] = []
+    try:
+        s = runtime.settings
+        face_paths = {
+            "human_detector": s.face_human_model_path,
+            "face_detector": s.face_detector_model_path,
+            "embedding": s.face_embedding_model_path,
+        }
+        model_results.extend(_run_model_tests(runtime, face_paths))
+        fire_path = s.fire_model_path
+        model_results.extend(_run_model_tests(runtime, {"fire_smoke": fire_path}))
+        plate_paths = {
+            "vehicle_detector": s.vehicle_detector_weights,
+            "plate_detector": s.plate_detector_weights,
+        }
+        model_results.extend(_run_model_tests(runtime, plate_paths))
+        # Check recognizer directory
+        if s.plate_recognizer_dir.is_dir():
+            model_results.append(_test("plate_recognizer_dir", _TEST_PASS))
+        else:
+            model_results.append(_test("plate_recognizer_dir", _TEST_WARN, "directory not found"))
+    except Exception as exc:
+        model_results.append(_test("model_checks", _TEST_FAIL, str(exc)))
+    all_tests["models"] = {"tests": model_results}
+    all_results.extend(model_results)
 
-    # Stores
-    sections["stores"] = {
-        "personnel": _personnel_store_section(runtime),
-        "locations": _location_store_section(runtime),
-        "shifts": _shift_store_section(runtime),
-        "holidays": _holiday_store_section(runtime),
-        "requests": _request_store_section(runtime),
-    }
+    # ── Store tests ───────────────────────────────────────────────────
+    store_results: list[dict[str, Any]] = []
+    for label, store in (
+        ("personnel", runtime.personnel_store),
+        ("shifts", runtime.shift_store),
+        ("holidays", runtime.holiday_store),
+        ("requests", runtime.request_store),
+    ):
+        store_results.extend(_run_store_tests(store, label))
+    # Locations (different API)
+    try:
+        loc = runtime.location_store
+        b = loc.count_buildings()
+        s = loc.count_sections()
+        r = loc.count_rooms()
+        assert all(isinstance(v, int) and v >= 0 for v in (b, s, r))
+        store_results.append(_test("locations_counts", _TEST_PASS, f"buildings={b},sections={s},rooms={r}"))
+    except Exception as exc:
+        store_results.append(_test("locations_counts", _TEST_FAIL, str(exc)))
+    all_tests["stores"] = {"tests": store_results}
+    all_results.extend(store_results)
 
-    # Services
-    sections["services"] = {
-        "attendance": _attendance_service_section(runtime),
-    }
+    # ── Service tests ─────────────────────────────────────────────────
+    service_results = _run_service_tests(runtime)
+    all_tests["services"] = {"tests": service_results}
+    all_results.extend(service_results)
 
-    # Data stores
-    sections["data_stores"] = {
-        "plate_logs": _plate_logs_section(runtime),
-        "fire_smoke_logs": _fire_smoke_logs_section(runtime),
-        "human_logs": _human_logs_section(runtime),
-        "result_store": _result_store_section(runtime),
-    }
+    # ── Data store tests ──────────────────────────────────────────────
+    ds_results: list[dict[str, Any]] = []
+    for label, ds in (
+        ("plate_logs", runtime.plate_logs),
+        ("fire_smoke_logs", runtime.fire_smoke_logs),
+        ("human_logs", runtime.human_logs),
+    ):
+        try:
+            count = ds.count()
+            assert isinstance(count, int) and count >= 0
+            ds_results.append(_test(f"{label}_count", _TEST_PASS, f"count={count}"))
+        except Exception as exc:
+            ds_results.append(_test(f"{label}_count", _TEST_FAIL, str(exc)))
+    try:
+        capacity = runtime.results._recent.maxlen
+        ds_results.append(_test("result_store_capacity", _TEST_PASS, f"maxlen={capacity}"))
+    except Exception as exc:
+        ds_results.append(_test("result_store_capacity", _TEST_FAIL, str(exc)))
+    all_tests["data_stores"] = {"tests": ds_results}
+    all_results.extend(ds_results)
 
-    # Settings
-    sections["settings"] = {
-        "plate_settings": _plate_settings_section(runtime),
-        "face_quality_settings": _face_quality_settings_section(runtime),
-    }
+    # ── Settings tests ────────────────────────────────────────────────
+    settings_results: list[dict[str, Any]] = []
+    try:
+        policy = runtime.plate_settings.general()
+        settings_results.append(_test("plate_settings", _TEST_PASS if policy else _TEST_WARN,
+                                       "general policy available" if policy else "no general policy"))
+    except Exception as exc:
+        settings_results.append(_test("plate_settings", _TEST_FAIL, str(exc)))
+    try:
+        qpolicy = runtime.face_quality_settings.get()
+        settings_results.append(_test("face_quality_settings", _TEST_PASS if qpolicy else _TEST_WARN,
+                                       "policy available" if qpolicy else "no policy"))
+    except Exception as exc:
+        settings_results.append(_test("face_quality_settings", _TEST_FAIL, str(exc)))
+    all_tests["settings"] = {"tests": settings_results}
+    all_results.extend(settings_results)
 
-    # Infrastructure
-    sections["infrastructure"] = {
-        "source_registry": _source_registry_section(runtime),
-        "broadcast": _broadcast_section(runtime),
-        "task_router": _task_router_section(runtime),
-        "video_ingestor": _video_ingestor_section(runtime),
-    }
+    # ── Infrastructure tests ──────────────────────────────────────────
+    infra_results: list[dict[str, Any]] = []
+    # Source registry
+    try:
+        cameras = runtime.registry.list()
+        enabled = sum(1 for c in cameras if c.enabled)
+        assert isinstance(cameras, list)
+        infra_results.append(_test("source_registry", _TEST_PASS, f"total={len(cameras)},enabled={enabled}"))
+    except Exception as exc:
+        infra_results.append(_test("source_registry", _TEST_FAIL, str(exc)))
+    # Broadcast
+    try:
+        status = runtime.broadcast.status()
+        infra_results.append(_test("broadcast", _TEST_PASS, f"enabled={runtime.broadcast.enabled},subscribers={status.get('subscribers',0)}"))
+    except Exception as exc:
+        infra_results.append(_test("broadcast", _TEST_FAIL, str(exc)))
+    # Task router
+    try:
+        rstatus = runtime.router.status()
+        infra_results.append(_test("task_router", _TEST_PASS, f"started={rstatus.get('started',False)},rounds={rstatus.get('rounds_received',0)}"))
+    except Exception as exc:
+        infra_results.append(_test("task_router", _TEST_FAIL, str(exc)))
+    # Video ingestor
+    ingestor = runtime.video_ingestor
+    if ingestor is None:
+        infra_results.append(_test("video_ingestor", _TEST_SKIP, "disabled"))
+    else:
+        try:
+            vs = ingestor.status()
+            infra_results.append(_test("video_ingestor", _TEST_PASS,
+                                       f"backend={vs.get('backend','?')},running={vs.get('running',False)}"))
+        except Exception as exc:
+            infra_results.append(_test("video_ingestor", _TEST_FAIL, str(exc)))
+    all_tests["infrastructure"] = {"tests": infra_results}
+    all_results.extend(infra_results)
 
-    # Model management
-    sections["model_management"] = {
-        "model_manager": _model_management_section(runtime),
-        "model_conversions": _model_conversions_section(runtime),
-    }
+    # ── Model management tests ────────────────────────────────────────
+    mgmt_results: list[dict[str, Any]] = []
+    try:
+        snapshot = runtime.models.snapshot()
+        resolved = list(snapshot.get("resolved_models", {}).keys())
+        mgmt_results.append(_test("model_manager", _TEST_PASS, f"roles={resolved}"))
+    except Exception as exc:
+        mgmt_results.append(_test("model_manager", _TEST_FAIL, str(exc)))
+    try:
+        _ = runtime.model_conversions
+        mgmt_results.append(_test("model_conversions", _TEST_PASS))
+    except Exception as exc:
+        mgmt_results.append(_test("model_conversions", _TEST_FAIL, str(exc)))
+    all_tests["model_management"] = {"tests": mgmt_results}
+    all_results.extend(mgmt_results)
 
-    # Compute overall status
-    all_ready = True
-    failed_sections: list[str] = []
-    for group_name, group in sections.items():
-        for section_name, data in group.items():
-            if isinstance(data, dict) and data.get("ready") is False:
-                all_ready = False
-                failed_sections.append(f"{group_name}.{section_name}")
+    # ── Compute summary ───────────────────────────────────────────────
+    total = len(all_results)
+    passed = sum(1 for t in all_results if t["status"] == _TEST_PASS)
+    failed = sum(1 for t in all_results if t["status"] == _TEST_FAIL)
+    warned = sum(1 for t in all_results if t["status"] == _TEST_WARN)
+    skipped = sum(1 for t in all_results if t["status"] == _TEST_SKIP)
 
-    sections["_summary"] = {
-        "total_groups": len(sections),
-        "all_sections_ready": all_ready,
+    if failed:
+        overall = _TEST_FAIL
+    elif warned:
+        overall = _TEST_WARN
+    elif skipped and passed == total - skipped:
+        overall = _TEST_PASS
+    else:
+        overall = _TEST_PASS
+
+    all_tests["_summary"] = {
+        "status": overall,
+        "total_tests": total,
+        "passed": passed,
+        "failed": failed,
+        "warnings": warned,
+        "skipped": skipped,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
-    if failed_sections:
-        sections["_summary"]["not_ready"] = failed_sections
+    if failed:
+        failed_names = [t["name"] for t in all_results if t["status"] == _TEST_FAIL]
+        all_tests["_summary"]["failed_tests"] = failed_names
 
-    return sections
+    return all_tests
 
 
 @router.post(
