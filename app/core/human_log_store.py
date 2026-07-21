@@ -29,6 +29,7 @@ class HumanMediaEvent:
     captured_at_utc: str
     recognition_score: float
     ref_img_id: str | int | None
+    personnel_id: int | None
     snapshot_frame: np.ndarray | None
     snapshot_quality: float
     full_frame_video_frame: np.ndarray | None
@@ -140,6 +141,8 @@ class HumanLogStore:
                 "best_face_quality": "REAL NOT NULL DEFAULT 0",
                 "full_frame_video_frames": "INTEGER NOT NULL DEFAULT 0",
                 "accepted_face_frames": "INTEGER NOT NULL DEFAULT 0",
+                "personnel_id": "INTEGER",
+                "counts_for_attendance": "INTEGER NOT NULL DEFAULT 1",
             }
             for column, definition in additions.items():
                 if column not in existing:
@@ -329,6 +332,15 @@ class HumanLogStore:
                 if better_face:
                     self._best_face_scores[key] = face_quality
 
+            raw_ref = human.get("ref_img_id")
+            raw_personnel_id: int | None = None
+            if raw_ref is not None:
+                ref_str = str(raw_ref)
+                if ref_str.startswith("personnel_"):
+                    try:
+                        raw_personnel_id = int(ref_str[len("personnel_"):])
+                    except (ValueError, IndexError):
+                        pass
             event = HumanMediaEvent(
                 session_id=session_id,
                 camera=packet.source_id,
@@ -336,7 +348,8 @@ class HumanLogStore:
                 name=name,
                 captured_at_utc=packet.captured_at_utc,
                 recognition_score=float(human.get("recognition_score", 0.0) or 0.0),
-                ref_img_id=human.get("ref_img_id"),
+                ref_img_id=raw_ref,
+                personnel_id=raw_personnel_id,
                 snapshot_frame=human_crop if better_snapshot else None,
                 snapshot_quality=snapshot_quality,
                 full_frame_video_frame=(
@@ -528,8 +541,9 @@ class HumanLogStore:
                         session_id, camera, track_id, name, first_seen, last_seen,
                         recognition_score, ref_img_id, snapshot_url, video_url,
                         face_video_url, snapshot_quality, best_face_quality,
-                        full_frame_video_frames, accepted_face_frames
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        full_frame_video_frames, accepted_face_frames,
+                        personnel_id, counts_for_attendance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.session_id,
@@ -547,6 +561,8 @@ class HumanLogStore:
                         event.face_quality,
                         int(wrote_full_frame),
                         int(wrote_face),
+                        event.personnel_id,
+                        1,
                     ),
                 )
             else:
@@ -558,7 +574,8 @@ class HumanLogStore:
                         snapshot_quality = ?,
                         best_face_quality = CASE WHEN ? THEN ? ELSE best_face_quality END,
                         full_frame_video_frames = full_frame_video_frames + ?,
-                        accepted_face_frames = accepted_face_frames + ?
+                        accepted_face_frames = accepted_face_frames + ?,
+                        personnel_id = CASE WHEN ? THEN ? ELSE personnel_id END
                     WHERE session_id = ? AND camera = ? AND track_id = ?
                     """,
                     (
@@ -574,6 +591,8 @@ class HumanLogStore:
                         event.face_quality,
                         int(wrote_full_frame),
                         int(wrote_face),
+                        int(event.personnel_id is not None),
+                        event.personnel_id,
                         event.session_id,
                         event.camera,
                         event.track_id,
@@ -651,7 +670,7 @@ class HumanLogStore:
                        last_seen, recognition_score, ref_img_id, snapshot_url,
                        video_url, face_video_url, snapshot_quality,
                        best_face_quality, full_frame_video_frames,
-                       accepted_face_frames
+                       accepted_face_frames, personnel_id, counts_for_attendance
                 FROM human_logs
                 """
                 + where
@@ -684,6 +703,72 @@ class HumanLogStore:
                 "face_video_directory": str(self.face_video_dir),
                 "last_error": self._last_error,
             }
+
+    def get_logs_for_personnel(
+        self, personnel_id: int, utc_start: str, utc_end: str,
+    ) -> list[dict[str, Any]]:
+        """Return human_log rows for a personnel within a UTC range."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, camera, track_id, name, first_seen,
+                       last_seen, recognition_score, ref_img_id, snapshot_url,
+                       video_url, face_video_url, snapshot_quality,
+                       best_face_quality, full_frame_video_frames,
+                       accepted_face_frames, personnel_id, counts_for_attendance
+                FROM human_logs
+                WHERE personnel_id = ?
+                  AND last_seen >= ?
+                  AND last_seen <= ?
+                  AND counts_for_attendance = 1
+                ORDER BY last_seen ASC
+                """,
+                (personnel_id, utc_start, utc_end),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_logs_in_range(
+        self, utc_start: str, utc_end: str,
+        personnel_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return human_log rows in a UTC range, optionally filtered by personnel."""
+        where = "last_seen >= ? AND last_seen <= ? AND counts_for_attendance = 1"
+        params: list[Any] = [utc_start, utc_end]
+        if personnel_id is not None:
+            where += " AND personnel_id = ?"
+            params.append(personnel_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id, camera, track_id, name, first_seen,
+                       last_seen, recognition_score, ref_img_id, snapshot_url,
+                       video_url, face_video_url, snapshot_quality,
+                       best_face_quality, full_frame_video_frames,
+                       accepted_face_frames, personnel_id, counts_for_attendance
+                FROM human_logs
+                WHERE """ + where + """
+                ORDER BY last_seen ASC
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_counts_for_attendance(self, log_id: int, counts: bool) -> dict[str, Any] | None:
+        """Toggle counts_for_attendance on a human_log row."""
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM human_logs WHERE id = ?", (log_id,)
+            ).fetchone()
+            if existing is None:
+                return None
+            connection.execute(
+                "UPDATE human_logs SET counts_for_attendance = ? WHERE id = ?",
+                (1 if counts else 0, log_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM human_logs WHERE id = ?", (log_id,)
+            ).fetchone()
+            return dict(row) if row else None
 
     def flush(self) -> None:
         """Wait until all currently queued writes are durable (primarily for tests)."""

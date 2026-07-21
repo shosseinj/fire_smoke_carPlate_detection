@@ -29,6 +29,7 @@ class PersonnelRecord:
     national_code: str
     employee_type: str
     degree: str | None
+    shift_id: int | None
     last_seen: str | None
     created_at_utc: str
     updated_at_utc: str
@@ -139,6 +140,18 @@ class PersonnelStore:
                 conn.execute(
                     "ALTER TABLE personnel_images ADD COLUMN embedding_id TEXT"
                 )
+            # Migration: add shift_id if missing
+            if "shift_id" not in existing:
+                conn.execute(
+                    "ALTER TABLE personnel ADD COLUMN shift_id INTEGER"
+                )
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_personnel_shift "
+                        "ON personnel(shift_id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
     # ── Personnel CRUD ─────────────────────────────────────────────────
 
@@ -146,6 +159,10 @@ class PersonnelStore:
         last_seen: str | None = None
         if "last_seen" in row.keys():
             last_seen = row["last_seen"]
+        shift_id: int | None = None
+        if "shift_id" in row.keys():
+            raw = row["shift_id"]
+            shift_id = int(raw) if raw is not None else None
         return PersonnelRecord(
             id=row["id"],
             fname=row["fname"],
@@ -153,6 +170,7 @@ class PersonnelStore:
             national_code=row["national_code"],
             employee_type=row["employee_type"],
             degree=row["degree"],
+            shift_id=shift_id,
             last_seen=last_seen,
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],

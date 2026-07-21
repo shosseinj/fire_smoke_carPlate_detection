@@ -60,7 +60,8 @@
     },
     {
       "name": "Holidays",
-      "item_count": 2
+      "item_count": 2,
+      "status": "IMPLEMENTED"
     },
     {
       "name": "logs",
@@ -76,7 +77,8 @@
     },
     {
       "name": "Personnel Requests",
-      "item_count": 9
+      "item_count": 9,
+      "status": "IMPLEMENTED"
     },
     {
       "name": "personnel-images",
@@ -100,11 +102,17 @@
     },
     {
       "name": "shifts",
-      "item_count": 5
+      "item_count": 5,
+      "status": "IMPLEMENTED"
     },
     {
       "name": "WebSocket",
       "item_count": 5
+    },
+    {
+      "name": "Attendance Reports",
+      "item_count": 6,
+      "status": "IMPLEMENTED"
     }
   ],
   "items": [

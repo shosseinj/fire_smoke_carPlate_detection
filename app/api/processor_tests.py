@@ -11,8 +11,11 @@ import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.holiday_store import HolidayStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
+from app.core.request_store import RequestStore
+from app.core.shift_store import ShiftStore
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.processors.fire_smoke import FireSmokeProcessor
 from app.processors.plate import PlateRecognitionProcessor
@@ -708,6 +711,237 @@ async def locations_smoke_test(
 
 
 # ---------------------------------------------------------------------------
+# Shifts — smoke test
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/shifts/smoke",
+    summary="Run a shifts module smoke test",
+    description="Creates, reads, updates, and deletes a shift. Tests personnel assignment. Works in mock mode.",
+)
+async def shifts_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    store: ShiftStore = runtime.shift_store
+    steps: dict[str, Any] = {}
+    try:
+        # 1. Create shift
+        shift = store.create(
+            shift_name="Smoke Shift",
+            shift_type="morning",
+            start_time="08:00",
+            end_time="16:00",
+            works_saturday=True,
+            works_sunday=False,
+            works_monday=True,
+            works_tuesday=True,
+            works_wednesday=True,
+            works_thursday=True,
+            works_friday=False,
+        )
+        steps["create"] = {"status": "PASS", "id": shift.id}
+        shift_id = shift.id
+
+        # 2. Get by ID
+        fetched = store.get(shift_id)
+        if fetched is None or fetched.id != shift_id:
+            steps["get"] = {"status": "FAIL", "detail": "Record not found after creation"}
+        else:
+            steps["get"] = {"status": "PASS", "name": fetched.shift_name}
+
+        # 3. Update
+        updated = store.update(shift_id, shift_name="Updated Shift")
+        if updated is None or updated.shift_name != "Updated Shift":
+            steps["update"] = {"status": "FAIL", "detail": "Update failed"}
+        else:
+            steps["update"] = {"status": "PASS"}
+
+        # 4. List
+        records, total = store.list(limit=100)
+        if total < 1:
+            steps["list"] = {"status": "FAIL", "detail": "List returned zero"}
+        else:
+            steps["list"] = {"status": "PASS", "total": total}
+
+        # 5. Statistics
+        stats = store.statistics()
+        steps["statistics"] = {"status": "PASS", "total_shifts": stats["total_shifts"]}
+
+        # 6. Delete
+        deleted = store.delete(shift_id)
+        if not deleted:
+            steps["delete"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete"] = {"status": "PASS"}
+
+        failed = {k: v for k, v in steps.items() if isinstance(v, dict) and v.get("status") == "FAIL"}
+        steps["_summary"] = {"total": len(steps), "passed": len(steps) - len(failed), "failed": len(failed)}
+    except Exception as exc:
+        steps["_unexpected_error"] = f"{type(exc).__name__}: {exc}"
+        steps["_summary"] = {"total": len(steps), "passed": 0, "failed": 1}
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# Holidays — smoke test
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/holidays/smoke",
+    summary="Run a holidays module smoke test",
+    description="Creates, reads, updates, deletes, and checks a holiday. Works in mock mode.",
+)
+async def holidays_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    store: HolidayStore = runtime.holiday_store
+    steps: dict[str, Any] = {}
+    try:
+        # 1. Create holiday
+        holiday = store.create(
+            name="Smoke Holiday",
+            date_value="2026-12-25",
+            description="Smoke test holiday",
+            holiday_type="national",
+            every_year=False,
+        )
+        steps["create"] = {"status": "PASS", "id": holiday.id}
+        holiday_id = holiday.id
+
+        # 2. Get by ID
+        fetched = store.get(holiday_id)
+        if fetched is None or fetched.id != holiday_id:
+            steps["get"] = {"status": "FAIL", "detail": "Record not found after creation"}
+        else:
+            steps["get"] = {"status": "PASS", "name": fetched.name}
+
+        # 3. Update
+        updated = store.update(holiday_id, name="Updated Holiday")
+        if updated is None or updated.name != "Updated Holiday":
+            steps["update"] = {"status": "FAIL", "detail": "Update failed"}
+        else:
+            steps["update"] = {"status": "PASS"}
+
+        # 4. Check is_holiday
+        from datetime import date
+        is_h = store.is_holiday(date(2026, 12, 25))
+        if not is_h:
+            steps["is_holiday"] = {"status": "FAIL", "detail": "is_holiday returned False"}
+        else:
+            steps["is_holiday"] = {"status": "PASS"}
+
+        # 5. List
+        records, total = store.list(limit=100)
+        if total < 1:
+            steps["list"] = {"status": "FAIL", "detail": "List returned zero"}
+        else:
+            steps["list"] = {"status": "PASS", "total": total}
+
+        # 6. Soft-delete (deactivate)
+        deleted = store.delete(holiday_id)
+        if not deleted:
+            steps["delete"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete"] = {"status": "PASS"}
+
+        # 7. Hard-delete for cleanup
+        store.hard_delete(holiday_id)
+
+        failed = {k: v for k, v in steps.items() if isinstance(v, dict) and v.get("status") == "FAIL"}
+        steps["_summary"] = {"total": len(steps), "passed": len(steps) - len(failed), "failed": len(failed)}
+    except Exception as exc:
+        steps["_unexpected_error"] = f"{type(exc).__name__}: {exc}"
+        steps["_summary"] = {"total": len(steps), "passed": 0, "failed": 1}
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# Requests — smoke test
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/requests/smoke",
+    summary="Run a requests module smoke test",
+    description="Creates, reads, approves, and deletes a personnel request. Works in mock mode.",
+)
+async def requests_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    store: RequestStore = runtime.request_store
+    personnel_store: PersonnelStore = runtime.personnel_store
+    steps: dict[str, Any] = {}
+    test_id = f"req-{int(time.time() * 1000)}"
+    test_nat_code = _TEST_NATIONAL_CODE_2  # use second test code
+    person = None
+    try:
+        # Create personnel for test
+        person = personnel_store.create(
+            fname="Req",
+            lname=f"Test{test_id}",
+            national_code=test_nat_code,
+            employee_type="employee",
+        )
+        personnel_id = person.id
+
+        # 1. Create request
+        req = store.create(
+            personnel_id=personnel_id,
+            request_type="leave",
+            start_date="2026-08-01",
+            end_date="2026-08-03",
+            reason="Smoke test leave",
+        )
+        steps["create_request"] = {"status": "PASS", "id": req.id}
+        req_id = req.id
+
+        # 2. Get by ID
+        fetched = store.get(req_id)
+        if fetched is None or fetched.id != req_id:
+            steps["get"] = {"status": "FAIL", "detail": "Request not found"}
+        else:
+            steps["get"] = {"status": "PASS", "status_val": fetched.status}
+
+        # 3. Approve
+        approved = store.approve(req_id, approved_by=1)
+        if approved is None or approved.status != "approved":
+            steps["approve"] = {"status": "FAIL", "detail": "Approve failed"}
+        else:
+            steps["approve"] = {"status": "PASS"}
+
+        # 4. List
+        records, total = store.list(limit=100)
+        if total < 1:
+            steps["list"] = {"status": "FAIL", "detail": "List returned zero"}
+        else:
+            steps["list"] = {"status": "PASS", "total": total}
+
+        # 5. Delete
+        deleted = store.delete(req_id)
+        if not deleted:
+            steps["delete"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete"] = {"status": "PASS"}
+
+        # Cleanup personnel
+        personnel_store.delete(personnel_id)
+
+        failed = {k: v for k, v in steps.items() if isinstance(v, dict) and v.get("status") == "FAIL"}
+        steps["_summary"] = {"total": len(steps), "passed": len(steps) - len(failed), "failed": len(failed)}
+    except Exception as exc:
+        if person is not None:
+            try:
+                personnel_store.delete(person.id)
+            except Exception:
+                pass
+        steps["_unexpected_error"] = f"{type(exc).__name__}: {exc}"
+        steps["_summary"] = {"total": len(steps), "passed": 0, "failed": 1}
+    return steps
+
+
+# ---------------------------------------------------------------------------
 # All-in-one
 # ---------------------------------------------------------------------------
 
@@ -730,5 +964,17 @@ def all_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]
             "buildings": runtime.location_store.count_buildings(),
             "sections": runtime.location_store.count_sections(),
             "rooms": runtime.location_store.count_rooms(),
+        },
+        "shifts": {
+            "store_ready": True,
+            "count": runtime.shift_store.count(),
+        },
+        "holidays": {
+            "store_ready": True,
+            "count": runtime.holiday_store.count_active(),
+        },
+        "requests": {
+            "store_ready": True,
+            "count": runtime.request_store.count(),
         },
     }

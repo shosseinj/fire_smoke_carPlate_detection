@@ -23,6 +23,10 @@ from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
 from app.api.personnel import router as personnel_router
 from app.api.locations import router as locations_router
+from app.api.shifts import router as shifts_router
+from app.api.holidays import router as holidays_router
+from app.api.requests import router as requests_router
+from app.api.attendance import router as attendance_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -101,6 +105,22 @@ OPENAPI_TAGS = [
         "name": "locations",
         "description": "Hierarchical location management: buildings, sections, rooms with polygon zones, camera assignment, personnel room access, and detection-room matching.",
     },
+    {
+        "name": "Shifts",
+        "description": "Work shift definitions, weekday schedules, personnel assignment, and statistics.",
+    },
+    {
+        "name": "Holidays",
+        "description": "Holiday definitions with annual recurrence, active/inactive status, and date checks.",
+    },
+    {
+        "name": "Personnel Requests",
+        "description": "Personnel leave, sick leave, mission, remote work, and overtime requests with approval workflow.",
+    },
+    {
+        "name": "Attendance",
+        "description": "Daily, monthly, and yearly attendance reports. Daily summary, monthly performance, leave analysis, and log attendance toggle.",
+    },
 ]
 
 
@@ -139,6 +159,10 @@ app.include_router(faces_router)
 app.include_router(humans_router)
 app.include_router(personnel_router)
 app.include_router(locations_router)
+app.include_router(shifts_router)
+app.include_router(holidays_router)
+app.include_router(requests_router)
+app.include_router(attendance_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 
@@ -161,5 +185,8 @@ def health() -> dict:
         "plate_log_count": status["plate_log_count"],
         "fire_smoke_logs": status["fire_smoke_logs"],
         "human_logs": status["human_logs"],
+        "shift_count": status["shift_count"],
+        "holiday_count": status["holiday_count"],
+        "request_count": status["request_count"],
         "workers": status["workers"],
     }

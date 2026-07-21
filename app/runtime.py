@@ -21,6 +21,10 @@ from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
+from app.core.shift_store import ShiftStore
+from app.core.holiday_store import HolidayStore
+from app.core.request_store import RequestStore
+from app.core.attendance_service import AttendanceService
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
@@ -59,6 +63,10 @@ class Runtime:
     face_processor: BatchProcessor
     personnel_store: PersonnelStore
     location_store: LocationStore
+    shift_store: ShiftStore
+    holiday_store: HolidayStore
+    request_store: RequestStore
+    attendance_service: AttendanceService
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -159,6 +167,9 @@ class Runtime:
             "sections": self.location_store.count_sections(),
             "rooms": self.location_store.count_rooms(),
         }
+        value["shift_count"] = self.shift_store.count()
+        value["holiday_count"] = self.holiday_store.count_active()
+        value["request_count"] = self.request_store.count()
         return value
 
 
@@ -280,6 +291,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     location_store = LocationStore(
         app_settings.plate_log_db_path,
+    )
+    shift_store = ShiftStore(app_settings.plate_log_db_path)
+    holiday_store = HolidayStore(app_settings.plate_log_db_path)
+    request_store = RequestStore(app_settings.plate_log_db_path)
+    attendance_service = AttendanceService(
+        personnel_store=personnel_store,
+        human_log_store=human_logs,
+        shift_store=shift_store,
+        holiday_store=holiday_store,
+        request_store=request_store,
     )
 
     if app_settings.processor_mode == "mock":
@@ -541,5 +562,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         face_processor=face_processor,
         personnel_store=personnel_store,
         location_store=location_store,
+        shift_store=shift_store,
+        holiday_store=holiday_store,
+        request_store=request_store,
+        attendance_service=attendance_service,
         video_ingestor=video_ingestor,
     )
