@@ -288,14 +288,6 @@ class PersonnelStore:
     def delete(self, personnel_id: int) -> bool:
         """Delete a personnel record and cascade images. Returns True if deleted."""
         with self._lock, self._connection() as conn:
-            # Collect image info before deleting
-            rows = conn.execute(
-                "SELECT id, storage_key, embedding_id FROM personnel_images WHERE personnel_id = ?",
-                (personnel_id,),
-            ).fetchall()
-            # Delete storage files
-            for row in rows:
-                self._delete_storage_file(row["storage_key"])
             cursor = conn.execute(
                 "DELETE FROM personnel WHERE id = ?", (personnel_id,)
             )
@@ -392,87 +384,34 @@ class PersonnelStore:
         storage_key: str,
         description: str | None = None,
         embedding_id: str | None = None,
-        is_primary: bool | None = None,
     ) -> PersonnelImageRecord:
-        """Insert an image record. The first image for a personnel becomes primary.
-
-        When is_primary=True, atomically unsets any existing primary for this
-        personnel before setting the new image as primary.
-        """
+        """Insert an image record. The first image for a personnel becomes primary."""
         now = self._now()
         with self._lock, self._connection() as conn:
-            return self._create_image_in_conn(
-                conn, personnel_id, storage_key, description, embedding_id, now,
-                is_primary=is_primary,
-            )
-
-    def _create_image_in_conn(
-        self,
-        conn: sqlite3.Connection,
-        personnel_id: int,
-        storage_key: str,
-        description: str | None,
-        embedding_id: str | None,
-        now: str,
-        *,
-        is_primary: bool | None = None,
-    ) -> PersonnelImageRecord:
-        """Create an image record using an existing connection (for batch operations)."""
-        # Verify personnel exists
-        existing = conn.execute(
-            "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
-        ).fetchone()
-        if existing is None:
-            raise ValueError(f"Personnel not found: {personnel_id}")
-        if is_primary is True:
-            # Atomically unset any existing primary for this personnel
-            conn.execute(
-                "UPDATE personnel_images SET is_primary = 0 WHERE personnel_id = ? AND is_primary = 1",
-                (personnel_id,),
-            )
-            is_primary_int = 1
-        elif is_primary is False:
-            is_primary_int = 0
-        else:
-            # Auto: become primary only if no primary exists for this personnel
-            existing_primary = conn.execute(
-                "SELECT COUNT(*) FROM personnel_images WHERE personnel_id = ? AND is_primary = 1",
+            # Verify personnel exists
+            existing = conn.execute(
+                "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
+            ).fetchone()
+            if existing is None:
+                raise ValueError(f"Personnel not found: {personnel_id}")
+            # First image auto-becomes primary
+            image_count = conn.execute(
+                "SELECT COUNT(*) FROM personnel_images WHERE personnel_id = ?",
                 (personnel_id,),
             ).fetchone()[0]
-            is_primary_int = 1 if existing_primary == 0 else 0
-        cursor = conn.execute(
-            "INSERT INTO personnel_images "
-            "(personnel_id, storage_key, description, is_primary, uploaded_at_utc, embedding_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (personnel_id, storage_key, description, is_primary_int, now, embedding_id),
-        )
-        row = conn.execute(
-            "SELECT * FROM personnel_images WHERE id = ?", (cursor.lastrowid,)
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("Failed to retrieve created image record")
-        return self._row_to_image(row)
-
-    def create_images_batch(
-        self,
-        images: list[tuple[int, str, str | None, str | None]],
-    ) -> list[PersonnelImageRecord]:
-        """Create multiple image records in one transaction.
-
-        Each tuple is (personnel_id, storage_key, description, embedding_id).
-        The first image for the first personnel in the batch auto-becomes primary.
-        """
-        if not images:
-            return []
-        now = self._now()
-        records: list[PersonnelImageRecord] = []
-        with self._lock, self._connection() as conn:
-            for personnel_id, storage_key, description, embedding_id in images:
-                record = self._create_image_in_conn(
-                    conn, personnel_id, storage_key, description, embedding_id, now
-                )
-                records.append(record)
-        return records
+            is_primary = 1 if image_count == 0 else 0
+            cursor = conn.execute(
+                "INSERT INTO personnel_images "
+                "(personnel_id, storage_key, description, is_primary, uploaded_at_utc, embedding_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (personnel_id, storage_key, description, is_primary, now, embedding_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM personnel_images WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Failed to retrieve created image record")
+            return self._row_to_image(row)
 
     def get_image(self, image_id: int) -> PersonnelImageRecord | None:
         with self._lock, self._connection() as conn:
@@ -492,24 +431,18 @@ class PersonnelStore:
             ).fetchall()
             return [self._row_to_image(r) for r in rows]
 
-    def delete_image(self, image_id: int) -> dict | None:
-        """Delete an image record. If it was primary, promote the oldest remaining.
-
-        Returns a dict with cleanup info (embedding_id, storage_key, personnel_id)
-        or None if the image was not found.
-        """
+    def delete_image(self, image_id: int) -> bool:
+        """Delete an image record. If it was primary, promote the oldest remaining."""
         with self._lock, self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM personnel_images WHERE id = ?", (image_id,)
             ).fetchone()
             if row is None:
-                return None
+                return False
             was_primary = bool(row["is_primary"])
             personnel_id = int(row["personnel_id"])
-            embedding_id: str | None = row["embedding_id"]
-            storage_key: str = row["storage_key"]
             # Delete the image file from disk
-            self._delete_storage_file(storage_key)
+            self._delete_storage_file(row["storage_key"])
             conn.execute("DELETE FROM personnel_images WHERE id = ?", (image_id,))
             # If deleted was primary, promote the oldest remaining image
             if was_primary:
@@ -523,11 +456,7 @@ class PersonnelStore:
                         "UPDATE personnel_images SET is_primary = 1 WHERE id = ?",
                         (oldest["id"],),
                     )
-            return {
-                "embedding_id": embedding_id,
-                "storage_key": storage_key,
-                "personnel_id": personnel_id,
-            }
+            return True
 
     def set_primary_image(self, image_id: int) -> PersonnelImageRecord | None:
         """Atomically set one image as primary, unsetting any other primary for the same personnel."""
@@ -561,41 +490,6 @@ class PersonnelStore:
                 path.unlink()
         except OSError:
             pass
-
-    def get_all_image_info(self, personnel_id: int) -> list[dict[str, str | None]]:
-        """Return (storage_key, embedding_id) for all images of a personnel.
-
-        Used by the DELETE personnel route to clean up storage and vector entries.
-        """
-        with self._lock, self._connection() as conn:
-            rows = conn.execute(
-                "SELECT storage_key, embedding_id FROM personnel_images WHERE personnel_id = ?",
-                (personnel_id,),
-            ).fetchall()
-        return [
-            {"storage_key": row["storage_key"], "embedding_id": row["embedding_id"]}
-            for row in rows
-        ]
-
-    def set_null_personnel_id_for_detections(self, personnel_id: int) -> int:
-        """Set human_logs.personnel_id = NULL to preserve Detection records.
-
-        Returns the number of affected rows.
-        """
-        with self._lock, self._connection() as conn:
-            cursor = conn.execute(
-                "UPDATE human_logs SET personnel_id = NULL WHERE personnel_id = ?",
-                (personnel_id,),
-            )
-            return int(cursor.rowcount)
-
-    def save_image_file(self, personnel_id: int, data: bytes, original_filename: str) -> str:
-        """Public wrapper around _save_image_file."""
-        return self._save_image_file(personnel_id, data, original_filename)
-
-    def delete_storage_file(self, storage_key: str) -> None:
-        """Public wrapper around _delete_storage_file."""
-        self._delete_storage_file(storage_key)
 
     # ── Import / Export ─────────────────────────────────────────────────
 

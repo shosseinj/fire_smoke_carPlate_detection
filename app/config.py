@@ -31,6 +31,30 @@ def _env_int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
+
+
+def _env_first(names: tuple[str, ...], default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value not in {None, ""}:
+            return value
+    return default
+
+
+def _env_int_fallback(primary: str, fallback: str, default: int) -> int:
+    value = _env_first((primary, fallback))
+    return int(value) if value not in {None, ""} else default
+
+
+def _refresh_minutes() -> int:
+    direct = os.getenv("JWT_REFRESH_EXPIRY_MINUTES")
+    if direct not in {None, ""}:
+        return int(direct)
+    legacy_days = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS")
+    if legacy_days not in {None, ""}:
+        return int(legacy_days) * 24 * 60
+    return 10080
+
 def _path(name: str, default: str) -> Path:
     value = Path(os.getenv(name, default)).expanduser()
     return value if value.is_absolute() else (ROOT / value).resolve()
@@ -184,21 +208,6 @@ class Settings:
     face_qdrant_path: Path = _path("FACE_QDRANT_PATH", "data/qdrant")
     face_qdrant_api_key: str | None = os.getenv("FACE_QDRANT_API_KEY") or None
 
-    # Image upload limits for personnel images
-    max_images_per_request: int = _env_int("MAX_IMAGES_PER_REQUEST", 10)
-    max_upload_bytes_per_image: int = _env_int("MAX_UPLOAD_BYTES_PER_IMAGE", 10 * 1024 * 1024)  # 10 MB
-    max_decoded_width: int = _env_int("MAX_DECODED_WIDTH", 4096)
-    max_decoded_height: int = _env_int("MAX_DECODED_HEIGHT", 4096)
-    max_total_decoded_pixels: int = _env_int("MAX_TOTAL_DECODED_PIXELS", 4096 * 4096)
-    supported_image_mime_types: tuple[str, ...] = (
-        "image/jpeg",
-        "image/png",
-        "image/bmp",
-    )
-    supported_image_extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".bmp")
-    # When true, store cropped face instead of original; when false, store original
-    store_cropped_face: bool = _env_bool("STORE_CROPPED_FACE", False)
-
     human_media_queue_size: int = _env_int("HUMAN_MEDIA_QUEUE_SIZE", 256)
     human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 5.0)
     human_video_idle_seconds: float = _env_float("HUMAN_VIDEO_IDLE_SECONDS", 5.0)
@@ -209,14 +218,28 @@ class Settings:
     draw_info: bool = _env_bool("draw_info", True)
     save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)
 
-    # Authentication / JWT
-    jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "change-me-in-production-use-a-strong-random-secret")
+    # Authentication / JWT. Current names take precedence; legacy names are fallbacks.
+    jwt_secret_key: str = str(
+        _env_first(
+            ("JWT_SECRET_KEY", "SECRET_KEY"),
+            "change-me-in-production-use-a-strong-random-secret",
+        )
+    )
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
-    jwt_expiry_minutes: int = _env_int("JWT_EXPIRY_MINUTES", 1440)
-    jwt_refresh_expiry_minutes: int = _env_int("JWT_REFRESH_EXPIRY_MINUTES", 10080)
+    jwt_expiry_minutes: int = _env_int_fallback(
+        "JWT_EXPIRY_MINUTES", "ACCESS_TOKEN_EXPIRE_MINUTES", 1440
+    )
+    jwt_refresh_expiry_minutes: int = _refresh_minutes()
     auth_db_path: Path = _path("AUTH_DB_PATH", "data/auth.sqlite3")
-    auth_default_admin_username: str = os.getenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
-    auth_default_admin_password: str = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "admin123")
+    auth_default_admin_username: str = str(
+        _env_first(("AUTH_DEFAULT_ADMIN_USERNAME", "SUPERUSER_USERNAME"), "admin")
+    )
+    auth_default_admin_password: str = str(
+        _env_first(("AUTH_DEFAULT_ADMIN_PASSWORD", "SUPERUSER_PASSWORD"), "admin123")
+    )
+    auth_default_admin_email: str | None = _env_first(("AUTH_DEFAULT_ADMIN_EMAIL", "SUPERUSER_EMAIL"))
+    auth_login_max_attempts: int = _env_int("AUTH_LOGIN_MAX_ATTEMPTS", 5)
+    auth_login_lockout_minutes: int = _env_int("AUTH_LOGIN_LOCKOUT_MINUTES", 15)
 
 
 settings = Settings()

@@ -1,49 +1,20 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, field_validator
 
 
-# ── Existing schemas ────────────────────────────────────────────────
+VALID_ROLES = frozenset({"admin", "operator", "viewer"})
+LEGACY_ROLE_VALUES = frozenset({"superuser", "admin", "user"})
 
 
 class LoginRequest(BaseModel):
-    """Credentials for login."""
-
-    username: str = Field(min_length=1, max_length=200, description="User login name")
-    password: str = Field(min_length=1, max_length=500, description="User password")
-
-
-class TokenResponse(BaseModel):
-    """Successful login response carrying a JWT access token."""
-
-    access_token: str
-    token_type: str = "bearer"
-    role: str
-
-
-class UserResponse(BaseModel):
-    """Public user profile returned by /api/v1/auth/me."""
-
-    id: int
-    username: str
-    role: str
-    is_active: bool
-    created_at_utc: str
-    email: str | None = None
-
-
-class AuthError(BaseModel):
-    """Standard error detail returned by auth endpoints."""
-
-    detail: str
-
-
-# ── Step 2: Token lifecycle schemas ─────────────────────────────────
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=500)
 
 
 class TokenRequest(BaseModel):
-    """OAuth2-compatible form-login request. Used by /api/v1/auth/token."""
-
     grant_type: str | None = Field(default=None, pattern="password")
     username: str = Field(min_length=1, max_length=200)
     password: str = Field(min_length=1, max_length=500)
@@ -53,150 +24,188 @@ class TokenRequest(BaseModel):
 
 
 class TokenExchangeResponse(BaseModel):
-    """OAuth2-compatible token response with access and refresh tokens."""
-
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in: int
-    refresh_token: str | None = None
+    user_id: int
+    username: str
     role: str
+
+
+class TokenResponse(TokenExchangeResponse):
+    pass
 
 
 class RefreshRequest(BaseModel):
-    """Refresh token request."""
-
-    refresh_token: str = Field(min_length=1, description="Valid refresh token")
+    refresh_token: str = Field(min_length=1)
 
 
-class RefreshResponse(BaseModel):
-    """Response carrying a new access token."""
-
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    role: str
+class RefreshResponse(TokenExchangeResponse):
+    pass
 
 
 class LogoutRequest(BaseModel):
-    """Logout request carrying a refresh token to revoke."""
-
-    refresh_token: str = Field(min_length=1, description="Refresh token to revoke")
+    refresh_token: str = Field(min_length=1)
 
 
 class LogoutResponse(BaseModel):
-    """Confirmation of successful logout."""
-
-    message: str = "Logged out successfully"
+    message: str
 
 
-# ── Step 3: User-creation schemas ───────────────────────────────────
-
-
-class CreateUserRequest(BaseModel):
-    """Create a new user."""
-
-    username: str = Field(
-        min_length=3, max_length=200, pattern=r"^[a-zA-Z0-9_-]+$",
-        description="Unique username (letters, digits, underscores, hyphens)",
-    )
-    password: str = Field(
-        min_length=8, max_length=200,
-        description="Strong password with at least 8 characters",
-    )
-    email: str | None = Field(
-        default=None, max_length=300, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
-        description="Optional email address",
-    )
-    role: str = Field(
-        default="viewer", pattern=r"^(admin|operator|viewer)$",
-        description="User role: admin, operator, or viewer",
-    )
-    is_active: bool = True
-
-
-class CreateUserResponse(BaseModel):
-    """Public user record returned after creation (no password hash)."""
-
+class UserResponse(BaseModel):
     id: int
     username: str
     role: str
     is_active: bool
     created_at_utc: str
+    created_at: str
     email: str | None = None
+    full_name: str | None = None
+    last_login_utc: str | None = None
+    last_login: str | None = None
 
 
-class DuplicateError(BaseModel):
-    """Error response for duplicate username or email."""
-
+class AuthError(BaseModel):
     detail: str
 
 
-# ── Step 4: User-management schemas ─────────────────────────────────
+class CreateUserRequest(BaseModel):
+    """Combined current and legacy create-user request."""
+
+    username: str = Field(
+        min_length=3,
+        max_length=200,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    password: str = Field(min_length=8, max_length=72)
+    email: str | None = Field(
+        default=None,
+        max_length=300,
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+    )
+    role: str = Field(default="viewer", max_length=50)
+    is_active: bool = True
+    confirm_password: str | None = Field(default=None, max_length=72)
+    full_name: str | None = Field(default=None, max_length=200)
+
+
+class CreateUserResponse(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    role: str
+    is_active: bool
+    created_at_utc: str
+    email: str | None = None
+    full_name: str | None = None
+    message: str | None = None
+
+
+class DuplicateError(BaseModel):
+    detail: str
 
 
 class UserUpdateRequest(BaseModel):
-    """Fields that can be updated on a user."""
-
     username: str | None = Field(
-        default=None, min_length=3, max_length=200, pattern=r"^[a-zA-Z0-9_-]+$",
+        default=None,
+        min_length=3,
+        max_length=200,
+        pattern=r"^[a-zA-Z0-9_-]+$",
     )
     email: str | None = Field(
-        default=None, max_length=300, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        default=None,
+        max_length=300,
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
     )
     is_active: bool | None = None
+    full_name: str | None = Field(default=None, max_length=200)
 
 
 class RoleChangeRequest(BaseModel):
-    """Request to change a user's role."""
+    role: str = Field(pattern=r"^(admin|operator|viewer)$")
 
-    role: str = Field(
-        pattern=r"^(admin|operator|viewer)$",
-        description="New role: admin, operator, or viewer",
-    )
+
+class LegacyRoleChangeResponse(UserResponse):
+    user_id: int
+    message: str
 
 
 class PaginatedUserResponse(BaseModel):
-    """Paginated list of users."""
-
     users: list[UserResponse]
     total: int
     offset: int
     limit: int
 
 
-# ── Step 5: Password-change schemas ─────────────────────────────────
-
-
 class PasswordChangeRequest(BaseModel):
-    """Change the current user's password."""
-
-    current_password: str = Field(
-        min_length=1, max_length=500,
-        description="Current password for verification",
-    )
-    new_password: str = Field(
-        min_length=8, max_length=200,
-        description="New password (at least 8 characters)",
-    )
-    confirm_password: str = Field(
-        min_length=1, max_length=200,
-        description="Confirm new password (must match new_password)",
-    )
+    current_password: str = Field(min_length=1, max_length=500)
+    new_password: str = Field(min_length=8, max_length=72)
+    confirm_password: str = Field(min_length=1, max_length=72)
 
     @field_validator("confirm_password")
     @classmethod
-    def passwords_match(cls, v: str, info) -> str:
-        if "new_password" in info.data and v != info.data["new_password"]:
+    def passwords_match(cls, value: str, info) -> str:
+        if info.data.get("new_password") is not None and value != info.data["new_password"]:
             raise ValueError("Passwords do not match")
-        return v
+        return value
+
+
+class LegacyPasswordChangeRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=500)
+    new_password: str = Field(min_length=8, max_length=72)
+    confirm_new_password: str = Field(min_length=1, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        errors = validate_legacy_password_strength(value)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return value
+
+    @field_validator("confirm_new_password")
+    @classmethod
+    def passwords_match(cls, value: str, info) -> str:
+        if info.data.get("new_password") is not None and value != info.data["new_password"]:
+            raise ValueError("رمز عبور جدید و تایید آن یکسان نیست")
+        return value
 
 
 class PasswordChangeResponse(BaseModel):
-    """Confirmation of successful password change."""
-
-    message: str = "Password changed successfully"
+    message: str
 
 
-# ── Valid roles ─────────────────────────────────────────────────────
+def validate_legacy_password_strength(password: str) -> list[str]:
+    errors: list[str] = []
+    if len(password) < 8:
+        errors.append("رمز عبور باید حداقل ۸ کاراکتر باشد")
+    if len(password.encode("utf-8")) > 72:
+        errors.append("رمز عبور باید حداکثر ۷۲ بایت باشد")
+    if not re.search(r"[A-Z]", password):
+        errors.append("رمز عبور باید حداقل یک حرف بزرگ داشته باشد")
+    if not re.search(r"[a-z]", password):
+        errors.append("رمز عبور باید حداقل یک حرف کوچک داشته باشد")
+    if not re.search(r"\d", password):
+        errors.append("رمز عبور باید حداقل یک عدد داشته باشد")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        errors.append("رمز عبور باید حداقل یک کاراکتر ویژه داشته باشد")
 
-VALID_ROLES = frozenset({"admin", "operator", "viewer"})
+    lowered = password.lower()
+    for pattern in (
+        "password",
+        "123456",
+        "qwerty",
+        "abc123",
+        "admin",
+        "welcome",
+        "letmein",
+        "monkey",
+    ):
+        if pattern in lowered:
+            errors.append(f"رمز عبور شامل الگوی ضعیف '{pattern}' است")
+            break
+
+    if re.search(r"(.)\1{2,}", password):
+        errors.append("رمز عبور شامل کاراکترهای تکراری است")
+    return errors

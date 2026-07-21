@@ -640,7 +640,7 @@ docker run --rm -it `
   -e VIDEO_INGESTION_ENABLED=true `
   -e PROCESSOR_MODE=real `
   -v "${PWD}\:/workspace/" `
-  merged-video-ai-router:v6
+  merged-video-ai-router:v9
 ```
 
 ```

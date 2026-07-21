@@ -88,8 +88,6 @@ class FaceVectorStore(Protocol):
 
     def delete_person(self, person: str) -> int: ...
 
-    def delete_point(self, point_id: str) -> bool: ...
-
     def status(self) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
@@ -663,15 +661,6 @@ class QdrantFaceStore:
             )
         return count
 
-    def delete_point(self, point_id: str) -> bool:
-        with self.lock:
-            self.client.delete(
-                collection_name=self.collection,
-                points_selector=[point_id],
-                wait=True,
-            )
-        return True
-
     def status(self) -> dict[str, Any]:
         with self.lock:
             count = int(self.client.count(collection_name=self.collection).count)
@@ -781,14 +770,6 @@ class SqliteFaceStore:
             )
             self.connection.commit()
             return int(cursor.rowcount)
-
-    def delete_point(self, point_id: str) -> bool:
-        with self.lock:
-            cursor = self.connection.execute(
-                "DELETE FROM face_embeddings WHERE id = ?", (point_id,)
-            )
-            self.connection.commit()
-            return int(cursor.rowcount) > 0
 
     def status(self) -> dict[str, Any]:
         with self.lock:

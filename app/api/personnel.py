@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import logging
 
+import cv2
+import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.config import settings
 from app.core.auth import require_role
-from app.core.personnel_image_service import (
-    ImageProcessResult,
-    PersonnelImageProcessor,
-    validate_uploaded_image,
-)
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -90,25 +86,6 @@ class PersonnelImageResponse(BaseModel):
     url: str = ""
 
 
-class PersonnelImageUploadResult(BaseModel):
-    """Result of processing one uploaded image."""
-
-    filename: str
-    success: bool
-    image: PersonnelImageResponse | None = None
-    failure_code: str | None = None
-    failure_reason: str | None = None
-
-
-class PersonnelBatchUploadResponse(BaseModel):
-    """Response for the batch image upload endpoint."""
-
-    personnel: PersonnelWithImagesResponse
-    results: list[PersonnelImageUploadResult]
-    total_success: int
-    total_failed: int
-
-
 def _personnel_to_response(p: PersonnelRecord) -> PersonnelResponse:
     return PersonnelResponse(
         id=p.id,
@@ -124,6 +101,7 @@ def _personnel_to_response(p: PersonnelRecord) -> PersonnelResponse:
 
 
 def _image_to_response(img: PersonnelImageRecord) -> PersonnelImageResponse:
+    from app.config import settings
     base_url = getattr(settings, "external_base_url", "")
     url = f"{base_url}/media/{img.storage_key}"
     return PersonnelImageResponse(
@@ -135,38 +113,6 @@ def _image_to_response(img: PersonnelImageRecord) -> PersonnelImageResponse:
         uploaded_at_utc=img.uploaded_at_utc,
         embedding_id=img.embedding_id,
         url=url,
-    )
-
-
-def _personnel_with_images_response(
-    p: PersonnelRecord,
-    images: list[PersonnelImageRecord],
-) -> PersonnelWithImagesResponse:
-    base_url = getattr(settings, "external_base_url", "")
-    enriched_images: list[dict] = []
-    for img in images:
-        img_dict = {
-            "id": img.id,
-            "personnel_id": img.personnel_id,
-            "storage_key": img.storage_key,
-            "description": img.description,
-            "is_primary": img.is_primary,
-            "uploaded_at_utc": img.uploaded_at_utc,
-            "embedding_id": img.embedding_id,
-            "url": f"{base_url}/media/{img.storage_key}",
-        }
-        enriched_images.append(img_dict)
-    return PersonnelWithImagesResponse(
-        id=p.id,
-        fname=p.fname,
-        lname=p.lname,
-        national_code=p.national_code,
-        employee_type=p.employee_type,
-        degree=p.degree,
-        last_seen=p.last_seen,
-        created_at_utc=p.created_at_utc,
-        updated_at_utc=p.updated_at_utc,
-        images=enriched_images,
     )
 
 
@@ -343,45 +289,16 @@ def update_personnel(
     return _personnel_to_response(record)
 
 
-@router.delete(
-    "/{personnel_id}",
-    summary="Delete a personnel record",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
+@router.delete("/{personnel_id}", summary="Delete a personnel record")
 def delete_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-) -> Response:
-    store = _store(runtime)
-
-    # 1. Collect image info for vector cleanup before deleting
-    image_info_list = store.get_all_image_info(personnel_id)
-    embedding_ids: list[str] = []
-    for info in image_info_list:
-        eid = info.get("embedding_id")
-        if eid is not None:
-            embedding_ids.append(str(eid))
-
-    # 2. Preserve detection records by setting personnel_id to NULL
-    store.set_null_personnel_id_for_detections(personnel_id)
-
-    # 3. Delete personnel record (cascade deletes images and storage files)
-    deleted = store.delete(personnel_id)
+) -> dict:
+    deleted = _store(runtime).delete(personnel_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
-
-    # 4. Clean up vector store entries
-    if embedding_ids:
-        face_processor = _face_processor(runtime)
-        if face_processor is not None:
-            for point_id in embedding_ids:
-                try:
-                    face_processor._vector_store.delete_point(point_id)
-                except Exception as exc:
-                    LOGGER.warning("Vector cleanup failed for point %s: %s", point_id, exc)
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return {"deleted": True, "personnel_id": personnel_id}
 
 
 # ── Personnel Image endpoints ───────────────────────────────────────
@@ -409,200 +326,63 @@ def list_personnel_images(
 
 @router.post(
     "/{personnel_id}/images",
-    summary="Upload one or more face images for a personnel record",
+    summary="Upload a face image for a personnel record",
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_personnel_image(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-    files: list[UploadFile] = File(...),
-    enable_cropping: bool = Form(default=False),
-    is_primary: bool | None = Form(default=None),
-) -> PersonnelBatchUploadResponse:
+    file: UploadFile = File(...),
+    description: str | None = Form(default=None),
+) -> PersonnelImageResponse:
     store = _store(runtime)
-
-    # 1. Verify personnel exists
+    # Verify personnel exists
     person = store.get(personnel_id)
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
 
-    # 2. Validate upload count
-    if not files:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="At least one image file is required",
-        )
-    if len(files) > settings.max_images_per_request:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Maximum {settings.max_images_per_request} images per request",
-        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
 
+    # Save image to disk first
+    storage_key = store._save_image_file(personnel_id, raw, file.filename or "image.jpg")
+
+    embedding_id: str | None = None
     face_processor = _face_processor(runtime)
-    image_processor = PersonnelImageProcessor(face_processor)
-
-    # 3. Track cleanup data using scalar values (not ORM objects)
-    cleanup_data: list[dict] = []  # each: {storage_key, vector_point_id, image_id, filename}
-    successful_records: list[PersonnelImageRecord] = []
-    upload_results: list[PersonnelImageUploadResult] = []
-    has_unrecoverable_error = False
-
-    # 4. Process each file
-    for file in files:
-        raw = await file.read()
-        safe_name = file.filename or "image"
-
-        # 4a. Validate the uploaded image
-        validation = validate_uploaded_image(raw, safe_name, file.content_type)
-        if not validation.valid:
-            upload_results.append(PersonnelImageUploadResult(
-                filename=safe_name,
-                success=False,
-                failure_code=validation.failure_code,
-                failure_reason=validation.failure_message,
-            ))
-            continue
-
-        # 4b. Save to storage (get storage_key before DB record)
-        try:
-            storage_key = store._save_image_file(personnel_id, validation.data, safe_name)
-        except OSError as exc:
-            LOGGER.error("Storage write failed for %s: %s", safe_name, exc)
-            upload_results.append(PersonnelImageUploadResult(
-                filename=safe_name,
-                success=False,
-                failure_code="storage_error",
-                failure_reason="Failed to save image file",
-            ))
-            continue
-        cleanup_entry: dict = {"storage_key": storage_key, "vector_point_id": None, "image_id": None, "filename": safe_name}
-
-        # 4c. Process face (detection, cropping, embedding, vector enroll)
-        process_result: ImageProcessResult | None = None
-        try:
-            from starlette.concurrency import run_in_threadpool
-            process_result = await run_in_threadpool(
-                image_processor.process_image,
-                validation.data,
-                person_name=f"{person.fname} {person.lname}",
-                ref_img_id=f"personnel_{personnel_id}",
-                enable_cropping=enable_cropping,
-            )
-        except Exception as exc:
-            LOGGER.error("Face processing error for %s: %s", safe_name, exc)
-            process_result = ImageProcessResult(
-                success=False,
-                failure_code="processing_error",
-                failure_message=f"Unexpected error: {type(exc).__name__}",
-            )
-
-        if process_result is None or not process_result.success:
-            # Clean up storage file, skip vector cleanup (no vector was written)
-            cleanup_entry["storage_key"] = storage_key  # already set
-            store._delete_storage_file(storage_key)
-            upload_results.append(PersonnelImageUploadResult(
-                filename=safe_name,
-                success=False,
-                failure_code=process_result.failure_code if process_result else "unknown",
-                failure_reason=process_result.failure_message if process_result else "Unknown processing error",
-            ))
-            continue
-
-        # 4d. Determine which bytes to store (original vs cropped)
-        if enable_cropping and process_result.processed_bytes is not None:
-            stored_bytes = process_result.processed_bytes
-        else:
-            stored_bytes = validation.data
-
-        # Re-save with processed bytes if cropping changed them
-        if stored_bytes is not validation.data:
-            # Delete original, save processed
-            store._delete_storage_file(storage_key)
+    if face_processor is not None:
+        # Try face enrollment
+        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is not None:
             try:
-                storage_key = store._save_image_file(personnel_id, stored_bytes, safe_name)
-                cleanup_entry["storage_key"] = storage_key
-            except OSError as exc:
-                LOGGER.error("Storage write for cropped image failed: %s", exc)
-                store._delete_storage_file(storage_key)
-                upload_results.append(PersonnelImageUploadResult(
-                    filename=safe_name,
-                    success=False,
-                    failure_code="storage_error",
-                    failure_reason="Failed to save cropped image",
-                ))
-                continue
+                enroll_result = await run_in_threadpool(
+                    face_processor.enroll,
+                    image,
+                    person=f"{person.fname} {person.lname}",
+                    ref_img_id=f"personnel_{personnel_id}",
+                )
+                embedding_id = enroll_result.get("point_id")
+            except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
+                LOGGER.warning("Face enrollment failed for personnel %s: %s", personnel_id, exc)
+                # Non-fatal — image was saved even without face enrollment
+        else:
+            LOGGER.warning("Could not decode uploaded image for face enrollment")
 
-        vector_point_id = process_result.vector_point_id
-        cleanup_entry["vector_point_id"] = vector_point_id
-
-        # 4e. Create the image record (without commit — we batch below)
-        try:
-            img_record = store.create_image(
-                personnel_id=personnel_id,
-                storage_key=storage_key,
-                description=None,
-                embedding_id=vector_point_id,
-                is_primary=is_primary,
-            )
-        except ValueError as exc:
-            LOGGER.warning("DB create_image failed for %s: %s", safe_name, exc)
-            # Cleanup: storage + vector
-            store._delete_storage_file(storage_key)
-            if vector_point_id is not None and face_processor is not None:
-                try:
-                    face_processor._vector_store.delete_point(vector_point_id)
-                except Exception as exc2:
-                    LOGGER.warning("Vector cleanup failed for point %s: %s", vector_point_id, exc2)
-            upload_results.append(PersonnelImageUploadResult(
-                filename=safe_name,
-                success=False,
-                failure_code="db_error",
-                failure_reason="Failed to create image record",
-            ))
-            continue
-
-        cleanup_entry["image_id"] = img_record.id
-        cleanup_data.append(cleanup_entry)
-        successful_records.append(img_record)
-        upload_results.append(PersonnelImageUploadResult(
-            filename=safe_name,
-            success=True,
-            image=_image_to_response(img_record),
-        ))
-
-    # 5. Handle all-failed case
-    if not successful_records:
-        # Clean up any remaining cleanup data (should be empty here because we
-        # cleaned up per-image failures already)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "message": "All uploaded files failed processing",
-                "results": [
-                    {"filename": r.filename, "failure_code": r.failure_code, "failure_reason": r.failure_reason}
-                    for r in upload_results
-                ],
-            },
+    # Create image record
+    try:
+        img_record = store.create_image(
+            personnel_id=personnel_id,
+            storage_key=storage_key,
+            description=description,
+            embedding_id=embedding_id,
         )
+    except ValueError as exc:
+        # Rollback file save
+        store._delete_storage_file(storage_key)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
-    # 6. Reload personnel with all images
-    all_images = store.list_images(personnel_id)
-    person_reloaded = store.get(personnel_id)
-    if person_reloaded is None:
-        # Should not happen, but handle defensively
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Personnel record disappeared")
-
-    personnel_resp = _personnel_with_images_response(person_reloaded, all_images)
-    total_success = sum(1 for r in upload_results if r.success)
-    total_failed = len(upload_results) - total_success
-
-    return PersonnelBatchUploadResponse(
-        personnel=personnel_resp,
-        results=upload_results,
-        total_success=total_success,
-        total_failed=total_failed,
-    )
+    return _image_to_response(img_record)
 
 
 # ── Personnel Images (standalone) ────────────────────────────────────
@@ -628,27 +408,16 @@ def get_personnel_image(
     "/images/{image_id}",
     summary="Delete a personnel image",
     tags=["personnel-images"],
-    status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_personnel_image(
     image_id: int,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-) -> Response:
-    store = _store(runtime)
-    cleanup_info = store.delete_image(image_id)
-    if cleanup_info is None:
+) -> dict:
+    deleted = _store(runtime).delete_image(image_id)
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    # Clean up vector store if an embedding exists
-    embedding_id = cleanup_info.get("embedding_id")
-    if embedding_id is not None:
-        face_processor = _face_processor(runtime)
-        if face_processor is not None:
-            try:
-                face_processor._vector_store.delete_point(embedding_id)
-            except Exception as exc:
-                LOGGER.warning("Vector cleanup failed for point %s: %s", embedding_id, exc)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return {"deleted": True, "image_id": image_id}
 
 
 @router.put(

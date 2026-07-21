@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -15,18 +17,35 @@ from app.core.auth_store import AuthStore, UserRecord
 LOGGER = logging.getLogger("uvicorn.error")
 
 _bearer_scheme = HTTPBearer(auto_error=False)
-
-# Global auth store instance — initialised once at runtime build time.
 _auth_store: AuthStore | None = None
+
+ROLE_ALIASES = {
+    "superuser": "admin",
+    "admin": "admin",
+    "operator": "operator",
+    "user": "viewer",
+    "viewer": "viewer",
+}
+CANONICAL_ROLES = frozenset({"admin", "operator", "viewer"})
+
+
+def normalize_role(role: str | None) -> str:
+    """Map legacy role vocabulary to the canonical target roles."""
+    normalized = ROLE_ALIASES.get((role or "").strip().lower())
+    return normalized or (role or "").strip().lower()
 
 
 def get_auth_store() -> AuthStore:
     global _auth_store
     if _auth_store is None:
+        # The project already uses DATABASE_PATH as its canonical shared SQLite file.
+        # Do not switch silently to AUTH_DB_PATH and create a second users database.
         _auth_store = AuthStore(settings.database_path)
         _auth_store.seed_default_admin(
             username=settings.auth_default_admin_username,
             password=settings.auth_default_admin_password,
+            role="admin",
+            email=settings.auth_default_admin_email,
         )
     return _auth_store
 
@@ -35,11 +54,20 @@ def get_auth_store() -> AuthStore:
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    encoded = password.encode("utf-8")
+    if len(encoded) > 72:
+        raise ValueError("Password exceeds bcrypt's 72-byte limit")
+    return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, stored_hash: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), stored_hash.encode("utf-8"))
+    try:
+        encoded = plain.encode("utf-8")
+        if len(encoded) > 72:
+            return False
+        return bcrypt.checkpw(encoded, stored_hash.encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
 
 
 # ── JWT utilities ───────────────────────────────────────────────────
@@ -52,28 +80,23 @@ def _make_jwt_payload(
     token_type: str,
     expires_minutes: int | None = None,
 ) -> dict[str, Any]:
-    if token_type == "access":
-        if expires_minutes is None:
-            expires_minutes = settings.jwt_expiry_minutes
-    else:
-        if expires_minutes is None:
-            expires_minutes = settings.jwt_refresh_expiry_minutes
+    if expires_minutes is None:
+        expires_minutes = (
+            settings.jwt_expiry_minutes
+            if token_type == "access"
+            else settings.jwt_refresh_expiry_minutes
+        )
     now = datetime.now(timezone.utc)
-    payload: dict[str, Any] = {
+    return {
         "sub": str(user_id),
+        "user_id": user_id,
         "username": username,
-        "role": role,
+        "role": normalize_role(role),
         "iat": now,
         "exp": now + timedelta(minutes=expires_minutes),
         "type": token_type,
-        "jti": _generate_jti(),
+        "jti": str(uuid.uuid4()),
     }
-    return payload
-
-
-def _generate_jti() -> str:
-    import uuid
-    return str(uuid.uuid4())
 
 
 def create_access_token(
@@ -82,7 +105,6 @@ def create_access_token(
     role: str,
     expires_minutes: int | None = None,
 ) -> str:
-    """Create a signed JWT access token."""
     payload = _make_jwt_payload(user_id, username, role, "access", expires_minutes)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -93,72 +115,92 @@ def create_refresh_token(
     role: str,
     expires_minutes: int | None = None,
 ) -> str:
-    """Create a signed JWT refresh token."""
     payload = _make_jwt_payload(user_id, username, role, "refresh", expires_minutes)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> dict[str, Any] | None:
-    """Decode and validate a JWT access token. Returns payload or None."""
+def _decode_token(token: str, expected_type: str) -> dict[str, Any] | None:
     try:
         payload = jwt.decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
         )
-        if payload.get("type") != "access":
-            return None
-        return payload
     except jwt.ExpiredSignatureError:
-        LOGGER.warning("JWT token expired")
+        LOGGER.warning("JWT %s token expired", expected_type)
         return None
     except jwt.InvalidTokenError as exc:
-        LOGGER.warning("Invalid JWT token: %s", exc)
+        LOGGER.warning("Invalid JWT %s token: %s", expected_type, exc)
         return None
+
+    if payload.get("type") != expected_type:
+        return None
+    payload["role"] = normalize_role(payload.get("role"))
+    return payload
+
+
+def decode_access_token(token: str) -> dict[str, Any] | None:
+    return _decode_token(token, "access")
+
+
+def token_revocation_id(token: str, payload: dict[str, Any]) -> str:
+    """Use jti when present and a stable non-secret fingerprint for legacy tokens."""
+    jti = payload.get("jti")
+    if isinstance(jti, str) and jti.strip():
+        return jti
+    return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def decode_refresh_token(token: str) -> dict[str, Any] | None:
-    """Decode and validate a JWT refresh token. Returns payload or None."""
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm],
-        )
-        if payload.get("type") != "refresh":
-            return None
-        store = get_auth_store()
-        if store.is_token_revoked(payload.get("jti", "")):
-            LOGGER.warning("Refresh token has been revoked")
-            return None
-        return payload
-    except jwt.ExpiredSignatureError:
-        LOGGER.warning("JWT refresh token expired")
+    payload = _decode_token(token, "refresh")
+    if payload is None:
         return None
-    except jwt.InvalidTokenError as exc:
-        LOGGER.warning("Invalid JWT refresh token: %s", exc)
+    if get_auth_store().is_token_revoked(token_revocation_id(token, payload)):
+        LOGGER.warning("Refresh token has been revoked")
         return None
+    return payload
 
 
 def revoke_refresh_token(token: str) -> bool:
-    """Revoke a refresh token so it cannot be used again."""
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm],
-        )
-        if payload.get("type") != "refresh":
-            return False
-        store = get_auth_store()
-        exp_dt = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
-        store.revoke_token(
-            jti=payload.get("jti", ""),
-            expires_at_utc=exp_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-        return True
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+    """Persistently revoke a valid refresh token; repeated calls remain idempotent."""
+    payload = _decode_token(token, "refresh")
+    if payload is None:
         return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    get_auth_store().revoke_token(token_revocation_id(token, payload), expires_at)
+    return True
+
+
+def resolve_user_from_payload(payload: dict[str, Any]) -> UserRecord | None:
+    """Resolve current storage identity from current or legacy JWT claim shapes."""
+    store = get_auth_store()
+
+    user_id_claim = payload.get("user_id")
+    try:
+        if user_id_claim not in (None, ""):
+            user = store.get_user_by_id(int(user_id_claim))
+            if user is not None:
+                return user
+    except (TypeError, ValueError):
+        pass
+
+    subject = payload.get("sub")
+    try:
+        if subject not in (None, ""):
+            user = store.get_user_by_id(int(subject))
+            if user is not None:
+                return user
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(subject, str) and subject:
+        return store.get_user_by_username(subject)
+    return None
 
 
 # ── FastAPI dependencies ────────────────────────────────────────────
@@ -167,11 +209,6 @@ def revoke_refresh_token(token: str) -> bool:
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> UserRecord:
-    """FastAPI dependency: extract and validate Bearer token, return the user.
-
-    Raises 401 if the token is missing, invalid, or expired.
-    Raises 403 if the user account is disabled.
-    """
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -185,23 +222,7 @@ def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_id_str: str | None = payload.get("sub")
-    if user_id_str is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        user_id = int(user_id_str)
-    except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token subject",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    store = get_auth_store()
-    user = store.get_user_by_id(user_id)
+    user = resolve_user_from_payload(payload)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -219,40 +240,29 @@ def get_current_user(
 def get_optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> UserRecord | None:
-    """FastAPI dependency: return the authenticated user or None if no valid token."""
     if credentials is None:
         return None
     payload = decode_access_token(credentials.credentials)
     if payload is None:
         return None
-    user_id_str = payload.get("sub")
-    if user_id_str is None:
-        return None
-    try:
-        user_id = int(user_id_str)
-    except (ValueError, TypeError):
-        return None
-    store = get_auth_store()
-    user = store.get_user_by_id(user_id)
+    user = resolve_user_from_payload(payload)
     if user is None or not user.is_active:
         return None
     return user
 
 
 def require_role(required_role: str):
-    """Factory: return a dependency that enforces a minimum role.
-
-    Role hierarchy: admin > operator > viewer.
-    """
-    _ROLE_HIERARCHY = {"admin": 3, "operator": 2, "viewer": 1}
+    """Return a dependency enforcing the canonical admin > operator > viewer hierarchy."""
+    hierarchy = {"admin": 3, "operator": 2, "viewer": 1}
+    canonical_required = normalize_role(required_role)
 
     def _role_checker(current_user: UserRecord = Depends(get_current_user)) -> UserRecord:
-        user_level = _ROLE_HIERARCHY.get(current_user.role, 0)
-        required_level = _ROLE_HIERARCHY.get(required_role, 0)
+        user_level = hierarchy.get(normalize_role(current_user.role), 0)
+        required_level = hierarchy.get(canonical_required, 0)
         if user_level < required_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{required_role}' or higher required",
+                detail=f"Role '{canonical_required}' or higher required",
             )
         return current_user
 
