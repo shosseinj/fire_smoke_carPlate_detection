@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    ".opencode/instructions/project-orchestration.md"
+  ],
+  "watcher": {
+    "ignore": [
+      ".agentic/reports/**",
+      ".agentic/tmp/**"
+    ]
+  }
+}

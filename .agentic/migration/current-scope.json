@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "migration_mode": "PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY",
+  "run_id": null,
+  "created_at": null,
+  "user_prompt": null,
+  "selected_apps": [],
+  "selected_routes": [],
+  "selected_catalog_rows": [],
+  "selected_options_or_behaviors": [],
+  "prompt_enrichment": [],
+  "confirmed_specification": [],
+  "target_convention_inferences": [],
+  "safe_assumptions": [],
+  "missing_critical_details": [],
+  "explicit_exclusions": [],
+  "resolved_work_items": [],
+  "allowed_dependency_changes": [],
+  "out_of_scope_items": [],
+  "status": "NO_ACTIVE_SCOPE"
+}

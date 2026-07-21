@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "project_name": null,
+  "initialized": false,
+  "last_updated": null,
+  "verified_commands": {
+    "install": [],
+    "build": [],
+    "lint": [],
+    "static": [],
+    "test": [],
+    "deploy": [],
+    "runtime": [],
+    "rollback": []
+  },
+  "critical_sections": [],
+  "runtime_validation": {
+    "available": null,
+    "representative_input": null,
+    "last_status": "NOT_TESTED"
+  },
+  "known_blockers": [],
+  "notes": []
+}

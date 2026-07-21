@@ -13,3 +13,6 @@ output/
 *.sqlite3-wal
 *.jpg
 *.tar
+# Agentic evaluation outputs
+.agentic/reports/
+.agentic/tmp/
