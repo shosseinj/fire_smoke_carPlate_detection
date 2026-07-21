@@ -35,6 +35,7 @@ class TaskWorker:
         max_wait_ms: float,
         result_callback: Callable[[FramePacket, TaskResult], None] | None = None,
         result_observer: Callable[[FramePacket, TaskResult], None] | None = None,
+        location_observer: Callable[[FramePacket, TaskResult], None] | None = None,
     ) -> None:
         self.processor = processor
         self.result_store = result_store
@@ -42,6 +43,7 @@ class TaskWorker:
         self.max_wait_seconds = max(0.0, max_wait_ms / 1000.0)
         self.result_callback = result_callback
         self.result_observer = result_observer
+        self.location_observer = location_observer
         self.buffer = LatestPerSourceBuffer()
         self.counters = WorkerCounters()
         self._thread: threading.Thread | None = None
@@ -84,6 +86,11 @@ class TaskWorker:
                             self.result_observer(packet, result)
                         except Exception:
                             LOGGER.exception("Result observer failed")
+                    if self.location_observer is not None:
+                        try:
+                            self.location_observer(packet, result)
+                        except Exception:
+                            LOGGER.exception("Location observer failed")
                     if self.result_callback is not None:
                         try:
                             self.result_callback(packet, result)

@@ -22,6 +22,7 @@ from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
 from app.api.personnel import router as personnel_router
+from app.api.locations import router as locations_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -96,6 +97,10 @@ OPENAPI_TAGS = [
         "name": "personnel-images",
         "description": "Standalone personnel image operations: retrieve, delete, set primary image.",
     },
+    {
+        "name": "locations",
+        "description": "Hierarchical location management: buildings, sections, rooms with polygon zones, camera assignment, personnel room access, and detection-room matching.",
+    },
 ]
 
 
@@ -133,6 +138,7 @@ app.include_router(fire_smoke_logs_router)
 app.include_router(faces_router)
 app.include_router(humans_router)
 app.include_router(personnel_router)
+app.include_router(locations_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 

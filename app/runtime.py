@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from app.config import Settings, settings
 from app.core.result_store import ResultStore
@@ -18,10 +19,11 @@ from app.core.model_management import (
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
+from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
-from app.core.types import TaskName
+from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
@@ -56,6 +58,7 @@ class Runtime:
     face_quality_settings: FaceQualitySettingsStore
     face_processor: BatchProcessor
     personnel_store: PersonnelStore
+    location_store: LocationStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -151,6 +154,11 @@ class Runtime:
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
         value["human_logs"] = self.human_logs.status()
         value["personnel_count"] = self.personnel_store.count()
+        value["location_counts"] = {
+            "buildings": self.location_store.count_buildings(),
+            "sections": self.location_store.count_sections(),
+            "rooms": self.location_store.count_rooms(),
+        }
         return value
 
 
@@ -270,6 +278,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         app_settings.plate_log_db_path,
         app_settings.saved_media_path,
     )
+    location_store = LocationStore(
+        app_settings.plate_log_db_path,
+    )
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
@@ -357,6 +368,97 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")
 
+    # ── Location observer: polygon-based detection-to-room matching ──
+
+    def _build_location_observer(
+        ls: LocationStore,
+        reg: SourceRegistry,
+    ) -> Callable[[FramePacket, TaskResult], None]:
+        """Return a location_observer that matches detected objects to room polygons."""
+        def location_observer(packet: FramePacket, result: TaskResult) -> None:
+            if result.error:
+                return
+            if result.task not in (
+                TaskName.FACE_RECOGNITION,
+                TaskName.PLATE_RECOGNITION,
+                TaskName.FIRE_SMOKE,
+            ):
+                return
+            source_id = result.source_id
+            frame_index = result.frame_index
+            if not source_id:
+                return
+            # Resolve section_id from camera
+            cam = reg.get(source_id)
+            if cam is None:
+                return
+            section_id = cam.metadata.get("section_id") if cam.metadata else None
+            if section_id is None:
+                return
+            detections: list[dict[str, object]] = []
+
+            if result.task == TaskName.FACE_RECOGNITION:
+                faces = result.data.get("faces", [])
+                for face in faces:
+                    bbox = face.get("bbox")
+                    if bbox and len(bbox) >= 4:
+                        cx = (bbox[0] + bbox[2]) / 2.0
+                        cy = (bbox[1] + bbox[3]) / 2.0
+                        detections.append({
+                            "cx": cx,
+                            "cy": cy,
+                            "personnel_id": face.get("personnel_id") or face.get("person"),
+                            "detection_event_id": frame_index,
+                        })
+            elif result.task == TaskName.PLATE_RECOGNITION:
+                plates = result.data.get("plates", [])
+                for plate in plates:
+                    bbox = plate.get("bbox")
+                    if bbox and len(bbox) >= 4:
+                        cx = (bbox[0] + bbox[2]) / 2.0
+                        cy = (bbox[1] + bbox[3]) / 2.0
+                        detections.append({
+                            "cx": cx,
+                            "cy": cy,
+                            "personnel_id": None,
+                            "detection_event_id": frame_index,
+                        })
+            elif result.task == TaskName.FIRE_SMOKE:
+                tracks = result.data.get("tracks", [])
+                for track in tracks:
+                    bbox = track.get("bbox")
+                    if bbox and len(bbox) >= 4:
+                        cx = (bbox[0] + bbox[2]) / 2.0
+                        cy = (bbox[1] + bbox[3]) / 2.0
+                        detections.append({
+                            "cx": cx,
+                            "cy": cy,
+                            "personnel_id": None,
+                            "detection_event_id": frame_index,
+                        })
+
+            for det in detections:
+                try:
+                    ls.match_detection_to_rooms(
+                        section_id=section_id,
+                        detection_type=result.task.value,
+                        detection_event_id=det["detection_event_id"],
+                        bbox_center_x=det["cx"],
+                        bbox_center_y=det["cy"],
+                        personnel_id=det["personnel_id"],
+                        camera_id=source_id,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Location matching failed: source=%s task=%s",
+                        source_id,
+                        result.task.value,
+                    )
+
+        return location_observer
+
+    location_obs = _build_location_observer(location_store, registry)
+
     workers = {
         TaskName.FIRE_SMOKE: TaskWorker(
             processor=fire_processor,
@@ -365,6 +467,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             max_wait_ms=app_settings.fire_max_wait_ms,
             result_callback=broadcast.publish_result,
             result_observer=fire_smoke_logs.observe_result,
+            location_observer=location_obs,
         ),
         TaskName.PLATE_RECOGNITION: TaskWorker(
             processor=plate_processor,
@@ -373,6 +476,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             max_wait_ms=app_settings.plate_max_wait_ms,
             result_callback=broadcast.publish_result,
             result_observer=plate_logs.insert_result,
+            location_observer=location_obs,
         ),
         TaskName.FACE_RECOGNITION: TaskWorker(
             processor=face_processor,
@@ -381,6 +485,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             max_wait_ms=app_settings.face_max_wait_ms,
             result_callback=broadcast.publish_result,
             result_observer=human_logs.observe_result,
+            location_observer=location_obs,
         ),
     }
     router = TaskRouter(
@@ -435,5 +540,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         face_quality_settings=face_quality_settings,
         face_processor=face_processor,
         personnel_store=personnel_store,
+        location_store=location_store,
         video_ingestor=video_ingestor,
     )

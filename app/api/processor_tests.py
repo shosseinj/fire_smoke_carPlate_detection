@@ -11,6 +11,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.processors.fire_smoke import FireSmokeProcessor
@@ -486,6 +487,227 @@ async def personnel_smoke_test(
 
 
 # ---------------------------------------------------------------------------
+# Locations — smoke test (works in mock mode)
+# ---------------------------------------------------------------------------
+
+
+def _location_store(runtime: Runtime) -> LocationStore:
+    return runtime.location_store
+
+
+@router.post(
+    "/locations/smoke",
+    summary="Run a locations module smoke test",
+    description=(
+        "Creates, reads, updates, and deletes a building, section, and room. "
+        "Tests polygon validation, personnel room access (grant/revoke/check), "
+        "and camera assignment. Works in mock mode."
+    ),
+)
+async def locations_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    store = _location_store(runtime)
+    steps: dict[str, Any] = {}
+    ts = int(time.time() * 1000)
+
+    try:
+        # 1. Create building
+        bld = store.create_building(
+            name=f"Smoke Building {ts}",
+            address=f"123 Test St, Unit {ts}",
+            description="Smoke test building",
+        )
+        steps["create_building"] = {"status": "PASS", "id": bld.id}
+        building_id = bld.id
+
+        # 2. Get building
+        fetched = store.get_building(building_id)
+        if fetched is None or fetched.id != building_id:
+            steps["get_building"] = {"status": "FAIL", "detail": "Building not found after creation"}
+        else:
+            steps["get_building"] = {"status": "PASS"}
+
+        # 3. Update building
+        updated = store.update_building(building_id, name="Updated Building")
+        if updated is None or updated.name != "Updated Building":
+            steps["update_building"] = {"status": "FAIL", "detail": "Update failed"}
+        else:
+            steps["update_building"] = {"status": "PASS"}
+
+        # 4. List buildings
+        blds, total = store.list_buildings(limit=100)
+        if total < 1:
+            steps["list_buildings"] = {"status": "FAIL", "detail": "No buildings listed"}
+        else:
+            steps["list_buildings"] = {"status": "PASS", "total": total}
+
+        # 5. Create section
+        sec = store.create_section(
+            name=f"Section {ts}",
+            building_id=building_id,
+            description="Smoke test section",
+        )
+        steps["create_section"] = {"status": "PASS", "id": sec.id}
+        section_id = sec.id
+
+        # 6. Get section
+        fetched_sec = store.get_section(section_id)
+        if fetched_sec is None or fetched_sec.id != section_id:
+            steps["get_section"] = {"status": "FAIL", "detail": "Section not found"}
+        else:
+            steps["get_section"] = {"status": "PASS"}
+
+        # 7. List sections by building
+        secs, sec_total = store.list_sections(building_id=building_id)
+        if sec_total < 1:
+            steps["list_sections_by_building"] = {"status": "FAIL", "detail": "No sections by building"}
+        else:
+            steps["list_sections_by_building"] = {"status": "PASS", "total": sec_total}
+
+        # 8. Create room with valid polygon (a triangle)
+        polygon = "[[0,0],[100,0],[50,100]]"
+        room = store.create_room(
+            name=f"Room {ts}",
+            section_id=section_id,
+            description="Smoke test room",
+            polygon_json=polygon,
+        )
+        steps["create_room"] = {"status": "PASS", "id": room.id}
+        room_id = room.id
+
+        # 9. Get room
+        fetched_room = store.get_room(room_id)
+        if fetched_room is None or fetched_room.id != room_id:
+            steps["get_room"] = {"status": "FAIL", "detail": "Room not found"}
+        else:
+            steps["get_room"] = {"status": "PASS"}
+
+        # 10. Update room polygon
+        new_polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        updated_room = store.update_room(room_id, polygon_json=new_polygon)
+        if updated_room is None or updated_room.polygon_json != new_polygon:
+            steps["update_room_polygon"] = {"status": "FAIL", "detail": "Polygon update failed"}
+        else:
+            steps["update_room_polygon"] = {"status": "PASS"}
+
+        # 11. List rooms by section
+        rooms, room_total = store.list_rooms(section_id=section_id)
+        if room_total < 1:
+            steps["list_rooms_by_section"] = {"status": "FAIL", "detail": "No rooms by section"}
+        else:
+            steps["list_rooms_by_section"] = {"status": "PASS", "total": room_total}
+
+        # 12. Grant room access
+        access = store.grant_room_access(
+            personnel_id=1, room_id=room_id, granted_by="smoke_test"
+        )
+        if access is None or access.room_id != room_id:
+            steps["grant_access"] = {"status": "FAIL", "detail": "Grant access failed"}
+        else:
+            steps["grant_access"] = {"status": "PASS", "access_id": access.id}
+
+        # 13. Check room access
+        has_access = store.check_room_access(personnel_id=1, room_id=room_id)
+        if not has_access:
+            steps["check_access"] = {"status": "FAIL", "detail": "Access check returned False after grant"}
+        else:
+            steps["check_access"] = {"status": "PASS"}
+
+        # 14. List personnel rooms
+        personnel_rooms = store.list_personnel_rooms(personnel_id=1)
+        if len(personnel_rooms) < 1:
+            steps["list_personnel_rooms"] = {"status": "FAIL", "detail": "No rooms for personnel"}
+        else:
+            steps["list_personnel_rooms"] = {"status": "PASS", "count": len(personnel_rooms)}
+
+        # 15. List room personnel
+        room_personnel = store.list_room_personnel(room_id)
+        if len(room_personnel) < 1:
+            steps["list_room_personnel"] = {"status": "FAIL", "detail": "No personnel for room"}
+        else:
+            steps["list_room_personnel"] = {"status": "PASS", "count": len(room_personnel)}
+
+        # 16. Revoke room access
+        revoked = store.revoke_room_access(personnel_id=1, room_id=room_id)
+        if not revoked:
+            steps["revoke_access"] = {"status": "FAIL", "detail": "Revoke returned False"}
+        else:
+            steps["revoke_access"] = {"status": "PASS"}
+
+        # 17. Test polygon matching (point inside the polygon)
+        # The room has polygon [[0,0],[200,0],[200,200],[0,200]]
+        # Point (50, 50) should be inside
+        from app.core.location_store import point_in_polygon, parse_polygon
+        points = parse_polygon(new_polygon)
+        inside = point_in_polygon(50.0, 50.0, points)
+        if not inside:
+            steps["polygon_inside"] = {"status": "FAIL", "detail": "Point should be inside polygon"}
+        else:
+            steps["polygon_inside"] = {"status": "PASS"}
+
+        # Point (300, 300) should be outside
+        outside = point_in_polygon(300.0, 300.0, points)
+        if outside:
+            steps["polygon_outside"] = {"status": "FAIL", "detail": "Point should be outside polygon"}
+        else:
+            steps["polygon_outside"] = {"status": "PASS"}
+
+        # 18. Test match_detection_to_rooms
+        # Uses section_id directly (caller resolves section_id from camera)
+        matches = store.match_detection_to_rooms(
+            section_id=section_id,
+            detection_type="face_recognition",
+            detection_event_id=0,
+            bbox_center_x=50.0,
+            bbox_center_y=50.0,
+            personnel_id=1,
+            camera_id="smoke-cam-test",
+        )
+        if len(matches) < 1:
+            steps["polygon_matching"] = {"status": "FAIL", "detail": "No matches found for point inside polygon"}
+        else:
+            steps["polygon_matching"] = {"status": "PASS", "matches": len(matches)}
+
+        # 19. Delete room
+        deleted_room = store.delete_room(room_id)
+        if not deleted_room:
+            steps["delete_room"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete_room"] = {"status": "PASS"}
+
+        # 20. Delete section
+        deleted_sec = store.delete_section(section_id)
+        if not deleted_sec:
+            steps["delete_section"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete_section"] = {"status": "PASS"}
+
+        # 21. Delete building
+        deleted_bld = store.delete_building(building_id)
+        if not deleted_bld:
+            steps["delete_building"] = {"status": "FAIL", "detail": "Delete returned False"}
+        else:
+            steps["delete_building"] = {"status": "PASS"}
+
+        # Summary
+        failed = {k: v for k, v in steps.items() if isinstance(v, dict) and v.get("status") == "FAIL"}
+        steps["_summary"] = {
+            "total": len(steps),
+            "passed": len(steps) - len(failed),
+            "failed": len(failed),
+        }
+        if failed:
+            steps["_summary"]["failed_steps"] = list(failed.keys())
+
+    except Exception as exc:
+        steps["_unexpected_error"] = f"{type(exc).__name__}: {exc}"
+        steps["_summary"] = {"total": len(steps), "passed": 0, "failed": 1}
+
+    return steps
+
+
+# ---------------------------------------------------------------------------
 # All-in-one
 # ---------------------------------------------------------------------------
 
@@ -502,5 +724,11 @@ def all_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]
         "personnel": {
             "store_ready": True,
             "count": runtime.personnel_store.count(),
+        },
+        "locations": {
+            "store_ready": True,
+            "buildings": runtime.location_store.count_buildings(),
+            "sections": runtime.location_store.count_sections(),
+            "rooms": runtime.location_store.count_rooms(),
         },
     }
