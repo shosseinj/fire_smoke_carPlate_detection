@@ -40,6 +40,7 @@ def _path(name: str, default: str) -> Path:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Unified Video AI Task Router")
     processor_mode: str = os.getenv("PROCESSOR_MODE", "real").strip().lower()
+    database_path: Path = _path("DATABASE_PATH", "ai_database")
     camera_db_path: Path = _path("CAMERA_DB_PATH", "data/cameras.sqlite3")
     source_registry_path: Path = _path("SOURCE_REGISTRY_PATH", "data/sources.json")
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)

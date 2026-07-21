@@ -97,7 +97,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
         )
     )
     local_missing = []
-    project_root = runtime.settings.camera_db_path.parents[1]
+    project_root = runtime.settings.database_path.parent
     for camera in enabled:
         uri = camera.source_uri or ""
         if not uri or VideoFileIngestor.is_rtsp_uri(uri) or "://" in uri:

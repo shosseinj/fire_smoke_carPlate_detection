@@ -19,10 +19,8 @@ def _make_test_runtime(tmp_path: Path):
     test_settings = replace(
         settings,
         processor_mode="mock",
-        camera_db_path=tmp_path / "cameras.sqlite3",
+        database_path=tmp_path / "ai_database",
         source_registry_path=tmp_path / "sources.json",
-        plate_log_db_path=tmp_path / "plate_logs.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
         auth_default_admin_username="admin",
@@ -43,7 +41,7 @@ def _setup_client(tmp_path: Path):
     from app.core import auth as auth_core
     from app.core.auth_store import AuthStore
     old_store = auth_core._auth_store
-    auth_core._auth_store = AuthStore(tmp_path / "auth.sqlite3")
+    auth_core._auth_store = AuthStore(tmp_path / "ai_database")
     auth_core._auth_store.seed_default_admin("admin", "admin123")
 
     return test_runtime, old_runtime, TestClient(main_module.app), old_store

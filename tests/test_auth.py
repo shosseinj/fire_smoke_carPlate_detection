@@ -23,10 +23,8 @@ def _make_test_runtime(tmp_path: Path):
     test_settings = replace(
         settings,
         processor_mode="mock",
-        camera_db_path=tmp_path / "cameras.sqlite3",
+        database_path=tmp_path / "ai_database",
         source_registry_path=tmp_path / "sources.json",
-        plate_log_db_path=tmp_path / "plate_logs.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
         video_ingestion_enabled=False,
         auth_default_admin_username="admin",
         auth_default_admin_password="admin123",

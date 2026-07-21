@@ -193,7 +193,8 @@ def _seed_registry(
 
 
 def build_runtime(app_settings: Settings = settings) -> Runtime:
-    registry = SourceRegistry(app_settings.camera_db_path)
+    db_path = app_settings.database_path
+    registry = SourceRegistry(db_path)
     _seed_registry(
         registry,
         app_settings.source_registry_path,
@@ -206,7 +207,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_settings = PlateSettingsStore(
-        app_settings.camera_db_path,
+        db_path,
         default_policy=PlateDetectionPolicy(
             vehicle_confidence=app_settings.vehicle_confidence,
             plate_confidence=app_settings.plate_confidence,
@@ -219,7 +220,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     registry.add_listener(plate_settings.on_source_change)
     face_quality_settings = FaceQualitySettingsStore(
-        app_settings.plate_log_db_path,
+        db_path,
         FaceQualityPolicy(
             quality_threshold=app_settings.face_quality_threshold,
             blur_threshold=app_settings.face_blur_threshold,
@@ -244,7 +245,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             ) from exc
 
     models = ModelManager(
-        app_settings.camera_db_path,
+        db_path,
         model_root,
         default_config=ModelSelectionConfig(
             fire_smoke_model=model_relative(app_settings.fire_model_path),
@@ -266,9 +267,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ),
     )
     model_conversions = ModelConversionManager(models)
-    plate_logs = PlateLogStore(app_settings.plate_log_db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
+    plate_logs = PlateLogStore(db_path, app_settings.draw_info , app_settings.save_plate_snapshot)
     fire_smoke_logs = FireSmokeLogStore(
-        app_settings.plate_log_db_path,
+        db_path,
         app_settings.saved_media_path,
         default_policy=FireSmokePolicyConfig(
             window_seconds=app_settings.fire_severity_window_seconds,
@@ -278,7 +279,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ),
     )
     human_logs = HumanLogStore(
-        app_settings.plate_log_db_path,
+        db_path,
         app_settings.saved_media_path,
         queue_size=app_settings.human_media_queue_size,
         video_fps=app_settings.human_video_fps,
@@ -286,15 +287,15 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         snapshot_min_improvement=app_settings.human_snapshot_min_improvement,
     )
     personnel_store = PersonnelStore(
-        app_settings.plate_log_db_path,
+        db_path,
         app_settings.saved_media_path,
     )
     location_store = LocationStore(
-        app_settings.plate_log_db_path,
+        db_path,
     )
-    shift_store = ShiftStore(app_settings.plate_log_db_path)
-    holiday_store = HolidayStore(app_settings.plate_log_db_path)
-    request_store = RequestStore(app_settings.plate_log_db_path)
+    shift_store = ShiftStore(db_path)
+    holiday_store = HolidayStore(db_path)
+    request_store = RequestStore(db_path)
     attendance_service = AttendanceService(
         personnel_store=personnel_store,
         human_log_store=human_logs,

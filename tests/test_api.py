@@ -18,7 +18,7 @@ from app.runtime import build_runtime
 
 def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path) -> None:
     seed_path = tmp_path / "sources.json"
-    database_path = tmp_path / "cameras.sqlite3"
+    test_db_path = tmp_path / "ai_database"
     seed_path.write_text(
         json.dumps(
             [
@@ -37,9 +37,8 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
     test_settings = replace(
         settings,
         processor_mode="mock",
-        camera_db_path=database_path,
+        database_path=tmp_path / "ai_database",
         source_registry_path=seed_path,
-        plate_log_db_path=tmp_path / "plate_logs.sqlite3",
         video_ingestion_enabled=False,
     )
 
@@ -51,7 +50,7 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
     finally:
         first_runtime.close()
 
-    with sqlite3.connect(database_path) as connection:
+    with sqlite3.connect(test_db_path) as connection:
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(cameras)").fetchall()
         }
@@ -84,9 +83,8 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing-sources.json",
-            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
             video_ingestion_enabled=False,
         )
     )
@@ -183,9 +181,8 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing-sources.json",
-            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
             video_ingestion_enabled=False,
         )
     )
@@ -271,9 +268,8 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "sources.json",
-            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
             video_ingestion_enabled=False,
         )
     )
@@ -364,9 +360,8 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "sources.json",
-            plate_log_db_path=tmp_path / "plate_logs.sqlite3",
             video_ingest_backend="deepstream",
         )
     )
@@ -384,9 +379,8 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing.json",
-            plate_log_db_path=tmp_path / "logs.sqlite3",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -478,9 +472,8 @@ def test_general_model_settings_and_play_only_camera_api(
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing.json",
-            plate_log_db_path=tmp_path / "logs.sqlite3",
             saved_media_path=tmp_path / "media",
             model_root_path=model_root,
             fire_model_path=fire_model,
@@ -595,9 +588,8 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing.json",
-            plate_log_db_path=tmp_path / "logs.sqlite3",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -661,9 +653,8 @@ def test_get_all_sections_returns_all_groups(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing.json",
-            plate_log_db_path=tmp_path / "logs.sqlite3",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -714,9 +705,8 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            camera_db_path=tmp_path / "cameras.sqlite3",
+            database_path=tmp_path / "ai_database",
             source_registry_path=tmp_path / "missing.json",
-            plate_log_db_path=tmp_path / "logs.sqlite3",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )

@@ -23,7 +23,7 @@ _auth_store: AuthStore | None = None
 def get_auth_store() -> AuthStore:
     global _auth_store
     if _auth_store is None:
-        _auth_store = AuthStore(settings.auth_db_path)
+        _auth_store = AuthStore(settings.database_path)
         _auth_store.seed_default_admin(
             username=settings.auth_default_admin_username,
             password=settings.auth_default_admin_password,
