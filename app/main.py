@@ -21,6 +21,7 @@ from app.api.sources import router as sources_router
 from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
+from app.api.personnel import router as personnel_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -87,6 +88,14 @@ OPENAPI_TAGS = [
         "name": "authentication",
         "description": "JWT-based login, token lifecycle (OAuth2 token, refresh, logout), user creation, user management, and self-service password change. Obtain a token via /login or /token and use it as Bearer token in the Authorization header.",
     },
+    {
+        "name": "personnel",
+        "description": "Personnel management: CRUD, image upload with face enrollment, import/export via Excel and ZIP, Iranian national code validation.",
+    },
+    {
+        "name": "personnel-images",
+        "description": "Standalone personnel image operations: retrieve, delete, set primary image.",
+    },
 ]
 
 
@@ -123,6 +132,7 @@ app.include_router(plate_logs_router)
 app.include_router(fire_smoke_logs_router)
 app.include_router(faces_router)
 app.include_router(humans_router)
+app.include_router(personnel_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 

@@ -18,6 +18,7 @@ from app.core.model_management import (
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
+from app.core.personnel_store import PersonnelStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
@@ -54,6 +55,7 @@ class Runtime:
     human_logs: HumanLogStore
     face_quality_settings: FaceQualitySettingsStore
     face_processor: BatchProcessor
+    personnel_store: PersonnelStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -148,6 +150,7 @@ class Runtime:
         value["plate_log_count"] = self.plate_logs.count()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
         value["human_logs"] = self.human_logs.status()
+        value["personnel_count"] = self.personnel_store.count()
         return value
 
 
@@ -262,6 +265,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_fps=app_settings.human_video_fps,
         video_idle_seconds=app_settings.human_video_idle_seconds,
         snapshot_min_improvement=app_settings.human_snapshot_min_improvement,
+    )
+    personnel_store = PersonnelStore(
+        app_settings.plate_log_db_path,
+        app_settings.saved_media_path,
     )
 
     if app_settings.processor_mode == "mock":
@@ -427,5 +434,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         human_logs=human_logs,
         face_quality_settings=face_quality_settings,
         face_processor=face_processor,
+        personnel_store=personnel_store,
         video_ingestor=video_ingestor,
     )
