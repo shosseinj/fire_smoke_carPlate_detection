@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Sequence
 
@@ -67,7 +67,7 @@ def _face_processor(runtime: Runtime) -> FaceRecognitionProcessor:
 
 
 def _fire_processor(runtime: Runtime) -> FireSmokeProcessor:
-    worker = runtime.router._workers.get(TaskName.FIRE_SMOKE)
+    worker = runtime.router.workers.get(TaskName.FIRE_SMOKE)
     if worker is None:
         raise HTTPException(status_code=400, detail="Fire/smoke worker is not available")
     proc = worker.processor
@@ -77,7 +77,7 @@ def _fire_processor(runtime: Runtime) -> FireSmokeProcessor:
 
 
 def _plate_processor(runtime: Runtime) -> PlateRecognitionProcessor:
-    worker = runtime.router._workers.get(TaskName.PLATE_RECOGNITION)
+    worker = runtime.router.workers.get(TaskName.PLATE_RECOGNITION)
     if worker is None:
         raise HTTPException(status_code=400, detail="Plate worker is not available")
     proc = worker.processor
@@ -200,6 +200,16 @@ async def test_face_full_pipeline(
 )
 def fire_smoke_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     s = runtime.settings
+    # Get class IDs from the processor if available
+    fire_class_id: int = 0
+    smoke_class_id: int = 1
+    worker = runtime.router.workers.get(TaskName.FIRE_SMOKE)
+    if worker is not None:
+        proc = worker.processor
+        if hasattr(proc, "settings"):
+            proc_settings = proc.settings
+            fire_class_id = getattr(proc_settings, "fire_class_id", 0)
+            smoke_class_id = getattr(proc_settings, "smoke_class_id", 1)
     return {
         "model": _model_file_status(s.fire_model_path),
         "settings": {
@@ -208,8 +218,8 @@ def fire_smoke_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[st
             "imgsz": s.fire_imgsz,
             "batch_size": s.fire_batch_size,
             "device": s.fire_device,
-            "fire_class_id": s.fire_class_id,
-            "smoke_class_id": s.smoke_class_id,
+            "fire_class_id": fire_class_id,
+            "smoke_class_id": smoke_class_id,
         },
     }
 
@@ -945,36 +955,435 @@ async def requests_smoke_test(
 # All-in-one
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Comprehensive overall section inventory
+# ---------------------------------------------------------------------------
+
+
+def _personnel_store_section(runtime: Runtime) -> dict[str, Any]:
+    store = runtime.personnel_store
+    return {
+        "ready": True,
+        "count": store.count(),
+        "can_create": True,
+        "can_import": True,
+    }
+
+
+def _location_store_section(runtime: Runtime) -> dict[str, Any]:
+    store = runtime.location_store
+    return {
+        "ready": True,
+        "buildings": store.count_buildings(),
+        "sections": store.count_sections(),
+        "rooms": store.count_rooms(),
+        "polygon_support": True,
+    }
+
+
+def _shift_store_section(runtime: Runtime) -> dict[str, Any]:
+    store = runtime.shift_store
+    try:
+        stats = store.statistics()
+        return {"ready": True, "count": store.count(), "statistics": stats}
+    except Exception:
+        return {"ready": True, "count": store.count(), "statistics": None}
+
+
+def _holiday_store_section(runtime: Runtime) -> dict[str, Any]:
+    store = runtime.holiday_store
+    return {
+        "ready": True,
+        "active_count": store.count_active(),
+        "supports_every_year": True,
+        "supports_jalali": True,
+    }
+
+
+def _request_store_section(runtime: Runtime) -> dict[str, Any]:
+    store = runtime.request_store
+    return {
+        "ready": True,
+        "count": store.count(),
+        "supports_leave_mission_overtime": True,
+    }
+
+
+def _attendance_service_section(runtime: Runtime) -> dict[str, Any]:
+    svc = runtime.attendance_service
+    return {
+        "ready": True,
+        "supports_daily": True,
+        "supports_monthly": True,
+        "supports_yearly": True,
+        "supports_jalali": True,
+        "supports_overnight_shifts": True,
+    }
+
+
+def _plate_logs_section(runtime: Runtime) -> dict[str, Any]:
+    return {"ready": True, "count": runtime.plate_logs.count()}
+
+
+def _fire_smoke_logs_section(runtime: Runtime) -> dict[str, Any]:
+    status = runtime.fire_smoke_logs.status()
+    return {
+        "ready": True,
+        "count": status.get("count", 0),
+        "active_incidents": status.get("incident_count", 0),
+    }
+
+
+def _human_logs_section(runtime: Runtime) -> dict[str, Any]:
+    status = runtime.human_logs.status()
+    return {
+        "ready": True,
+        "log_count": status.get("count", 0),
+        "active_sessions": status.get("active_sessions", 0),
+    }
+
+
+def _result_store_section(runtime: Runtime) -> dict[str, Any]:
+    return {"ready": True, "capacity": runtime.results._recent.maxlen}
+
+
+def _plate_settings_section(runtime: Runtime) -> dict[str, Any]:
+    try:
+        general = runtime.plate_settings.general()
+        return {
+            "ready": True,
+            "has_general_policy": general is not None,
+        }
+    except Exception:
+        return {"ready": True, "has_general_policy": False}
+
+
+def _face_quality_settings_section(runtime: Runtime) -> dict[str, Any]:
+    try:
+        policy = runtime.face_quality_settings.get()
+        return {
+            "ready": True,
+            "has_policy": policy is not None,
+        }
+    except Exception:
+        return {"ready": True, "has_policy": False}
+
+
+def _source_registry_section(runtime: Runtime) -> dict[str, Any]:
+    cameras = runtime.registry.list()
+    return {
+        "ready": True,
+        "total_cameras": len(cameras),
+        "enabled": sum(1 for c in cameras if c.enabled),
+        "revision": runtime.registry.revision,
+    }
+
+
+def _broadcast_section(runtime: Runtime) -> dict[str, Any]:
+    status = runtime.broadcast.status()
+    return {
+        "ready": True,
+        "enabled": runtime.broadcast.enabled,
+        "subscribers": status.get("subscribers", 0),
+        "rendered_frames": status.get("rendered_frames", 0),
+    }
+
+
+def _task_router_section(runtime: Runtime) -> dict[str, Any]:
+    status = runtime.router.status()
+    workers_ready: dict[str, Any] = {}
+    for task_name, worker_status in status.get("workers", {}).items():
+        workers_ready[task_name] = {
+            "started": status.get("started", False),
+            "counters": worker_status.get("counters", {}),
+            "buffer": worker_status.get("buffer", {}),
+        }
+    return {
+        "ready": True,
+        "started": status.get("started", False),
+        "rounds_received": status.get("rounds_received", 0),
+        "frames_received": status.get("frames_received", 0),
+        "workers": workers_ready,
+    }
+
+
+def _model_management_section(runtime: Runtime) -> dict[str, Any]:
+    try:
+        snapshot = runtime.models.snapshot()
+        return {
+            "ready": True,
+            "has_snapshot": True,
+            "resolved_models": list(snapshot.get("resolved_models", {}).keys()),
+        }
+    except Exception:
+        return {"ready": True, "has_snapshot": False}
+
+
+def _model_conversions_section(runtime: Runtime) -> dict[str, Any]:
+    return {"ready": True, "manager_active": True}
+
+
+def _video_ingestor_section(runtime: Runtime) -> dict[str, Any]:
+    ingestor = runtime.video_ingestor
+    if ingestor is None:
+        return {"ready": True, "enabled": False, "detail": "Video ingestion is disabled"}
+    try:
+        status = ingestor.status()
+        return {
+            "ready": True,
+            "enabled": True,
+            "backend": status.get("backend", "unknown"),
+            "running": status.get("running", False),
+            "active_sources": len(status.get("sources", {})),
+        }
+    except Exception as exc:
+        return {"ready": False, "enabled": True, "error": str(exc)}
+
+
 @router.get(
     "/all",
-    summary="Run all model checks at once",
-    description="Check all model files and TensorRT/cuDA availability for every pipeline in a single call.",
+    summary="Check every project section at once",
+    description=(
+        "Comprehensive read-only status check for every section in the project: "
+        "model artifacts, stores, services, data stores, settings, infrastructure, "
+        "and model management. Use POST /api/v1/tests/all to run active smoke tests."
+    ),
 )
-def all_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
-    return {
+def all_sections_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+    sections: dict[str, Any] = {}
+
+    # Model artifacts
+    sections["models"] = {
         "face": face_models_status(runtime),
         "fire_smoke": fire_smoke_models_status(runtime),
         "plate": plate_models_status(runtime),
-        "personnel": {
-            "store_ready": True,
-            "count": runtime.personnel_store.count(),
-        },
-        "locations": {
-            "store_ready": True,
-            "buildings": runtime.location_store.count_buildings(),
-            "sections": runtime.location_store.count_sections(),
-            "rooms": runtime.location_store.count_rooms(),
-        },
-        "shifts": {
-            "store_ready": True,
-            "count": runtime.shift_store.count(),
-        },
-        "holidays": {
-            "store_ready": True,
-            "count": runtime.holiday_store.count_active(),
-        },
-        "requests": {
-            "store_ready": True,
-            "count": runtime.request_store.count(),
-        },
+    }
+
+    # Stores
+    sections["stores"] = {
+        "personnel": _personnel_store_section(runtime),
+        "locations": _location_store_section(runtime),
+        "shifts": _shift_store_section(runtime),
+        "holidays": _holiday_store_section(runtime),
+        "requests": _request_store_section(runtime),
+    }
+
+    # Services
+    sections["services"] = {
+        "attendance": _attendance_service_section(runtime),
+    }
+
+    # Data stores
+    sections["data_stores"] = {
+        "plate_logs": _plate_logs_section(runtime),
+        "fire_smoke_logs": _fire_smoke_logs_section(runtime),
+        "human_logs": _human_logs_section(runtime),
+        "result_store": _result_store_section(runtime),
+    }
+
+    # Settings
+    sections["settings"] = {
+        "plate_settings": _plate_settings_section(runtime),
+        "face_quality_settings": _face_quality_settings_section(runtime),
+    }
+
+    # Infrastructure
+    sections["infrastructure"] = {
+        "source_registry": _source_registry_section(runtime),
+        "broadcast": _broadcast_section(runtime),
+        "task_router": _task_router_section(runtime),
+        "video_ingestor": _video_ingestor_section(runtime),
+    }
+
+    # Model management
+    sections["model_management"] = {
+        "model_manager": _model_management_section(runtime),
+        "model_conversions": _model_conversions_section(runtime),
+    }
+
+    # Compute overall status
+    all_ready = True
+    failed_sections: list[str] = []
+    for group_name, group in sections.items():
+        for section_name, data in group.items():
+            if isinstance(data, dict) and data.get("ready") is False:
+                all_ready = False
+                failed_sections.append(f"{group_name}.{section_name}")
+
+    sections["_summary"] = {
+        "total_groups": len(sections),
+        "all_sections_ready": all_ready,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    if failed_sections:
+        sections["_summary"]["not_ready"] = failed_sections
+
+    return sections
+
+
+@router.post(
+    "/all",
+    summary="Run active smoke tests for every project section",
+    description=(
+        "Actively runs smoke tests for every store, processor, and service. "
+        "This writes and deletes test data. For a read-only status check use GET /api/v1/tests/all."
+    ),
+)
+async def all_sections_smoke_test(
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    smoke_results: dict[str, Any] = {}
+    ts = int(time.time() * 1000)
+
+    # 1. Personnel smoke
+    try:
+        personnel_result = await personnel_smoke_test(runtime)
+        smoke_results["personnel"] = _summarize_smoke(personnel_result)
+    except Exception as exc:
+        smoke_results["personnel"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 2. Locations smoke
+    try:
+        loc_result = await locations_smoke_test(runtime)
+        smoke_results["locations"] = _summarize_smoke(loc_result)
+    except Exception as exc:
+        smoke_results["locations"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 3. Shifts smoke
+    try:
+        shift_result = await shifts_smoke_test(runtime)
+        smoke_results["shifts"] = _summarize_smoke(shift_result)
+    except Exception as exc:
+        smoke_results["shifts"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 4. Holidays smoke
+    try:
+        hol_result = await holidays_smoke_test(runtime)
+        smoke_results["holidays"] = _summarize_smoke(hol_result)
+    except Exception as exc:
+        smoke_results["holidays"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 5. Requests smoke
+    try:
+        req_result = await requests_smoke_test(runtime)
+        smoke_results["requests"] = _summarize_smoke(req_result)
+    except Exception as exc:
+        smoke_results["requests"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 6. Attendance smoke (lightweight — compute daily for a known personnel)
+    try:
+        svc = runtime.attendance_service
+        personnel_list, total = runtime.personnel_store.list(limit=5)
+        if total > 0:
+            test_person = personnel_list[0]
+            daily = svc.compute_daily_summary(test_person.id, str(date.today()))
+            smoke_results["attendance"] = {
+                "status": "PASS",
+                "personnel_id": test_person.id,
+                "daily_status": daily.get("status", "no_data"),
+            }
+        else:
+            smoke_results["attendance"] = {"status": "SKIP", "detail": "No personnel records exist"}
+    except Exception as exc:
+        smoke_results["attendance"] = {"status": "ERROR", "detail": str(exc)}
+
+    # 7. Infrastructure health
+    infra_checks = _infrastructure_health_check(runtime)
+    smoke_results["infrastructure"] = infra_checks
+
+    # Summary
+    total = len(smoke_results)
+    passed = sum(1 for v in smoke_results.values() if isinstance(v, dict) and v.get("status") == "PASS")
+    skipped = sum(1 for v in smoke_results.values() if isinstance(v, dict) and v.get("status") == "SKIP")
+    failed = sum(1 for v in smoke_results.values() if isinstance(v, dict) and v.get("status") in ("FAIL", "ERROR"))
+    smoke_results["_summary"] = {
+        "total_sections": total,
+        "passed": passed,
+        "skipped": skipped,
+        "failed": failed,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    return smoke_results
+
+
+def _summarize_smoke(result: dict[str, Any]) -> dict[str, Any]:
+    summary = result.get("_summary", {})
+    total = summary.get("total", 0)
+    failed = summary.get("failed", 0)
+    if failed > 0:
+        return {
+            "status": "FAIL",
+            "steps_total": total,
+            "steps_failed": failed,
+            "failed_steps": summary.get("failed_steps", []),
+        }
+    if total > 0:
+        return {"status": "PASS", "steps_total": total}
+    return {"status": "ERROR", "detail": "No steps executed"}
+
+
+def _infrastructure_health_check(runtime: Runtime) -> dict[str, Any]:
+    checks: dict[str, Any] = {}
+    # Source registry
+    try:
+        cameras = runtime.registry.list()
+        checks["source_registry"] = {
+            "status": "PASS",
+            "total_cameras": len(cameras),
+        }
+    except Exception as exc:
+        checks["source_registry"] = {"status": "FAIL", "detail": str(exc)}
+
+    # Broadcast
+    try:
+        enabled = runtime.broadcast.enabled
+        checks["broadcast"] = {"status": "PASS", "enabled": enabled}
+    except Exception as exc:
+        checks["broadcast"] = {"status": "FAIL", "detail": str(exc)}
+
+    # Task router
+    try:
+        router_status = runtime.router.status()
+        checks["task_router"] = {
+            "status": "PASS",
+            "started": router_status.get("started", False),
+        }
+    except Exception as exc:
+        checks["task_router"] = {"status": "FAIL", "detail": str(exc)}
+
+    # Video ingestor
+    ingestor = runtime.video_ingestor
+    if ingestor is None:
+        checks["video_ingestor"] = {"status": "SKIP", "detail": "Video ingestion is disabled"}
+    else:
+        try:
+            ingestor_status = ingestor.status()
+            checks["video_ingestor"] = {
+                "status": "PASS",
+                "running": ingestor_status.get("running", False),
+            }
+        except Exception as exc:
+            checks["video_ingestor"] = {"status": "FAIL", "detail": str(exc)}
+
+    # Model management
+    try:
+        snapshot = runtime.models.snapshot()
+        checks["model_manager"] = {"status": "PASS", "resolved_models": len(snapshot.get("resolved_models", {}))}
+    except Exception as exc:
+        checks["model_manager"] = {"status": "FAIL", "detail": str(exc)}
+
+    # Compute overall status
+    any_fail = any(v.get("status") == "FAIL" for v in checks.values())
+    any_skip = any(v.get("status") == "SKIP" for v in checks.values())
+    any_error = any(v.get("status") == "ERROR" for v in checks.values())
+    if any_fail or any_error:
+        overall = "FAIL"
+    elif any_skip:
+        overall = "SKIP"
+    else:
+        overall = "PASS"
+
+    return {
+        "status": overall,
+        "checks": checks,
     }

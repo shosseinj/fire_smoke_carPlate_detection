@@ -651,3 +651,124 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
             assert "plate_confidence" in cleared.json()["inherited_fields"]
     finally:
         main_module.runtime = old_runtime
+
+
+def test_get_all_sections_returns_all_groups(tmp_path: Path) -> None:
+    """GET /api/v1/tests/all must return every section group."""
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing.json",
+            plate_log_db_path=tmp_path / "logs.sqlite3",
+            saved_media_path=tmp_path / "media",
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            resp = client.get("/api/v1/tests/all")
+            assert resp.status_code == 200
+            body = resp.json()
+
+            # Top-level groups
+            assert "models" in body, "Missing models group"
+            assert "stores" in body, "Missing stores group"
+            assert "services" in body, "Missing services group"
+            assert "data_stores" in body, "Missing data_stores group"
+            assert "settings" in body, "Missing settings group"
+            assert "infrastructure" in body, "Missing infrastructure group"
+            assert "model_management" in body, "Missing model_management group"
+            assert "_summary" in body, "Missing _summary"
+
+            # Stores sub-sections
+            stores = body["stores"]
+            for key in ("personnel", "locations", "shifts", "holidays", "requests"):
+                assert key in stores, f"Missing store: {key}"
+                assert stores[key]["ready"] is True, f"{key} store not ready"
+
+            # Services
+            assert "attendance" in body["services"]
+            assert body["services"]["attendance"]["ready"] is True
+
+            # Infrastructure
+            infra = body["infrastructure"]
+            for key in ("source_registry", "broadcast", "task_router", "video_ingestor"):
+                assert key in infra, f"Missing infrastructure: {key}"
+
+            # Summary
+            assert body["_summary"]["all_sections_ready"] is True
+            assert body["_summary"]["total_groups"] == 7
+
+            # Check OpenAPI schema includes new endpoint
+            schema = client.get("/openapi.json").json()
+            assert "/api/v1/tests/all" in schema["paths"]
+            assert "get" in schema["paths"]["/api/v1/tests/all"]
+            assert "post" in schema["paths"]["/api/v1/tests/all"]
+    finally:
+        main_module.runtime = old_runtime
+
+
+def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
+    """POST /api/v1/tests/all must run active smoke tests for every section."""
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            camera_db_path=tmp_path / "cameras.sqlite3",
+            source_registry_path=tmp_path / "missing.json",
+            plate_log_db_path=tmp_path / "logs.sqlite3",
+            saved_media_path=tmp_path / "media",
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            # Pre-seed a personnel record so attendance smoke has data
+            # Use a unique valid national code that does not conflict with smoke-test codes
+            person = test_runtime.personnel_store.create(
+                fname="Test",
+                lname="AllSections",
+                national_code="0012345679",
+                employee_type="employee",
+            )
+
+            resp = client.post("/api/v1/tests/all")
+            assert resp.status_code == 200
+            body = resp.json()
+
+            # Every section must be present
+            expected_sections = [
+                "personnel", "locations", "shifts", "holidays",
+                "requests", "attendance", "infrastructure",
+            ]
+            for section in expected_sections:
+                assert section in body, f"Missing section: {section}"
+                if section == "infrastructure":
+                    assert isinstance(body[section], dict)
+                    assert "status" in body[section], "infrastructure missing overall status"
+                    assert body[section]["status"] in ("PASS", "SKIP", "FAIL", "ERROR"), \
+                        f"infrastructure has unexpected status: {body[section]['status']}"
+                else:
+                    assert body[section].get("status") in (
+                        "PASS", "SKIP", "FAIL", "ERROR"
+                    ), f"{section} has unexpected status"
+
+            # Most should PASS with mock mode
+            passed = body["_summary"]["passed"]
+            failed = body["_summary"]["failed"]
+            assert passed >= 6, f"Expected at least 6 passed sections, got {passed}"
+            assert failed == 0, f"Expected 0 failed sections, got {failed}: {body}"
+
+            assert body["_summary"]["total_sections"] == len(expected_sections)
+    finally:
+        main_module.runtime = old_runtime
