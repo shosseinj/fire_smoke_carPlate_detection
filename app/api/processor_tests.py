@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any, Sequence
+from typing import Annotated, Any
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.holiday_store import HolidayStore
@@ -290,7 +289,6 @@ async def test_plate_vehicle_detection(
     files: Annotated[list[UploadFile], File(description="JPEG images")],
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
-    import numpy as np
     frames = _decode_frames(files)
     proc = _plate_processor(runtime)
     proc._sync_model_selection()
@@ -835,7 +833,6 @@ async def holidays_smoke_test(
             steps["update"] = {"status": "PASS"}
 
         # 4. Check is_holiday
-        from datetime import date
         is_h = store.is_holiday(date(2026, 12, 25))
         if not is_h:
             steps["is_holiday"] = {"status": "FAIL", "detail": "is_holiday returned False"}

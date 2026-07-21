@@ -735,7 +735,7 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
         with TestClient(main_module.app) as client:
             # Pre-seed a personnel record so attendance smoke has data
             # Use a unique valid national code that does not conflict with smoke-test codes
-            person = test_runtime.personnel_store.create(
+            test_runtime.personnel_store.create(  # noqa: unused side-effect creates record for attendance
                 fname="Test",
                 lname="AllSections",
                 national_code="0012345679",
