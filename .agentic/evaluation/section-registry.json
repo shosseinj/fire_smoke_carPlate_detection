@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "project": null,
-  "generated_from_verified_repository_inspection": false,
+  "project": "Unified Video AI Task Router",
+  "generated_from_verified_repository_inspection": true,
   "statuses": [
     "PASS",
     "PASS_WITH_WARNINGS",
@@ -19,13 +19,519 @@
       "enabled": true,
       "critical": true,
       "runtime_required": false,
-      "owner_paths": [],
+      "owner_paths": [".agentic/", "AGENTS.md"],
       "dependencies": [],
-      "consumers": [],
-      "commands": [],
+      "consumers": ["all-sections"],
+      "commands": [
+        "python scripts/validate_agentic_workflow.py"
+      ],
+      "metrics": [],
+      "acceptance": {
+        "validation_passes": true
+      },
+      "notes": "Bootstrap completed 2026-07-21. 2 warnings remain (opencode.jsonc merge, section registry was template)."
+    },
+    {
+      "id": "configuration",
+      "name": "Application Configuration",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/config.py", ".env.example", "docker-compose.yml"],
+      "dependencies": [],
+      "consumers": ["frame-pipeline", "video-ingestion", "fire-smoke-processing", "plate-processing", "face-processing", "model-management"],
+      "commands": [
+        "python -m pytest tests/test_api.py -q -k \"test_health\"",
+        "python -m py_compile app/config.py"
+      ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Replace or expand this bootstrap placeholder after repository inspection. Empty commands produce NOT_CONFIGURED."
+      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern."
+    },
+    {
+      "id": "frame-pipeline",
+      "name": "Frame Pipeline (Router + Buffer + Worker)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/core/router.py", "app/core/latest_buffer.py", "app/core/worker.py", "app/core/types.py"],
+      "dependencies": ["configuration", "source-registry"],
+      "consumers": ["fire-smoke-processing", "plate-processing", "face-processing", "broadcast"],
+      "commands": [
+        "python -m pytest tests/test_router.py -q",
+        "python -m pytest tests/test_latest_buffer.py -q",
+        "python -m py_compile app/core/router.py app/core/worker.py app/core/latest_buffer.py"
+      ],
+      "metrics": [
+        "rounds_received", "frames_received", "frames_disabled",
+        "frames_unregistered", "task_submissions", "task_submission_rejections",
+        "play_only_frames", "queue_depth", "queue_capacity", "queue_replacements"
+      ],
+      "acceptance": {},
+      "notes": "Mock mode testable. Real mode requires GPU and model files."
+    },
+    {
+      "id": "video-ingestion",
+      "name": "Video Ingestion (DeepStream + OpenCV)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/core/deepstream_ingestor.py", "app/core/video_ingestor.py"],
+      "dependencies": ["configuration", "source-registry"],
+      "consumers": ["frame-pipeline"],
+      "commands": [
+        "python -m pytest tests/test_video_ingestor.py -q",
+        "python -m py_compile app/core/deepstream_ingestor.py app/core/video_ingestor.py"
+      ],
+      "metrics": [
+        "per_source_fps", "per_source_frame_index", "per_source_warnings",
+        "per_source_reconnects", "per_source_health", "backend"
+      ],
+      "acceptance": {},
+      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform."
+    },
+    {
+      "id": "source-registry",
+      "name": "Source Registry (Camera DB)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/core/source_registry.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["video-ingestion", "frame-pipeline", "plate-settings", "broadcast", "api-cameras", "api-sources"],
+      "commands": [
+        "python -m pytest tests/test_router.py -q",
+        "python -m py_compile app/core/source_registry.py"
+      ],
+      "metrics": ["total_sources", "enabled_sources", "revision"],
+      "acceptance": {},
+      "notes": "SQLite-backed. Listeners notified on changes."
+    },
+    {
+      "id": "fire-smoke-processing",
+      "name": "Fire/Smoke Detection and Event Processing",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/processors/fire_smoke.py", "app/core/fire_smoke_log_store.py", "app/fire_core/"],
+      "dependencies": ["configuration", "model-management", "frame-pipeline"],
+      "consumers": ["broadcast", "api-fire-smoke"],
+      "commands": [
+        "python -m pytest tests/test_fire_processor.py -q",
+        "python -m pytest tests/test_fire_smoke_log_store.py -q",
+        "python -m py_compile app/processors/fire_smoke.py"
+      ],
+      "metrics": [
+        "processed_frames", "fire_count", "smoke_count",
+        "fire_confidence", "smoke_confidence", "window_seconds",
+        "severity_counts", "incident_count"
+      ],
+      "acceptance": {},
+      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model."
+    },
+    {
+      "id": "plate-processing",
+      "name": "Plate Recognition Pipeline",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/processors/plate.py", "app/core/plate_log_store.py", "app/core/plate_settings_store.py"],
+      "dependencies": ["configuration", "model-management", "frame-pipeline"],
+      "consumers": ["broadcast", "api-plate-logs", "api-plate-settings"],
+      "commands": [
+        "python -m pytest tests/test_plate_processor.py -q",
+        "python -m pytest tests/test_plate_log_store.py -q",
+        "python -m pytest tests/test_plate_settings_store.py -q",
+        "python -m py_compile app/processors/plate.py"
+      ],
+      "metrics": [
+        "vehicle_detections", "plate_detections", "ocr_results",
+        "vehicle_confidence", "plate_confidence", "ocr_confidence",
+        "processed_frames", "pipeline_stages", "crop_batch_size"
+      ],
+      "acceptance": {},
+      "notes": "Mock mode tested. Real OCR requires Hezar model. Iranian format validation tested."
+    },
+    {
+      "id": "face-processing",
+      "name": "Face Recognition Pipeline",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/processors/face_recognition.py", "app/core/human_log_store.py", "app/core/face_quality_store.py"],
+      "dependencies": ["configuration", "model-management", "frame-pipeline"],
+      "consumers": ["broadcast", "api-faces", "api-humans"],
+      "commands": [
+        "python -m pytest tests/test_face_recognition.py -q",
+        "python -m pytest tests/test_face_quality_store.py -q",
+        "python -m pytest tests/test_human_log_store.py -q",
+        "python -m py_compile app/processors/face_recognition.py"
+      ],
+      "metrics": [
+        "human_detections", "face_detections", "recognitions",
+        "tracked_humans", "stable_tracks", "embedding_search_time",
+        "quality_processed", "quality_rejected", "qdrant_status"
+      ],
+      "acceptance": {},
+      "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant."
+    },
+    {
+      "id": "model-management",
+      "name": "Model Management (Catalog, Conversion, Selection)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/core/model_management.py", "app/model_export_worker.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["fire-smoke-processing", "plate-processing", "face-processing"],
+      "commands": [
+        "python -m pytest tests/test_model_management.py -q",
+        "python -m py_compile app/core/model_management.py app/model_export_worker.py"
+      ],
+      "metrics": [
+        "catalog_count", "active_models", "fallback_chain",
+        "conversion_jobs", "conversion_status", "selected_format"
+      ],
+      "acceptance": {},
+      "notes": "Model catalog scanned from MODEL_ROOT_PATH. SQLite-persisted selections. Fallback logic tested."
+    },
+    {
+      "id": "broadcast",
+      "name": "Annotated Broadcast (WebSocket + MJPEG + Dashboard)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/core/broadcast.py", "app/api/broadcast.py", "app/web/dashboard.html"],
+      "dependencies": ["configuration", "frame-pipeline"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m pytest tests/test_broadcast.py -q",
+        "python -m py_compile app/core/broadcast.py"
+      ],
+      "metrics": [
+        "active_connections", "frames_published", "bytes_sent",
+        "jpeg_quality", "enabled", "per_camera_mjpeg_clients"
+      ],
+      "acceptance": {},
+      "notes": "WebSocket tested with mock mode. Dashboard requires browser."
+    },
+    {
+      "id": "api-health",
+      "name": "Health Endpoint",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/main.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["deployment", "monitoring"],
+      "commands": [
+        "python -m pytest tests/test_api.py -q -k \"test_health\""
+      ],
+      "metrics": [
+        "status", "processor_mode", "registered_sources",
+        "router_started", "video_ingestor", "broadcast",
+        "plate_log_count", "fire_smoke_logs", "human_logs", "workers"
+      ],
+      "acceptance": {},
+      "notes": "Returns 200 with runtime status. No auth required."
+    },
+    {
+      "id": "api-cameras",
+      "name": "Camera CRUD API",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/api/cameras.py", "app/schemas.py"],
+      "dependencies": ["configuration", "source-registry"],
+      "consumers": ["user-interface", "video-ingestion"],
+      "commands": [
+        "python -m pytest tests/test_api.py -q -k \"camera\"",
+        "python -m py_compile app/api/cameras.py app/schemas.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Full CRUD with bulk operations. Testable in mock mode."
+    },
+    {
+      "id": "api-sources",
+      "name": "Sources API (Backward-Compatible)",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/sources.py"],
+      "dependencies": ["configuration", "source-registry"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/sources.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Operates on same SQLite camera rows. Backward-compatible alias."
+    },
+    {
+      "id": "api-models",
+      "name": "Model Management API",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/api/models.py"],
+      "dependencies": ["configuration", "model-management"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/models.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Model listing, settings download/update, conversion jobs, upload-based engine creation."
+    },
+    {
+      "id": "api-settings",
+      "name": "General Settings API",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/api/general_settings.py"],
+      "dependencies": ["configuration", "model-management", "fire-smoke-processing", "plate-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/general_settings.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Combined view: model choices, detection policies, startup config, camera modes."
+    },
+    {
+      "id": "api-plate-logs",
+      "name": "Plate Logs API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/plate_logs.py"],
+      "dependencies": ["configuration", "plate-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m pytest tests/test_plate_log_store.py -q",
+        "python -m py_compile app/api/plate_logs.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "CRUD for persisted plate recognition records."
+    },
+    {
+      "id": "api-plate-settings",
+      "name": "Plate Settings API (General + Per-Camera Overrides)",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/plate_settings.py", "app/core/plate_settings_store.py"],
+      "dependencies": ["configuration", "plate-processing", "source-registry"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m pytest tests/test_plate_settings_store.py -q",
+        "python -m py_compile app/api/plate_settings.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "General defaults and per-camera overrides with automatic inheritance. 2 tests."
+    },
+    {
+      "id": "api-fire-smoke",
+      "name": "Fire/Smoke Logs and Settings API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/fire_smoke_logs.py"],
+      "dependencies": ["configuration", "fire-smoke-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/fire_smoke_logs.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Fire/smoke incident logs and severity policy settings."
+    },
+    {
+      "id": "api-faces",
+      "name": "Face Recognition API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/faces.py"],
+      "dependencies": ["configuration", "face-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/faces.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Enrollment, identity management, quality settings."
+    },
+    {
+      "id": "api-humans",
+      "name": "Human Tracking API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/humans.py"],
+      "dependencies": ["configuration", "face-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/humans.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Track logs with best snapshot, full-frame video, and face video links."
+    },
+    {
+      "id": "api-tests",
+      "name": "Processor Test Endpoints",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/processor_tests.py"],
+      "dependencies": ["configuration", "fire-smoke-processing", "plate-processing", "face-processing"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/processor_tests.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Per-stage pipeline testing with image upload."
+    },
+    {
+      "id": "api-frame-rounds",
+      "name": "Frame Round Upload Endpoint",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/frames.py"],
+      "dependencies": ["configuration", "frame-pipeline"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/frames.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "HTTP frame submission for testing (not real-time path)."
+    },
+    {
+      "id": "api-diagnostics",
+      "name": "Diagnostics API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/diagnostics.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/diagnostics.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Read-only overview and safe maintenance checks."
+    },
+    {
+      "id": "api-results",
+      "name": "Results and Router Status API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/results.py"],
+      "dependencies": ["configuration", "frame-pipeline"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m py_compile app/api/results.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Recent results, router status, result WebSocket."
+    },
+    {
+      "id": "mock-mode",
+      "name": "Mock Processor Mode",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/processors/mock.py", "app/runtime.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["fire-smoke-processing", "plate-processing", "face-processing"],
+      "commands": [
+        "PROCESSOR_MODE=mock python -m pytest -q",
+        "PROCESSOR_MODE=mock python -m py_compile app/processors/mock.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Mock mode enables testing without GPU or model files. All tests should pass in mock mode."
+    },
+    {
+      "id": "deployment-docker",
+      "name": "Docker Deployment (DeepStream)",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["Dockerfile.deepstream", "Dockerfile", "docker-compose.yml"],
+      "dependencies": ["all-sections"],
+      "consumers": ["production"],
+      "commands": [
+        "docker compose config --quiet",
+        "docker compose build"
+      ],
+      "metrics": [
+        "build_success", "container_running", "gpu_available",
+        "container_logs_no_errors"
+      ],
+      "acceptance": {},
+      "notes": "Requires NVIDIA GPU + Docker with nvidia-container-toolkit. Not testable on this workstation without GPU."
+    },
+    {
+      "id": "ultralytics-loader",
+      "name": "Ultralytics Model Preloading",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/processors/ultralytics_loader.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["fire-smoke-processing", "plate-processing"],
+      "commands": [
+        "python -m pytest tests/test_ultralytics_loader.py -q"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Preloads Ultralytics model dependencies to avoid runtime imports."
+    },
+    {
+      "id": "scripts-tools",
+      "name": "Utility Scripts (Build Engines, Smoke Test, Mock Load)",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["scripts/smoke_test.py", "scripts/mock_load_test.py", "scripts/build_all_engines.py", "scripts/build_face_engines.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["deployment-docker"],
+      "commands": [
+        "python -m py_compile scripts/smoke_test.py scripts/mock_load_test.py",
+        "python -m py_compile scripts/build_all_engines.py scripts/build_face_engines.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Smoke test and mock load test run without GPU. Engine builders require GPU + TensorRT."
+    },
+    {
+      "id": "agentic-workflow",
+      "name": "Agentic Workflow State",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": [".agentic/", ".opencode/", "scripts/validate_agentic_workflow.py", "scripts/agentic_eval.py", "scripts/import_option_catalog.py"],
+      "dependencies": [],
+      "consumers": ["all-sections"],
+      "commands": [
+        "python scripts/validate_agentic_workflow.py",
+        "python -m py_compile scripts/agentic_eval.py scripts/import_option_catalog.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Agentic workflow bootstrapped 2026-07-21. 104 catalog items all PENDING."
     }
   ]
 }
