@@ -268,8 +268,8 @@ def test_delete_personnel(tmp_path: Path) -> None:
             f"/api/v1/personnel/{person_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200
-        assert resp.json()["deleted"] is True
+        assert resp.status_code == 204, resp.text
+        assert resp.content == b""  # 204 No Content
 
         # Verify deleted
         get_resp = client.get(
@@ -334,10 +334,29 @@ def _create_test_person(client, token) -> dict:
 
 
 def _jpeg_bytes() -> bytes:
-    """Return minimal valid JPEG bytes."""
-    import struct
-    # Minimal JPEG SOI + EOI
-    return b"\xff\xd8\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00" + b"\x00" * 14 + b"\xff\xd9"
+    """Return a small valid JPEG image encoded via OpenCV."""
+    import cv2
+    import numpy as np
+    # Create a small colored image (blue square)
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :] = (200, 100, 50)  # BGR
+    success, encoded = cv2.imencode(".jpg", img)
+    if not success:
+        # Fallback to minimal JPEG header if cv2 fails
+        return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00\x43\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\x09\x09\x08\x0a\x0c\x14\x0d\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c\x20\x24\x2e\x27\x20\x22\x2c\x23\x1c\x1c\x28\x37\x29\x2c\x30\x31\x34\x34\x34\x1f\x27\x39\x3d\x38\x32\x3c\x2e\x33\x34\x32\xff\xc0\x00\x0b\x08\x00\x64\x00\x64\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x11\x04\x12\x21\x31\x41\x05\x13\x51\x61\x22\x71\x81\x32\x06\x14\x91\xa1\xb1\xc1\x09\x23\x52\xf0\x15\x42\xd1\xe1\xf1\x33\x62\x72\x82\x92\x43\x53\x63\x73\x93\xa2\xb2\xc2\xd2\xe2\xf2\x24\x34\x54\x64\x74\x84\x94\xa3\xb3\xc3\xd3\xe3\xf3\x35\x55\x65\x75\x85\x95\xa5\xb5\xc5\xd5\xe5\xf5\x36\x46\x56\x66\x76\x86\x96\xa6\xb6\xc6\xd6\xe6\xf6\x37\x47\x57\x67\x77\x87\x97\xa7\xb7\xc7\xd7\xe7\xf7\x38\x48\x58\x68\x78\x88\x98\xa8\xb8\xc8\xd8\xe8\xf8\x39\x49\x59\x69\x79\x89\x99\xa9\xb9\xc9\xd9\xe9\xf9\x3a\x4a\x5a\x6a\x7a\x8a\x9a\xaa\xba\xca\xda\xea\xfa\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\xfb\xa5\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\xff\xd9"
+    return encoded.tobytes()
+
+
+def _upload_one_image(client, token, person_id, filename=None):
+    """Helper: POST a single image and return the batch response."""
+    img_data = _jpeg_bytes()
+    resp = client.post(
+        f"/api/v1/personnel/{person_id}/images",
+        files={"files": (filename or "test.jpg", img_data, "image/jpeg")},
+        data={"enable_cropping": "false"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return resp
 
 
 def test_upload_image(tmp_path: Path) -> None:
@@ -347,19 +366,18 @@ def test_upload_image(tmp_path: Path) -> None:
         person = _create_test_person(client, admin_token)
         person_id = person["id"]
 
-        img_data = _jpeg_bytes()
-        resp = client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("test.jpg", img_data, "image/jpeg")},
-            data={"description": "Face photo"},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
+        resp = _upload_one_image(client, admin_token, person_id)
         assert resp.status_code == 201, resp.text
         body = resp.json()
-        assert body["personnel_id"] == person_id
-        assert body["description"] == "Face photo"
-        assert body["is_primary"] is True  # First image is primary
-        assert body["storage_key"].startswith("personnel_snapshots/")
+        assert body["total_success"] == 1
+        assert body["total_failed"] == 0
+        assert len(body["results"]) == 1
+        assert body["results"][0]["success"] is True
+        assert body["results"][0]["image"]["personnel_id"] == person_id
+        assert body["results"][0]["image"]["is_primary"] is True
+        assert body["results"][0]["image"]["storage_key"].startswith("personnel_snapshots/")
+        # Personnel in response should have images
+        assert len(body["personnel"]["images"]) >= 1
     finally:
         _teardown(test_runtime, old_runtime, old_store)
 
@@ -371,12 +389,7 @@ def test_list_images(tmp_path: Path) -> None:
         person = _create_test_person(client, admin_token)
         person_id = person["id"]
 
-        img_data = _jpeg_bytes()
-        client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("face.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
+        _upload_one_image(client, admin_token, person_id)
 
         op_token = _operator_token(client)
         resp = client.get(
@@ -398,24 +411,15 @@ def test_set_primary_image(tmp_path: Path) -> None:
         person = _create_test_person(client, admin_token)
         person_id = person["id"]
 
-        img_data = _jpeg_bytes()
         # Upload two images
-        resp1 = client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("first.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        resp2 = client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("second.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        first_id = resp1.json()["id"]
-        second_id = resp2.json()["id"]
+        resp1 = _upload_one_image(client, admin_token, person_id)
+        resp2 = _upload_one_image(client, admin_token, person_id, "second.jpg")
+        first_id = resp1.json()["results"][0]["image"]["id"]
+        second_id = resp2.json()["results"][0]["image"]["id"]
 
         # Second should not be primary initially
-        assert resp1.json()["is_primary"] is True
-        assert resp2.json()["is_primary"] is False
+        assert resp1.json()["results"][0]["image"]["is_primary"] is True
+        assert resp2.json()["results"][0]["image"]["is_primary"] is False
 
         # Set second as primary
         resp = client.put(
@@ -442,26 +446,18 @@ def test_delete_image_promotes_next(tmp_path: Path) -> None:
         person = _create_test_person(client, admin_token)
         person_id = person["id"]
 
-        img_data = _jpeg_bytes()
-        resp1 = client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("first.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        resp2 = client.post(
-            f"/api/v1/personnel/{person_id}/images",
-            files={"file": ("second.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        first_id = resp1.json()["id"]
-        second_id = resp2.json()["id"]
+        resp1 = _upload_one_image(client, admin_token, person_id)
+        resp2 = _upload_one_image(client, admin_token, person_id, "second.jpg")
+        first_id = resp1.json()["results"][0]["image"]["id"]
+        second_id = resp2.json()["results"][0]["image"]["id"]
 
         # Delete the first (primary) — second should become primary
         resp = client.delete(
             f"/api/v1/personnel/images/{first_id}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 204, resp.text
+        assert resp.content == b""  # 204 No Content
 
         second = client.get(
             f"/api/v1/personnel/images/{second_id}",
@@ -484,12 +480,7 @@ def test_list_with_images(tmp_path: Path) -> None:
         person = _create_test_person(client, admin_token)
 
         # Upload an image
-        img_data = _jpeg_bytes()
-        client.post(
-            f"/api/v1/personnel/{person['id']}/images",
-            files={"file": ("face.jpg", img_data, "image/jpeg")},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
+        _upload_one_image(client, admin_token, person["id"])
 
         op_token = _operator_token(client)
         resp = client.get(
@@ -629,6 +620,352 @@ def test_admin_required_for_create(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DELETE image route tests (204 + vector cleanup + storage cleanup)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_delete_image_204_no_content(tmp_path: Path) -> None:
+    """DELETE image returns 204 with empty body."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        resp = _upload_one_image(client, admin_token, person["id"])
+        image_id = resp.json()["results"][0]["image"]["id"]
+
+        resp = client.delete(
+            f"/api/v1/personnel/images/{image_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+        # Verify image is gone
+        get_resp = client.get(
+            f"/api/v1/personnel/images/{image_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert get_resp.status_code == 404
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_image_not_found(tmp_path: Path) -> None:
+    """DELETE image with non-existent ID returns 404."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        resp = client.delete(
+            "/api/v1/personnel/images/99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 404
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_image_forbidden_for_operator(tmp_path: Path) -> None:
+    """DELETE image requires admin role."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        resp = _upload_one_image(client, admin_token, person["id"])
+        image_id = resp.json()["results"][0]["image"]["id"]
+
+        op_token = _operator_token(client)
+        resp = client.delete(
+            f"/api/v1/personnel/images/{image_id}",
+            headers={"Authorization": f"Bearer {op_token}"},
+        )
+        assert resp.status_code == 403
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_image_cleans_up_storage(tmp_path: Path) -> None:
+    """DELETE image removes the physical file from disk."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        resp = _upload_one_image(client, admin_token, person["id"])
+        image_id = resp.json()["results"][0]["image"]["id"]
+        storage_key = resp.json()["results"][0]["image"]["storage_key"]
+        media_root = test_runtime.personnel_store._media_root
+        file_path = media_root / storage_key
+        assert file_path.is_file(), "Storage file should exist before delete"
+
+        client.delete(
+            f"/api/v1/personnel/images/{image_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert not file_path.is_file(), "Storage file should be removed after delete"
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_image_last_primary_no_promotion(tmp_path: Path) -> None:
+    """Deleting the only image leaves no primary; it should not crash."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        resp = _upload_one_image(client, admin_token, person["id"])
+        image_id = resp.json()["results"][0]["image"]["id"]
+
+        # Delete the only image
+        resp = client.delete(
+            f"/api/v1/personnel/images/{image_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 204
+
+        # Verify the person has no images
+        list_resp = client.get(
+            f"/api/v1/personnel/{person['id']}/images",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert list_resp.json()["count"] == 0
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DELETE personnel route tests (204 + cleanup + Detection preservation)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_delete_personnel_204_no_content(tmp_path: Path) -> None:
+    """DELETE personnel returns 204 with empty body."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        person = _create_test_person(client, token)
+        resp = client.delete(
+            f"/api/v1/personnel/{person['id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+        # Verify gone
+        get_resp = client.get(
+            f"/api/v1/personnel/{person['id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert get_resp.status_code == 404
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_personnel_not_found(tmp_path: Path) -> None:
+    """DELETE personnel with non-existent ID returns 404."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        resp = client.delete(
+            "/api/v1/personnel/99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 404
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_personnel_forbidden_for_operator(tmp_path: Path) -> None:
+    """DELETE personnel requires admin role."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        op_token = _operator_token(client)
+        resp = client.delete(
+            f"/api/v1/personnel/{person['id']}",
+            headers={"Authorization": f"Bearer {op_token}"},
+        )
+        assert resp.status_code == 403
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_personnel_cleans_up_images(tmp_path: Path) -> None:
+    """DELETE personnel removes all image storage files."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+        # Upload two images
+        resp1 = _upload_one_image(client, admin_token, person["id"])
+        resp2 = _upload_one_image(client, admin_token, person["id"], "second.jpg")
+        sk1 = resp1.json()["results"][0]["image"]["storage_key"]
+        sk2 = resp2.json()["results"][0]["image"]["storage_key"]
+        media_root = test_runtime.personnel_store._media_root
+        assert (media_root / sk1).is_file()
+        assert (media_root / sk2).is_file()
+
+        client.delete(
+            f"/api/v1/personnel/{person['id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        assert not (media_root / sk1).is_file()
+        assert not (media_root / sk2).is_file()
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
+    """DELETE personnel preserves human_logs rows by setting personnel_id to NULL."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+
+        # Insert a human_log row referencing this personnel
+        store = test_runtime.personnel_store
+        # Direct DB insert to simulate an existing detection
+        with store._lock, store._connection() as conn:
+            conn.execute(
+                """INSERT INTO human_logs
+                   (session_id, camera, track_id, name, first_seen, last_seen,
+                    recognition_score, snapshot_url, video_url, face_video_url,
+                    snapshot_quality, best_face_quality, full_frame_video_frames,
+                    accepted_face_frames, personnel_id, counts_for_attendance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("test-session", "cam1", 1, "Test User",
+                 "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z",
+                 0.95, "", "", "",
+                 0.8, 0.9, 10, 5, person["id"], 1),
+            )
+
+        # Verify the log exists with personnel_id
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM human_logs WHERE personnel_id = ?",
+            (person["id"],),
+        )
+        assert cursor.fetchone()[0] == 1
+
+        # Delete personnel
+        client.delete(
+            f"/api/v1/personnel/{person['id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        # Verify detection record still exists but personnel_id is NULL
+        cursor = conn.execute(
+            "SELECT personnel_id FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
+            ("test-session", "cam1", 1),
+        )
+        row = cursor.fetchone()
+        assert row is not None, "Detection record should still exist"
+        assert row["personnel_id"] is None, "personnel_id should be NULL"
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Upload with is_primary form parameter tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_upload_with_is_primary_true(tmp_path: Path) -> None:
+    """Uploading with is_primary=True sets that image as primary (replaces existing)."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+
+        # Upload first image (auto-becomes primary)
+        resp1 = _upload_one_image(client, admin_token, person["id"])
+        first_id = resp1.json()["results"][0]["image"]["id"]
+        assert resp1.json()["results"][0]["image"]["is_primary"] is True
+
+        # Upload second with is_primary=True
+        img_data = _jpeg_bytes()
+        resp2 = client.post(
+            f"/api/v1/personnel/{person['id']}/images",
+            files={"files": ("second.jpg", img_data, "image/jpeg")},
+            data={"enable_cropping": "false", "is_primary": "true"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp2.status_code == 201
+        second_id = resp2.json()["results"][0]["image"]["id"]
+        assert resp2.json()["results"][0]["image"]["is_primary"] is True
+
+        # First should no longer be primary
+        first_resp = client.get(
+            f"/api/v1/personnel/images/{first_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert first_resp.json()["is_primary"] is False
+        assert first_resp.json()["id"] != second_id
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_upload_with_is_primary_false(tmp_path: Path) -> None:
+    """Uploading with is_primary=False marks it non-primary explicitly."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+
+        # Upload first with is_primary=False (should NOT become primary)
+        img_data = _jpeg_bytes()
+        resp = client.post(
+            f"/api/v1/personnel/{person['id']}/images",
+            files={"files": ("first.jpg", img_data, "image/jpeg")},
+            data={"enable_cropping": "false", "is_primary": "false"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["results"][0]["image"]["is_primary"] is False
+
+        # Upload second (default auto) should auto-become primary
+        resp2 = _upload_one_image(client, admin_token, person["id"], "second.jpg")
+        assert resp2.json()["results"][0]["image"]["is_primary"] is True
+    finally:
+        _teardown(test_runtime, old_runtime, old_store)
+
+
+def test_upload_is_primary_batch_last_wins(tmp_path: Path) -> None:
+    """Uploading multiple files with is_primary=True: the last processed becomes primary."""
+    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    try:
+        admin_token = _admin_token(client)
+        person = _create_test_person(client, admin_token)
+
+        # Upload two files both with is_primary=True
+        img_data_1 = _jpeg_bytes()
+        img_data_2 = _jpeg_bytes()
+        from io import BytesIO
+        resp = client.post(
+            f"/api/v1/personnel/{person['id']}/images",
+            files=[
+                ("files", ("first.jpg", img_data_1, "image/jpeg")),
+                ("files", ("second.jpg", img_data_2, "image/jpeg")),
+            ],
+            data={"enable_cropping": "false", "is_primary": "true"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 201
+        results = resp.json()["results"]
+        assert len(results) == 2
+        # The last file (second.jpg) should end up as primary
+        assert results[0]["success"] is True
+        assert results[1]["success"] is True
+        # Last processed image should be the primary
+        second = client.get(
+            f"/api/v1/personnel/images/{results[1]['image']['id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert second.json()["is_primary"] is True
     finally:
         _teardown(test_runtime, old_runtime, old_store)
 

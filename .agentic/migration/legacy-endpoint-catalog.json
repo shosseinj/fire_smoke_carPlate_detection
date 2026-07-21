@@ -1570,21 +1570,20 @@
       "priority": null,
       "source_row": 60,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
+      "catalog_status": "MIGRATED",
       "selected_by_prompt": true,
       "analysis_status": "ANALYZED",
       "migration_status": "MIGRATED",
       "evaluation_status": "PASS",
       "last_migration_run": "2026-07-21T00:00:00Z",
       "implementation_evidence": [
-        "app/core/personnel_store.py",
-        "app/api/personnel.py",
-        "app/runtime.py",
-        "app/main.py",
-        "tests/test_personnel.py"
+        "app/api/personnel.py: DELETE /personnel/images/{image_id} returns 204 with vector+storage cleanup",
+        "app/core/personnel_store.py: delete_image returns cleanup dict with embedding_id"
       ],
       "assumptions": [],
-      "notes": []
+      "notes": [
+        "BREAKING: Response changed from 200 {\"deleted\":true} to 204 No Content"
+      ]
     },
     {
       "id": "personnel:/api/v1/personnel/import-excel",
@@ -1744,21 +1743,20 @@
       "priority": null,
       "source_row": 66,
       "specification_status": "PARTIAL_CATALOG_SPECIFICATION",
-      "catalog_status": "PENDING",
+      "catalog_status": "MIGRATED",
       "selected_by_prompt": true,
       "analysis_status": "ANALYZED",
       "migration_status": "MIGRATED",
       "evaluation_status": "PASS",
       "last_migration_run": "2026-07-21T00:00:00Z",
       "implementation_evidence": [
-        "app/core/personnel_store.py",
-        "app/api/personnel.py",
-        "app/runtime.py",
-        "app/main.py",
-        "tests/test_personnel.py"
+        "app/api/personnel.py: DELETE /personnel/{personnel_id} returns 204 with vector+storage cleanup + Detection preservation",
+        "app/core/personnel_store.py: delete() collects image storage keys, removes files; set_null_personnel_id_for_detections()"
       ],
       "assumptions": [],
-      "notes": []
+      "notes": [
+        "BREAKING: Response changed from 200 {\"deleted\":true} to 204 No Content"
+      ]
     },
     {
       "id": "personnel:/api/v1/personnel/{personnel_id}/images",
@@ -1776,18 +1774,33 @@
       "catalog_status": "PENDING",
       "selected_by_prompt": true,
       "analysis_status": "ANALYZED",
-      "migration_status": "MIGRATED",
+      "migration_status": "COMPLETE",
       "evaluation_status": "PASS",
-      "last_migration_run": "2026-07-21T00:00:00Z",
+      "last_migration_run": "run-20260721-personnel-images",
       "implementation_evidence": [
-        "app/core/personnel_store.py",
-        "app/api/personnel.py",
-        "app/runtime.py",
-        "app/main.py",
-        "tests/test_personnel.py"
+        "app/api/personnel.py: Extended POST endpoint for multiple-image upload",
+        "app/core/personnel_image_service.py: PersonnelImageProcessor service",
+        "app/config.py: Image upload limits configuration",
+        "app/core/personnel_store.py: create_images_batch method",
+        "app/processors/face_recognition.py: delete_point method added",
+        "tests/test_personnel_image_upload.py: 31 comprehensive tests",
+        "tests/test_personnel.py: Updated existing tests for new response format"
       ],
-      "assumptions": [],
-      "notes": []
+      "assumptions": [
+        "Mock mode skips face enrollment successfully",
+        "Recognition model input is 112x112 (from OnnxFaceEmbedder._blob)",
+        "Face vector dimension is 512, distance is COSINE",
+        "store_cropped_face config controls whether cropped or original is stored",
+        "First image auto-becomes primary (existing store policy)"
+      ],
+      "notes": [
+        "BREAKING: Response format changed from PersonnelImageResponse to PersonnelBatchUploadResponse",
+        "Existing single-file clients must read results[0].image instead of top-level fields",
+        "Per-file validation rejects corrupt, oversized, wrong-type images before face processing",
+        "All-failed requests return 422; partial success returns 201 with per-image results",
+        "NEW: is_primary form parameter allows explicit primary control during upload",
+        "NEW: delete_image route and delete personnel route handle vector+storage cleanup"
+      ]
     },
     {
       "id": "personnel-requests:/api/v1/personnel-requests/",

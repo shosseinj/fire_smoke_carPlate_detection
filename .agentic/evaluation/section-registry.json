@@ -486,17 +486,17 @@
       "enabled": true,
       "critical": true,
       "runtime_required": false,
-      "owner_paths": ["app/api/personnel.py", "app/core/personnel_store.py"],
-      "dependencies": ["configuration"],
+      "owner_paths": ["app/api/personnel.py", "app/core/personnel_store.py", "app/core/personnel_image_service.py", "tests/test_personnel.py", "tests/test_personnel_image_upload.py"],
+      "dependencies": ["configuration", "api-auth"],
       "consumers": ["user-interface", "attendance", "shifts", "requests"],
       "commands": [
-        "python -m pytest tests/test_personnel.py -q",
+        "python -m pytest tests/test_personnel.py tests/test_personnel_image_upload.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestPersonnelCrud\"",
-        "python -m py_compile app/api/personnel.py"
+        "python -m py_compile app/api/personnel.py app/core/personnel_image_service.py"
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Full CRUD with images, search, Excel import/export."
+      "notes": "Full CRUD with single/multiple-image upload, face enrollment, is_primary parameter, 204 No Content for deletes, vector+storage cleanup on delete, Detection preservation (personnel_id → NULL on human_logs)."
     },
     {
       "id": "mock-mode",

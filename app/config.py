@@ -184,6 +184,21 @@ class Settings:
     face_qdrant_path: Path = _path("FACE_QDRANT_PATH", "data/qdrant")
     face_qdrant_api_key: str | None = os.getenv("FACE_QDRANT_API_KEY") or None
 
+    # Image upload limits for personnel images
+    max_images_per_request: int = _env_int("MAX_IMAGES_PER_REQUEST", 10)
+    max_upload_bytes_per_image: int = _env_int("MAX_UPLOAD_BYTES_PER_IMAGE", 10 * 1024 * 1024)  # 10 MB
+    max_decoded_width: int = _env_int("MAX_DECODED_WIDTH", 4096)
+    max_decoded_height: int = _env_int("MAX_DECODED_HEIGHT", 4096)
+    max_total_decoded_pixels: int = _env_int("MAX_TOTAL_DECODED_PIXELS", 4096 * 4096)
+    supported_image_mime_types: tuple[str, ...] = (
+        "image/jpeg",
+        "image/png",
+        "image/bmp",
+    )
+    supported_image_extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".bmp")
+    # When true, store cropped face instead of original; when false, store original
+    store_cropped_face: bool = _env_bool("STORE_CROPPED_FACE", False)
+
     human_media_queue_size: int = _env_int("HUMAN_MEDIA_QUEUE_SIZE", 256)
     human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 5.0)
     human_video_idle_seconds: float = _env_float("HUMAN_VIDEO_IDLE_SECONDS", 5.0)

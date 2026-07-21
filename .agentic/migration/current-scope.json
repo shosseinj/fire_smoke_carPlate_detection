@@ -1,198 +1,51 @@
 {
-  "schema_version": 2,
-  "migration_mode": "PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY",
-  "run_id": "run-20260721-003",
-  "created_at": "2026-07-21T11:17:00Z",
-  "user_prompt": "Implement Work Shifts, Holidays, Personnel Requests, and Attendance Reports (daily/monthly/yearly) using raw sqlite3 stores, reusing existing Personnel and Detection infrastructure.",
-  "status": "IMPLEMENTED_AND_EVALUATED",
-  "selected_apps": ["Shifts", "Holidays", "Personnel Requests", "Attendance Reports"],
-  "selected_routes": [
-    "/api/v1/shifts/",
-    "/api/v1/shifts/{shift_id}",
-    "/api/v1/shifts/{shift_id}/assign/{personnel_id}",
-    "/api/v1/shifts/assign/{personnel_id}",
-    "/api/v1/shifts/{shift_id}/personnel",
-    "/api/v1/shifts/statistics/summary",
-    "/api/v1/holidays/",
-    "/api/v1/holidays/{holiday_id}",
-    "/api/v1/holidays/check/{date_value}",
-    "/api/v1/requests/",
-    "/api/v1/requests/{request_id}",
-    "/api/v1/requests/{request_id}/approve",
-    "/api/v1/requests/{request_id}/cancel",
-    "/api/v1/requests/types/list",
-    "/api/v1/requests/statuses/list",
-    "/api/v1/attendance/daily/{personnel_id}",
-    "/api/v1/attendance/monthly/{personnel_id}",
-    "/api/v1/attendance/monthly-performance",
-    "/api/v1/attendance/yearly-leave/{personnel_id}",
-    "/api/v1/attendance/log/{log_id}/toggle-attendance"
-  ],
-  "selected_options_or_behaviors": [
-    "shifts: CRUD for work shifts with weekday flags, overnight support",
-    "shifts: Personnel assignment to shifts",
-    "shifts: Shift statistics (distribution, assigned/unassigned counts)",
-    "holidays: CRUD with annual recurrence, Jalali date support, active/inactive",
-    "holidays: Check if a date is a holiday (including annual recurrence)",
-    "requests: CRUD for personnel requests (leave, sick_leave, remote_work, mission, overtime, personal, other)",
-    "requests: Approval workflow (approve/reject with overlap prevention)",
-    "requests: Cancel pending requests",
-    "attendance: Daily summary (present/absent, delay, early leave, overtime)",
-    "attendance: Monthly summary (gregorian and jalali calendar)",
-    "attendance: Monthly performance (all personnel ranking)",
-    "attendance: Yearly leave summary (leave, sick, mission, remote, personal days)",
-    "attendance: Log attendance toggle (set counts_for_attendance flag on detection logs)"
-  ],
-  "prompt_enrichment": [
-    "All stores use raw sqlite3 with RLock pattern matching existing PersonnelStore/LocationStore convention",
-    "ShiftStore adds shift_id column to personnel table via ALTER TABLE migration (no FK constraint to avoid ordering issues)",
-    "HumanLogStore gets personnel_id and counts_for_attendance columns via ALTER TABLE migration",
-    "personnel_id extracted from ref_img_id='personnel_<id>' format set by face enrollment API",
-    "AttendanceService uses Tehran timezone (+3:30) for business day calculations",
-    "Overnight shifts (e.g. 22:00→06:00) supported with correct duration calculation",
-    "Jalali dates supported in all date inputs (year 1200-1500 range detected as Jalali)",
-    "Attendance delay/early-leave computed against shift max_minutes_delay/max_minutes_early thresholds",
-    "Attendance overtime capped at shift max_overtime_hours",
-    "Minimum presence threshold: 60 seconds (MIN_ATTENDANCE_SECONDS)",
-    "Overlap prevention for approved requests of same type for same person"
-  ],
-  "confirmed_specification": [
+  "scope": "PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY",
+  "selected_items": [
     {
-      "item_id": "shifts:CRUD",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["CURRENT_USER_PROMPT: shifts selected", "Store CRUD pattern matches existing PersonnelStore"]
+      "id": "personnel:/api/v1/personnel/{personnel_id}",
+      "app": "personnel",
+      "url": "/api/v1/personnel/{personnel_id}",
+      "method": "DELETE",
+      "source_row": 66,
+      "specification_status": "CONFIRMED_FROM_INPUT",
+      "description": "Delete personnel record with vector embedding cleanup, storage cleanup, and Detection record preservation (sets personnel_id to NULL on human_logs). Returns 204 No Content."
     },
     {
-      "item_id": "shifts:assign",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["CURRENT_USER_PROMPT: shift assignment selected", "shift_id column on personnel table"]
+      "id": "personnel:/api/v1/personnel/{personnel_id}/images",
+      "app": "personnel",
+      "url": "/api/v1/personnel/{personnel_id}/images",
+      "method": "POST",
+      "source_row": 67,
+      "specification_status": "CONFIRMED_FROM_INPUT",
+      "description": "Multiple-image upload with face enrollment, optional cropping, is_primary support, batch transaction, and per-image cleanup."
     },
     {
-      "item_id": "holidays:CRUD",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["CURRENT_USER_PROMPT: holidays selected", "Duplicate prevention for active holidays"]
-    },
-    {
-      "item_id": "holidays:check",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Date check with annual recurrence support"]
-    },
-    {
-      "item_id": "requests:CRUD",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["CURRENT_USER_PROMPT: requests selected", "Overlap validation for approved requests"]
-    },
-    {
-      "item_id": "requests:approve",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Approve/reject workflow with admin role", "Overlap check on approval"]
-    },
-    {
-      "item_id": "attendance:daily",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Daily summary with presence computation from human_logs"]
-    },
-    {
-      "item_id": "attendance:monthly",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Monthly summary and performance with gregorian/jalali support"]
-    },
-    {
-      "item_id": "attendance:yearly-leave",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Yearly leave/sick/mission/remote/personal day counts from approved requests"]
-    },
-    {
-      "item_id": "attendance:toggle",
-      "coverage": "IMPLEMENTED_BY_TARGET_CONVENTION",
-      "evidence": ["Toggle counts_for_attendance flag on detection logs"]
+      "id": "personnel:/api/v1/personnel/images/{image_id}",
+      "app": "personnel",
+      "url": "/api/v1/personnel/images/{image_id}",
+      "method": "DELETE",
+      "source_row": 60,
+      "specification_status": "CONFIRMED_FROM_INPUT",
+      "description": "Delete personnel image with vector embedding cleanup, storage file cleanup, and automatic primary promotion. Returns 204 No Content."
     }
   ],
-  "target_convention_inferences": [
-    {
-      "item": "shifts:API",
-      "field": "route prefix",
-      "inference": "/api/v1/shifts",
-      "source": "Existing API convention (personnel, locations under /api/v1/)",
-      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
-    },
-    {
-      "item": "holidays:API",
-      "field": "route prefix",
-      "inference": "/api/v1/holidays",
-      "source": "Existing API convention",
-      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
-    },
-    {
-      "item": "requests:API",
-      "field": "route prefix",
-      "inference": "/api/v1/requests",
-      "source": "Existing API convention",
-      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
-    },
-    {
-      "item": "attendance:API",
-      "field": "route prefix",
-      "inference": "/api/v1/attendance",
-      "source": "Existing API convention",
-      "status": "IMPLEMENTED_BY_TARGET_CONVENTION"
-    }
-  ],
+  "prompt_enrichment": {
+    "DELETE_response": "204 No Content instead of 200 JSON body",
+    "vector_cleanup": "delete_point() called on face vector store for each removed embedding",
+    "storage_cleanup": "Physical image files deleted from personnel_snapshots/",
+    "detection_preservation": "human_logs.personnel_id set to NULL before personnel delete",
+    "primary_promotion": "Automatic when deleted image was primary",
+    "is_primary_parameter": "Form parameter on POST upload; True=force primary, False=force non-primary, None=auto (first or if no primary exists)"
+  },
   "safe_assumptions": [
-    "Tehran timezone = +3:30 constant (no DST adjustment, matching existing jalali_utils.py)",
-    "Attendance presence computed from overlapping human_log detection intervals",
-    "Delay = (first_seen - shift_start) - max_minutes_delay",
-    "Early leave = (shift_end - last_seen) - max_minutes_early",
-    "Overtime capped at max_overtime_hours",
-    "Minimum 60 seconds of detection counts as 'present'",
-    "Shift deletion sets personnel.shift_id to NULL (application-level cascade)",
-    "Holiday soft-delete sets is_active=0 rather than physical removal"
+    "SQlite ON DELETE CASCADE handles personnel_images record cleanup when personnel is deleted",
+    "human_logs.personnel_id is nullable (INTEGER without NOT NULL constraint)",
+    "Face vector store delete_point() exists on both QdrantFaceStore and SqliteFaceStore",
+    "Mock mode has face_processor = MockProcessor; _face_processor(runtime) returns None",
+    "Vector cleanup errors are non-fatal (logged as warning)",
+    "204 No Content response with empty body is the correct REST convention for DELETE",
+    "is_primary=True on batch upload: last processed image ends up as primary (atomic unset+set per image)"
   ],
-  "missing_critical_details": [],
-  "explicit_exclusions": [
-    "Attendance export to Excel/PDF",
-    "Real-time attendance dashboard/WebSocket",
-    "Qdrant integration for attendance matching",
-    "Shift swap/approval workflow"
-  ],
-  "resolved_work_items": [
-    {"order": 1, "action": "Create app/core/shift_store.py", "detail": "WorkShift table CRUD, personnel assignment, statistics"},
-    {"order": 2, "action": "Create app/core/holiday_store.py", "detail": "Holiday CRUD with annual recurrence, Jalali support"},
-    {"order": 3, "action": "Create app/core/request_store.py", "detail": "Personnel request CRUD with approval workflow, overlap prevention"},
-    {"order": 4, "action": "Create app/core/attendance_service.py", "detail": "Daily/monthly/yearly attendance computation"},
-    {"order": 5, "action": "Modify app/core/personnel_store.py", "detail": "Add shift_id column via migration"},
-    {"order": 6, "action": "Modify app/core/human_log_store.py", "detail": "Add personnel_id, counts_for_attendance columns + query methods"},
-    {"order": 7, "action": "Create API routers (shifts/holidays/requests/attendance)", "detail": "Full CRUD + operations endpoints with auth"},
-    {"order": 8, "action": "Wire stores in app/runtime.py", "detail": "Instantiate ShiftStore, HolidayStore, RequestStore, AttendanceService"},
-    {"order": 9, "action": "Register routers in app/main.py", "detail": "Register all 4 routers + update health/tags"},
-    {"order": 10, "action": "Add smoke test endpoints in processor_tests.py", "detail": "Shifts/holidays/requests smoke tests + all-in-one status"},
-    {"order": 11, "action": "Write tests", "detail": "18 shift tests + 19 holiday tests + 22 request tests + 13 attendance tests = 72 total"},
-    {"order": 12, "action": "Run full regression", "detail": "72/72 new tests pass. Full suite: 3 pre-existing face_recognition failures (unrelated)"}
-  ],
-  "allowed_dependency_changes": [
-    "Created app/core/shift_store.py",
-    "Created app/core/holiday_store.py",
-    "Created app/core/request_store.py",
-    "Created app/core/attendance_service.py",
-    "Modified app/core/personnel_store.py: +shift_id column",
-    "Modified app/core/human_log_store.py: +personnel_id, +counts_for_attendance, +query methods",
-    "Modified app/runtime.py: +4 new store/service fields",
-    "Modified app/main.py: +4 router registrations, +health fields, +tag descriptions",
-    "Modified app/api/processor_tests.py: +3 smoke test endpoints, +all-in-one status",
-    "Created app/api/shifts.py",
-    "Created app/api/holidays.py",
-    "Created app/api/requests.py",
-    "Created app/api/attendance.py",
-    "Created tests/test_shifts.py (18 tests)",
-    "Created tests/test_holidays.py (19 tests)",
-    "Created tests/test_requests.py (22 tests)",
-    "Created tests/test_attendance.py (13 tests)"
-  ],
-  "out_of_scope_items": [
-    "All Buildings/Rooms/Sections items (already implemented in run-002)",
-    "All Authentication items (already implemented in run-001/002)",
-    "Any Pipeline/Processor model changes",
-    "DeepStream or GPU-accelerated changes",
-    "Attendance export, dashboard, WebSocket"
-  ]
+  "blocked_items": [],
+  "all_unselected_items": "PENDING"
 }
