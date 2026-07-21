@@ -1,74 +1,59 @@
 [
   {
     "source_id": "camera-01",
-    "name": "Fire and plate Camera",
+    "name": "Smoke Camera 1",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.14:554/Streaming/Channels/101",
-
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T10:39:58.018632+00:00"
+    "tasks": ["fire_smoke"],
+    "source_uri": "data/smoke1.mp4",
+    "metadata": { "kind": "video_file", "index": 1, "file_name": "smoke1.mp4" }
   },
   {
     "source_id": "camera-02",
     "name": "Smoke Camera 2",
     "enabled": true,
     "tasks": ["fire_smoke", "plate_recognition"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.28:554/Streaming/Channels/101",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T11:12:11.947821+00:00"
+    "source_uri": "data/smoke2.mp4",
+    "metadata": { "kind": "video_file", "index": 2, "file_name": "smoke2.mp4" }
   },
   {
     "source_id": "camera-03",
-    "name": "Fire Camera",
+    "name": "Smoke Camera 4",
     "enabled": true,
     "tasks": ["fire_smoke"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/101",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "source_uri": "data/smoke4.mp4",
+    "metadata": { "kind": "video_file", "index": 3, "file_name": "smoke4.mp4" }
   },
   {
     "source_id": "camera-04",
-    "name": "Vehicle Camera",
+    "name": "Test Camera 2",
     "enabled": true,
-    "tasks": ["fire_smoke", "plate_recognition"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/201",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T10:41:22.877299+00:00"
+    "tasks": ["plate_recognition"],
+    "source_uri": "data/test2.mp4",
+    "metadata": { "kind": "video_file", "index": 4, "file_name": "test2.mp4" }
   },
   {
     "source_id": "camera-05",
     "name": "Road Camera",
     "enabled": true,
-    "tasks": ["fire_smoke"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/301",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "tasks": ["plate_recognition"],
+    "source_uri": "data/yt.mp4",
+    "metadata": { "kind": "video_file", "index": 5, "file_name": "yt.mp4" }
   },
   {
     "source_id": "camera-06",
     "name": "Workshop Camera",
     "enabled": true,
-    "tasks": ["fire_smoke"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/401",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "tasks": ["plate_recognition"],
+    "source_uri": "data/bucket11.mp4",
+    "metadata": { "kind": "video_file", "index": 6, "file_name": "bucket11.mp4" }
   },
   {
     "source_id": "camera-07",
     "name": "Mixed Camera 1",
     "enabled": true,
     "tasks": ["fire_smoke", "plate_recognition"],
-    "source_uri": "rtsp://admin:pMc897OmId@192.168.110.20:554/Streaming/Channels/501",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "source_uri": "data/etry.mp4",
+    "metadata": { "kind": "video_file", "index": 7, "file_name": "etry.mp4" }
   },
   {
     "source_id": "camera-08",
@@ -76,8 +61,6 @@
     "enabled": true,
     "tasks": ["fire_smoke", "plate_recognition"],
     "source_uri": "data/test1.mp4",
-    "metadata": {},
-    "created_at_utc": "2026-07-15T07:05:28.781176+00:00",
-    "updated_at_utc": "2026-07-15T07:05:28.781176+00:00"
+    "metadata": { "kind": "video_file", "index": 8, "file_name": "test1.mp4" }
   }
 ]

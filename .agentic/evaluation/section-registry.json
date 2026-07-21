@@ -206,6 +206,7 @@
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_broadcast.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestBroadcastApi\"",
         "python -m py_compile app/core/broadcast.py"
       ],
       "metrics": [
@@ -225,7 +226,8 @@
       "dependencies": ["configuration"],
       "consumers": ["deployment", "monitoring"],
       "commands": [
-        "python -m pytest tests/test_api.py -q -k \"test_health\""
+        "python -m pytest tests/test_api.py -q -k \"test_health\"",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestHealthEndpoint\""
       ],
       "metrics": [
         "status", "processor_mode", "registered_sources",
@@ -246,6 +248,7 @@
       "consumers": ["user-interface", "video-ingestion"],
       "commands": [
         "python -m pytest tests/test_api.py -q -k \"camera\"",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestCamerasCrud\"",
         "python -m py_compile app/api/cameras.py app/schemas.py"
       ],
       "metrics": [],
@@ -262,6 +265,7 @@
       "dependencies": ["configuration", "source-registry"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestSourcesCrud\"",
         "python -m py_compile app/api/sources.py"
       ],
       "metrics": [],
@@ -278,6 +282,8 @@
       "dependencies": ["configuration", "model-management"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestModelsApi\"",
+        "python -m pytest tests/test_model_management.py -q",
         "python -m py_compile app/api/models.py"
       ],
       "metrics": [],
@@ -294,6 +300,7 @@
       "dependencies": ["configuration", "model-management", "fire-smoke-processing", "plate-processing"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestGeneralSettingsApi\"",
         "python -m py_compile app/api/general_settings.py"
       ],
       "metrics": [],
@@ -311,6 +318,7 @@
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_plate_log_store.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestPlateLogsApi\"",
         "python -m py_compile app/api/plate_logs.py"
       ],
       "metrics": [],
@@ -328,6 +336,7 @@
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_plate_settings_store.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestPlateSettingsApi\"",
         "python -m py_compile app/api/plate_settings.py"
       ],
       "metrics": [],
@@ -344,6 +353,7 @@
       "dependencies": ["configuration", "fire-smoke-processing"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestFireSmokeApi\"",
         "python -m py_compile app/api/fire_smoke_logs.py"
       ],
       "metrics": [],
@@ -360,6 +370,7 @@
       "dependencies": ["configuration", "face-processing"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestFacesApi\"",
         "python -m py_compile app/api/faces.py"
       ],
       "metrics": [],
@@ -376,6 +387,7 @@
       "dependencies": ["configuration", "face-processing"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestHumansApi\"",
         "python -m py_compile app/api/humans.py"
       ],
       "metrics": [],
@@ -392,11 +404,12 @@
       "dependencies": ["configuration", "fire-smoke-processing", "plate-processing", "face-processing"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestHealthEndpoint\"",
         "python -m py_compile app/api/processor_tests.py"
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Per-stage pipeline testing with image upload."
+      "notes": "Per-stage pipeline testing with image upload. Smoke tests for personnel, locations, shifts, holidays, requests."
     },
     {
       "id": "api-frame-rounds",
@@ -408,6 +421,7 @@
       "dependencies": ["configuration", "frame-pipeline"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestFramesApi\"",
         "python -m py_compile app/api/frames.py"
       ],
       "metrics": [],
@@ -424,6 +438,7 @@
       "dependencies": ["configuration"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestDiagnosticsApi\"",
         "python -m py_compile app/api/diagnostics.py"
       ],
       "metrics": [],
@@ -440,11 +455,48 @@
       "dependencies": ["configuration", "frame-pipeline"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestResultsApi\"",
         "python -m py_compile app/api/results.py"
       ],
       "metrics": [],
       "acceptance": {},
       "notes": "Recent results, router status, result WebSocket."
+    },
+    {
+      "id": "api-attendance",
+      "name": "Attendance API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/attendance.py", "app/core/attendance_service.py"],
+      "dependencies": ["configuration", "personnel-store", "human-logs"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestAttendanceApi\"",
+        "python -m pytest tests/test_attendance.py -q",
+        "python -m py_compile app/api/attendance.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Daily, monthly, yearly attendance summaries. Toggle human log attendance flag."
+    },
+    {
+      "id": "api-personnel",
+      "name": "Personnel CRUD API",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["app/api/personnel.py", "app/core/personnel_store.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface", "attendance", "shifts", "requests"],
+      "commands": [
+        "python -m pytest tests/test_personnel.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestPersonnelCrud\"",
+        "python -m py_compile app/api/personnel.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Full CRUD with images, search, Excel import/export."
     },
     {
       "id": "mock-mode",
@@ -527,11 +579,106 @@
       "consumers": ["user-interface", "all-api-endpoints"],
       "commands": [
         "python -m pytest tests/test_auth.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestAuthCrud\"",
         "python -m py_compile app/api/auth.py app/core/auth.py app/core/auth_store.py"
       ],
       "metrics": ["login_count", "token_creations", "token_validations", "auth_errors"],
       "acceptance": {},
       "notes": "JWT-based auth with bcrypt password hashing. Default admin seeded on first startup. Role hierarchy: admin > operator > viewer."
+    },
+    {
+      "id": "crud-coverage",
+      "name": "Comprehensive CRUD API Coverage Analysis",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": false,
+      "owner_paths": ["tests/test_crud_api.py", "app/testsupport.py", "scripts/crud_report.py"],
+      "dependencies": ["configuration", "api-auth"],
+      "consumers": ["all-api-endpoints"],
+      "commands": [
+        "python -m pytest tests/test_crud_api.py -q -k \"TestCrudCoverageReport\"",
+        "python -m pytest tests/test_crud_api.py -q -k \"not TestCrudCoverageReport\"",
+        "python scripts/crud_report.py --report-only",
+        "python -m py_compile tests/test_crud_api.py app/testsupport.py scripts/crud_report.py"
+      ],
+      "metrics": [
+        "modules_tested", "endpoints_tested", "overall_pass_rate",
+        "module_coverage_pct", "failed_modules"
+      ],
+      "acceptance": {},
+      "notes": "Comprehensive CRUD analysis across 21 API modules. Runs in mock mode. Generates JSON + Markdown reports at .agentic/reports/crud-analysis-*."
+    },
+    {
+      "id": "api-locations",
+      "name": "Locations API (Buildings, Sections, Rooms)",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/locations.py", "app/core/location_store.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface"],
+      "commands": [
+        "python -m pytest tests/test_locations.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestLocationsCrud\"",
+        "python -m py_compile app/api/locations.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Building, section, room CRUD. Polygon matching, room access grants."
+    },
+    {
+      "id": "api-shifts",
+      "name": "Shifts CRUD API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/shifts.py", "app/core/shift_store.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface", "attendance"],
+      "commands": [
+        "python -m pytest tests/test_shifts.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestShiftsCrud\"",
+        "python -m py_compile app/api/shifts.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Work shift CRUD, personnel assignment, statistics."
+    },
+    {
+      "id": "api-holidays",
+      "name": "Holidays CRUD API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/holidays.py", "app/core/holiday_store.py"],
+      "dependencies": ["configuration"],
+      "consumers": ["user-interface", "attendance"],
+      "commands": [
+        "python -m pytest tests/test_holidays.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestHolidaysCrud\"",
+        "python -m py_compile app/api/holidays.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Holiday CRUD with Jalali date support, soft/hard delete."
+    },
+    {
+      "id": "api-requests",
+      "name": "Personnel Requests CRUD API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/requests.py", "app/core/request_store.py"],
+      "dependencies": ["configuration", "personnel-store"],
+      "consumers": ["user-interface", "attendance"],
+      "commands": [
+        "python -m pytest tests/test_requests.py -q",
+        "python -m pytest tests/test_crud_api.py -q -k \"TestRequestsCrud\"",
+        "python -m py_compile app/api/requests.py"
+      ],
+      "metrics": [],
+      "acceptance": {},
+      "notes": "Personnel request CRUD with approve/reject workflow."
     },
     {
       "id": "agentic-workflow",

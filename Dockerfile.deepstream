@@ -1,4 +1,4 @@
-FROM merged-video-ai-router:v8
+FROM merged-video-ai-router:v9
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1

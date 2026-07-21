@@ -2,3 +2,9 @@
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "crud: Comprehensive CRUD API tests",
+    "api: API-level integration tests",
+    "smoke: Smoke tests for module validation",
+    "store: Store-level unit tests",
+]

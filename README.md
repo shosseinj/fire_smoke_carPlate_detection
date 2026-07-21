@@ -651,7 +651,7 @@ docker compose up -d --force-recreate video-ai-router
 ```
 docker build `                                                                                          --add-host=host.docker.internal:host-gateway                                                                                         --no-cache `
   -f Dockerfile.deepstream `
-  -t merged-video-ai-router:v6 `
+  -t merged-video-ai-router:v9 `
   .
 ```
 
