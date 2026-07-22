@@ -6,6 +6,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
+from typing import Annotated
 
 import cv2
 import numpy as np
@@ -612,9 +613,24 @@ def list_personnel_images(
     "/{personnel_id}/images",
     summary="Upload face image(s) for a personnel record",
     status_code=status.HTTP_201_CREATED,
+    response_model=list[PersonnelImageResponse],
 )
-async def upload_personnel_image(
+async def upload_personnel_images(
     personnel_id: int,
+    files: Annotated[
+        list[UploadFile],
+        File(
+            description="JPEG, PNG, or BMP image files",
+            media_type="image/*",
+            json_schema_extra={
+                "items": {
+                    "type": "string",
+                    "format": "binary",
+                    "contentMediaType": "image/*",
+                }
+            },
+        ),
+    ],
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
     file: UploadFile | None = File(default=None),

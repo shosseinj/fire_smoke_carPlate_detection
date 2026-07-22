@@ -312,6 +312,11 @@ class PersonnelStore:
         on human_logs and detection_room_matches. Returns True if deleted."""
         with self._lock, self._connection() as conn:
             existing = conn.execute(
+                "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
+            ).fetchone()
+            if existing is None:
+                return False
+            existing = conn.execute(
                 f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if existing is None:
@@ -561,6 +566,21 @@ class PersonnelStore:
                 path.unlink()
         except OSError:
             pass
+
+    def _delete_personnel_files(self, personnel_id: int) -> None:
+        """Delete snapshot and cropped-face files owned by one personnel record."""
+        filename_pattern = f"personnel_{personnel_id}_*"
+        for directory in (self._snapshot_dir, self._cropped_face_dir):
+            try:
+                candidates = tuple(directory.glob(filename_pattern))
+            except OSError:
+                continue
+            for path in candidates:
+                try:
+                    if path.is_file():
+                        path.unlink()
+                except OSError:
+                    continue
 
     # ── Import / Export ─────────────────────────────────────────────────
 

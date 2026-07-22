@@ -104,7 +104,7 @@ class Settings:
     )
     broadcast_enabled: bool = _env_bool("BROADCAST_ENABLED", True)
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
-    saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media")
+    saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
     fire_severity_window_seconds: float = _env_float(
         "FIRE_SEVERITY_WINDOW_SECONDS", 3.0
     )
