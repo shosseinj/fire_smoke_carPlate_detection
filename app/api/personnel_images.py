@@ -97,12 +97,12 @@ async def upload_personnel_images(
         validation = validate_uploaded_image(raw, img_file.filename or "image.jpg", img_file.content_type)
         if not validation.valid:
             continue
-        storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg")
+        storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg", person.national_code)
         embedding_id: str | None = None
         process_result = processor.process_image(
             raw,
-            person_name=person_name,
-            ref_img_id=f"personnel_{personnel_id}",
+            person_name=person.national_code,
+            ref_img_id=f"{personnel_id}",
             enable_cropping=enable_cropping,
         )
         if process_result.success:

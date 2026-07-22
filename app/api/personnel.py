@@ -389,12 +389,12 @@ async def create_personnel_with_images(
         if not validation.valid:
             errors.append(f"{img_file.filename}: {validation.failure_message}")
             continue
-        storage_key = store._save_image_file(person.id, raw, img_file.filename or "image.jpg")
+        storage_key = store._save_image_file(person.id, raw, img_file.filename or "image.jpg", person.national_code)
         embedding_id: str | None = None
         process_result = processor.process_image(
             raw,
-            person_name=person_name,
-            ref_img_id=f"personnel_{person.id}",
+            person_name=person.national_code,
+            ref_img_id=f"{person.id}",
             enable_cropping=enable_cropping,
         )
         if process_result.success:
@@ -491,6 +491,7 @@ async def upload_personnel_zip(
     _: UserRecord = Depends(require_role("admin")),
     file: UploadFile = File(...),
     skip_invalid_national_codes: bool = Form(default=True),
+    enable_cropping: bool = Form(default=False),
 ) -> Any:
     store = _store(runtime)
     raw = await file.read()
@@ -498,22 +499,30 @@ async def upload_personnel_zip(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
     try:
         fp = _face_processor(runtime)
-        result = await run_in_threadpool(store.upload_personnel_zip, raw, fp)
+        result = await run_in_threadpool(store.upload_personnel_zip, raw, fp, enable_cropping)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    summary = {
+        "total_images_in_zip": result.get("total_images_in_zip", 0),
+        "total_persons": result.get("created_personnel", 0),
+        "total_images_saved": result.get("created_images", 0),
+        "total_errors": len(result.get("errors", [])),
+        "total_failed": result.get("total_failed", 0),
+        "qdrant_enrolled_count": result.get("qdrant_enrolled", 0),
+        "face_stats": result.get("face_counts", {}),
+    }
     return {
         "success": len(result.get("errors", [])) == 0,
         "filename": file.filename or "file.zip",
-        "message": f"Processed {result.get('created_personnel', 0)} persons, {result.get('created_images', 0)} images",
-        "summary": {
-            "total_processed": result.get("created_personnel", 0) + result.get("created_images", 0),
-            "total_errors": len(result.get("errors", [])),
-            "total_persons": result.get("created_personnel", 0),
-            "total_images_saved": result.get("created_images", 0),
-            "skipped_folders": 0,
-        },
-        "details": [],
-        "skipped_folders": None,
+        "message": (
+            f"Processed {summary['total_images_in_zip']} images: "
+            f"{summary['total_images_saved']} saved, "
+            f"{summary['qdrant_enrolled_count']} enrolled in Qdrant, "
+            f"{summary['total_failed']} failed"
+        ),
+        "summary": summary,
+        "details": result.get("image_details", []),
+        "errors": result.get("errors", []),
     }
 
 
@@ -686,7 +695,7 @@ async def upload_personnel_images(
             })
             continue
 
-        storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg")
+        storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg", person.national_code)
         embedding_id: str | None = None
         face_status = 0
         cropped_face_key: str | None = None
@@ -706,8 +715,8 @@ async def upload_personnel_images(
                 else:
                     process_result = processor.process_image(
                         raw,
-                        person_name=person_name,
-                        ref_img_id=f"personnel_{personnel_id}",
+                        person_name=person.national_code,
+                        ref_img_id=f"{personnel_id}",
                         enable_cropping=enable_cropping,
                     )
                     if process_result.success:
@@ -722,7 +731,7 @@ async def upload_personnel_images(
                                     success_enc, encoded = cv2.imencode(".jpg", aligned)
                                     if success_enc:
                                         cropped_face_key = store._save_cropped_face_file(
-                                            personnel_id, encoded.tobytes(), img_file.filename or "face.jpg"
+                                            personnel_id, encoded.tobytes(), img_file.filename or "face.jpg", person.national_code
                                         )
                             except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
                                 LOGGER.warning(
@@ -735,8 +744,8 @@ async def upload_personnel_images(
         else:
             process_result = processor.process_image(
                 raw,
-                person_name=person_name,
-                ref_img_id=f"personnel_{personnel_id}",
+                person_name=person.national_code,
+                ref_img_id=f"{personnel_id}",
                 enable_cropping=enable_cropping,
             )
             if process_result.success:

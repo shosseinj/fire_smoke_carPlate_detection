@@ -37,8 +37,10 @@ class _Store:
             updated_at_utc="2026-07-22T00:00:00Z",
         )
 
-    def _save_image_file(self, personnel_id: int, raw: bytes, filename: str) -> str:
+    def _save_image_file(self, personnel_id: int, raw: bytes, filename: str, national_code: str = "") -> str:
         self.saved_files += 1
+        if national_code:
+            return f"personnel_snapshots/{national_code}/{filename}"
         return f"personnel_snapshots/{personnel_id}/{filename}"
 
     def create_image(

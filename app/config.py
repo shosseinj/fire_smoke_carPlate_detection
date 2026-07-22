@@ -253,6 +253,7 @@ class Settings:
     auth_default_admin_email: str | None = _env_first(("AUTH_DEFAULT_ADMIN_EMAIL", "SUPERUSER_EMAIL"))
     auth_login_max_attempts: int = _env_int("AUTH_LOGIN_MAX_ATTEMPTS", 5)
     auth_login_lockout_minutes: int = _env_int("AUTH_LOGIN_LOCKOUT_MINUTES", 15)
+    disable_auth: bool = _env_bool("DISABLE_AUTH", False)
 
 
 settings = Settings()

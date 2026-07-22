@@ -973,6 +973,213 @@ def test_upload_is_primary_batch_last_wins(tmp_path: Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# ZIP upload test
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_test_zip(national_code: str) -> bytes:
+    """Create a minimal ZIP with folder-per-person structure and a JPEG image."""
+    import io as io_mod
+    import zipfile
+    import cv2 as cv_mod
+    import numpy as np_mod
+
+    # Small valid JPEG image
+    img = np_mod.zeros((50, 50, 3), dtype=np_mod.uint8)
+    img[:, :] = (100, 150, 200)
+    ok, encoded = cv_mod.imencode(".jpg", img)
+    assert ok
+
+    buf = io_mod.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{national_code}/photo.jpg", encoded.tobytes())
+    return buf.getvalue()
+
+
+def test_upload_personnel_zip_folder_structure(tmp_path: Path) -> None:
+    """ZIP with folder-per-person structure creates personnel + image records."""
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        zip_bytes = _make_test_zip("1234567891")
+        resp = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("test.zip", zip_bytes, "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["summary"]["total_persons"] == 1
+        assert body["summary"]["total_images_saved"] == 1
+        assert body["summary"]["total_images_in_zip"] == 1
+        assert body["summary"]["total_failed"] == 0
+        assert body["summary"]["qdrant_enrolled_count"] == 0  # no face processor in mock mode
+        assert len(body["details"]) == 1
+        assert body["details"][0]["status"] in ("ok", "failed")
+        assert body["details"][0]["file"] == "1234567891/photo.jpg"
+        assert len(body.get("errors", [])) == 0
+
+        # Verify the person was created with descriptive name from national code
+        person_resp = client.get(
+            "/api/v1/personnel/search/1234567891",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert person_resp.status_code == 200
+        person = person_resp.json()
+        assert person["national_code"] == "1234567891"
+        assert person["fname"] == "person_1234567891"
+        assert person["lname"] == ""
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_upload_personnel_zip_with_enable_cropping(tmp_path: Path) -> None:
+    """ZIP upload accepts enable_cropping parameter without error (mock mode)."""
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        zip_bytes = _make_test_zip("9876543210")
+        resp = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("test.zip", zip_bytes, "application/zip")},
+            data={"enable_cropping": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["summary"]["total_persons"] == 1
+        assert body["summary"]["total_images_in_zip"] == 1
+        assert body["summary"]["qdrant_enrolled_count"] == 0
+        assert len(body["details"]) == 1
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_upload_personnel_zip_invalid_national_code_saves_error(tmp_path: Path) -> None:
+    """ZIP images with non-numeric filenames (no valid national code) are saved to error folder."""
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        import io as io_mod
+        import zipfile
+        import cv2 as cv2_mod
+        import numpy as np_mod
+
+        img = np_mod.zeros((50, 50, 3), dtype=np_mod.uint8)
+        ok, encoded = cv2_mod.imencode(".jpg", img)
+        assert ok
+        buf = io_mod.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("no_nc_photo.jpg", encoded.tobytes())
+        zip_bytes = buf.getvalue()
+
+        token = _admin_token(client)
+        resp = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("bad.zip", zip_bytes, "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is False
+        assert body["summary"]["total_images_in_zip"] == 1
+        assert body["summary"]["total_persons"] == 0
+        assert body["summary"]["total_images_saved"] == 0
+        assert body["summary"]["total_failed"] == 1
+        assert len(body["errors"]) == 1
+        assert "Cannot determine personnel" in body["errors"][0]["error"]
+        assert len(body["details"]) == 1
+        assert body["details"][0]["status"] == "failed"
+        assert body["details"][0]["saved_to_error_folder"] is not None
+        assert body["details"][0]["enrolled_in_qdrant"] is False
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_upload_personnel_zip_folder_creates_person_with_national_code_name(tmp_path: Path) -> None:
+    """ZIP with folder-per-person structure creates person named person_{national_code}
+    instead of 'Unknown Unknown'."""
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        nc = VALID_CODE_3  # "1234123411" — valid checksum
+        zip_bytes = _make_test_zip(nc)
+        resp = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("test.zip", zip_bytes, "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["summary"]["qdrant_enrolled_count"] == 0  # no real face processor
+        assert len(body["details"]) == 1
+        assert body["details"][0]["file"] == f"{nc}/photo.jpg"
+
+        # Verify the person was created with a descriptive name
+        person_resp = client.get(
+            f"/api/v1/personnel/search/{nc}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert person_resp.status_code == 200
+        person = person_resp.json()
+        assert person["fname"] == f"person_{nc}"
+        assert person["lname"] == ""
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_upload_personnel_zip_updates_existing_unknown_name(tmp_path: Path) -> None:
+    """Re-upload for a national code whose person record has 'Unknown' name
+    (e.g. from a prior upload before the naming fix) updates the record to
+    'person_{national_code}' so that vector enrollment can proceed."""
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        nc = VALID_CODE_1  # "1234567891"
+
+        # 1. Create a person with "Unknown" name (simulating a pre-fix upload)
+        resp = client.post(
+            "/api/v1/personnel/",
+            json={
+                "fname": "Unknown",
+                "lname": "Unknown",
+                "national_code": nc,
+                "employee_type": "unknown",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201, resp.text
+
+        # 2. Upload a ZIP for the same national code
+        zip_bytes = _make_test_zip(nc)
+        resp = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("test.zip", zip_bytes, "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        assert body["summary"]["total_images_in_zip"] == 1
+
+        # 3. Verify the person's name was updated
+        person_resp = client.get(
+            f"/api/v1/personnel/search/{nc}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert person_resp.status_code == 200
+        person = person_resp.json()
+        assert person["fname"] == f"person_{nc}"
+        assert person["lname"] == ""
+        # Should have 0 created_personnel (reused existing record)
+        assert body["summary"]["total_persons"] == 0
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Smoke test endpoint test
 # ═══════════════════════════════════════════════════════════════════
 

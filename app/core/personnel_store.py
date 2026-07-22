@@ -90,21 +90,61 @@ def _personnel_integrity_message(
     return "Personnel data violates a database constraint"
 
 
+def _parse_zip_entry_personnel(name: str) -> tuple[str, str, str]:
+    """Extract (fname, lname, national_code_candidate) from a ZIP entry path.
+
+    Folder-per-person structure:  {national_code}/{filename}
+      → (Unknown, Unknown, national_code)
+
+    Underscore filename pattern:  {fname}_{lname}_{national_code}.ext
+      → (fname, lname, national_code)
+
+    Bare numeric stem:  {national_code}.ext
+      → (Unknown, Unknown, national_code)
+
+    Returns empty string for national_code when no candidate can be determined.
+    """
+    parts = Path(name).parts
+    img_filename = Path(name).name
+    stem = img_filename.rsplit(".", 1)[0] if "." in img_filename else img_filename
+
+    if len(parts) >= 2:
+        # Inside a directory — use the first path component as national_code
+        # Expected structure: {national_code}/{image_file}
+        nc_candidate = normalize_national_code(parts[0])
+        return "Unknown", "Unknown", nc_candidate
+
+    # Flat file — underscore pattern: fname_lname_nationalCode.ext
+    parts_underscore = stem.split("_")
+    if len(parts_underscore) >= 3:
+        fc = parts_underscore[0]
+        lc = "_".join(parts_underscore[1:-1])
+        nc_candidate = normalize_national_code(parts_underscore[-1])
+        return fc, lc, nc_candidate
+
+    # Bare numeric stem
+    if stem.isdigit():
+        nc_candidate = normalize_national_code(stem)
+        return "Unknown", "Unknown", nc_candidate
+
+    return "Unknown", "Unknown", ""
+
+
 class PersonnelStore:
     """PostgreSQL-backed store for personnel records and images."""
 
     def __init__(self, database: Database | str, saved_media_path: Path) -> None:
-        self.database = ensure_database(database)
+        self._database = ensure_database(database)
         self._media_root = saved_media_path.resolve()
         self._snapshot_dir = self._media_root / "personnel_snapshots"
-        self._snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._cropped_face_dir = self._media_root / "personnel_cropped_faces"
+        self._zip_errors_dir = self._media_root / "personnel_zip_errors"
         self._cropped_face_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_db()
 
     def _connection(self) -> Connection:
-        return self.database.connection()
+        return self._database.connection()
 
     def _init_db(self) -> None:
         return None
@@ -600,7 +640,7 @@ class PersonnelStore:
 
     def _delete_personnel_files(self, personnel_id: int) -> None:
         """Delete snapshot and cropped-face files owned by one personnel record."""
-        filename_pattern = f"personnel_{personnel_id}_*"
+        filename_pattern = f"{personnel_id}_*"
         for directory in (self._snapshot_dir, self._cropped_face_dir):
             try:
                 candidates = tuple(directory.glob(filename_pattern))
@@ -675,19 +715,31 @@ class PersonnelStore:
         self,
         data: bytes,
         face_processor: Any | None = None,
+        enable_cropping: bool = False,
     ) -> dict[str, Any]:
-        """Process a ZIP file containing personnel metadata + images.
+        """Process a ZIP file containing personnel data and images.
 
-        Expected structure:
-          - metadata.xlsx or metadata.json (optional — personnel records)
-          - images/ directory with image files
-          - Images are matched to personnel via metadata or filename pattern
+        Supported structures (in priority order):
+          1. Folder-per-person:  {national_code}/{image_file}
+             Each folder name is the person's 10-digit national code.
+             fname/lname default to "Unknown".
+          2. Filename pattern:  {fname}_{lname}_{national_code}.ext
+             Underscore-separated parts, last part is national code.
+          3. Flat numeric stem:  {national_code}.ext
+             Only when the filename stem is a valid national code.
+          4. metadata.xlsx or metadata.json at ZIP root (optional).
 
-        When face_processor is provided, runs face detection and saves
-        cropped faces. Each image entry includes face_status:
-          0 = no face, 1 = one face (enrolled), 2 = multiple faces.
+        When face_processor is provided, runs face detection and reports
+        face_status per image: 0 = no face, 1 = one face (enrolled),
+        2 = multiple faces. When enable_cropping is True and exactly one
+        face is detected, the aligned face crop is saved to disk.
 
-        Returns summary dict.
+        Failed images (no face, multiple faces, enrollment errors) are
+        saved to the personnel_zip_errors/ folder for manual review.
+        Faces whose person name is "Unknown Unknown" are NOT enrolled
+        in the vector store to avoid polluting Qdrant with unknowns.
+
+        Returns summary dict with per-image details and error reasons.
         """
         import cv2 as cv2_mod
         import numpy as np_mod
@@ -696,17 +748,25 @@ class PersonnelStore:
 
         created_personnel = 0
         created_images = 0
-        image_results: list[dict[str, Any]] = []
+        qdrant_enrolled = 0
+        image_details: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        face_counts = {"no_face": 0, "multiple_faces": 0, "enrolled": 0, "skipped_unknown_name": 0, "errors": 0}
+
+        total_images_in_zip = 0
 
         with zipfile.ZipFile(BytesIO(data)) as zf:
+            names = zf.namelist()
+
             metadata: list[dict[str, str]] = []
-            if "metadata.xlsx" in zf.namelist():
+            if "metadata.xlsx" in names:
                 excel_data = zf.read("metadata.xlsx")
                 result = self.import_from_excel(excel_data)
                 created_personnel = result["created"]
-                errors.extend(result["errors"])
-            elif "metadata.json" in zf.namelist():
+                for e in result.get("errors", []):
+                    e["file"] = "metadata.xlsx"
+                    errors.append(e)
+            elif "metadata.json" in names:
                 json_data = zf.read("metadata.json")
                 records = json.loads(json_data)
                 for rec in records:
@@ -721,54 +781,91 @@ class PersonnelStore:
                         created_personnel += 1
                     except (ValueError, KeyError) as exc:
                         errors.append({"file": "metadata.json", "error": str(exc)})
-            else:
-                pass
 
-            for name in zf.namelist():
+            for name in names:
                 if name.startswith("__MACOSX") or name.startswith("."):
                     continue
                 if name.endswith((".xlsx", ".json", "/")):
                     continue
+                if name.startswith("metadata."):
+                    continue
+
+                total_images_in_zip += 1
                 file_data = zf.read(name)
-                parts = Path(name).parts
                 img_filename = Path(name).name
-                stem = img_filename.rsplit(".", 1)[0] if "." in img_filename else img_filename
-                parts_underscore = stem.split("_")
-                if len(parts_underscore) >= 3:
-                    fc = parts_underscore[0]
-                    lc = "_".join(parts_underscore[1:-1])
-                    nc_candidate = normalize_national_code(parts_underscore[-1])
-                else:
-                    fc = "Unknown"
-                    lc = "Unknown"
-                    nc_candidate = normalize_national_code(stem) if stem.isdigit() else f"auto-{uuid.uuid4().hex[:8]}"
+
+                # Determine personnel info from folder or filename
+                fc, lc, nc_candidate = _parse_zip_entry_personnel(name)
+                error_reason: str | None = None
+                saved_to_error_folder: str | None = None
+                person_name: str = "Unknown Unknown"
 
                 if validate_national_code(nc_candidate):
                     person = self.get_by_national_code(nc_candidate)
                     if person is None:
                         try:
+                            # When the parsed name is "Unknown" (folder/bare-numeric
+                            # pattern with no real name info), use a descriptive label.
+                            display_fname = f"person_{nc_candidate}" if fc == "Unknown" else fc
+                            display_lname = "" if fc == "Unknown" else lc
                             person = self.create(
-                                fname=fc,
-                                lname=lc,
+                                fname=display_fname,
+                                lname=display_lname,
                                 national_code=nc_candidate,
                                 employee_type="unknown",
                             )
                             created_personnel += 1
                         except ValueError as exc:
-                            errors.append({"file": name, "error": str(exc)})
+                            error_reason = str(exc)
+                            errors.append({"file": name, "error": error_reason})
+                            saved_to_error_folder = self._save_error_image(nc_candidate, img_filename, file_data)
+                            image_details.append({
+                                "file": name,
+                                "status": "failed",
+                                "error_reason": error_reason,
+                                "saved_to_error_folder": saved_to_error_folder,
+                                "face_status": -1,
+                                "enrolled_in_qdrant": False,
+                            })
+                            face_counts["errors"] += 1
                             continue
                 else:
-                    errors.append({"file": name, "error": "Cannot determine personnel from filename"})
+                    error_reason = "Cannot determine personnel from filename"
+                    errors.append({"file": name, "error": error_reason})
+                    saved_to_error_folder = self._save_error_image("unknown", img_filename, file_data)
+                    image_details.append({
+                        "file": name,
+                        "status": "failed",
+                        "error_reason": error_reason,
+                        "saved_to_error_folder": saved_to_error_folder,
+                        "face_status": -1,
+                        "enrolled_in_qdrant": False,
+                    })
+                    face_counts["errors"] += 1
                     continue
 
                 if person is not None:
+                    raw_name = f"{person.fname} {person.lname}".strip() or "Unknown Unknown"
+                    # If the person has an unknown name (e.g. from a previous
+                    # upload that could not determine the real name), update it
+                    # to a descriptive label so vector enrollment can proceed.
+                    if raw_name.lower() in ("unknown unknown", "unknown"):
+                        updated = self.update(
+                            person.id,
+                            fname=f"person_{nc_candidate}",
+                            lname="",
+                        )
+                        if updated is not None:
+                            person = updated
+                    person_name = f"{person.fname} {person.lname}".strip() 
                     try:
-                        storage_key = self._save_image_file(person.id, file_data, img_filename)
+                        storage_key = self._save_image_file(person.id, file_data, img_filename, nc_candidate)
 
                         # Face processing
-                        face_status = 0
+                        face_status = -1
                         cropped_face_key: str | None = None
                         embedding_id: str | None = None
+                        enrolled_in_qdrant = False
 
                         if face_processor is not None:
                             np_arr = np_mod.frombuffer(file_data, dtype=np_mod.uint8)
@@ -781,58 +878,175 @@ class PersonnelStore:
 
                                 if raw_count == 0:
                                     face_status = 0
+                                    error_reason = "No face detected in image"
+                                    face_counts["no_face"] += 1
                                 elif raw_count >= 2:
                                     face_status = 2
+                                    error_reason = f"Multiple faces detected ({raw_count})"
+                                    face_counts["multiple_faces"] += 1
                                 else:
+                                    # Exactly one face detected — attempt enrollment
                                     try:
-                                        enroll_result = face_processor.enroll(
-                                            image,
-                                            person=f"{person.fname} {person.lname}",
-                                            ref_img_id=f"personnel_{person.id}",
-                                        )
-                                        embedding_id = enroll_result.get("point_id")
-                                        face_status = 1
-                                    except (ValueError, FileNotFoundError, RuntimeError, ImportError):
+                                        # Skip enrollment when person name is unknown
+                                        if person_name.lower() in ("unknown unknown", "unknown"):
+                                            face_status = 1
+                                            error_reason = "Skipped vector enrollment: person name is unknown"
+                                            face_counts["skipped_unknown_name"] += 1
+                                            LOGGER.info(
+                                                "Skipped Qdrant enrollment for '%s' (%s): name is unknown",
+                                                person_name, nc_candidate,
+                                            )
+                                        else:
+                                            enroll_result = face_processor.enroll(
+                                                image,
+                                                person=person_name,
+                                                ref_img_id=f"{person.id}",
+                                            )
+                                            embedding_id = enroll_result.get("point_id")
+                                            face_status = 1
+                                            enrolled_in_qdrant = True
+                                            qdrant_enrolled += 1
+                                            face_counts["enrolled"] += 1
+
+                                            if enable_cropping:
+                                                success, aligned = face_processor.get_aligned_face(image)
+                                                if success and aligned is not None:
+                                                    ok_enc, encoded = cv2_mod.imencode(".jpg", aligned)
+                                                    if ok_enc:
+                                                        cropped_face_key = self._save_cropped_face_file(
+                                                            person.id, encoded.tobytes(), img_filename, nc_candidate
+                                                        )
+
+                                            LOGGER.info(
+                                                "Enrolled face for '%s' (%s) in Qdrant: point_id=%s",
+                                                person_name, nc_candidate, embedding_id,
+                                            )
+                                    except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
                                         face_status = 0
+                                        error_reason = f"Face enrollment failed: {exc}"
+                                        face_counts["errors"] += 1
+                            else:
+                                error_reason = "Could not decode image"
+                                face_counts["errors"] += 1
+                        else:
+                            # No face processor — image saved without face check
+                            face_status = -1
 
                         self.create_image(
                             person.id, storage_key,
                             embedding_id=embedding_id,
                         )
                         created_images += 1
-                        image_results.append({
+
+                        # Save to error folder if there was a problem
+                        if error_reason and embedding_id is None:
+                            saved_to_error_folder = self._save_error_image(nc_candidate, img_filename, file_data)
+
+                        image_details.append({
                             "file": name,
+                            "status": "failed" if error_reason else "ok",
+                            "error_reason": error_reason,
+                            "saved_to_error_folder": saved_to_error_folder,
                             "face_status": face_status,
+                            "enrolled_in_qdrant": enrolled_in_qdrant,
                             "cropped_face_key": cropped_face_key,
+                            "embedding_id": embedding_id,
                         })
+                        if error_reason:
+                            errors.append({"file": name, "error": error_reason})
                     except Exception as exc:
-                        errors.append({"file": name, "error": f"{type(exc).__name__}: {exc}"})
+                        error_reason = f"{type(exc).__name__}: {exc}"
+                        errors.append({"file": name, "error": error_reason})
+                        saved_to_error_folder = self._save_error_image(
+                            nc_candidate, img_filename, file_data
+                        )
+                        image_details.append({
+                            "file": name,
+                            "status": "failed",
+                            "error_reason": error_reason,
+                            "saved_to_error_folder": saved_to_error_folder,
+                            "face_status": -1,
+                            "enrolled_in_qdrant": False,
+                        })
+                        face_counts["errors"] += 1
+
+        total_failed = sum(1 for d in image_details if d["status"] == "failed")
+
+        LOGGER.info(
+            "ZIP upload complete: %d images in zip | %d persons | %d images saved | "
+            "%d enrolled in Qdrant | %d failed | "
+            "face_stats: no_face=%d multiple_faces=%d enrolled=%d skipped_unknown_name=%d errors=%d",
+            total_images_in_zip,
+            created_personnel,
+            created_images,
+            qdrant_enrolled,
+            total_failed,
+            face_counts["no_face"],
+            face_counts["multiple_faces"],
+            face_counts["enrolled"],
+            face_counts["skipped_unknown_name"],
+            face_counts["errors"],
+        )
 
         return {
             "created_personnel": created_personnel,
             "created_images": created_images,
-            "image_results": image_results,
+            "qdrant_enrolled": qdrant_enrolled,
+            "image_details": image_details,
             "errors": errors,
+            "face_counts": face_counts,
+            "total_images_in_zip": total_images_in_zip,
+            "total_failed": total_failed,
         }
 
-    def _save_image_file(self, personnel_id: int, data: bytes, original_filename: str) -> str:
+    def _save_image_file(self, personnel_id: int, data: bytes, original_filename: str, national_code: str = "") -> str:
+        """Save an image to personnel_snapshots/{national_code}/ and return the relative storage_key.
+
+        When national_code is empty the file is saved directly under personnel_snapshots/
+        for backward compatibility.
+        """
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
-        unique_name = f"personnel_{personnel_id}_{uuid.uuid4().hex}{ext}"
-        relative_path = f"personnel_snapshots/{unique_name}"
+        unique_name = f"{personnel_id}_{uuid.uuid4().hex}{ext}"
+        if national_code:
+            relative_path = f"personnel_snapshots/{national_code}/{unique_name}"
+        else:
+            relative_path = f"personnel_snapshots/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         return relative_path
 
-    def _save_cropped_face_file(self, personnel_id: int, data: bytes, original_filename: str) -> str:
-        """Save a cropped face image to disk and return the storage_key (relative to media_root)."""
+    def _save_cropped_face_file(self, personnel_id: int, data: bytes, original_filename: str, national_code: str = "") -> str:
+        """Save a cropped face image to personnel_cropped_faces/{national_code}/ and return the storage_key.
+
+        When national_code is empty the file is saved directly under personnel_cropped_faces/
+        for backward compatibility.
+        """
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
-        unique_name = f"personnel_{personnel_id}_{uuid.uuid4().hex}{ext}"
-        relative_path = f"personnel_cropped_faces/{unique_name}"
+        unique_name = f"{personnel_id}_{uuid.uuid4().hex}{ext}"
+        if national_code:
+            relative_path = f"personnel_cropped_faces/{national_code}/{unique_name}"
+        else:
+            relative_path = f"personnel_cropped_faces/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         return relative_path
+
+    def _save_error_image(self, national_code: str, filename: str, data: bytes) -> str:
+        """Save a copy of a failed image to the zip errors directory for manual review.
+
+        Returns the relative path (for logging/reporting).
+        """
+        safe_nc = re.sub(r"[^\dA-Za-z_-]", "_", national_code) if national_code else "unknown"
+        dest_dir = self._zip_errors_dir / safe_nc
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        unique_name = f"{Path(filename).stem}_{uuid.uuid4().hex}{Path(filename).suffix or '.jpg'}"
+        dest = dest_dir / unique_name
+        dest.write_bytes(data)
+        relative = str(dest.relative_to(self._media_root))
+        LOGGER.warning("Saved failed image to error folder: %s", relative)
+        return relative
 
     def get_image_path(self, storage_key: str) -> Path:
         return self._media_root / storage_key

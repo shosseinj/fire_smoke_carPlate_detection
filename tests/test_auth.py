@@ -1120,3 +1120,72 @@ def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
         )
     finally:
         _teardown(test_runtime, old_runtime)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 6: Disabled auth mode tests (DISABLE_AUTH=true)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_disabled_auth_allows_access_without_token(tmp_path: Path) -> None:
+    """With DISABLE_AUTH=true, protected endpoints work without a token."""
+    os.environ["DISABLE_AUTH"] = "true"
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        response = client.get("/api/v1/auth/me")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["username"] == "dev"
+        assert body["role"] == "admin"
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
+        _teardown(test_runtime, old_runtime)
+
+
+def test_disabled_auth_skips_role_checks(tmp_path: Path) -> None:
+    """With DISABLE_AUTH=true, admin-only endpoints work without a token."""
+    os.environ["DISABLE_AUTH"] = "true"
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        # /api/v1/auth/users is admin-only; should work without token
+        response = client.get("/api/v1/auth/users")
+        assert response.status_code == 200
+        body = response.json()
+        assert "users" in body
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
+        _teardown(test_runtime, old_runtime)
+
+
+def test_disabled_auth_with_invalid_token(tmp_path: Path) -> None:
+    """With DISABLE_AUTH=true, even an invalid token is accepted (bypassed)."""
+    os.environ["DISABLE_AUTH"] = "true"
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        response = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer this-is-not-valid"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["username"] == "dev"
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
+        _teardown(test_runtime, old_runtime)
+
+
+def test_disabled_auth_login_still_works(tmp_path: Path) -> None:
+    """Login endpoint still functions normally when auth is disabled."""
+    os.environ["DISABLE_AUTH"] = "true"
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        # Login is an unprotected endpoint; it should still work
+        assert response.status_code == 200
+        assert "access_token" in response.json()
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
+        _teardown(test_runtime, old_runtime)

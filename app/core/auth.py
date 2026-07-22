@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -216,10 +217,26 @@ def resolve_user_from_payload(payload: dict[str, Any]) -> UserRecord | None:
 
 # ── FastAPI dependencies ────────────────────────────────────────────
 
+_DISABLED_AUTH_USER = UserRecord(
+    id=0,
+    username="dev",
+    password_hash="",
+    role="admin",
+    is_active=True,
+    created_at_utc="",
+)
+
+
+def _auth_disabled() -> bool:
+    """Check DISABLE_AUTH env var at runtime so tests can set it per-suite."""
+    return os.environ.get("DISABLE_AUTH", "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> UserRecord:
+    if _auth_disabled():
+        return _DISABLED_AUTH_USER
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -251,6 +268,8 @@ def get_current_user(
 def get_optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> UserRecord | None:
+    if _auth_disabled():
+        return _DISABLED_AUTH_USER
     if credentials is None:
         return None
     payload = decode_access_token(credentials.credentials)
