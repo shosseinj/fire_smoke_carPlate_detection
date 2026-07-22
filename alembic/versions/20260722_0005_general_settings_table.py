@@ -50,7 +50,7 @@ def upgrade() -> None:
             "face_rec_score, face_det_score, human_det_score, confirmation_threshold, "
             "created_at_utc, updated_at_utc) "
             "SELECT 1, 1, 0, 0, 1, 1.0, 1, 1, 0, 1, 0.4, 0.4, 0.4, 0.6, "
-            "datetime('now'), datetime('now') "
+            "NOW(), NOW() "
             "WHERE NOT EXISTS (SELECT 1 FROM general_settings WHERE id = 1)"
         )
     )
