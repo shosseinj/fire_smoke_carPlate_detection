@@ -135,6 +135,29 @@ class CameraResponse(BaseModel):
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
+    settings_overrides: dict[str, Any] = Field(default_factory=dict)
+    effective_settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class CameraSettingsPatch(BaseModel):
+    video_ingest_fps: float | None = Field(default=None, gt=0, le=240)
+    video_preview_fps: float | None = Field(default=None, gt=0, le=240)
+    video_loop: bool | None = None
+    rtsp_transport: str | None = None
+    rtsp_open_timeout_ms: int | None = Field(default=None, gt=0)
+    rtsp_read_timeout_ms: int | None = Field(default=None, gt=0)
+    rtsp_reconnect_seconds: float | None = Field(default=None, ge=0.5)
+    deepstream_rtsp_latency_ms: int | None = Field(default=None, gt=0)
+    deepstream_rtsp_stall_timeout_seconds: int | None = Field(default=None, gt=0)
+    fire_confidence: float | None = Field(default=None, ge=0, le=1)
+    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_iou: float | None = Field(default=None, ge=0, le=1)
+    vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
+    vehicle_iou: float | None = Field(default=None, ge=0, le=1)
+    face_human_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
 
 class CameraTaskUpdate(BaseModel):

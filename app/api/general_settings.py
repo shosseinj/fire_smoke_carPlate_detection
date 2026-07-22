@@ -39,10 +39,37 @@ class FireSmokePolicyPatch(BaseModel):
     medium_count: int | None = Field(default=None, ge=2, le=100000)
     high_count: int | None = Field(default=None, ge=3, le=100000)
 
+class OperationalSettingsPatch(BaseModel):
+    video_ingest_fps: float | None = Field(default=None, gt=0, le=240)
+    video_preview_fps: float | None = Field(default=None, gt=0, le=240)
+    video_loop: bool | None = None
+    rtsp_transport: str | None = None
+    rtsp_open_timeout_ms: int | None = Field(default=None, gt=0)
+    rtsp_read_timeout_ms: int | None = Field(default=None, gt=0)
+    rtsp_reconnect_seconds: float | None = Field(default=None, ge=0.5)
+    deepstream_rtsp_latency_ms: int | None = Field(default=None, gt=0)
+    deepstream_rtsp_stall_timeout_seconds: int | None = Field(default=None, gt=0)
+    broadcast_enabled: bool | None = None
+    broadcast_jpeg_quality: int | None = Field(default=None, ge=1, le=100)
+    broadcast_wall_jpeg_quality: int | None = Field(default=None, ge=1, le=100)
+    broadcast_wall_max_width: int | None = Field(default=None, gt=0, le=4096)
+    broadcast_wall_max_height: int | None = Field(default=None, gt=0, le=4096)
+    fire_confidence: float | None = Field(default=None, ge=0, le=1)
+    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_iou: float | None = Field(default=None, ge=0, le=1)
+    vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
+    vehicle_iou: float | None = Field(default=None, ge=0, le=1)
+    face_human_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
+
+
 class GeneralSettingsPatch(BaseModel):
     models: ModelSettingsPatch | None = None
     plate_detection: PlateDetectionPatch | None = None
     fire_smoke_detection: FireSmokePolicyPatch | None = None
+    operational: OperationalSettingsPatch | None = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -69,6 +96,7 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
         if application_values.get(secret_name):
             application_values[secret_name] = "***"
     return {
+        "operational": runtime.general_settings.get().operational.to_dict(),
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
         "fire_smoke_detection": runtime.fire_smoke_logs.settings(),
@@ -127,6 +155,11 @@ def update_general_settings(
             runtime.plate_settings.update_general(
                 PlateDetectionPolicy(**{**asdict(current), **changes})
             )
+        if payload.operational is not None:
+            changes = payload.operational.model_dump(exclude_unset=True)
+            if changes:
+                runtime.general_settings.update({"operational": changes})
+                runtime.apply_operational_settings()
         if payload.fire_smoke_detection is not None:
             _, current = runtime.fire_smoke_logs.policy_snapshot()
             changes = payload.fire_smoke_detection.model_dump(

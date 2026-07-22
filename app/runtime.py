@@ -10,6 +10,7 @@ from app.config import Settings, settings
 from app.database import Database, get_database
 from app.core.auth import initialize_auth_store
 from app.core.general_settings_store import GeneralSettingsStore
+from app.core.operational_settings import OperationalSettings, CAMERA_SETTINGS_METADATA_KEY
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
@@ -75,6 +76,57 @@ class Runtime:
     detection_log_store: DetectionLogStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
+
+    def operational_settings(self):
+        return self.general_settings.get().operational
+
+    def resolve_camera_settings(self, camera_id: str) -> dict[str, object]:
+        general = self.operational_settings().to_dict()
+        camera = self.registry.require(camera_id)
+        overrides = dict(camera.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {})
+        return {**general, **overrides}
+
+    def update_camera_overrides(self, camera_id: str, changes: dict[str, object]) -> dict[str, object]:
+        camera = self.registry.require(camera_id)
+        current = dict(camera.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {})
+        candidate = self.operational_settings().updated({**current, **{k: v for k, v in changes.items() if v is not None}})
+        for key, value in changes.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        metadata = dict(camera.metadata)
+        if current:
+            metadata[CAMERA_SETTINGS_METADATA_KEY] = current
+        else:
+            metadata.pop(CAMERA_SETTINGS_METADATA_KEY, None)
+        self.registry.update(camera_id, metadata=metadata)
+        if self.video_ingestor is not None and hasattr(self.video_ingestor, "restart_source"):
+            self.video_ingestor.restart_source(camera_id)
+        return self.resolve_camera_settings(camera_id)
+
+    def apply_operational_settings(self) -> None:
+        from dataclasses import replace
+        current = self.operational_settings()
+        workers = self.router.workers
+        fire = workers.get(TaskName.FIRE_SMOKE)
+        if fire is not None and hasattr(fire.processor, "settings"):
+            fire.processor.settings = replace(fire.processor.settings, fire_candidate_confidence=current.fire_confidence, smoke_candidate_confidence=current.smoke_confidence)
+        plate = workers.get(TaskName.PLATE_RECOGNITION)
+        if plate is not None and hasattr(plate.processor, "settings"):
+            plate.processor.settings = replace(plate.processor.settings, detector_confidence=current.plate_confidence, detector_iou=current.plate_iou, vehicle_confidence=current.vehicle_confidence, vehicle_iou=current.vehicle_iou)
+        face = workers.get(TaskName.FACE_RECOGNITION)
+        if face is not None and hasattr(face.processor, "settings"):
+            face.processor.settings = replace(face.processor.settings, human_confidence=current.face_human_confidence, face_confidence=current.face_detection_confidence, recognition_threshold=current.face_recognition_threshold)
+        if self.video_ingestor is not None:
+            for name in ("target_fps", "preview_fps", "rtsp_reconnect_seconds"):
+                source = {"target_fps": "video_ingest_fps", "preview_fps": "video_preview_fps", "rtsp_reconnect_seconds": "rtsp_reconnect_seconds"}[name]
+                if hasattr(self.video_ingestor, name):
+                    setattr(self.video_ingestor, name, getattr(current, source))
+        self.broadcast.set_enabled(current.broadcast_enabled)
+        for camera in self.registry.list():
+            if self.video_ingestor is not None and hasattr(self.video_ingestor, "restart_source"):
+                self.video_ingestor.restart_source(camera.source_id)
 
     def selected_model_records(self) -> list[dict[str, object]]:
         """Return the exact startup model choices in runtime load order."""
@@ -218,18 +270,18 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     results = ResultStore(app_settings.recent_results_limit)
     broadcast = AnnotatedBroadcastHub(
-        enabled=app_settings.broadcast_enabled,
-        jpeg_quality=app_settings.broadcast_jpeg_quality,
-        wall_jpeg_quality=app_settings.broadcast_wall_jpeg_quality,
-        wall_max_width=app_settings.broadcast_wall_max_width,
-        wall_max_height=app_settings.broadcast_wall_max_height,
+        enabled=operational.broadcast_enabled,
+        jpeg_quality=operational.broadcast_jpeg_quality,
+        wall_jpeg_quality=operational.broadcast_wall_jpeg_quality,
+        wall_max_width=operational.broadcast_wall_max_width,
+        wall_max_height=operational.broadcast_wall_max_height,
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_settings = PlateSettingsStore(
         database,
         default_policy=PlateDetectionPolicy(
-            vehicle_confidence=app_settings.vehicle_confidence,
-            plate_confidence=app_settings.plate_confidence,
+            vehicle_confidence=operational.vehicle_confidence,
+            plate_confidence=operational.plate_confidence,
             ocr_confidence=app_settings.plate_ocr_confidence,
             min_vehicle_width_pixels=app_settings.min_vehicle_width_pixels,
             min_vehicle_height_pixels=app_settings.min_vehicle_height_pixels,
@@ -316,7 +368,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
-    general_settings = GeneralSettingsStore(database)
+    general_settings = GeneralSettingsStore(database, OperationalSettings.from_app_settings(app_settings))
+    operational = general_settings.get().operational
     attendance_service = AttendanceService(
         personnel_store=personnel_store,
         human_log_store=human_logs,
@@ -338,8 +391,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 imgsz=app_settings.fire_imgsz,
                 batch_size=app_settings.fire_batch_size,
                 engine_fixed_batch=app_settings.fire_engine_fixed_batch,
-                fire_candidate_confidence=app_settings.fire_confidence,
-                smoke_candidate_confidence=app_settings.smoke_confidence,
+                fire_candidate_confidence=operational.fire_confidence,
+                smoke_candidate_confidence=operational.smoke_confidence,
             ),
             policy_provider=fire_smoke_logs.policy_snapshot,
             model_provider=models.provider("fire_smoke"),
@@ -351,12 +404,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 recognizer_model_dir=app_settings.plate_recognizer_dir,
                 device=app_settings.plate_device,
                 detector_imgsz=app_settings.plate_imgsz,
-                detector_confidence=app_settings.plate_confidence,
-                detector_iou=app_settings.plate_iou,
+                detector_confidence=operational.plate_confidence,
+                detector_iou=operational.plate_iou,
                 plate_crop_batch_size=app_settings.plate_crop_batch_size,
                 plate_class_ids=app_settings.plate_class_ids,
-                vehicle_confidence=app_settings.vehicle_confidence,
-                vehicle_iou=app_settings.vehicle_iou,
+                vehicle_confidence=operational.vehicle_confidence,
+                vehicle_iou=operational.vehicle_iou,
                 vehicle_imgsz=app_settings.vehicle_imgsz,
                 vehicle_max_per_frame=app_settings.vehicle_max_per_frame,
                 vehicle_class_ids=app_settings.vehicle_class_ids,
@@ -382,9 +435,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 face_imgsz=app_settings.face_detector_imgsz,
                 human_engine_fixed_batch=app_settings.face_human_engine_fixed_batch,
                 face_engine_fixed_batch=app_settings.face_detector_engine_fixed_batch,
-                human_confidence=app_settings.face_human_confidence,
-                face_confidence=app_settings.face_detection_confidence,
-                recognition_threshold=app_settings.face_recognition_threshold,
+                human_confidence=operational.face_human_confidence,
+                face_confidence=operational.face_detection_confidence,
+                recognition_threshold=operational.face_recognition_threshold,
                 min_face_width=face_quality_policy.min_face_width,
                 min_face_height=face_quality_policy.min_face_height,
                 blur_threshold=face_quality_policy.blur_threshold,
@@ -548,28 +601,28 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "registry": registry,
             "router": router,
             "project_root": project_root,
-            "target_fps": app_settings.video_ingest_fps,
-            "loop": app_settings.video_loop,
-            "rtsp_transport": app_settings.rtsp_transport,
-            "rtsp_reconnect_seconds": app_settings.rtsp_reconnect_seconds,
+            "target_fps": operational.video_ingest_fps,
+            "loop": operational.video_loop,
+            "rtsp_transport": operational.rtsp_transport,
+            "rtsp_reconnect_seconds": operational.rtsp_reconnect_seconds,
         }
         if app_settings.video_ingest_backend == "deepstream":
             print('\n\n\n\ningest video with deepstream\n\n')
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
-                rtsp_latency_ms=app_settings.deepstream_rtsp_latency_ms,
-                preview_fps=app_settings.video_preview_fps,
+                rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
+                preview_fps=operational.video_preview_fps,
                 rtsp_stall_timeout_seconds=(
-                    app_settings.deepstream_rtsp_stall_timeout_seconds
+                    operational.deepstream_rtsp_stall_timeout_seconds
                 ),
                 skip_taskless_sources=app_settings.skip_taskless_sources,
             )
         elif app_settings.video_ingest_backend == "opencv":
             video_ingestor = VideoFileIngestor(
                 **common_ingestor_settings,
-                rtsp_open_timeout_ms=app_settings.rtsp_open_timeout_ms,
-                rtsp_read_timeout_ms=app_settings.rtsp_read_timeout_ms,
+                rtsp_open_timeout_ms=operational.rtsp_open_timeout_ms,
+                rtsp_read_timeout_ms=operational.rtsp_read_timeout_ms,
             )
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
