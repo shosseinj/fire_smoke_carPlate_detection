@@ -208,6 +208,15 @@ class Settings:
     face_history_size: int = _env_int("FACE_HISTORY_SIZE", 30)
     face_stable_min_hits: int = _env_int("FACE_STABLE_MIN_HITS", 3)
     face_embedding_batch_size: int = _env_int("FACE_EMBEDDING_BATCH_SIZE", 64)
+    max_images_per_request: int = _env_int("MAX_IMAGES_PER_REQUEST", 10)
+    max_upload_bytes_per_image: int = _env_int("MAX_UPLOAD_BYTES_PER_IMAGE", 10 * 1024 * 1024)
+    max_decoded_width: int = _env_int("MAX_DECODED_WIDTH", 4096)
+    max_decoded_height: int = _env_int("MAX_DECODED_HEIGHT", 4096)
+    max_total_decoded_pixels: int = _env_int("MAX_TOTAL_DECODED_PIXELS", 16_000_000)
+    supported_image_extensions: tuple[str, ...] = _env_int_tuple(
+        "SUPPORTED_IMAGE_EXTENSIONS", (".jpg", ".jpeg", ".png", ".bmp")
+    )
+    store_cropped_face: bool = _env_bool("STORE_CROPPED_FACE", False)
     face_vector_size: int = _env_int("FACE_VECTOR_SIZE", 512)
     face_qdrant_collection: str = os.getenv("FACE_QDRANT_COLLECTION", "faces")
     face_qdrant_url: str | None = os.getenv("FACE_QDRANT_URL") or None

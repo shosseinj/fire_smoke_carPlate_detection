@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -14,12 +16,20 @@ from app.runtime import build_runtime
 # ── Test helpers ─────────────────────────────────────────────────────
 
 
+def _test_database_url() -> str:
+    """Return DATABASE_URL from environment or raise a clear error."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+    return url
+
+
 def _make_test_runtime(tmp_path: Path):
     """Build a minimal mock runtime with clean databases."""
     test_settings = replace(
         settings,
         processor_mode="mock",
-        database_path=tmp_path / "ai_database",
+        database_url=_test_database_url(),
         source_registry_path=tmp_path / "sources.json",
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
@@ -37,24 +47,16 @@ def _setup_client(tmp_path: Path):
     old_runtime = main_module.runtime
     main_module.runtime = test_runtime
 
-    # Replace global auth store
-    from app.core import auth as auth_core
-    from app.core.auth_store import AuthStore
-    old_store = auth_core._auth_store
-    auth_core._auth_store = AuthStore(tmp_path / "ai_database")
-    auth_core._auth_store.seed_default_admin("admin", "admin123")
-
-    return test_runtime, old_runtime, TestClient(main_module.app), old_store
+    # Auth store already initialized by build_runtime via initialize_auth_store
+    return test_runtime, old_runtime, TestClient(main_module.app)
 
 
-def _teardown(test_runtime, old_runtime, old_store):
-    """Restore runtime and auth store."""
+def _teardown(test_runtime, old_runtime):
+    """Restore runtime."""
     import app.main as main_module
-    from app.core import auth as auth_core
 
     test_runtime.close()
     main_module.runtime = old_runtime
-    auth_core._auth_store = old_store
 
 
 def _admin_token(client: TestClient) -> str:
@@ -114,7 +116,7 @@ VALID_CODE_3 = "1234123411"
 
 
 def test_create_personnel(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.post(
@@ -138,11 +140,11 @@ def test_create_personnel(tmp_path: Path) -> None:
         assert body["id"] > 0
         assert body["created_at_utc"] is not None
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_personnel_duplicate_national_code(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         client.post(
@@ -158,11 +160,11 @@ def test_create_personnel_duplicate_national_code(tmp_path: Path) -> None:
         assert resp.status_code == 422
         assert "already exists" in resp.text
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_personnel_invalid_national_code(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.post(
@@ -173,11 +175,11 @@ def test_create_personnel_invalid_national_code(tmp_path: Path) -> None:
         assert resp.status_code == 422
         assert "Invalid" in resp.text
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_personnel_viewer_forbidden(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _viewer_token(client)
         resp = client.post(
@@ -187,11 +189,11 @@ def test_create_personnel_viewer_forbidden(tmp_path: Path) -> None:
         )
         assert resp.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_get_personnel(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         create_resp = client.post(
@@ -212,11 +214,11 @@ def test_get_personnel(tmp_path: Path) -> None:
         assert body["fname"] == "Ali"
         assert body["national_code"] == VALID_CODE_1
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_get_personnel_not_found(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.get(
@@ -225,11 +227,11 @@ def test_get_personnel_not_found(tmp_path: Path) -> None:
         )
         assert resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_update_personnel(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         create_resp = client.post(
@@ -250,11 +252,11 @@ def test_update_personnel(tmp_path: Path) -> None:
         assert body["lname"] == "Mohammadi"  # unchanged
         assert body["degree"] == "Master"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_personnel(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         create_resp = client.post(
@@ -278,7 +280,7 @@ def test_delete_personnel(tmp_path: Path) -> None:
         )
         assert get_resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -287,7 +289,7 @@ def test_delete_personnel(tmp_path: Path) -> None:
 
 
 def test_search_personnel_by_national_code(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         client.post(
@@ -303,11 +305,11 @@ def test_search_personnel_by_national_code(tmp_path: Path) -> None:
         assert resp.status_code == 200
         assert resp.json()["national_code"] == VALID_CODE_1
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_search_personnel_not_found(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.get(
@@ -316,7 +318,7 @@ def test_search_personnel_not_found(tmp_path: Path) -> None:
         )
         assert resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -360,7 +362,7 @@ def _upload_one_image(client, token, person_id, filename=None):
 
 
 def test_upload_image(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -379,11 +381,11 @@ def test_upload_image(tmp_path: Path) -> None:
         # Personnel in response should have images
         assert len(body["personnel"]["images"]) >= 1
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_list_images(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -401,11 +403,11 @@ def test_list_images(tmp_path: Path) -> None:
         assert body["count"] >= 1
         assert len(body["items"]) >= 1
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_set_primary_image(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -436,11 +438,11 @@ def test_set_primary_image(tmp_path: Path) -> None:
         )
         assert first.json()["is_primary"] is False
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_image_promotes_next(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -465,7 +467,7 @@ def test_delete_image_promotes_next(tmp_path: Path) -> None:
         )
         assert second.json()["is_primary"] is True
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -474,7 +476,7 @@ def test_delete_image_promotes_next(tmp_path: Path) -> None:
 
 
 def test_list_with_images(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -495,7 +497,7 @@ def test_list_with_images(tmp_path: Path) -> None:
         assert len(found) == 1
         assert len(found[0]["images"]) >= 1
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -504,7 +506,7 @@ def test_list_with_images(tmp_path: Path) -> None:
 
 
 def test_import_template(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.get(
@@ -515,11 +517,11 @@ def test_import_template(tmp_path: Path) -> None:
         assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         assert len(resp.content) > 0
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_import_excel(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         # Build a minimal Excel file using openpyxl
@@ -553,7 +555,7 @@ def test_import_excel(tmp_path: Path) -> None:
         assert search.status_code == 200
         assert search.json()["fname"] == "Sara"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -562,7 +564,7 @@ def test_import_excel(tmp_path: Path) -> None:
 
 
 def test_endpoints_require_auth(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         # No auth header — expect 401 (not authenticated)
         endpoints = [
@@ -594,11 +596,11 @@ def test_endpoints_require_auth(tmp_path: Path) -> None:
                 continue
             assert resp.status_code == 401, f"{method} {url} returned {resp.status_code}"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_list_endpoint_operator_allowed(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _operator_token(client)
         resp = client.get(
@@ -607,11 +609,11 @@ def test_list_endpoint_operator_allowed(tmp_path: Path) -> None:
         )
         assert resp.status_code == 200
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_admin_required_for_create(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _operator_token(client)
         resp = client.post(
@@ -621,7 +623,7 @@ def test_admin_required_for_create(tmp_path: Path) -> None:
         )
         assert resp.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -631,7 +633,7 @@ def test_admin_required_for_create(tmp_path: Path) -> None:
 
 def test_delete_image_204_no_content(tmp_path: Path) -> None:
     """DELETE image returns 204 with empty body."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -652,12 +654,12 @@ def test_delete_image_204_no_content(tmp_path: Path) -> None:
         )
         assert get_resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_image_not_found(tmp_path: Path) -> None:
     """DELETE image with non-existent ID returns 404."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.delete(
@@ -666,12 +668,12 @@ def test_delete_image_not_found(tmp_path: Path) -> None:
         )
         assert resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_image_forbidden_for_operator(tmp_path: Path) -> None:
     """DELETE image requires admin role."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -685,12 +687,12 @@ def test_delete_image_forbidden_for_operator(tmp_path: Path) -> None:
         )
         assert resp.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_image_cleans_up_storage(tmp_path: Path) -> None:
     """DELETE image removes the physical file from disk."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -707,12 +709,12 @@ def test_delete_image_cleans_up_storage(tmp_path: Path) -> None:
         )
         assert not file_path.is_file(), "Storage file should be removed after delete"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_image_last_primary_no_promotion(tmp_path: Path) -> None:
     """Deleting the only image leaves no primary; it should not crash."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -733,7 +735,7 @@ def test_delete_image_last_primary_no_promotion(tmp_path: Path) -> None:
         )
         assert list_resp.json()["count"] == 0
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -743,7 +745,7 @@ def test_delete_image_last_primary_no_promotion(tmp_path: Path) -> None:
 
 def test_delete_personnel_204_no_content(tmp_path: Path) -> None:
     """DELETE personnel returns 204 with empty body."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         person = _create_test_person(client, token)
@@ -761,12 +763,12 @@ def test_delete_personnel_204_no_content(tmp_path: Path) -> None:
         )
         assert get_resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_personnel_not_found(tmp_path: Path) -> None:
     """DELETE personnel with non-existent ID returns 404."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         resp = client.delete(
@@ -775,12 +777,12 @@ def test_delete_personnel_not_found(tmp_path: Path) -> None:
         )
         assert resp.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_personnel_forbidden_for_operator(tmp_path: Path) -> None:
     """DELETE personnel requires admin role."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -791,12 +793,12 @@ def test_delete_personnel_forbidden_for_operator(tmp_path: Path) -> None:
         )
         assert resp.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_personnel_cleans_up_images(tmp_path: Path) -> None:
     """DELETE personnel removes all image storage files."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -817,12 +819,12 @@ def test_delete_personnel_cleans_up_images(tmp_path: Path) -> None:
         assert not (media_root / sk1).is_file()
         assert not (media_root / sk2).is_file()
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
     """DELETE personnel preserves human_logs rows by setting personnel_id to NULL."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -866,7 +868,7 @@ def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
         assert row is not None, "Detection record should still exist"
         assert row["personnel_id"] is None, "personnel_id should be NULL"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -876,7 +878,7 @@ def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
 
 def test_upload_with_is_primary_true(tmp_path: Path) -> None:
     """Uploading with is_primary=True sets that image as primary (replaces existing)."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -906,12 +908,12 @@ def test_upload_with_is_primary_true(tmp_path: Path) -> None:
         assert first_resp.json()["is_primary"] is False
         assert first_resp.json()["id"] != second_id
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_upload_with_is_primary_false(tmp_path: Path) -> None:
     """Uploading with is_primary=False marks it non-primary explicitly."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -931,12 +933,12 @@ def test_upload_with_is_primary_false(tmp_path: Path) -> None:
         resp2 = _upload_one_image(client, admin_token, person["id"], "second.jpg")
         assert resp2.json()["results"][0]["image"]["is_primary"] is True
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_upload_is_primary_batch_last_wins(tmp_path: Path) -> None:
     """Uploading multiple files with is_primary=True: the last processed becomes primary."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         person = _create_test_person(client, admin_token)
@@ -967,7 +969,7 @@ def test_upload_is_primary_batch_last_wins(tmp_path: Path) -> None:
         )
         assert second.json()["is_primary"] is True
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -977,7 +979,7 @@ def test_upload_is_primary_batch_last_wins(tmp_path: Path) -> None:
 
 def test_personnel_smoke_endpoint(tmp_path: Path) -> None:
     """Call the personnel smoke-test endpoint and verify every step passes."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         resp = client.post("/api/v1/tests/personnel/smoke")
         assert resp.status_code == 200, resp.text
@@ -990,4 +992,4 @@ def test_personnel_smoke_endpoint(tmp_path: Path) -> None:
             f"Smoke test passed {summary.get('passed')} steps, expected >= 10"
         )
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)

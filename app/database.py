@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260722_0001"
+ALEMBIC_HEAD_REVISION = "20260722_0002"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -140,11 +140,13 @@ personnel = Table(
     Column("lname", Text, nullable=False), Column("national_code", Text, nullable=False, unique=True),
     Column("employee_type", Text, nullable=False, server_default="unknown"), Column("degree", Text),
     Column("shift_id", Integer),
+    Column("department_id", Integer),
     Column("last_seen", UTC_TS), *_audit_columns(),
 )
 Index("idx_personnel_national_code", personnel.c.national_code)
 Index("idx_personnel_name", personnel.c.lname, personnel.c.fname)
 Index("idx_personnel_shift", personnel.c.shift_id)
+Index("idx_personnel_department", personnel.c.department_id)
 
 personnel_images = Table(
     "personnel_images", metadata,

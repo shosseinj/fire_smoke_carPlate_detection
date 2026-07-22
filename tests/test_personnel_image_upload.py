@@ -9,6 +9,7 @@ cleanup, primary-image policy, and response format.
 from __future__ import annotations
 
 import io
+import os
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -25,12 +27,20 @@ from app.runtime import build_runtime
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
+def _test_database_url() -> str:
+    """Return DATABASE_URL from environment or raise a clear error."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+    return url
+
+
 def _make_test_runtime(tmp_path: Path):
     """Build a minimal mock runtime with clean databases."""
     test_settings = replace(
         settings,
         processor_mode="mock",
-        database_path=tmp_path / "ai_database",
+        database_url=_test_database_url(),
         source_registry_path=tmp_path / "sources.json",
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
@@ -48,24 +58,16 @@ def _setup_client(tmp_path: Path):
     old_runtime = main_module.runtime
     main_module.runtime = test_runtime
 
-    # Replace global auth store
-    from app.core import auth as auth_core
-    from app.core.auth_store import AuthStore
-    old_store = auth_core._auth_store
-    auth_core._auth_store = AuthStore(tmp_path / "ai_database")
-    auth_core._auth_store.seed_default_admin("admin", "admin123")
-
-    return test_runtime, old_runtime, TestClient(main_module.app), old_store
+    # Auth store already initialized by build_runtime via initialize_auth_store
+    return test_runtime, old_runtime, TestClient(main_module.app)
 
 
-def _teardown(test_runtime, old_runtime, old_store):
-    """Restore runtime and auth store."""
+def _teardown(test_runtime, old_runtime):
+    """Restore runtime."""
     import app.main as main_module
-    from app.core import auth as auth_core
 
     test_runtime.close()
     main_module.runtime = old_runtime
-    auth_core._auth_store = old_store
 
 
 def _admin_token(client: TestClient) -> str:
@@ -188,16 +190,16 @@ def _upload_single(
 
 class TestEndpointValidation:
     def test_personnel_not_found(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             resp = _upload_single(client, token, 99999)
             assert resp.status_code == 404
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_no_files(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -209,10 +211,10 @@ class TestEndpointValidation:
             assert resp.status_code == 422
             # FastAPI validation catches missing required field before handler runs
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_too_many_files(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -223,10 +225,10 @@ class TestEndpointValidation:
             assert resp.status_code == 422
             assert "Maximum" in resp.text
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_invalid_extension(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -234,10 +236,10 @@ class TestEndpointValidation:
             assert resp.status_code == 422
             assert "unsupported_extension" in resp.text.lower() or "Unsupported extension" in resp.text
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_invalid_mime_type(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -246,10 +248,10 @@ class TestEndpointValidation:
             result = resp.json()
             assert len(result.get("detail", {}).get("results", [])) > 0 or "unsupported" in resp.text.lower()
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_corrupt_image(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -257,27 +259,27 @@ class TestEndpointValidation:
             resp = _upload_single(client, token, person["id"], data=corrupt, content_type="image/jpeg")
             assert resp.status_code == 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_path_traversal_filename(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"], filename="../../etc/passwd.jpg")
             assert resp.status_code == 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_empty_file(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"], data=b"", content_type="image/jpeg")
             assert resp.status_code == 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -287,7 +289,7 @@ class TestEndpointValidation:
 
 class TestBatchBehavior:
     def test_single_successful_upload(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -302,10 +304,10 @@ class TestBatchBehavior:
             assert body["results"][0]["image"]["is_primary"] is True
             assert len(body["personnel"]["images"]) >= 1
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_multiple_successful_uploads_in_one_request(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -323,10 +325,10 @@ class TestBatchBehavior:
             assert body["results"][0]["image"]["is_primary"] is True
             assert body["results"][1]["image"]["is_primary"] is False
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_first_file_fails_later_succeeds(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -342,10 +344,10 @@ class TestBatchBehavior:
             assert body["results"][0]["success"] is False
             assert body["results"][1]["success"] is True
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_first_file_succeeds_later_fails(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -361,10 +363,10 @@ class TestBatchBehavior:
             assert body["results"][0]["success"] is True
             assert body["results"][1]["success"] is False
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_all_validation_failures(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -375,12 +377,12 @@ class TestBatchBehavior:
             resp = _upload(client, token, person["id"], files)
             assert resp.status_code == 422  # all-failed returns 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_all_face_detection_failures_mock(self, tmp_path: Path) -> None:
         """In mock mode, face detection always succeeds so this test verifies
         the endpoint accepts valid images even without real face processing."""
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -388,11 +390,11 @@ class TestBatchBehavior:
             assert resp.status_code == 201
             assert resp.json()["total_success"] == 1
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_mixed_valid_and_corrupt(self, tmp_path: Path) -> None:
         """Partial success: some valid, some corrupt."""
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -407,7 +409,7 @@ class TestBatchBehavior:
             assert body["total_success"] == 2
             assert body["total_failed"] == 1
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -417,7 +419,7 @@ class TestBatchBehavior:
 
 class TestResponse:
     def test_response_contains_personnel(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -430,10 +432,10 @@ class TestResponse:
             assert p["national_code"] == person["national_code"]
             assert "images" in p
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_response_contains_results(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -444,11 +446,11 @@ class TestResponse:
             assert "total_failed" in body
             assert isinstance(body["results"], list)
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_no_legacy_fields_in_response(self, tmp_path: Path) -> None:
         """Verify no Department, WorkShift, or other legacy fields."""
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -462,7 +464,7 @@ class TestResponse:
             assert "shift_id" not in p
             assert "Room" not in p
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -472,17 +474,17 @@ class TestResponse:
 
 class TestPrimaryImage:
     def test_first_image_becomes_primary(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"])
             assert resp.json()["results"][0]["image"]["is_primary"] is True
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_existing_primary_remains_primary(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -504,10 +506,10 @@ class TestPrimaryImage:
             )
             assert resp_get2.json()["is_primary"] is False
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_failed_first_image_does_not_become_primary(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -524,10 +526,10 @@ class TestPrimaryImage:
             # The successful image should be primary
             assert body["results"][1]["image"]["is_primary"] is True
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_only_one_primary_after_multiple_uploads(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -545,7 +547,7 @@ class TestPrimaryImage:
             )
             assert primary_count == 1
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -555,7 +557,7 @@ class TestPrimaryImage:
 
 class TestAuth:
     def test_unauthenticated(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -566,37 +568,37 @@ class TestAuth:
             )
             assert resp.status_code == 401
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_viewer_forbidden(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _viewer_token(client)
             person = _create_person(client, _admin_token(client))
             resp = _upload_single(client, token, person["id"])
             assert resp.status_code == 403
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_operator_forbidden(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _operator_token(client)
             person = _create_person(client, _admin_token(client))
             resp = _upload_single(client, token, person["id"])
             assert resp.status_code == 403
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_admin_authorized(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"])
             assert resp.status_code == 201
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -606,27 +608,27 @@ class TestAuth:
 
 class TestImageValidation:
     def test_jpeg_accepted(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"], "photo.jpg", _valid_jpeg_bytes(), "image/jpeg")
             assert resp.status_code == 201
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_png_accepted(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"], "photo.png", _valid_png_bytes(), "image/png")
             assert resp.status_code == 201
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_oversized_file_rejected(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -635,10 +637,10 @@ class TestImageValidation:
             resp = _upload_single(client, token, person["id"], data=large_data)
             assert resp.status_code == 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_mime_extension_mismatch(self, tmp_path: Path) -> None:
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -647,12 +649,12 @@ class TestImageValidation:
             resp = _upload_single(client, token, person["id"], "photo.jpg", _valid_png_bytes(), "image/png")
             assert resp.status_code == 422
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)
 
     def test_storage_key_generated(self, tmp_path: Path) -> None:
         """Verify the storage_key starts with personnel_snapshots/ and does not
         contain raw filename."""
-        runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+        runtime, old_runtime, client = _setup_client(tmp_path)
         try:
             token = _admin_token(client)
             person = _create_person(client, token)
@@ -662,4 +664,4 @@ class TestImageValidation:
             assert key.startswith("personnel_snapshots/")
             assert "myphoto" not in key  # UUID-based, not raw filename
         finally:
-            _teardown(runtime, old_runtime, old_store)
+            _teardown(runtime, old_runtime)

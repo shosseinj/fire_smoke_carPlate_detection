@@ -3,8 +3,10 @@ from __future__ import annotations
 from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
 from app.time_utils import utc_now_text
 
+import base64
 import io
 import json
+import logging
 import os
 import re
 import threading
@@ -16,10 +18,9 @@ from typing import Any
 
 from app.config import settings
 
+LOGGER = logging.getLogger("uvicorn.error")
 
 _VALID_EMPLOYEE_TYPES = frozenset({"contractor", "customer", "guest", "employee", "unknown"})
-
-# Persian, Arabic, and English digit mappings for national code normalization
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
@@ -32,6 +33,7 @@ class PersonnelRecord:
     employee_type: str
     degree: str | None
     shift_id: int | None
+    department_id: int | None
     last_seen: str | None
     created_at_utc: str
     updated_at_utc: str
@@ -49,23 +51,18 @@ class PersonnelImageRecord:
 
 
 def normalize_national_code(raw: str) -> str:
-    """Normalize Persian/Arabic/English digits and strip whitespace."""
     normalized = raw.strip().translate(_PERSIAN_DIGITS)
-    # Keep only ASCII digits
     normalized = re.sub(r"[^\d]", "", normalized)
     return normalized
 
 
 def validate_national_code(code: str) -> bool:
-    """Validate an Iranian national code (کد ملی) using the checksum algorithm."""
     if not re.match(r"^\d{10}$", code):
         return False
-    # All identical digits are invalid
     if len(set(code)) == 1:
         return False
     digits = [int(d) for d in code]
     checksum = digits[-1]
-    # Multiply each of the first 9 digits by its position weight (10 down to 2)
     total = sum(digits[i] * (10 - i) for i in range(9))
     remainder = total % 11
     if remainder < 2:
@@ -92,8 +89,79 @@ class PersonnelStore:
         return self.database.connection()
 
     def _init_db(self) -> None:
-        # Alembic owns the PostgreSQL schema; runtime startup validates it.
         return None
+
+    def _now(self) -> str:
+        return utc_now_text()
+
+    # ── Helpers ─────────────────────────────────────────────────────
+
+    def _resolve_shift_name(self, shift_id: int | None) -> str | None:
+        if shift_id is None:
+            return None
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT shift_name FROM work_shifts WHERE id = ?", (shift_id,)
+                ).fetchone()
+                return str(row["shift_name"]) if row else None
+        except (OperationalError, Exception):
+            return None
+
+    def _resolve_department_name(self, department_id: int | None) -> str | None:
+        if department_id is None:
+            return None
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT name FROM sections WHERE id = ?", (department_id,)
+                ).fetchone()
+                return str(row["name"]) if row else None
+        except (OperationalError, Exception):
+            return None
+
+    def _resolve_shift_names_bulk(self, shift_ids: set[int | None]) -> dict[int | None, str | None]:
+        """Resolve multiple shift names in one query."""
+        result: dict[int | None, str | None] = {None: None}
+        ids = [sid for sid in shift_ids if sid is not None]
+        if not ids:
+            return result
+        try:
+            placeholders = ", ".join("?" for _ in ids)
+            with self._connection() as conn:
+                rows = conn.execute(
+                    f"SELECT id, shift_name FROM work_shifts WHERE id IN ({placeholders})", ids
+                ).fetchall()
+                for row in rows:
+                    result[int(row["id"])] = str(row["shift_name"])
+                for sid in ids:
+                    if sid not in result:
+                        result[sid] = None
+        except (OperationalError, Exception):
+            for sid in ids:
+                result[sid] = None
+        return result
+
+    def _resolve_department_names_bulk(self, dept_ids: set[int | None]) -> dict[int | None, str | None]:
+        result: dict[int | None, str | None] = {None: None}
+        ids = [did for did in dept_ids if did is not None]
+        if not ids:
+            return result
+        try:
+            placeholders = ", ".join("?" for _ in ids)
+            with self._connection() as conn:
+                rows = conn.execute(
+                    f"SELECT id, name FROM sections WHERE id IN ({placeholders})", ids
+                ).fetchall()
+                for row in rows:
+                    result[int(row["id"])] = str(row["name"])
+                for did in ids:
+                    if did not in result:
+                        result[did] = None
+        except (OperationalError, Exception):
+            for did in ids:
+                result[did] = None
+        return result
 
     # ── Personnel CRUD ─────────────────────────────────────────────────
 
@@ -105,6 +173,10 @@ class PersonnelStore:
         if "shift_id" in row.keys():
             raw = row["shift_id"]
             shift_id = int(raw) if raw is not None else None
+        department_id: int | None = None
+        if "department_id" in row.keys():
+            raw = row["department_id"]
+            department_id = int(raw) if raw is not None else None
         return PersonnelRecord(
             id=row["id"],
             fname=row["fname"],
@@ -113,13 +185,15 @@ class PersonnelStore:
             employee_type=row["employee_type"],
             degree=row["degree"],
             shift_id=shift_id,
+            department_id=department_id,
             last_seen=last_seen,
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
         )
 
-    def _now(self) -> str:
-        return utc_now_text()
+    def _personnel_columns(self) -> str:
+        return ("id, fname, lname, national_code, employee_type, degree, "
+                "shift_id, department_id, last_seen, created_at_utc, updated_at_utc")
 
     def create(
         self,
@@ -128,8 +202,9 @@ class PersonnelStore:
         national_code: str,
         employee_type: str = "unknown",
         degree: str | None = None,
+        shift_id: int | None = None,
+        department_id: int | None = None,
     ) -> PersonnelRecord:
-        """Insert a new personnel record. Raises ValueError on invalid data."""
         fname = fname.strip()
         lname = lname.strip()
         if not fname or not lname:
@@ -147,12 +222,12 @@ class PersonnelStore:
             try:
                 cursor = conn.execute(
                     "INSERT INTO personnel "
-                    "(fname, lname, national_code, employee_type, degree, created_at_utc, updated_at_utc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (fname, lname, raw_code, employee_type, degree, now, now),
+                    "(fname, lname, national_code, employee_type, degree, shift_id, department_id, created_at_utc, updated_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (fname, lname, raw_code, employee_type, degree, shift_id, department_id, now, now),
                 )
                 row = conn.execute(
-                    "SELECT * FROM personnel WHERE id = ?", (cursor.lastrowid,)
+                    f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
                 if row is None:
                     raise RuntimeError("Failed to retrieve created personnel record")
@@ -163,7 +238,7 @@ class PersonnelStore:
     def get(self, personnel_id: int) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM personnel WHERE id = ?", (personnel_id,)
+                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -173,7 +248,7 @@ class PersonnelStore:
         code = normalize_national_code(national_code)
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM personnel WHERE national_code = ?", (code,)
+                f"SELECT {self._personnel_columns()} FROM personnel WHERE national_code = ?", (code,)
             ).fetchone()
             if row is None:
                 return None
@@ -187,11 +262,12 @@ class PersonnelStore:
         national_code: str | None = None,
         employee_type: str | None = None,
         degree: str | None = None,
+        shift_id: int | None = None,
+        department_id: int | None = None,
     ) -> PersonnelRecord | None:
-        """Update personnel fields. Returns updated record or None if not found."""
         with self._lock, self._connection() as conn:
             existing = conn.execute(
-                "SELECT * FROM personnel WHERE id = ?", (personnel_id,)
+                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if existing is None:
                 return None
@@ -213,23 +289,29 @@ class PersonnelStore:
                     f"Must be one of: {sorted(_VALID_EMPLOYEE_TYPES)}"
                 )
             new_degree = degree if degree is not None else existing["degree"]
+            new_shift_id = shift_id if shift_id is not None else existing["shift_id"]
+            new_department_id = department_id if department_id is not None else existing["department_id"]
             now = self._now()
             try:
                 conn.execute(
                     "UPDATE personnel SET fname=?, lname=?, national_code=?, "
-                    "employee_type=?, degree=?, updated_at_utc=? WHERE id=?",
-                    (new_fname, new_lname, raw_code, new_employee_type, new_degree, now, personnel_id),
+                    "employee_type=?, degree=?, shift_id=?, department_id=?, "
+                    "updated_at_utc=? WHERE id=?",
+                    (new_fname, new_lname, raw_code, new_employee_type, new_degree,
+                     new_shift_id, new_department_id, now, personnel_id),
                 )
                 row = conn.execute(
-                    "SELECT * FROM personnel WHERE id = ?", (personnel_id,)
+                    f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
                 ).fetchone()
                 return self._row_to_personnel(row)
             except IntegrityError:
                 raise ValueError(f"National code already exists: {raw_code}")
 
     def delete(self, personnel_id: int) -> bool:
-        """Delete a personnel record and cascade images. Returns True if deleted."""
+        """Delete a personnel record. Cascades images (DB + files) and sets NULL
+        on human_logs and detection_room_matches. Returns True if deleted."""
         with self._lock, self._connection() as conn:
+<<<<<<< HEAD
             images = conn.execute(
                 "SELECT * FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
             ).fetchall()
@@ -237,6 +319,53 @@ class PersonnelStore:
                 self._delete_storage_file(img["storage_key"])
             conn.execute(
                 "DELETE FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
+=======
+            existing = conn.execute(
+                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
+            ).fetchone()
+            if existing is None:
+                return False
+            # Delete image files from disk
+            image_rows = conn.execute(
+                "SELECT storage_key FROM personnel_images WHERE personnel_id = ?",
+                (personnel_id,),
+            ).fetchall()
+            for img_row in image_rows:
+                self._delete_storage_file(img_row["storage_key"])
+            # Also delete vector embeddings through the face embeddings table
+            img_ids = conn.execute(
+                "SELECT embedding_id FROM personnel_images WHERE personnel_id = ? AND embedding_id IS NOT NULL",
+                (personnel_id,),
+            ).fetchall()
+            for img_id_row in img_ids:
+                eid = img_id_row["embedding_id"]
+                if eid:
+                    try:
+                        conn.execute(
+                            "DELETE FROM face_embeddings WHERE id = ?", (eid,)
+                        )
+                    except OperationalError:
+                        pass
+            # Set NULL on detection_room_matches and human_logs
+            try:
+                conn.execute(
+                    "UPDATE detection_room_matches SET personnel_id = NULL WHERE personnel_id = ?",
+                    (personnel_id,),
+                )
+            except OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "UPDATE human_logs SET personnel_id = NULL WHERE personnel_id = ?",
+                    (personnel_id,),
+                )
+            except OperationalError:
+                pass
+            # Delete personnel_images (cascade should handle this, but be explicit)
+            conn.execute(
+                "DELETE FROM personnel_images WHERE personnel_id = ?",
+                (personnel_id,),
+>>>>>>> b77bfec (Resolve git conflicts in personnel.py and personnel_store.py)
             )
             cursor = conn.execute(
                 "DELETE FROM personnel WHERE id = ?", (personnel_id,)
@@ -250,7 +379,6 @@ class PersonnelStore:
         employee_type: str | None = None,
         search: str | None = None,
     ) -> tuple[list[PersonnelRecord], int]:
-        """Return (records, total_count) with optional filters."""
         where_clauses: list[str] = []
         params: list[Any] = []
         if employee_type is not None:
@@ -268,7 +396,7 @@ class PersonnelStore:
                 f"SELECT COUNT(*) FROM personnel{where}", params
             ).fetchone()[0]
             rows = conn.execute(
-                f"SELECT * FROM personnel{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT {self._personnel_columns()} FROM personnel{where} ORDER BY id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
             records = [self._row_to_personnel(r) for r in rows]
@@ -279,11 +407,10 @@ class PersonnelStore:
         offset: int = 0,
         limit: int = 50,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return personnel records with their images as nested list."""
         with self._lock, self._connection() as conn:
             total = conn.execute("SELECT COUNT(*) FROM personnel").fetchone()[0]
             rows = conn.execute(
-                "SELECT * FROM personnel ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT {self._personnel_columns()} FROM personnel ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -303,7 +430,6 @@ class PersonnelStore:
             return result, int(total)
 
     def touch_last_seen(self, personnel_id: int, seen_at: str | None = None) -> None:
-        """Update the last_seen timestamp for a personnel record."""
         if seen_at is None:
             seen_at = self._now()
         with self._lock, self._connection() as conn:
@@ -334,27 +460,33 @@ class PersonnelStore:
         storage_key: str,
         description: str | None = None,
         embedding_id: str | None = None,
+        is_primary: bool | None = None,
     ) -> PersonnelImageRecord:
-        """Insert an image record. The first image for a personnel becomes primary."""
         now = self._now()
         with self._lock, self._connection() as conn:
-            # Verify personnel exists
             existing = conn.execute(
                 "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if existing is None:
                 raise ValueError(f"Personnel not found: {personnel_id}")
-            # First image auto-becomes primary
-            image_count = conn.execute(
-                "SELECT COUNT(*) FROM personnel_images WHERE personnel_id = ?",
-                (personnel_id,),
-            ).fetchone()[0]
-            is_primary = 1 if image_count == 0 else 0
+            if is_primary is not None and is_primary:
+                conn.execute(
+                    "UPDATE personnel_images SET is_primary = 0 "
+                    "WHERE personnel_id = ? AND is_primary = 1",
+                    (personnel_id,),
+                )
+                primary_flag = 1
+            else:
+                image_count = conn.execute(
+                    "SELECT COUNT(*) FROM personnel_images WHERE personnel_id = ?",
+                    (personnel_id,),
+                ).fetchone()[0]
+                primary_flag = 1 if image_count == 0 else 0
             cursor = conn.execute(
                 "INSERT INTO personnel_images "
                 "(personnel_id, storage_key, description, is_primary, uploaded_at_utc, embedding_id) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (personnel_id, storage_key, description, is_primary, now, embedding_id),
+                (personnel_id, storage_key, description, primary_flag, now, embedding_id),
             )
             row = conn.execute(
                 "SELECT * FROM personnel_images WHERE id = ?", (cursor.lastrowid,)
@@ -382,7 +514,6 @@ class PersonnelStore:
             return [self._row_to_image(r) for r in rows]
 
     def delete_image(self, image_id: int) -> bool:
-        """Delete an image record. If it was primary, promote the oldest remaining."""
         with self._lock, self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM personnel_images WHERE id = ?", (image_id,)
@@ -391,10 +522,18 @@ class PersonnelStore:
                 return False
             was_primary = bool(row["is_primary"])
             personnel_id = int(row["personnel_id"])
+            # Delete embedding from face_embeddings if present
+            embedding_id = row["embedding_id"]
+            if embedding_id:
+                try:
+                    conn.execute(
+                        "DELETE FROM face_embeddings WHERE id = ?", (embedding_id,)
+                    )
+                except OperationalError:
+                    pass
             # Delete the image file from disk
             self._delete_storage_file(row["storage_key"])
             conn.execute("DELETE FROM personnel_images WHERE id = ?", (image_id,))
-            # If deleted was primary, promote the oldest remaining image
             if was_primary:
                 oldest = conn.execute(
                     "SELECT id FROM personnel_images WHERE personnel_id = ? "
@@ -409,7 +548,6 @@ class PersonnelStore:
             return True
 
     def set_primary_image(self, image_id: int) -> PersonnelImageRecord | None:
-        """Atomically set one image as primary, unsetting any other primary for the same personnel."""
         with self._lock, self._connection() as conn:
             target = conn.execute(
                 "SELECT * FROM personnel_images WHERE id = ?", (image_id,)
@@ -417,12 +555,10 @@ class PersonnelStore:
             if target is None:
                 return None
             personnel_id = int(target["personnel_id"])
-            # Unset current primary for this personnel
             conn.execute(
                 "UPDATE personnel_images SET is_primary = 0 WHERE personnel_id = ? AND is_primary = 1",
                 (personnel_id,),
             )
-            # Set new primary
             conn.execute(
                 "UPDATE personnel_images SET is_primary = 1 WHERE id = ?",
                 (image_id,),
@@ -433,7 +569,6 @@ class PersonnelStore:
             return self._row_to_image(row)
 
     def _delete_storage_file(self, storage_key: str) -> None:
-        """Delete the physical file for a storage key. Failures are non-fatal."""
         try:
             path = self._media_root / storage_key
             if path.is_file():
@@ -444,7 +579,6 @@ class PersonnelStore:
     # ── Import / Export ─────────────────────────────────────────────────
 
     def generate_import_template(self) -> bytes:
-        """Generate an Excel template with the expected columns."""
         import openpyxl
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -452,10 +586,8 @@ class PersonnelStore:
         headers = ["fname", "lname", "national_code", "employee_type", "degree"]
         ws.append(headers)
         ws.append(["Example", "User", "0012345678", "employee", "Bachelor"])
-        # Style headers
         for cell in ws[1]:
             cell.font = openpyxl.styles.Font(bold=True)
-        # Set column widths
         for i, header in enumerate(headers, 1):
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 20
         buf = io.BytesIO()
@@ -464,10 +596,6 @@ class PersonnelStore:
         return buf.getvalue()
 
     def import_from_excel(self, data: bytes) -> dict[str, Any]:
-        """Parse an Excel file and import personnel records.
-
-        Returns summary dict with created, skipped, errors counts.
-        """
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data))
         ws = wb.active
@@ -535,7 +663,6 @@ class PersonnelStore:
         errors: list[dict[str, Any]] = []
 
         with zipfile.ZipFile(BytesIO(data)) as zf:
-            # Check for metadata files
             metadata: list[dict[str, str]] = []
             if "metadata.xlsx" in zf.namelist():
                 excel_data = zf.read("metadata.xlsx")
@@ -558,36 +685,27 @@ class PersonnelStore:
                     except (ValueError, KeyError) as exc:
                         errors.append({"file": "metadata.json", "error": str(exc)})
             else:
-                # No metadata — create personnel from image filenames
-                # Files named like: fname_lname_nationalcode.ext
-                pass  # handled by file loop below
+                pass
 
-            # Process image files
             for name in zf.namelist():
                 if name.startswith("__MACOSX") or name.startswith("."):
                     continue
                 if name.endswith((".xlsx", ".json", "/")):
                     continue
-                # Extract personnel info from filename or use auto-generated entries
                 file_data = zf.read(name)
-                # Try to extract personnel info from path
                 parts = Path(name).parts
-                # Support: images/fname_lname_nationalcode.ext or images/nationalcode.ext
                 img_filename = Path(name).name
                 stem = img_filename.rsplit(".", 1)[0] if "." in img_filename else img_filename
                 parts_underscore = stem.split("_")
                 if len(parts_underscore) >= 3:
-                    # Assume fname_lname_nationalcode format
                     fc = parts_underscore[0]
                     lc = "_".join(parts_underscore[1:-1])
                     nc_candidate = normalize_national_code(parts_underscore[-1])
                 else:
-                    # Use stem directly as identifier
                     fc = "Unknown"
                     lc = "Unknown"
                     nc_candidate = normalize_national_code(stem) if stem.isdigit() else f"auto-{uuid.uuid4().hex[:8]}"
 
-                # Find or create personnel
                 if validate_national_code(nc_candidate):
                     person = self.get_by_national_code(nc_candidate)
                     if person is None:
@@ -603,17 +721,9 @@ class PersonnelStore:
                             errors.append({"file": name, "error": str(exc)})
                             continue
                 else:
-                    # Auto-generate placeholder if no valid national code found
-                    try:
-                        # Use a placeholder — only if we can't find by other means
-                        # Skip if we can't identify personnel
-                        errors.append({"file": name, "error": "Cannot determine personnel from filename"})
-                        continue
-                    except ValueError as exc:
-                        errors.append({"file": name, "error": str(exc)})
-                        continue
+                    errors.append({"file": name, "error": "Cannot determine personnel from filename"})
+                    continue
 
-                # Save image
                 if person is not None:
                     try:
                         storage_key = self._save_image_file(person.id, file_data, img_filename)
@@ -677,7 +787,6 @@ class PersonnelStore:
         }
 
     def _save_image_file(self, personnel_id: int, data: bytes, original_filename: str) -> str:
-        """Save an image file to disk and return the storage_key (relative to media_root)."""
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
         unique_name = f"personnel_{personnel_id}_{uuid.uuid4().hex}{ext}"
         relative_path = f"personnel_snapshots/{unique_name}"
@@ -697,8 +806,23 @@ class PersonnelStore:
         return relative_path
 
     def get_image_path(self, storage_key: str) -> Path:
-        """Return the absolute path for a storage_key."""
         return self._media_root / storage_key
+
+    def read_image_base64(self, storage_key: str) -> str | None:
+        """Read the image file at the given storage_key and return it as a
+        base64-encoded data URI string. Returns None if the file is missing."""
+        try:
+            path = self._media_root / storage_key
+            if not path.is_file():
+                return None
+            data = path.read_bytes()
+            ext = path.suffix.lower()
+            mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "png": "image/png", "bmp": "image/bmp"}.get(ext.lstrip("."), "image/jpeg")
+            encoded = base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64,{encoded}"
+        except (OSError, FileNotFoundError):
+            return None
 
     def count(self) -> int:
         with self._lock, self._connection() as conn:
@@ -706,9 +830,7 @@ class PersonnelStore:
 
 
 def dataclass_to_dict(obj: Any) -> dict[str, Any]:
-    """Convert a dataclass instance to a dict, handling frozen=True."""
-    # This avoids asdict() which has issues with frozen dataclasses with slots
     return {
         f.name: getattr(obj, f.name)
-        for f in type(obj).__dataclass_fields__.values()  # type: ignore[attr-defined]
+        for f in type(obj).__dataclass_fields__.values()
     }

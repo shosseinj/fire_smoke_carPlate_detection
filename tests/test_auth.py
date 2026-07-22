@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -18,12 +20,20 @@ from app.core.auth import (
 from app.runtime import build_runtime
 
 
+def _test_database_url() -> str:
+    """Return DATABASE_URL from environment or raise a clear error."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+    return url
+
+
 def _make_test_runtime(tmp_path: Path):
     """Build a minimal mock runtime with a clean auth database."""
     test_settings = replace(
         settings,
         processor_mode="mock",
-        database_path=tmp_path / "ai_database",
+        database_url=_test_database_url(),
         source_registry_path=tmp_path / "sources.json",
         video_ingestion_enabled=False,
         auth_default_admin_username="admin",
@@ -40,24 +50,16 @@ def _setup_client(tmp_path: Path):
     old_runtime = main_module.runtime
     main_module.runtime = test_runtime
 
-    # Replace the global auth store with one pointing at the test database
-    from app.core import auth as auth_core
-    from app.core.auth_store import AuthStore
-    old_store = auth_core._auth_store
-    auth_core._auth_store = AuthStore(tmp_path / "auth.sqlite3")
-    auth_core._auth_store.seed_default_admin("admin", "admin123")
-
-    return test_runtime, old_runtime, TestClient(main_module.app), old_store
+    # Auth store already initialized by build_runtime via initialize_auth_store
+    return test_runtime, old_runtime, TestClient(main_module.app)
 
 
-def _teardown(test_runtime, old_runtime, old_store):
-    """Restore runtime and auth store."""
+def _teardown(test_runtime, old_runtime):
+    """Restore runtime."""
     import app.main as main_module
-    from app.core import auth as auth_core
 
     test_runtime.close()
     main_module.runtime = old_runtime
-    auth_core._auth_store = old_store
 
 
 def _admin_token(client: TestClient) -> str:
@@ -72,7 +74,7 @@ def _admin_token(client: TestClient) -> str:
 
 
 def test_login_valid_credentials(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -88,11 +90,11 @@ def test_login_valid_credentials(tmp_path: Path) -> None:
         assert payload["username"] == "admin"
         assert payload["role"] == "admin"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_login_invalid_password(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -102,11 +104,11 @@ def test_login_invalid_password(tmp_path: Path) -> None:
         body = response.json()
         assert "detail" in body
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_login_nonexistent_user(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -114,11 +116,11 @@ def test_login_nonexistent_user(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_login_empty_username(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -126,11 +128,11 @@ def test_login_empty_username(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_login_missing_fields(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -138,11 +140,11 @@ def test_login_missing_fields(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_me_with_valid_token(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         login_resp = client.post(
             "/api/v1/auth/login",
@@ -161,20 +163,20 @@ def test_me_with_valid_token(tmp_path: Path) -> None:
         assert "id" in body
         assert "created_at_utc" in body
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_me_without_token(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.get("/api/v1/auth/me")
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_me_with_invalid_token(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.get(
             "/api/v1/auth/me",
@@ -182,11 +184,11 @@ def test_me_with_invalid_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_me_with_expired_token(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = create_access_token(
             user_id=1,
@@ -200,11 +202,11 @@ def test_me_with_expired_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_me_with_wrong_scheme(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.get(
             "/api/v1/auth/me",
@@ -212,11 +214,11 @@ def test_me_with_wrong_scheme(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_token_contains_user_info(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         login_resp = client.post(
             "/api/v1/auth/login",
@@ -234,11 +236,11 @@ def test_token_contains_user_info(tmp_path: Path) -> None:
         assert "exp" in payload
         assert "jti" in payload
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_login_response_structure(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/login",
@@ -251,7 +253,7 @@ def test_login_response_structure(tmp_path: Path) -> None:
         assert len(body["access_token"]) > 0
         assert body["token_type"] == "bearer"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_auth_store_seed_only_once(tmp_path: Path) -> None:
@@ -286,7 +288,7 @@ def test_auth_store_verify_credentials(tmp_path: Path) -> None:
 
 def test_token_oauth2_endpoint(tmp_path: Path) -> None:
     """POST /api/v1/auth/token with form data returns both access and refresh tokens."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/token",
@@ -312,12 +314,12 @@ def test_token_oauth2_endpoint(tmp_path: Path) -> None:
         assert refresh_payload["username"] == "admin"
         assert refresh_payload["type"] == "refresh"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_token_oauth2_invalid_credentials(tmp_path: Path) -> None:
     """POST /api/v1/auth/token with wrong password returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/token",
@@ -325,22 +327,22 @@ def test_token_oauth2_invalid_credentials(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_token_oauth2_missing_fields(tmp_path: Path) -> None:
     """POST /api/v1/auth/token with missing fields returns 422."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post("/api/v1/auth/token", data={})
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_refresh_valid_token(tmp_path: Path) -> None:
     """POST /api/v1/auth/refresh with valid refresh token returns new access token."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         # Get a refresh token from /token
         token_resp = client.post(
@@ -366,12 +368,12 @@ def test_refresh_valid_token(tmp_path: Path) -> None:
         assert payload is not None
         assert payload["username"] == "admin"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_refresh_token_single_use(tmp_path: Path) -> None:
     """A refresh token can only be used once (single-use)."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token_resp = client.post(
             "/api/v1/auth/token",
@@ -393,12 +395,12 @@ def test_refresh_token_single_use(tmp_path: Path) -> None:
         )
         assert r2.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_refresh_invalid_token(tmp_path: Path) -> None:
     """POST /api/v1/auth/refresh with invalid string returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/refresh",
@@ -406,12 +408,12 @@ def test_refresh_invalid_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_refresh_expired_token(tmp_path: Path) -> None:
     """POST /api/v1/auth/refresh with expired refresh token returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         expired = create_refresh_token(
             user_id=1, username="admin", role="admin", expires_minutes=-60,
@@ -422,12 +424,12 @@ def test_refresh_expired_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_refresh_token_not_access_token(tmp_path: Path) -> None:
     """An access token cannot be used as a refresh token (type mismatch)."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         access = create_access_token(user_id=1, username="admin", role="admin")
         response = client.post(
@@ -436,12 +438,12 @@ def test_refresh_token_not_access_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_access_token_not_refresh_token(tmp_path: Path) -> None:
     """A refresh token cannot be used as an access token."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         refresh = create_refresh_token(user_id=1, username="admin", role="admin")
         response = client.get(
@@ -450,12 +452,12 @@ def test_access_token_not_refresh_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_logout_revokes_refresh_token(tmp_path: Path) -> None:
     """POST /api/v1/auth/logout revokes the refresh token."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token_resp = client.post(
             "/api/v1/auth/token",
@@ -477,12 +479,12 @@ def test_logout_revokes_refresh_token(tmp_path: Path) -> None:
         )
         assert r2.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_logout_invalid_token(tmp_path: Path) -> None:
     """Logout with invalid token returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/logout",
@@ -490,22 +492,22 @@ def test_logout_invalid_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_logout_missing_token(tmp_path: Path) -> None:
     """Logout without token returns 422 (validation error)."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post("/api/v1/auth/logout", json={})
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_logout_missing_token_field(tmp_path: Path) -> None:
     """Logout with empty refresh_token string fails validation."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/logout",
@@ -513,12 +515,12 @@ def test_logout_missing_token_field(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_logout_with_access_token(tmp_path: Path) -> None:
     """Logout with an access token (not refresh) returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         access = create_access_token(user_id=1, username="admin", role="admin")
         response = client.post(
@@ -527,7 +529,7 @@ def test_logout_with_access_token(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -537,7 +539,7 @@ def test_logout_with_access_token(tmp_path: Path) -> None:
 
 def test_create_admin_as_admin(tmp_path: Path) -> None:
     """Admin can create another admin."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -553,12 +555,12 @@ def test_create_admin_as_admin(tmp_path: Path) -> None:
         assert "id" in body
         assert "password_hash" not in body
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_admin_without_auth(tmp_path: Path) -> None:
     """Creating admin without auth returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/create-admin",
@@ -566,12 +568,12 @@ def test_create_admin_without_auth(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_admin_as_non_admin(tmp_path: Path) -> None:
     """Non-admin (viewer) cannot create admin."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         # First create a viewer user
         admin_token = _admin_token(client)
@@ -595,12 +597,12 @@ def test_create_admin_as_non_admin(tmp_path: Path) -> None:
         )
         assert response.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_user_as_admin(tmp_path: Path) -> None:
     """Admin can create a regular user."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -614,12 +616,12 @@ def test_create_user_as_admin(tmp_path: Path) -> None:
         assert body["role"] == "operator"
         assert "password_hash" not in body
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_user_as_operator(tmp_path: Path) -> None:
     """Operator can create viewer users."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         client.post(
@@ -642,12 +644,12 @@ def test_create_user_as_operator(tmp_path: Path) -> None:
         assert response.status_code == 201
         assert response.json()["role"] == "viewer"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_operator_cannot_create_admin(tmp_path: Path) -> None:
     """Operator cannot create an admin user."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         client.post(
@@ -669,12 +671,12 @@ def test_operator_cannot_create_admin(tmp_path: Path) -> None:
         )
         assert response.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_duplicate_username(tmp_path: Path) -> None:
     """Creating a user with an existing username returns 400."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -685,12 +687,12 @@ def test_create_duplicate_username(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "already exists" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_duplicate_email(tmp_path: Path) -> None:
     """Creating a user with an existing email returns 400."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         client.post(
@@ -706,12 +708,12 @@ def test_create_duplicate_email(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "already exists" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_user_weak_password(tmp_path: Path) -> None:
     """Creating a user with a weak password returns 422."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -721,12 +723,12 @@ def test_create_user_weak_password(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_create_user_invalid_role(tmp_path: Path) -> None:
     """Creating a user with an invalid role returns 422."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -736,7 +738,7 @@ def test_create_user_invalid_role(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -746,7 +748,7 @@ def test_create_user_invalid_role(tmp_path: Path) -> None:
 
 def test_list_users_as_admin(tmp_path: Path) -> None:
     """Admin can list users."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.get(
@@ -762,12 +764,12 @@ def test_list_users_as_admin(tmp_path: Path) -> None:
         # Verify no password hash in response
         assert "password_hash" not in body["users"][0]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_list_users_as_non_admin(tmp_path: Path) -> None:
     """Non-admin cannot list users."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         # Need a non-admin user; create one
         admin_token = _admin_token(client)
@@ -788,22 +790,22 @@ def test_list_users_as_non_admin(tmp_path: Path) -> None:
         )
         assert response.status_code == 403
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_list_users_without_auth(tmp_path: Path) -> None:
     """Listing users without auth returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.get("/api/v1/auth/users")
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_get_user_by_id(tmp_path: Path) -> None:
     """Admin can get user details by ID."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.get(
@@ -816,12 +818,12 @@ def test_get_user_by_id(tmp_path: Path) -> None:
         assert body["role"] == "admin"
         assert "password_hash" not in body
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_get_user_not_found(tmp_path: Path) -> None:
     """Getting a nonexistent user returns 404."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.get(
@@ -830,12 +832,12 @@ def test_get_user_not_found(tmp_path: Path) -> None:
         )
         assert response.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_update_user(tmp_path: Path) -> None:
     """Admin can update user fields."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         # Create a user first
@@ -855,12 +857,12 @@ def test_update_user(tmp_path: Path) -> None:
         assert body["username"] == "updateduser"
         assert body["email"] == "new@example.com"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_update_user_not_found(tmp_path: Path) -> None:
     """Updating a nonexistent user returns 404."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
@@ -870,12 +872,12 @@ def test_update_user_not_found(tmp_path: Path) -> None:
         )
         assert response.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_role(tmp_path: Path) -> None:
     """Admin can change another user's role."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
         client.post(
@@ -892,12 +894,12 @@ def test_change_role(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json()["role"] == "operator"
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_role_invalid(tmp_path: Path) -> None:
     """Changing role to invalid value returns 422."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.patch(
@@ -907,12 +909,12 @@ def test_change_role_invalid(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_role_not_found(tmp_path: Path) -> None:
     """Changing role of nonexistent user returns 404."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.patch(
@@ -922,12 +924,12 @@ def test_change_role_not_found(tmp_path: Path) -> None:
         )
         assert response.status_code == 404
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_cannot_deactivate_last_admin(tmp_path: Path) -> None:
     """Cannot deactivate the last active admin."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
@@ -938,12 +940,12 @@ def test_cannot_deactivate_last_admin(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "last active admin" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_cannot_demote_last_admin(tmp_path: Path) -> None:
     """Cannot change the role of the last active admin."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.patch(
@@ -954,7 +956,7 @@ def test_cannot_demote_last_admin(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "last active admin" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -964,7 +966,7 @@ def test_cannot_demote_last_admin(tmp_path: Path) -> None:
 
 def test_change_password_success(tmp_path: Path) -> None:
     """User can change their own password with correct current password."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -993,12 +995,12 @@ def test_change_password_success(tmp_path: Path) -> None:
         )
         assert new_login.status_code == 200
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_password_wrong_current(tmp_path: Path) -> None:
     """Password change fails with incorrect current password."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -1013,12 +1015,12 @@ def test_change_password_wrong_current(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "incorrect" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_password_mismatch(tmp_path: Path) -> None:
     """Password change fails when new and confirm passwords don't match."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -1032,12 +1034,12 @@ def test_change_password_mismatch(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_password_same_as_old(tmp_path: Path) -> None:
     """Password change fails when new password is same as current."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -1052,12 +1054,12 @@ def test_change_password_same_as_old(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "different" in response.json()["detail"]
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_password_without_auth(tmp_path: Path) -> None:
     """Password change without auth returns 401."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/me/password",
@@ -1069,12 +1071,12 @@ def test_change_password_without_auth(tmp_path: Path) -> None:
         )
         assert response.status_code == 401
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_change_password_weak_new(tmp_path: Path) -> None:
     """Password change fails with a weak new password."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.post(
@@ -1088,12 +1090,12 @@ def test_change_password_weak_new(tmp_path: Path) -> None:
         )
         assert response.status_code == 422
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
 
 
 def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
     """Previously issued access tokens remain valid after password change."""
-    test_runtime, old_runtime, client, old_store = _setup_client(tmp_path)
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         old_token = _admin_token(client)
 
@@ -1117,4 +1119,4 @@ def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
             "Old access tokens should remain valid after password change"
         )
     finally:
-        _teardown(test_runtime, old_runtime, old_store)
+        _teardown(test_runtime, old_runtime)
