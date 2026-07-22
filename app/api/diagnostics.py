@@ -4,6 +4,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.auth import require_role
+from app.core.auth_store import UserRecord
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.video_ingestor import VideoFileIngestor
 from app.core.types import TaskName
@@ -198,6 +200,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
 )
 def restart_camera_pipeline(
     camera_id: str,
+    current_user: UserRecord = Depends(require_role("admin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     ingestor = runtime.video_ingestor

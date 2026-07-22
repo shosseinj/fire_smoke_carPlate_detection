@@ -9,6 +9,7 @@ from typing import Callable
 from app.config import Settings, settings
 from app.database import Database, get_database
 from app.core.auth import initialize_auth_store
+from app.core.general_settings_store import GeneralSettingsStore
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
@@ -72,6 +73,7 @@ class Runtime:
     request_store: RequestStore
     attendance_service: AttendanceService
     detection_log_store: DetectionLogStore
+    general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -314,6 +316,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
+    general_settings = GeneralSettingsStore(database)
     attendance_service = AttendanceService(
         personnel_store=personnel_store,
         human_log_store=human_logs,
@@ -588,5 +591,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         request_store=request_store,
         attendance_service=attendance_service,
         detection_log_store=detection_log_store,
+        general_settings=general_settings,
         video_ingestor=video_ingestor,
     )

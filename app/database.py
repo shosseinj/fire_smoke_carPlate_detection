@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260722_0004"
+ALEMBIC_HEAD_REVISION = "20260722_0005"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -288,6 +288,33 @@ model_general_settings = Table(
     Column("export_timeout_seconds", Integer, nullable=False, server_default="300"), Column("updated_at_utc", UTC_TS, nullable=False),
     CheckConstraint("id = 1", name="ck_model_general_singleton"),
 )
+general_settings = Table(
+    "general_settings", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("enable_processing", Integer, nullable=False, server_default="1"),
+    Column("process_fire", Integer, nullable=False, server_default="0"),
+    Column("process_plate", Integer, nullable=False, server_default="0"),
+    Column("counts_for_attendance", Integer, nullable=False, server_default="1"),
+    Column("margin_level", Float, nullable=False, server_default="1.0"),
+    Column("draw_box", Integer, nullable=False, server_default="1"),
+    Column("draw_face", Integer, nullable=False, server_default="1"),
+    Column("draw_skeleton", Integer, nullable=False, server_default="0"),
+    Column("draw_zones", Integer, nullable=False, server_default="1"),
+    Column("face_rec_score", Float, nullable=False, server_default="0.4"),
+    Column("face_det_score", Float, nullable=False, server_default="0.4"),
+    Column("human_det_score", Float, nullable=False, server_default="0.4"),
+    Column("confirmation_threshold", Float, nullable=False, server_default="0.6"),
+    Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("updated_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    *_audit_columns(),
+    CheckConstraint("id = 1", name="ck_general_settings_singleton"),
+    CheckConstraint("margin_level >= 1.0 AND margin_level <= 5.0", name="ck_margin_level_range"),
+    CheckConstraint("face_rec_score >= 0.0 AND face_rec_score <= 1.0", name="ck_face_rec_score_range"),
+    CheckConstraint("face_det_score >= 0.0 AND face_det_score <= 1.0", name="ck_face_det_score_range"),
+    CheckConstraint("human_det_score >= 0.0 AND human_det_score <= 1.0", name="ck_human_det_score_range"),
+    CheckConstraint("confirmation_threshold >= 0.0 AND confirmation_threshold <= 1.0", name="ck_confirmation_threshold_range"),
+)
+
 model_conversion_jobs = Table(
     "model_conversion_jobs", metadata,
     Column("job_id", Text, primary_key=True), Column("role", Text, nullable=False), Column("source_model", Text, nullable=False),
