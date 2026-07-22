@@ -29,6 +29,7 @@ from app.api.requests import router as requests_router
 from app.api.personnel_requests import router as personnel_requests_router
 from app.api.attendance import router as attendance_router
 from app.api.personnel_images import router as personnel_images_router
+from app.api.detection_logs import router as detection_logs_router
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -167,6 +168,7 @@ app.include_router(requests_router)
 app.include_router(personnel_requests_router)
 app.include_router(attendance_router)
 app.include_router(personnel_images_router)
+app.include_router(detection_logs_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 from fastapi.middleware.cors import CORSMiddleware
@@ -198,5 +200,6 @@ def health() -> dict:
         "shift_count": status["shift_count"],
         "holiday_count": status["holiday_count"],
         "request_count": status["request_count"],
+        "detection_log_count": status["detection_log_count"],
         "workers": status["workers"],
     }

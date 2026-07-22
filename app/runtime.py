@@ -27,6 +27,7 @@ from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.attendance_service import AttendanceService
+from app.core.detection_log_store import DetectionLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
@@ -70,6 +71,7 @@ class Runtime:
     holiday_store: HolidayStore
     request_store: RequestStore
     attendance_service: AttendanceService
+    detection_log_store: DetectionLogStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
 
     def selected_model_records(self) -> list[dict[str, object]]:
@@ -174,6 +176,7 @@ class Runtime:
         value["shift_count"] = self.shift_store.count()
         value["holiday_count"] = self.holiday_store.count_active()
         value["request_count"] = self.request_store.count()
+        value["detection_log_count"] = self.detection_log_store.count_by_status()
         return value
 
 
@@ -307,6 +310,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     shift_store = ShiftStore(database)
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
+    detection_log_store = DetectionLogStore(database)
     attendance_service = AttendanceService(
         personnel_store=personnel_store,
         human_log_store=human_logs,
@@ -579,5 +583,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         holiday_store=holiday_store,
         request_store=request_store,
         attendance_service=attendance_service,
+        detection_log_store=detection_log_store,
         video_ingestor=video_ingestor,
     )

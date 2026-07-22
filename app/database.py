@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260722_0002"
+ALEMBIC_HEAD_REVISION = "20260722_0004"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -85,6 +85,41 @@ face_quality_settings = Table(
     Column("max_abs_roll", Float, nullable=False), Column("require_landmarks", Integer, nullable=False),
     CheckConstraint("singleton = 1", name="ck_face_quality_singleton"),
 )
+
+detection_logs = Table(
+    "detection_logs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("source_system", String(64), nullable=False, server_default="face_recognition"),
+    Column("source_event_key", String(255), unique=True, nullable=True),
+    Column("source_human_log_id", Integer),
+    Column("personnel_id", Integer),
+    Column("person", String(255), nullable=False, server_default="Unknown"),
+    Column("confidence", Float, nullable=False, server_default="0"),
+    Column("detection_time", UTC_TS, nullable=False),
+    Column("ref_img_id", String(255)),
+    Column("room_id", Integer),
+    Column("camera_id", Text),
+    Column("access_granted", Integer, nullable=False, server_default="0"),
+    Column("counts_for_attendance", Integer, nullable=False, server_default="1"),
+    Column("log_type", String(64), nullable=False, server_default="real_time"),
+    Column("import_source_parts", Text),
+    Column("face_image", Text),
+    Column("body_image", Text),
+    Column("snapshot_image", Text),
+    Column("video", Text),
+    Column("face_video_or_unknown_faces", Text),
+    Column("created_by", Integer),
+    Column("updated_by", Integer),
+    *_audit_columns(),
+)
+Index("idx_detection_logs_time", detection_logs.c.detection_time)
+Index("idx_detection_logs_personnel", detection_logs.c.personnel_id)
+Index("idx_detection_logs_person", detection_logs.c.person)
+Index("idx_detection_logs_room", detection_logs.c.room_id)
+Index("idx_detection_logs_camera", detection_logs.c.camera_id)
+Index("idx_detection_logs_attendance", detection_logs.c.counts_for_attendance)
+Index("idx_detection_logs_type", detection_logs.c.log_type)
+Index("idx_detection_logs_source_event", detection_logs.c.source_event_key)
 
 fire_smoke_logs = Table(
     "fire_smoke_logs", metadata,
