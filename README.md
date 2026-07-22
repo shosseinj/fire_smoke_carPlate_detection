@@ -563,6 +563,36 @@ The plate processor performs:
 5. Exact Iranian-format and OCR-score validation.
 6. Original-frame coordinate restoration and per-frame plate deduplication.
 
+## Local Qdrant and dashboard
+
+Qdrant runs locally as a Docker service and persists vectors under
+`./qdrant_storage`. Start only the vector database with:
+
+```powershell
+docker compose up -d qdrant
+```
+
+Open the local Qdrant dashboard at `http://127.0.0.1:6333/dashboard`.
+The REST API is available at `http://127.0.0.1:6333`. The Compose-managed
+application connects to `http://qdrant:6333`; a manually launched application
+container connects through `http://host.docker.internal:6333`.
+
+Embedded `QdrantClient(path="./qdrant_storage")` mode is intentionally not used
+because it does not run the HTTP service required by the dashboard. Existing
+PostgreSQL face embeddings are not automatically copied into Qdrant.
+
+To replace the previous interactive `docker run` command, use:
+
+```powershell
+docker compose --profile shell run --rm --service-ports video-ai-router-shell
+```
+
+This opens `/bin/bash` with the NVIDIA GPU, real processor mode, video ingestion,
+the complete repository mounted at `/workspace`, PostgreSQL reachable through
+`host.docker.internal`, and Qdrant reachable through the Compose network. Start
+the application from that shell with `python3 run.py`; it is then available at
+`http://127.0.0.1:8000`.
+
 ## Start
 
 ```bash
@@ -705,4 +735,13 @@ docker run --rm -it `
   -e PROCESSOR_MODE=real `
   --mount "type=bind,source=$($PWD.Path),target=/workspace" `
   merged-video-ai-router:v9
+```
+
+```
+docker compose up -d --build
+docker compose up -d
+
+docker compose logs -f video-ai-router
+
+docker compose down
 ```

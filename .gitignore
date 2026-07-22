@@ -7,6 +7,7 @@ weights/**/*.onnx
 weights/**/*.pt
 weights/**/*.pth
 output/
+qdrant_storage/
 *.mp4
 *.sqlite3
 *.sqlite3-shm

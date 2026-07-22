@@ -1,5 +1,20 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
   video-ai-router:
+    image: merged-video-ai-router:v9
     build:
       context: .
       dockerfile: Dockerfile.deepstream
@@ -7,7 +22,7 @@ services:
         INSTALL_AI_REQUIREMENTS: ${INSTALL_AI_REQUIREMENTS:-0}
     env_file: ./app/.env
     environment:
-      PROCESSOR_MODE: ${PROCESSOR_MODE:-mock}
+      PROCESSOR_MODE: ${PROCESSOR_MODE:-real}
       VIDEO_INGEST_BACKEND: deepstream
       VIDEO_INGESTION_ENABLED: "true"
       VIDEO_INGEST_FPS: ${VIDEO_INGEST_FPS:-5}
@@ -79,21 +94,54 @@ services:
       FACE_STABLE_MIN_HITS: ${FACE_STABLE_MIN_HITS:-3}
       FACE_EMBEDDING_BATCH_SIZE: ${FACE_EMBEDDING_BATCH_SIZE:-64}
       FACE_QDRANT_COLLECTION: ${FACE_QDRANT_COLLECTION:-faces}
-      FACE_QDRANT_PATH: /workspace/data/qdrant
-      FACE_QDRANT_URL: ${FACE_QDRANT_URL:-}
+      FACE_QDRANT_URL: ${FACE_QDRANT_URL:-http://qdrant:6333}
       FACE_QDRANT_API_KEY: ${FACE_QDRANT_API_KEY:-}
       HUMAN_MEDIA_QUEUE_SIZE: ${HUMAN_MEDIA_QUEUE_SIZE:-256}
       HUMAN_VIDEO_FPS: ${HUMAN_VIDEO_FPS:-5}
       HUMAN_VIDEO_IDLE_SECONDS: ${HUMAN_VIDEO_IDLE_SECONDS:-5}
       HUMAN_SNAPSHOT_MIN_IMPROVEMENT: ${HUMAN_SNAPSHOT_MIN_IMPROVEMENT:-0.01}
     ports:
-      - "8000:8000"
+      - "8000:9999"
     volumes:
       - ./app:/workspace/app:ro
       - ./data:/workspace/data
       - ./weights:/workspace/weights:ro
       - ./saved_media:/workspace/saved_media
     shm_size: "2gb"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  video-ai-router-shell:
+    image: merged-video-ai-router:v9
+    profiles: ["shell"]
+    entrypoint: /bin/bash
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    env_file: ./app/.env
+    environment:
+      PROCESSOR_MODE: real
+      VIDEO_INGEST_BACKEND: deepstream
+      VIDEO_INGESTION_ENABLED: "true"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      FACE_QDRANT_URL: http://qdrant:6333
+    ports:
+      - "8000:9999"
+    volumes:
+      - .:/workspace
+    shm_size: "2gb"
+    depends_on:
+      qdrant:
+        condition: service_healthy
     deploy:
       resources:
         reservations:
