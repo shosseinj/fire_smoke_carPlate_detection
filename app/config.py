@@ -236,10 +236,10 @@ class Settings:
     )
     jwt_refresh_expiry_minutes: int = _refresh_minutes()
     auth_default_admin_username: str = str(
-        _env_first(("AUTH_DEFAULT_ADMIN_USERNAME", "SUPERUSER_USERNAME"), "admin")
+        _env_first(("AUTH_DEFAULT_ADMIN_USERNAME", "SUPERUSER_USERNAME"), "superadmin")
     )
     auth_default_admin_password: str = str(
-        _env_first(("AUTH_DEFAULT_ADMIN_PASSWORD", "SUPERUSER_PASSWORD"), "admin123")
+        _env_first(("AUTH_DEFAULT_ADMIN_PASSWORD", "SUPERUSER_PASSWORD"), "SuperAdmin123!")
     )
     auth_default_admin_email: str | None = _env_first(("AUTH_DEFAULT_ADMIN_EMAIL", "SUPERUSER_EMAIL"))
     auth_login_max_attempts: int = _env_int("AUTH_LOGIN_MAX_ATTEMPTS", 5)

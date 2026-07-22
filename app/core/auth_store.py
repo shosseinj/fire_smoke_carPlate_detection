@@ -92,6 +92,37 @@ class AuthStore:
             )
             return self._select_user(conn, "id = ?", cursor.lastrowid)
 
+    def ensure_default_admin(
+        self,
+        username: str,
+        password: str,
+        role: str = "admin",
+        email: str | None = None,
+        full_name: str | None = None,
+    ) -> UserRecord:
+        """Ensure the configured administrator exists without resetting its password."""
+        with self._lock, self._connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO users (username, password_hash, role, email, full_name) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING",
+                (username, _hash(password), role, email, full_name),
+            )
+            if cursor.lastrowid is not None:
+                created = self._select_user(conn, "id = ?", cursor.lastrowid)
+                if created is None:
+                    raise RuntimeError("Default administrator could not be reloaded")
+                return created
+
+            existing = self._select_user(conn, "username = ?", username)
+            if existing is None:
+                raise RuntimeError("Default administrator could not be ensured")
+            if existing.role != role:
+                conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, existing.id))
+                existing = self._select_user(conn, "id = ?", existing.id)
+                if existing is None:
+                    raise RuntimeError("Default administrator could not be reloaded")
+            return existing
+
     def verify_credentials(self, username: str, password: str) -> UserRecord | None:
         """Return an active user when the supplied password is valid."""
         user = self.get_user_by_username(username)

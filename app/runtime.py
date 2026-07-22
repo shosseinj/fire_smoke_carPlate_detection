@@ -8,6 +8,7 @@ from typing import Callable
 
 from app.config import Settings, settings
 from app.database import Database, get_database
+from app.core.auth import initialize_auth_store
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
@@ -203,6 +204,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         max_overflow=app_settings.database_max_overflow,
     )
     database.verify_schema()
+    initialize_auth_store(database, app_settings)
     registry = SourceRegistry(database)
     _seed_registry(
         registry,

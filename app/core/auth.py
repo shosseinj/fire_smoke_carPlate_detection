@@ -11,9 +11,9 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.config import settings
+from app.config import Settings, settings
 from app.core.auth_store import AuthStore, UserRecord
-from app.database import get_database
+from app.database import Database, get_database
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -36,22 +36,29 @@ def normalize_role(role: str | None) -> str:
     return normalized or (role or "").strip().lower()
 
 
-def get_auth_store() -> AuthStore:
+def initialize_auth_store(database: Database, app_settings: Settings = settings) -> AuthStore:
     global _auth_store
-    if _auth_store is None:
-        _auth_store = AuthStore(get_database(
-            settings.database_url,
-            echo=settings.database_echo,
-            pool_size=settings.database_pool_size,
-            max_overflow=settings.database_max_overflow,
-        ))
-        _auth_store.seed_default_admin(
-            username=settings.auth_default_admin_username,
-            password=settings.auth_default_admin_password,
-            role="admin",
-            email=settings.auth_default_admin_email,
-        )
+    if _auth_store is None or _auth_store.database_url != database.url:
+        _auth_store = AuthStore(database)
+    _auth_store.ensure_default_admin(
+        username=app_settings.auth_default_admin_username,
+        password=app_settings.auth_default_admin_password,
+        role="admin",
+        email=app_settings.auth_default_admin_email,
+    )
     return _auth_store
+
+
+def get_auth_store() -> AuthStore:
+    if _auth_store is not None:
+        return _auth_store
+    database = get_database(
+        settings.database_url,
+        echo=settings.database_echo,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+    )
+    return initialize_auth_store(database, settings)
 
 
 # ── Password utilities ──────────────────────────────────────────────

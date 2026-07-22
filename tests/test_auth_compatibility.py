@@ -79,6 +79,30 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_ensure_default_admin_in_populated_database_preserves_password(auth_context):
+    _, store, _ = auth_context
+    created = store.ensure_default_admin(
+        "superadmin",
+        "InitialStrong1!",
+        role="admin",
+    )
+    assert created.username == "superadmin"
+    assert created.role == "admin"
+    assert store.verify_credentials("superadmin", "InitialStrong1!") is not None
+
+    existing_hash = created.password_hash
+    ensured = store.ensure_default_admin(
+        "superadmin",
+        "ReplacementStrong2!",
+        role="admin",
+    )
+    assert ensured.password_hash == existing_hash
+    assert store.verify_credentials("superadmin", "InitialStrong1!") is not None
+    assert store.verify_credentials("superadmin", "ReplacementStrong2!") is None
+    _, total = store.list_users()
+    assert total == 2
+
+
 def test_route_coverage_openapi_and_no_duplicates(auth_context):
     _, _, app = auth_context
     actual: set[tuple[str, str]] = set()
