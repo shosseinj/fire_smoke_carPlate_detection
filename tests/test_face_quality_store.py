@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
+from app.processors.face_recognition import FaceMatch, SourceFaceTracker, TrackState
 
 
 def test_face_quality_settings_are_validated_and_persistent(tmp_path: Path) -> None:
@@ -29,6 +30,26 @@ def test_face_quality_settings_are_validated_and_persistent(tmp_path: Path) -> N
         FaceQualityPolicy(quality_threshold=0.1, max_abs_pitch=10.0),
     )
     assert reopened.get() == updated
+
+
+def test_tracked_identity_keeps_best_recognition_score_and_face_quality() -> None:
+    tracker = SourceFaceTracker.__new__(SourceFaceTracker)
+    tracker.tracks = {
+        1: TrackState(
+            track_id=1,
+            bbox=[0.0, 0.0, 10.0, 10.0],
+            stable_person="Alice",
+            stable_score=0.60,
+            stable_ref_img_id="old",
+        )
+    }
+
+    improved = tracker.observe(1, FaceMatch("Alice", 0.91, "new"))
+    tracker.record_face_quality(1, 0.88)
+
+    assert improved.score == 0.91
+    assert improved.ref_img_id == "new"
+    assert tracker.best_quality(1) == 0.88
 
 
 def test_legacy_single_face_size_is_migrated_to_width_and_height(

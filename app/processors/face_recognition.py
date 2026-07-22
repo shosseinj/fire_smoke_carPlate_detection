@@ -133,6 +133,7 @@ class TrackState:
     stable_person: str = "Unknown"
     stable_score: float = 0.0
     stable_ref_img_id: str | int | None = None
+    best_face_quality: float = 0.0
 
 
 @dataclass(slots=True)
@@ -302,6 +303,12 @@ class SourceFaceTracker:
         track.scores.append(float(match.score))
         track.ref_img_ids.append(match.ref_img_id)
         if track.stable_person != "Unknown":
+            if (
+                match.person == track.stable_person
+                and float(match.score) > track.stable_score
+            ):
+                track.stable_score = float(match.score)
+                track.stable_ref_img_id = match.ref_img_id
             return FaceMatch(
                 person=track.stable_person,
                 score=track.stable_score,
@@ -332,6 +339,19 @@ class SourceFaceTracker:
             ref_img_id=track.stable_ref_img_id,
         )
 
+    def record_face_quality(self, track_id: int | None, quality: float) -> None:
+        if track_id is None:
+            return
+        track = self.tracks.get(int(track_id))
+        if track is not None:
+            track.best_face_quality = max(track.best_face_quality, float(quality))
+
+    def best_quality(self, track_id: int | None) -> float:
+        if track_id is None:
+            return 0.0
+        track = self.tracks.get(int(track_id))
+        return round(float(track.best_face_quality), 6) if track is not None else 0.0
+
     def snapshot(self) -> list[dict[str, Any]]:
         return [
             {
@@ -339,6 +359,7 @@ class SourceFaceTracker:
                 "bbox": list(track.bbox),
                 "person": track.stable_person,
                 "recognition_score": round(track.stable_score, 6),
+                "best_face_quality": round(track.best_face_quality, 6),
                 "ref_img_id": track.stable_ref_img_id,
                 "visible": track.track_id in self._visible_boxes,
                 "missed_frames": track.missed,
@@ -1835,6 +1856,10 @@ class FaceRecognitionProcessor(BatchProcessor):
                         "quality_reason": reason,
                     }
                 )
+                if valid:
+                    self._tracker(packets[frame_index].source_id).record_face_quality(
+                        face.get("track_id"), quality
+                    )
                 if valid and crop is not None and face.get("track_id") is not None:
                     face_locations.append((frame_index, face_index))
                     face_crops.append(crop)
@@ -1895,6 +1920,9 @@ class FaceRecognitionProcessor(BatchProcessor):
                             "ref_img_id": identity.ref_img_id,
                             "identity_stable": identity.person != "Unknown",
                             "face_visible": human.get("track_id") in faces_by_track,
+                            "best_face_quality": tracker.best_quality(
+                                human.get("track_id")
+                            ),
                         }
                     )
 

@@ -173,7 +173,7 @@
         "quality_processed", "quality_rejected", "qdrant_status"
       ],
       "acceptance": {},
-      "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant."
+      "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant. Face quality is emitted per recognition and each tracked human exposes accumulated best_face_quality; history persistence binds PostgreSQL CASE booleans correctly."
     },
     {
       "id": "model-management",

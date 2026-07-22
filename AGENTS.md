@@ -64,6 +64,10 @@ settings. Keep severity floors above detector admission when low-confidence fals
 positives must not accumulate into incidents. Plate persistence is queued on a bounded
 background writer so database and snapshot I/O do not block plate inference.
 
+Face recognition quality is emitted per face (`quality_score`, metrics, validity),
+while each tracked human accumulates `best_face_quality`; human history persistence
+must bind PostgreSQL boolean CASE parameters as booleans, not integer `0/1` values.
+
 Task workers support `TASK_QUEUE_POLICY=latest_per_source` for bounded-latency CCTV or
 `TASK_QUEUE_POLICY=lossless_fifo` for bounded FIFO admission with backpressure. The
 real-time Compose default is latest-per-source; FIFO is an explicit file/API workload
