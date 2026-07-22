@@ -564,12 +564,12 @@ def delete_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-<<<<<<< HEAD
-) -> dict:
-    personnel = _store(runtime).get(personnel_id)
+) -> Response:
+    store = _store(runtime)
+    personnel = store.get(personnel_id)
     if personnel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
-    images = _store(runtime).list_images(personnel_id)
+    images = store.list_images(personnel_id)
     embedding_ids = [img.embedding_id for img in images if img.embedding_id]
     if embedding_ids:
         processor = _face_processor(runtime)
@@ -577,10 +577,7 @@ def delete_personnel(
             processor.delete_points(embedding_ids)
             processor.delete_person(personnel.national_code)
             processor.delete_person(f"{personnel.fname} {personnel.lname}")
-=======
-) -> Response:
->>>>>>> b77bfec (Resolve git conflicts in personnel.py and personnel_store.py)
-    deleted = _store(runtime).delete(personnel_id)
+    deleted = store.delete(personnel_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -849,19 +846,16 @@ def delete_personnel_image(
     image_id: int,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-<<<<<<< HEAD
-) -> dict:
-    img = _store(runtime).get_image(image_id)
+) -> Response:
+    store = _store(runtime)
+    img = store.get_image(image_id)
     if img is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
     if img.embedding_id:
         processor = _face_processor(runtime)
         if processor is not None:
             processor.delete_points([img.embedding_id])
-=======
-) -> Response:
->>>>>>> b77bfec (Resolve git conflicts in personnel.py and personnel_store.py)
-    deleted = _store(runtime).delete_image(image_id)
+    deleted = store.delete_image(image_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

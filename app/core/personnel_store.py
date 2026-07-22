@@ -311,28 +311,17 @@ class PersonnelStore:
         """Delete a personnel record. Cascades images (DB + files) and sets NULL
         on human_logs and detection_room_matches. Returns True if deleted."""
         with self._lock, self._connection() as conn:
-<<<<<<< HEAD
-            images = conn.execute(
-                "SELECT * FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
-            ).fetchall()
-            for img in images:
-                self._delete_storage_file(img["storage_key"])
-            conn.execute(
-                "DELETE FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
-=======
             existing = conn.execute(
                 f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if existing is None:
                 return False
-            # Delete image files from disk
             image_rows = conn.execute(
                 "SELECT storage_key FROM personnel_images WHERE personnel_id = ?",
                 (personnel_id,),
             ).fetchall()
             for img_row in image_rows:
                 self._delete_storage_file(img_row["storage_key"])
-            # Also delete vector embeddings through the face embeddings table
             img_ids = conn.execute(
                 "SELECT embedding_id FROM personnel_images WHERE personnel_id = ? AND embedding_id IS NOT NULL",
                 (personnel_id,),
@@ -346,7 +335,6 @@ class PersonnelStore:
                         )
                     except OperationalError:
                         pass
-            # Set NULL on detection_room_matches and human_logs
             try:
                 conn.execute(
                     "UPDATE detection_room_matches SET personnel_id = NULL WHERE personnel_id = ?",
@@ -361,11 +349,9 @@ class PersonnelStore:
                 )
             except OperationalError:
                 pass
-            # Delete personnel_images (cascade should handle this, but be explicit)
             conn.execute(
                 "DELETE FROM personnel_images WHERE personnel_id = ?",
                 (personnel_id,),
->>>>>>> b77bfec (Resolve git conflicts in personnel.py and personnel_store.py)
             )
             cursor = conn.execute(
                 "DELETE FROM personnel WHERE id = ?", (personnel_id,)
