@@ -1,0 +1,20 @@
+logLevel: info
+
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+hls: no
+rtmp: no
+srt: no
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+
+paths:
+  all_others:
