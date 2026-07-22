@@ -181,6 +181,11 @@
         gap: 10px;
         pointer-events: none;
       }
+      .stream-profile {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       .fps-badge {
         border: 1px solid rgba(56, 220, 134, 0.35);
         border-radius: 999px;
@@ -193,6 +198,19 @@
           Consolas,
           monospace;
         box-shadow: 0 5px 18px rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(8px);
+      }
+      .resolution-badge {
+        border: 1px solid rgba(39, 211, 255, 0.32);
+        border-radius: 999px;
+        padding: 5px 9px;
+        background: rgba(3, 8, 13, 0.8);
+        color: #8eeaff;
+        font:
+          800 11px/1 ui-monospace,
+          SFMono-Regular,
+          Consolas,
+          monospace;
         backdrop-filter: blur(8px);
       }
       .camera-fullscreen {
@@ -366,6 +384,7 @@
       let synchronizationRunning = false;
       let broadcastSocket = null;
       let reconnectTimer = null;
+      let fullscreenSourceId = null;
       const frameStats = new Map();
       const metricElements = new Map();
       let sessionReceivedFrames = 0;
@@ -420,12 +439,16 @@
         for (const source of sources) {
           const card = document.createElement("article");
           card.className = `camera-card${source.enabled ? "" : " offline"}`;
+          card.dataset.sourceId = source.source_id;
           const chips = source.tasks.map((task) => `<span class="task-chip ${task === "fire_smoke" ? "fire" : ""}">${taskLabel(task)}</span>`).join("");
           card.innerHTML = `
           <div class="stream-shell">
             <img alt="Annotated stream for ${source.name}" data-source-id="${source.source_id}">
             <div class="stream-toolbar">
-              <span class="fps-badge" data-fps-for="${source.source_id}">0.0 FPS</span>
+              <div class="stream-profile">
+                <span class="fps-badge" data-fps-for="${source.source_id}">0.0 FPS</span>
+                <span class="resolution-badge" data-resolution-for="${source.source_id}">Wall · waiting</span>
+              </div>
               <button class="camera-fullscreen" type="button" data-fullscreen-source="${source.source_id}">Fullscreen</button>
             </div>
             <div class="stream-status" data-status-for="${source.source_id}">Waiting for processed frames…</div>
@@ -445,6 +468,7 @@
           const status = card.querySelector(".stream-status");
           metricElements.set(source.source_id, {
             fps: card.querySelector("[data-fps-for]"),
+            resolution: card.querySelector("[data-resolution-for]"),
             frames: card.querySelector("[data-frames-for]"),
             index: card.querySelector("[data-index-for]"),
           });
@@ -483,6 +507,11 @@
         stats.total += 1;
         stats.lastArrival = now;
         stats.frameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+        const elements = metricElements.get(header.source_id);
+        if (elements && Number.isFinite(header.frame_width) && Number.isFinite(header.frame_height)) {
+          const profile = header.render_profile === "full" ? "Full" : "Wall";
+          elements.resolution.textContent = `${profile} · ${header.frame_width}×${header.frame_height}`;
+        }
         sessionReceivedFrames += 1;
         const jpeg = new Uint8Array(payload, 4 + headerLength);
         const nextUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
@@ -498,7 +527,9 @@
         if (!broadcasting) return;
         if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws`);
+        const parameters = new URLSearchParams({ wall: "true" });
+        if (fullscreenSourceId) parameters.set("fullscreen_source", fullscreenSourceId);
+        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws?${parameters}`);
         broadcastSocket = socket;
         socket.binaryType = "arraybuffer";
         socket.addEventListener("message", (event) => {
@@ -530,6 +561,12 @@
           broadcastSocket = null;
           socket.close(1000, "Broadcast disabled");
         }
+      }
+
+      function reconnectBroadcastSocket() {
+        if (!broadcasting) return;
+        disconnectBroadcastSocket();
+        connectBroadcastSocket();
       }
 
       function applyStreams() {
@@ -569,6 +606,8 @@
             name: source.name,
             enabled: source.enabled,
             tasks: [...source.tasks].sort(),
+            frame_width: source.frame_width,
+            frame_height: source.frame_height,
             source_uri: source.source_uri,
           })),
         );
@@ -629,6 +668,11 @@
 
       document.addEventListener("fullscreenchange", () => {
         const fullscreenElement = document.fullscreenElement;
+        const nextFullscreenSourceId = fullscreenElement?.classList.contains("camera-card") ? fullscreenElement.dataset.sourceId : null;
+        if (nextFullscreenSourceId !== fullscreenSourceId) {
+          fullscreenSourceId = nextFullscreenSourceId;
+          reconnectBroadcastSocket();
+        }
         wallFullscreenButton.textContent = fullscreenElement === document.documentElement ? "Exit fullscreen" : "Fullscreen wall";
         for (const button of document.querySelectorAll("[data-fullscreen-source]")) {
           button.textContent = fullscreenElement === button.closest(".camera-card") ? "Exit fullscreen" : "Fullscreen";

@@ -104,6 +104,9 @@ class Settings:
     )
     broadcast_enabled: bool = _env_bool("BROADCAST_ENABLED", True)
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
+    broadcast_wall_jpeg_quality: int = _env_int("BROADCAST_WALL_JPEG_QUALITY", 70)
+    broadcast_wall_max_width: int = _env_int("BROADCAST_WALL_MAX_WIDTH", 320)
+    broadcast_wall_max_height: int = _env_int("BROADCAST_WALL_MAX_HEIGHT", 320)
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
     fire_severity_window_seconds: float = _env_float(
         "FIRE_SEVERITY_WINDOW_SECONDS", 3.0

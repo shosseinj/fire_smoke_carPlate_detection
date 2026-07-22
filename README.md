@@ -213,7 +213,12 @@ Frontend broadcasting can be controlled at startup:
 ```text
 BROADCAST_ENABLED=true
 BROADCAST_JPEG_QUALITY=82
+BROADCAST_WALL_JPEG_QUALITY=70
+BROADCAST_WALL_MAX_WIDTH=320
+BROADCAST_WALL_MAX_HEIGHT=320
 ```
+
+Camera `frame_width` and `frame_height` define the high-resolution dashboard image. The video wall uses an aspect-preserving rendition bounded by `BROADCAST_WALL_MAX_WIDTH` and `BROADCAST_WALL_MAX_HEIGHT`; opening one camera fullscreen automatically switches only that camera to its configured full resolution.
 
 It can also be toggled from the dashboard or through:
 

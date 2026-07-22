@@ -56,12 +56,19 @@ def update_broadcast_state(
 
 
 @router.websocket("/api/v1/broadcast/ws")
-async def annotated_broadcast_websocket(websocket: WebSocket) -> None:
+async def annotated_broadcast_websocket(
+    websocket: WebSocket,
+    wall: bool = False,
+    fullscreen_source: str | None = None,
+) -> None:
     from app.main import runtime
 
     await websocket.accept()
     if not runtime.broadcast.enabled:
         await websocket.close(code=1013, reason="Frontend broadcasting is disabled")
+        return
+    if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
+        await websocket.close(code=1008, reason="Fullscreen source not found")
         return
     subscriber_id, target = runtime.broadcast.subscribe()
     try:
@@ -77,16 +84,22 @@ async def annotated_broadcast_websocket(websocket: WebSocket) -> None:
                 if isinstance(frame, BroadcastControlEvent):
                     await websocket.send_json(frame.payload)
                     continue
+                jpeg, width, height, profile = frame.rendition(
+                    full_resolution=not wall or frame.source_id == fullscreen_source
+                )
                 header = json.dumps(
                     {
                         "source_id": frame.source_id,
                         "frame_index": frame.frame_index,
                         "tasks": list(frame.tasks),
+                        "render_profile": profile,
+                        "frame_width": width,
+                        "frame_height": height,
                     },
                     separators=(",", ":"),
                 ).encode("utf-8")
                 await websocket.send_bytes(
-                    struct.pack("!I", len(header)) + header + frame.jpeg
+                    struct.pack("!I", len(header)) + header + jpeg
                 )
             finally:
                 target.task_done()

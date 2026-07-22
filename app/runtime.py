@@ -218,6 +218,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     broadcast = AnnotatedBroadcastHub(
         enabled=app_settings.broadcast_enabled,
         jpeg_quality=app_settings.broadcast_jpeg_quality,
+        wall_jpeg_quality=app_settings.broadcast_wall_jpeg_quality,
+        wall_max_width=app_settings.broadcast_wall_max_width,
+        wall_max_height=app_settings.broadcast_wall_max_height,
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_settings = PlateSettingsStore(

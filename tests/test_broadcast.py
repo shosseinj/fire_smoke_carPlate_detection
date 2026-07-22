@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -136,6 +137,51 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     assert int(image.sum()) > 0
+
+
+def test_wall_rendition_is_bounded_and_full_rendition_keeps_camera_size() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+    )
+
+    hub.publish_passthrough(packet([]))
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    full_jpeg, full_width, full_height, full_profile = encoded.rendition(
+        full_resolution=True
+    )
+    wall_jpeg, wall_width, wall_height, wall_profile = encoded.rendition(
+        full_resolution=False
+    )
+    assert (full_width, full_height, full_profile) == (320, 180, "full")
+    assert (wall_width, wall_height, wall_profile) == (160, 90, "wall")
+    assert cv2.imdecode(
+        np.frombuffer(full_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+    ).shape == (180, 320, 3)
+    assert cv2.imdecode(
+        np.frombuffer(wall_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+    ).shape == (90, 160, 3)
+    status = hub.status()
+    assert status["wall_max_width"] == 160
+    assert status["wall_max_height"] == 160
+    assert status["active_streams"]["camera-07"]["full_resolution"] == [320, 180]
+    assert status["active_streams"]["camera-07"]["wall_resolution"] == [160, 90]
+    assert status["wall_encoded_bytes"] < status["full_encoded_bytes"]
+
+
+def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() -> None:
+    dashboard = (
+        Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'new URLSearchParams({ wall: "true" })' in dashboard
+    assert 'parameters.set("fullscreen_source", fullscreenSourceId)' in dashboard
+    assert 'fullscreenElement?.classList.contains("camera-card")' in dashboard
+    assert "reconnectBroadcastSocket()" in dashboard
+    assert 'header.render_profile === "full"' in dashboard
 
 
 def test_face_result_draws_recognized_identity() -> None:
