@@ -46,7 +46,7 @@
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern."
+      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern. Compose defaults AI ingest to 25 FPS; VIDEO_INGEST_FPS remains an explicit runtime override."
     },
     {
       "id": "frame-pipeline",
@@ -88,7 +88,7 @@
         "per_source_reconnects", "per_source_health", "backend"
       ],
       "acceptance": {},
-      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform."
+      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent."
     },
     {
       "id": "source-registry",

@@ -44,6 +44,12 @@ Do not calculate FPS from a single cumulative counter snapshot. Use the sampler 
 
 The normal detector input is fixed at `3×640×640`. TensorRT detector engines should use a dynamic batch dimension only, normally batch 1–8. Use `--dynamic-batch-only`; do not make height and width dynamic unless the task explicitly requires it.
 
+The DeepStream ingest path converts frames with `nvvideoconvert` to BGRx and normalizes
+the mapped appsink buffer to the existing 3-channel NumPy processor contract. It does
+not insert a CPU `videoconvert` stage. The Compose AI-ingest default is 25 FPS, while
+`VIDEO_INGEST_FPS` remains the authoritative override; use the bounded FPS diagnostic
+sampler before raising it further.
+
 ## Architecture
 
 - `app/main.py`: FastAPI application and lifespan.

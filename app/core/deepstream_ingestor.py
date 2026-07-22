@@ -78,7 +78,6 @@ class DeepStreamIngestor:
         "nvvideoconvert",
         "queue",
         "identity",
-        "videoconvert",
         "capsfilter",
         "appsink",
     )
@@ -302,20 +301,11 @@ class DeepStreamIngestor:
             structure = caps.get_structure(0)
             width = int(structure.get_value("width"))
             height = int(structure.get_value("height"))
+            pixel_format = str(structure.get_value("format"))
             buffer = sample.get_buffer()
             payload = buffer.extract_dup(0, buffer.get_size())
-            row_stride = len(payload) // max(height, 1)
-            packed_width = width * 3
-            if width <= 0 or height <= 0 or row_stride < packed_width:
-                raise ValueError(
-                    f"Invalid BGR sample layout: {width}x{height}, stride={row_stride}"
-                )
-            flat = np.frombuffer(payload, dtype=np.uint8)
-            frame = (
-                flat[: row_stride * height]
-                .reshape(height, row_stride)[:, :packed_width]
-                .reshape(height, width, 3)
-                .copy()
+            frame = self._decode_cpu_sample(
+                payload, width=width, height=height, pixel_format=pixel_format
             )
             source_time = None
             if buffer.pts != Gst.CLOCK_TIME_NONE:
@@ -340,6 +330,30 @@ class DeepStreamIngestor:
             state.last_frame_monotonic = now
             state.last_error = None
         return Gst.FlowReturn.OK
+
+    @staticmethod
+    def _decode_cpu_sample(
+        payload: bytes,
+        *,
+        width: int,
+        height: int,
+        pixel_format: str,
+    ) -> np.ndarray:
+        """Normalize the GPU-converted BGRx/BGR appsink buffer for processors."""
+        channels = {"BGR": 3, "BGRx": 4}.get(pixel_format)
+        if width <= 0 or height <= 0 or channels is None:
+            raise ValueError(f"Unsupported DeepStream sample format: {pixel_format}")
+        row_stride = len(payload) // height
+        packed_width = width * channels
+        if row_stride < packed_width:
+            raise ValueError(
+                f"Invalid {pixel_format} sample layout: {width}x{height}, stride={row_stride}"
+            )
+        flat = np.frombuffer(payload, dtype=np.uint8)
+        rows = flat[: row_stride * height].reshape(height, row_stride)[:, :packed_width]
+        if channels == 4:
+            return rows.reshape(height, width, 4)[:, :, :3].copy()
+        return rows.reshape(height, width, 3).copy()
 
     def _next_frame_index_locked(self, source_id: str) -> int:
         """Return a monotonic index that survives EOS pipeline replacement."""
@@ -370,8 +384,6 @@ class DeepStreamIngestor:
             pacer = self._make("identity", f"pacer_{safe_id}")
             gpu_convert = self._make("nvvideoconvert", f"gpu_convert_{safe_id}")
             bgrx_caps = self._make("capsfilter", f"bgrx_caps_{safe_id}")
-            cpu_convert = self._make("videoconvert", f"cpu_convert_{safe_id}")
-            bgr_caps = self._make("capsfilter", f"bgr_caps_{safe_id}")
             sink = self._make("appsink", f"appsink_{safe_id}")
 
             # DeepStream 7.1 still lets its internal uridecodebin autoplug AAC
@@ -422,7 +434,6 @@ class DeepStreamIngestor:
                 "caps",
                 Gst.Caps.from_string(bgrx_caps_value),
             )
-            bgr_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=BGR"))
             sink.set_property("emit-signals", True)
             sink.set_property("sync", False)
             sink.set_property("max-buffers", 1)
@@ -435,8 +446,6 @@ class DeepStreamIngestor:
                 pacer,
                 gpu_convert,
                 bgrx_caps,
-                cpu_convert,
-                bgr_caps,
                 sink,
             ):
                 pipeline.add(element)
@@ -446,12 +455,8 @@ class DeepStreamIngestor:
                 raise RuntimeError("Could not link DeepStream queue to nvvideoconvert")
             if not gpu_convert.link(bgrx_caps):
                 raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
-            if not bgrx_caps.link(cpu_convert):
-                raise RuntimeError("Could not link BGRx caps to videoconvert")
-            if not cpu_convert.link(bgr_caps):
-                raise RuntimeError("Could not link videoconvert to BGR caps")
-            if not bgr_caps.link(sink):
-                raise RuntimeError("Could not link BGR caps to appsink")
+            if not bgrx_caps.link(sink):
+                raise RuntimeError("Could not link BGRx caps to appsink")
             source_pad_handler_id = source.connect(
                 "pad-added", self._on_pad_added, pacer
             )

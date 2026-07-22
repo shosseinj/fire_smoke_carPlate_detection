@@ -229,6 +229,17 @@ def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
     assert ingestor._next_frame_index_locked("camera-loop") == 2
 
 
+def test_deepstream_decodes_gpu_converted_bgrx_without_cpu_videoconvert() -> None:
+    payload = bytes([10, 20, 30, 255, 40, 50, 60, 255])
+
+    frame = DeepStreamIngestor._decode_cpu_sample(
+        payload, width=2, height=1, pixel_format="BGRx"
+    )
+
+    assert frame.shape == (1, 2, 3)
+    assert frame.tolist() == [[[10, 20, 30], [40, 50, 60]]]
+
+
 def test_deepstream_submits_640_inference_view_with_native_source_frame(
     tmp_path: Path,
 ) -> None:
