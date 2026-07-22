@@ -21,6 +21,8 @@ from app.config import settings
 LOGGER = logging.getLogger("uvicorn.error")
 
 _VALID_EMPLOYEE_TYPES = frozenset({"contractor", "customer", "guest", "employee", "unknown"})
+_NATIONAL_CODE_CONSTRAINT = "personnel_national_code_key"
+_DEPARTMENT_CONSTRAINT = "personnel_department_id_fkey"
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
@@ -70,6 +72,22 @@ def validate_national_code(code: str) -> bool:
     else:
         expected = 11 - remainder
     return expected == checksum
+
+
+def _personnel_integrity_message(
+    exc: IntegrityError,
+    *,
+    national_code: str,
+    department_id: int | None,
+) -> str:
+    original = getattr(exc, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    if constraint_name == _NATIONAL_CODE_CONSTRAINT:
+        return f"National code already exists: {national_code}"
+    if constraint_name == _DEPARTMENT_CONSTRAINT:
+        return f"Department not found: {department_id}"
+    return "Personnel data violates a database constraint"
 
 
 class PersonnelStore:
@@ -232,8 +250,14 @@ class PersonnelStore:
                 if row is None:
                     raise RuntimeError("Failed to retrieve created personnel record")
                 return self._row_to_personnel(row)
-            except IntegrityError:
-                raise ValueError(f"National code already exists: {raw_code}")
+            except IntegrityError as exc:
+                raise ValueError(
+                    _personnel_integrity_message(
+                        exc,
+                        national_code=raw_code,
+                        department_id=department_id,
+                    )
+                ) from exc
 
     def get(self, personnel_id: int) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
@@ -304,8 +328,14 @@ class PersonnelStore:
                     f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
                 ).fetchone()
                 return self._row_to_personnel(row)
-            except IntegrityError:
-                raise ValueError(f"National code already exists: {raw_code}")
+            except IntegrityError as exc:
+                raise ValueError(
+                    _personnel_integrity_message(
+                        exc,
+                        national_code=raw_code,
+                        department_id=new_department_id,
+                    )
+                ) from exc
 
     def delete(self, personnel_id: int) -> bool:
         """Delete a personnel record. Cascades images (DB + files) and sets NULL
@@ -327,6 +357,7 @@ class PersonnelStore:
             ).fetchall()
             for img_row in image_rows:
                 self._delete_storage_file(img_row["storage_key"])
+            self._delete_personnel_files(personnel_id)
             img_ids = conn.execute(
                 "SELECT embedding_id FROM personnel_images WHERE personnel_id = ? AND embedding_id IS NOT NULL",
                 (personnel_id,),

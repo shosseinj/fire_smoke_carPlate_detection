@@ -36,8 +36,13 @@ class _Connection:
         if statement.startswith("SELECT id FROM personnel"):
             row = {"id": 7} if self._personnel_exists else None
             return _Result(row=row)
-        if statement.startswith("SELECT * FROM personnel_images"):
+        if statement.startswith("SELECT") and "FROM personnel WHERE id" in statement:
+            row = {"id": 7} if self._personnel_exists else None
+            return _Result(row=row)
+        if statement.startswith("SELECT storage_key FROM personnel_images"):
             return _Result(rows=[{"storage_key": self._snapshot_key}])
+        if statement.startswith("SELECT embedding_id FROM personnel_images"):
+            return _Result(rows=[])
         return _Result(rowcount=1)
 
 
