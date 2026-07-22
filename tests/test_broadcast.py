@@ -285,7 +285,34 @@ def test_face_result_draws_recognized_identity() -> None:
     )
     encoded = hub.latest("camera-07")
     assert encoded is not None
+
+
+def test_human_result_draws_human_bounding_box() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(
+            TaskName.FACE_RECOGNITION,
+            {
+                "humans": [
+                    {
+                        "bbox": [60, 45, 130, 135],
+                        "person": "Unknown",
+                        "track_id": 4,
+                    }
+                ],
+                "faces": [],
+            },
+        ),
+    )
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
     assert encoded.tasks == ("face_recognition",)
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     assert int(image.sum()) > 0
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[45:135, 60:130].mean()) > 0.0

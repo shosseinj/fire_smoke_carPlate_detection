@@ -35,3 +35,18 @@ def test_latest_frame_replaces_stale_frame_without_duplicate_queue_entry() -> No
     assert stats.accepted_by_source == {"camera-01": 2, "camera-02": 1}
     assert stats.stale_replaced_by_source == {"camera-01": 1}
     buffer.close()
+
+
+def test_lossless_fifo_preserves_every_frame_in_order() -> None:
+    buffer = LatestPerSourceBuffer(policy="lossless_fifo", capacity=3)
+    packets = [packet("camera-01", frame_index) for frame_index in range(3)]
+
+    assert all(buffer.put(item) for item in packets)
+    result = buffer.take_batch(3, 0.0)
+
+    assert [item.frame_index for item in result] == [0, 1, 2]
+    stats = buffer.stats()
+    assert stats.policy == "lossless_fifo"
+    assert stats.queue_depth == 0
+    assert stats.stale_replaced == 0
+    buffer.close()

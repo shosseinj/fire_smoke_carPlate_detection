@@ -68,7 +68,7 @@
         "play_only_frames", "queue_depth", "queue_capacity", "queue_replacements"
       ],
       "acceptance": {},
-      "notes": "Mock mode testable. Real mode requires GPU and model files."
+      "notes": "Mock mode testable. Real mode requires GPU and model files. Real-time Compose uses latest-per-source task queues; bounded lossless FIFO remains an explicit file/API option with backpressure."
     },
     {
       "id": "video-ingestion",
@@ -88,7 +88,7 @@
         "per_source_reconnects", "per_source_health", "backend"
       ],
       "acceptance": {},
-      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent."
+      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent. Upstream latest-frame/leaky behavior still limits live losslessness."
     },
     {
       "id": "source-registry",
@@ -215,7 +215,7 @@
         "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
       "acceptance": {},
-      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Dashboard requires browser validation."
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Face/human boxes are rendered server-side from TaskResult humans/faces; renderer failures are logged. Dashboard requires browser validation."
     },
     {
       "id": "api-health",

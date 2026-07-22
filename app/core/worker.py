@@ -36,6 +36,9 @@ class TaskWorker:
         batch_size: int,
         max_wait_ms: float,
         num_threads: int = 1,
+        queue_policy: str = "latest_per_source",
+        queue_capacity: int = 256,
+        queue_block_timeout_ms: float = 1000.0,
         result_callback: Callable[[FramePacket, TaskResult], None] | None = None,
         result_observer: Callable[[FramePacket, TaskResult], None] | None = None,
         location_observer: Callable[[FramePacket, TaskResult], None] | None = None,
@@ -48,7 +51,11 @@ class TaskWorker:
         self.result_callback = result_callback
         self.result_observer = result_observer
         self.location_observer = location_observer
-        self.buffer = LatestPerSourceBuffer()
+        self.buffer = LatestPerSourceBuffer(
+            policy=queue_policy,
+            capacity=queue_capacity,
+            block_timeout_seconds=queue_block_timeout_ms / 1000.0,
+        )
         self.counters = WorkerCounters()
         self._threads: list[threading.Thread] = []
         self._started = threading.Event()

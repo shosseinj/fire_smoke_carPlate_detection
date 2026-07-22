@@ -50,6 +50,15 @@ not insert a CPU `videoconvert` stage. The Compose AI-ingest default is 25 FPS, 
 `VIDEO_INGEST_FPS` remains the authoritative override; use the bounded FPS diagnostic
 sampler before raising it further.
 
+Task workers support `TASK_QUEUE_POLICY=latest_per_source` for bounded-latency CCTV or
+`TASK_QUEUE_POLICY=lossless_fifo` for bounded FIFO admission with backpressure. The
+real-time Compose default is latest-per-source; FIFO is an explicit file/API workload
+option. FIFO
+prevents worker-side replacement only while its finite capacity and timeout can absorb
+the workload; `TASK_QUEUE_BLOCK_TIMEOUT_MS=0` waits instead of rejecting admission.
+It still cannot guarantee lossless RTSP delivery when decode, network, or GPU
+throughput is lower than the source rate.
+
 ## Architecture
 
 - `app/main.py`: FastAPI application and lifespan.

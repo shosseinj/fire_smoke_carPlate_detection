@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import logging
 import threading
 import time
 import uuid
@@ -13,6 +14,8 @@ import numpy as np
 
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.source_registry import SourceChange
+
+LOGGER = logging.getLogger(__name__)
 
 
 TASK_LABELS = {
@@ -116,7 +119,12 @@ class AnnotatedBroadcastHub:
             try:
                 self._do_render(source_id, frame_index, pending)
             except Exception:
-                pass
+                LOGGER.exception(
+                    "Broadcast render failed: source=%s frame=%s tasks=%s",
+                    source_id,
+                    frame_index,
+                    sorted(task.value for task in pending.expected_tasks),
+                )
 
     def _do_render(self, source_id: str, frame_index: int, pending: PendingAnnotatedFrame) -> None:
         rendered = self._render(source_id, frame_index, pending)
