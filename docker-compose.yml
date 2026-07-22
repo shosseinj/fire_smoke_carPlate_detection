@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile.deepstream
       args:
         INSTALL_AI_REQUIREMENTS: ${INSTALL_AI_REQUIREMENTS:-0}
+    env_file: ./app/.env
     environment:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-mock}
       VIDEO_INGEST_BACKEND: deepstream

@@ -4,7 +4,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / "app" / ".env")
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg2://postgres:Asd12345@host.docker.internal:5432/ai_database"
 )
