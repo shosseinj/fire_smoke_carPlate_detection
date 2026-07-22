@@ -87,6 +87,8 @@ class FaceVectorStore(Protocol):
 
     def delete_person(self, person: str) -> int: ...
 
+    def delete_points(self, point_ids: list[str]) -> int: ...
+
     def status(self) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
@@ -658,6 +660,17 @@ class QdrantFaceStore:
             )
         return count
 
+    def delete_points(self, point_ids: list[str]) -> int:
+        if not point_ids:
+            return 0
+        with self.lock:
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=point_ids,
+                wait=True,
+            )
+        return len(point_ids)
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             count = int(self.client.count(collection_name=self.collection).count)
@@ -759,6 +772,17 @@ class PostgresFaceStore:
             cursor = connection.execute(
                 "DELETE FROM face_embeddings WHERE person = ?",
                 (person,),
+            )
+            return int(cursor.rowcount)
+
+    def delete_points(self, point_ids: list[str]) -> int:
+        if not point_ids:
+            return 0
+        placeholders = ",".join("?" for _ in point_ids)
+        with self.lock, self.database.connection() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM face_embeddings WHERE id IN ({placeholders})",
+                point_ids,
             )
             return int(cursor.rowcount)
 
@@ -2020,6 +2044,11 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._ensure_dependencies()
         assert self._vector_store is not None
         return self._vector_store.delete_person(person.strip())
+
+    def delete_points(self, point_ids: list[str]) -> int:
+        self._ensure_dependencies()
+        assert self._vector_store is not None
+        return self._vector_store.delete_points(point_ids)
 
     def quality_settings(self) -> dict[str, Any]:
         return {

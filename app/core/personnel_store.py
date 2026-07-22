@@ -230,6 +230,14 @@ class PersonnelStore:
     def delete(self, personnel_id: int) -> bool:
         """Delete a personnel record and cascade images. Returns True if deleted."""
         with self._lock, self._connection() as conn:
+            images = conn.execute(
+                "SELECT * FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
+            ).fetchall()
+            for img in images:
+                self._delete_storage_file(img["storage_key"])
+            conn.execute(
+                "DELETE FROM personnel_images WHERE personnel_id = ?", (personnel_id,)
+            )
             cursor = conn.execute(
                 "DELETE FROM personnel WHERE id = ?", (personnel_id,)
             )

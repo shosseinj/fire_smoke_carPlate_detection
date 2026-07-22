@@ -299,6 +299,17 @@ def delete_personnel(
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
 ) -> dict:
+    personnel = _store(runtime).get(personnel_id)
+    if personnel is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+    images = _store(runtime).list_images(personnel_id)
+    embedding_ids = [img.embedding_id for img in images if img.embedding_id]
+    if embedding_ids:
+        processor = _face_processor(runtime)
+        if processor is not None:
+            processor.delete_points(embedding_ids)
+            processor.delete_person(personnel.national_code)
+            processor.delete_person(f"{personnel.fname} {personnel.lname}")
     deleted = _store(runtime).delete(personnel_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
@@ -448,6 +459,13 @@ def delete_personnel_image(
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
 ) -> dict:
+    img = _store(runtime).get_image(image_id)
+    if img is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    if img.embedding_id:
+        processor = _face_processor(runtime)
+        if processor is not None:
+            processor.delete_points([img.embedding_id])
     deleted = _store(runtime).delete_image(image_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
