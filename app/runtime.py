@@ -261,6 +261,11 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         max_overflow=app_settings.database_max_overflow,
     )
     database.verify_schema()
+    general_settings = GeneralSettingsStore(
+        database,
+        OperationalSettings.from_app_settings(app_settings),
+    )
+    operational = general_settings.get().operational
     initialize_auth_store(database, app_settings)
     registry = SourceRegistry(database)
     _seed_registry(
@@ -368,8 +373,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
-    general_settings = GeneralSettingsStore(database, OperationalSettings.from_app_settings(app_settings))
-    operational = general_settings.get().operational
     attendance_service = AttendanceService(
         personnel_store=personnel_store,
         human_log_store=human_logs,

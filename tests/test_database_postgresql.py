@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from sqlalchemy import Date, DateTime, LargeBinary, Time
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
-from app.database import _replace_qmarks, metadata
+from app.database import ALEMBIC_HEAD_REVISION, _replace_qmarks, metadata
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -41,17 +42,50 @@ def test_postgresql_ddl_contains_native_types() -> None:
     assert "BYTEA" in embeddings_ddl
 
 
-def test_alembic_initial_revision_covers_every_application_table() -> None:
-    migration = (
-        PROJECT_ROOT
-        / "alembic"
-        / "versions"
-        / "20260722_0001_initial_postgresql.py"
-    ).read_text(encoding="utf-8")
+def test_alembic_migration_chain_covers_every_application_table() -> None:
+    migration = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((PROJECT_ROOT / "alembic" / "versions").glob("*.py"))
+    )
     for table_name in metadata.tables:
-        assert f"CREATE TABLE {table_name} " in migration
+        assert (
+            f"CREATE TABLE {table_name} " in migration
+            or f"CREATE TABLE IF NOT EXISTS {table_name} " in migration
+        )
     assert "revision: str = '20260722_0001'" in migration
     assert "down_revision" in migration
+
+
+def test_application_expected_revision_matches_alembic_head() -> None:
+    revisions: set[str] = set()
+    parent_revisions: set[str] = set()
+    for path in (PROJECT_ROOT / "alembic" / "versions").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        values: dict[str, str | None] = {}
+        for node in tree.body:
+            target = None
+            value = None
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                target = node.target
+                value = node.value
+            if (
+                isinstance(target, ast.Name)
+                and target.id in {"revision", "down_revision"}
+                and isinstance(value, ast.Constant)
+                and (isinstance(value.value, str) or value.value is None)
+            ):
+                values[target.id] = value.value
+        revision = values.get("revision")
+        if revision is not None:
+            revisions.add(revision)
+        parent = values.get("down_revision")
+        if parent is not None:
+            parent_revisions.add(parent)
+
+    assert revisions - parent_revisions == {ALEMBIC_HEAD_REVISION}
 
 
 def test_runtime_source_has_no_local_relational_database_backend() -> None:
