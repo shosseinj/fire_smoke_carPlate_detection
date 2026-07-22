@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import threading
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -11,7 +13,7 @@ from app.core.source_registry import SourceChange
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_text()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,76 +51,41 @@ class PlateDetectionPolicy:
 
 
 class PlateSettingsStore:
-    """In-memory effective settings backed by general and per-camera SQLite rows."""
+    """In-memory effective settings backed by general and per-camera PostgreSQL rows."""
 
     FIELDS = tuple(asdict(PlateDetectionPolicy()).keys())
 
     def __init__(
         self,
-        database_path: Path,
+        database: Database | str,
         *,
         default_policy: PlateDetectionPolicy,
     ) -> None:
-        self.database_path = database_path
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._revision = 0
         self._initialize(default_policy.validated())
         self._general, self._general_updated_at = self._load_general()
         self._camera_overrides = self._load_camera_overrides()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def _initialize(self, default: PlateDetectionPolicy) -> None:
+        values = asdict(default)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA busy_timeout=10000")
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS plate_general_settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    vehicle_confidence REAL NOT NULL,
-                    plate_confidence REAL NOT NULL,
-                    ocr_confidence REAL NOT NULL,
-                    min_vehicle_width_pixels INTEGER NOT NULL,
-                    min_vehicle_height_pixels INTEGER NOT NULL,
-                    min_vehicle_area_ratio REAL NOT NULL,
-                    vehicle_crop_padding_ratio REAL NOT NULL,
-                    updated_at_utc TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS plate_camera_settings (
-                    camera_id TEXT PRIMARY KEY,
-                    vehicle_confidence REAL,
-                    plate_confidence REAL,
-                    ocr_confidence REAL,
-                    min_vehicle_width_pixels INTEGER,
-                    min_vehicle_height_pixels INTEGER,
-                    min_vehicle_area_ratio REAL,
-                    vehicle_crop_padding_ratio REAL,
-                    updated_at_utc TEXT NOT NULL
-                )
-                """
-            )
-            values = asdict(default)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO plate_general_settings (
+                INSERT INTO plate_general_settings (
                     id, vehicle_confidence, plate_confidence, ocr_confidence,
                     min_vehicle_width_pixels, min_vehicle_height_pixels,
                     min_vehicle_area_ratio, vehicle_crop_padding_ratio,
                     updated_at_utc
                 ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
                 """,
-                (*values.values(), _utc_now()),
+                (*values.values(), utc_now_text()),
             )
-            connection.commit()
 
     def _load_general(self) -> tuple[PlateDetectionPolicy, str]:
         with self._connect() as connection:

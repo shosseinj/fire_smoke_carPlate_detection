@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
+import os
 
 import pytest
+
+pytest.importorskip("psycopg2")
+pytest.importorskip("bcrypt")
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.auth import router
 from app.core import auth as auth_core
 from app.core.auth_store import AuthStore
+from app.database import get_database, metadata
+
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(
+    not TEST_DATABASE_URL,
+    reason="TEST_DATABASE_URL must point to a disposable PostgreSQL database",
+)
 
 
 APPROVED_LEGACY_AUTH_ROUTES = [
@@ -28,8 +38,13 @@ APPROVED_LEGACY_AUTH_ROUTES = [
 
 
 @pytest.fixture()
-def auth_context(tmp_path: Path):
-    store = AuthStore(tmp_path / "auth.sqlite3")
+def auth_context():
+    assert TEST_DATABASE_URL is not None
+    database = get_database(TEST_DATABASE_URL)
+    with database.engine.begin() as connection:
+        connection.execute(metadata.tables["revoked_tokens"].delete())
+        connection.execute(metadata.tables["users"].delete())
+    store = AuthStore(database)
     store.seed_default_admin(
         "admin",
         "StrongPass1!",
@@ -46,6 +61,9 @@ def auth_context(tmp_path: Path):
     finally:
         client.close()
         auth_core._auth_store = old_store
+        with database.engine.begin() as connection:
+            connection.execute(metadata.tables["revoked_tokens"].delete())
+            connection.execute(metadata.tables["users"].delete())
 
 
 def login(client: TestClient, username: str = "admin", password: str = "StrongPass1!") -> dict:
@@ -84,34 +102,16 @@ def test_route_coverage_openapi_and_no_duplicates(auth_context):
     assert "/api/v1/auth/register" not in schema["paths"]
 
 
-def test_sqlite_additive_schema_upgrade(tmp_path: Path):
-    db_path = tmp_path / "legacy.sqlite3"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'viewer',
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at_utc TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO users (username, password_hash, role, created_at_utc) "
-            "VALUES ('legacy', 'hash', 'user', '2026-01-01T00:00:00Z')"
-        )
-    store = AuthStore(db_path)
-    user = store.get_user_by_username("legacy")
-    assert user is not None
-    assert user.role == "viewer"
-    assert user.login_attempts == 0
-    with sqlite3.connect(db_path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
-    assert {"email", "full_name", "last_login_utc", "login_attempts", "locked_until_utc"} <= columns
+def test_postgresql_auth_schema_uses_timezone_aware_columns():
+    assert TEST_DATABASE_URL is not None
+    database = get_database(TEST_DATABASE_URL)
+    from sqlalchemy import inspect
 
+    columns = {column["name"]: column for column in inspect(database.engine).get_columns("users")}
+    assert {"email", "full_name", "last_login_utc", "login_attempts", "locked_until_utc"} <= columns.keys()
+    assert getattr(columns["created_at_utc"]["type"], "timezone", False) is True
+    assert getattr(columns["last_login_utc"]["type"], "timezone", False) is True
+    assert getattr(columns["locked_until_utc"]["type"], "timezone", False) is True
 
 def test_login_superset_tracking_and_lockout(auth_context):
     client, store, _ = auth_context

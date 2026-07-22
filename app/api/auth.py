@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Response, status
@@ -29,6 +28,7 @@ from app.api.auth_schemas import (
     validate_legacy_password_strength,
 )
 from app.config import settings
+from app.database import IntegrityError
 from app.core.auth import (
     create_access_token,
     create_refresh_token,
@@ -197,7 +197,7 @@ def _create_user_record(
             is_active=is_active,
             full_name=payload.full_name,
         )
-    except sqlite3.IntegrityError as exc:
+    except IntegrityError as exc:
         LOGGER.info("Duplicate user creation rejected: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

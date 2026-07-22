@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -11,13 +10,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.core.types import TaskName
+from app.database import Database, IntegrityError, Row, ensure_database
+from app.time_utils import utc_now_text
 
 
 LOGGER = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_text()
 
 
 @dataclass(slots=True)
@@ -69,22 +70,12 @@ SourceChangeListener = Callable[[SourceChange], None]
 
 
 class SourceRegistry:
-    """Thread-safe camera registry backed by the SQLite ``cameras`` table."""
+    """Thread-safe camera registry backed by PostgreSQL."""
 
-    def __init__(self, database_path: Path | None = None) -> None:
+    def __init__(self, database: Database | str) -> None:
         self._lock = threading.RLock()
-        self.database_path = database_path
-        if database_path is not None:
-            database_path.parent.mkdir(parents=True, exist_ok=True)
-            database = str(database_path)
-        else:
-            database = ":memory:"
-        self._connection = sqlite3.connect(
-            database,
-            timeout=10.0,
-            check_same_thread=False,
-        )
-        self._connection.row_factory = sqlite3.Row
+        self.database = ensure_database(database)
+        self._connection = self.database.connection()
         self._records: dict[str, SourceRecord] = {}
         self._listeners: set[SourceChangeListener] = set()
         self._revision = 0
@@ -93,50 +84,8 @@ class SourceRegistry:
         self._load_records()
 
     def _initialize(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA journal_mode=WAL")
-            self._connection.execute("PRAGMA busy_timeout=10000")
-            self._connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS cameras (
-                    camera_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    tasks_json TEXT NOT NULL DEFAULT '[]',
-                    source_uri TEXT,
-                    frame_width INTEGER NOT NULL DEFAULT 640,
-                    frame_height INTEGER NOT NULL DEFAULT 640,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at_utc TEXT NOT NULL,
-                    updated_at_utc TEXT NOT NULL,
-                    CHECK (enabled IN (0, 1))
-                )
-                """
-            )
-            columns = {
-                str(row[1])
-                for row in self._connection.execute("PRAGMA table_info(cameras)")
-            }
-            if "frame_width" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN frame_width INTEGER NOT NULL DEFAULT 640"
-                )
-            if "frame_height" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN frame_height INTEGER NOT NULL DEFAULT 640"
-                )
-            # Add section_id column for LocationStore hierarchy
-            if "section_id" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN section_id INTEGER"
-                )
-            self._connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_cameras_enabled
-                ON cameras(enabled)
-                """
-            )
-            self._connection.commit()
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     def _load_records(self) -> None:
         with self._lock:
@@ -146,7 +95,7 @@ class SourceRegistry:
                        frame_width, frame_height, section_id,
                        metadata_json, created_at_utc, updated_at_utc
                 FROM cameras
-                ORDER BY rowid
+                ORDER BY created_at_utc, camera_id
                 """
             ).fetchall()
             self._records = {
@@ -173,7 +122,7 @@ class SourceRegistry:
         return value
 
     @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> SourceRecord:
+    def _row_to_record(row: Row) -> SourceRecord:
         metadata = dict(json.loads(row["metadata_json"]))
         # If section_id is stored as a dedicated column, merge it into metadata for backward compat
         section_id = row["section_id"]
@@ -308,7 +257,7 @@ class SourceRegistry:
                     self._parameters(record),
                 )
                 self._connection.commit()
-            except sqlite3.IntegrityError as exc:
+            except IntegrityError as exc:
                 self._connection.rollback()
                 raise ValueError(f"Source already exists: {record.source_id}") from exc
             self._records[record.source_id] = deepcopy(record)

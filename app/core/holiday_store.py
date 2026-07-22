@@ -1,9 +1,11 @@
-"""Holiday store — raw SQLite with thread-safe RLock pattern."""
+"""Holiday store — PostgreSQL with thread-safe RLock pattern."""
 
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -30,44 +32,26 @@ class HolidayRecord:
 
 
 def _now() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_now_text()
 
 
 class HolidayStore:
-    """SQLite-backed store for Holidays with annual recurrence support."""
+    """PostgreSQL-backed store for Holidays with annual recurrence support."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path.resolve()
+    def __init__(self, database: Database | str) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._init_db()
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS holidays (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name            TEXT    NOT NULL,
-                    date_value      TEXT    NOT NULL,
-                    description     TEXT,
-                    holiday_type    TEXT    NOT NULL DEFAULT 'national',
-                    every_year      INTEGER NOT NULL DEFAULT 0,
-                    is_active       INTEGER NOT NULL DEFAULT 1,
-                    created_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date_value);
-                CREATE INDEX IF NOT EXISTS idx_holidays_active ON holidays(is_active);
-            """)
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     @staticmethod
-    def _row_to_holiday(row: sqlite3.Row) -> HolidayRecord:
+    def _row_to_holiday(row: Row) -> HolidayRecord:
         return HolidayRecord(
             id=row["id"],
             name=row["name"],
@@ -255,7 +239,7 @@ class HolidayStore:
         with self._lock, self._connection() as conn:
             row = conn.execute(
                 "SELECT id FROM holidays WHERE is_active = 1 AND "
-                "(date_value = ? OR (every_year = 1 AND substr(date_value, 6) = ?))",
+                "(date_value = ? OR (every_year = 1 AND to_char(date_value, 'MM-DD') = ?))",
                 (d_str, month_day),
             ).fetchone()
             return row is not None

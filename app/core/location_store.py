@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import json
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -102,112 +104,28 @@ def parse_polygon(polygon_json: str | None) -> list[list[float]]:
 
 
 class LocationStore:
-    """SQLite-backed store for Buildings, Sections, Rooms, access, and detection matching."""
+    """PostgreSQL-backed store for Buildings, Sections, Rooms, access, and detection matching."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path.resolve()
+    def __init__(self, database: Database | str) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._init_db()
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS buildings (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name            TEXT    NOT NULL,
-                    address         TEXT,
-                    description     TEXT,
-                    created_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_buildings_name ON buildings(name);
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
-                CREATE TABLE IF NOT EXISTS sections (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    building_id     INTEGER REFERENCES buildings(id) ON DELETE SET NULL,
-                    name            TEXT    NOT NULL,
-                    description     TEXT,
-                    created_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_sections_building ON sections(building_id);
-                CREATE INDEX IF NOT EXISTS idx_sections_name ON sections(name);
-
-                CREATE TABLE IF NOT EXISTS rooms (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    section_id      INTEGER REFERENCES sections(id) ON DELETE SET NULL,
-                    name            TEXT    NOT NULL,
-                    description     TEXT,
-                    polygon_json    TEXT,
-                    created_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_rooms_section ON rooms(section_id);
-                CREATE INDEX IF NOT EXISTS idx_rooms_name ON rooms(name);
-
-                CREATE TABLE IF NOT EXISTS personnel_room_access (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    personnel_id    INTEGER NOT NULL,
-                    room_id         INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                    granted_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    granted_by      TEXT,
-                    UNIQUE(personnel_id, room_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_access_personnel ON personnel_room_access(personnel_id);
-                CREATE INDEX IF NOT EXISTS idx_access_room ON personnel_room_access(room_id);
-
-                CREATE TABLE IF NOT EXISTS detection_room_matches (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    detection_type  TEXT    NOT NULL,
-                    detection_event_id INTEGER NOT NULL,
-                    room_id         INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                    personnel_id    INTEGER,
-                    camera_id       TEXT,
-                    matched_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_matches_room ON detection_room_matches(room_id);
-                CREATE INDEX IF NOT EXISTS idx_matches_personnel ON detection_room_matches(personnel_id);
-                CREATE INDEX IF NOT EXISTS idx_matches_detection ON detection_room_matches(detection_type, detection_event_id);
-            """)
-
-            # Check for columns that might be missing (migrations)
-            self._migrate_columns(conn)
-
-    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
-        """Add any missing columns from schema evolution."""
-        tables = {
-            "buildings": {"address", "description"},
-            "sections": {"description"},
-            "rooms": {"description"},
-        }
-        for table, expected_cols in tables.items():
-            existing = {
-                str(row[1])
-                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            for col in expected_cols:
-                if col not in existing:
-                    try:
-                        conn.execute(
-                            f"ALTER TABLE {table} ADD COLUMN {col} TEXT"
-                        )
-                    except sqlite3.OperationalError:
-                        pass
 
     def _now(self) -> str:
-        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return utc_now_text()
 
     # ── Buildings ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _row_to_building(row: sqlite3.Row) -> BuildingRecord:
+    def _row_to_building(row: Row) -> BuildingRecord:
         return BuildingRecord(
             id=row["id"],
             name=row["name"],
@@ -301,7 +219,7 @@ class LocationStore:
     # ── Sections ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _row_to_section(row: sqlite3.Row) -> SectionRecord:
+    def _row_to_section(row: Row) -> SectionRecord:
         return SectionRecord(
             id=row["id"],
             building_id=row["building_id"],
@@ -438,7 +356,7 @@ class LocationStore:
     # ── Rooms ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _row_to_room(row: sqlite3.Row) -> RoomRecord:
+    def _row_to_room(row: Row) -> RoomRecord:
         return RoomRecord(
             id=row["id"],
             section_id=row["section_id"],
@@ -602,7 +520,7 @@ class LocationStore:
                     granted_at_utc=row["granted_at_utc"],
                     granted_by=row["granted_by"],
                 )
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 raise ValueError(
                     f"Personnel {personnel_id} already has access to room {room_id}"
                 )

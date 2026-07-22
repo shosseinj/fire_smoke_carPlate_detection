@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import json
 import logging
 import queue
-import sqlite3
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -30,16 +32,15 @@ class FireSmokeLogStore:
 
     def __init__(
         self,
-        database_path: Path,
+        database: Database | str,
         media_root: Path,
         *,
         default_policy: FireSmokePolicyConfig = FireSmokePolicyConfig(),
         queue_size: int = 64,
     ) -> None:
-        self.database_path = database_path
-        self.media_root = media_root
-        self.snapshot_dir = media_root / "fire_smoke_snapshots"
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database = ensure_database(database)
+        self.media_root = media_root.resolve()
+        self.snapshot_dir = self.media_root / "fire_smoke_snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._policy_revision = 0
@@ -56,73 +57,26 @@ class FireSmokeLogStore:
         )
         self._thread.start()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def _initialize(self, default: FireSmokePolicyConfig) -> None:
         with self._lock, self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA busy_timeout=10000")
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS fire_smoke_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    camera TEXT NOT NULL,
-                    time TEXT NOT NULL,
-                    incident_id TEXT,
-                    severity TEXT NOT NULL,
-                    fire_count INTEGER NOT NULL,
-                    smoke_count INTEGER NOT NULL,
-                    fire_confidence REAL NOT NULL,
-                    smoke_confidence REAL NOT NULL,
-                    window_seconds REAL NOT NULL,
-                    snapshot_url TEXT NOT NULL DEFAULT '',
-                    details_json TEXT NOT NULL DEFAULT '{}'
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fire_smoke_settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    window_seconds REAL NOT NULL,
-                    low_count INTEGER NOT NULL,
-                    medium_count INTEGER NOT NULL,
-                    high_count INTEGER NOT NULL,
-                    updated_at_utc TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO fire_smoke_settings (
+                INSERT INTO fire_smoke_settings (
                     id, window_seconds, low_count, medium_count, high_count, updated_at_utc
                 ) VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
                 """,
                 (
                     default.window_seconds,
                     default.low_count,
                     default.medium_count,
                     default.high_count,
-                    datetime.utcnow().isoformat() + "Z",
+                    utc_now_text(),
                 ),
             )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_time ON fire_smoke_logs(time)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_camera ON fire_smoke_logs(camera)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_severity ON fire_smoke_logs(severity)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fire_smoke_logs_incident "
-                "ON fire_smoke_logs(incident_id)"
-            )
-            connection.commit()
 
     def _load_policy(self) -> FireSmokePolicyConfig:
         with self._lock, self._connect() as connection:
@@ -185,7 +139,7 @@ class FireSmokeLogStore:
             return
         try:
             # Copy once while the ingest buffer is still valid; all drawing,
-            # JPEG encoding, and SQLite I/O happens on the writer thread.
+            # JPEG encoding, and PostgreSQL I/O happens on the writer thread.
             self._queue.put_nowait(_PendingEvent(packet.frame.copy(), result))
         except queue.Full:
             self._dropped += 1
@@ -205,7 +159,7 @@ class FireSmokeLogStore:
         fire = dict(result.data.get("fire") or {})
         smoke = dict(result.data.get("smoke") or {})
         incident_id = self._incident_id(result)
-        existing: sqlite3.Row | None = None
+        existing: Row | None = None
         if incident_id:
             with self._lock, self._connect() as connection:
                 existing = connection.execute(

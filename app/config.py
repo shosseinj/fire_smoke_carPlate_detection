@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg2://postgres:Reza1995@host.docker.internal:5432/ai_database"
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,8 +67,12 @@ def _path(name: str, default: str) -> Path:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Unified Video AI Task Router")
     processor_mode: str = os.getenv("PROCESSOR_MODE", "real").strip().lower()
-    database_path: Path = _path("DATABASE_PATH", "ai_database")
-    camera_db_path: Path = _path("CAMERA_DB_PATH", "data/cameras.sqlite3")
+    database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+    database_echo: bool = _env_bool("DATABASE_ECHO", False)
+    database_pool_size: int = _env_int("DATABASE_POOL_SIZE", 10)
+    database_max_overflow: int = _env_int("DATABASE_MAX_OVERFLOW", 20)
+    data_path: Path = _path("DATA_PATH", "data")
+    business_timezone_name: str = os.getenv("BUSINESS_TIMEZONE", "Asia/Tehran")
     source_registry_path: Path = _path("SOURCE_REGISTRY_PATH", "data/sources.json")
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)
     model_root_path: Path = _path("MODEL_ROOT_PATH", "weights")
@@ -97,7 +104,6 @@ class Settings:
     )
     broadcast_enabled: bool = _env_bool("BROADCAST_ENABLED", True)
     broadcast_jpeg_quality: int = _env_int("BROADCAST_JPEG_QUALITY", 82)
-    plate_log_db_path: Path = _path("PLATE_LOG_DB_PATH", "plate_logs.sqlite3")
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media")
     fire_severity_window_seconds: float = _env_float(
         "FIRE_SEVERITY_WINDOW_SECONDS", 3.0
@@ -230,7 +236,6 @@ class Settings:
         "JWT_EXPIRY_MINUTES", "ACCESS_TOKEN_EXPIRE_MINUTES", 1440
     )
     jwt_refresh_expiry_minutes: int = _refresh_minutes()
-    auth_db_path: Path = _path("AUTH_DB_PATH", "data/auth.sqlite3")
     auth_default_admin_username: str = str(
         _env_first(("AUTH_DEFAULT_ADMIN_USERNAME", "SUPERUSER_USERNAME"), "admin")
     )

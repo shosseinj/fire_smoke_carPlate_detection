@@ -13,6 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
 from app.core.auth_store import AuthStore, UserRecord
+from app.database import get_database
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -38,9 +39,12 @@ def normalize_role(role: str | None) -> str:
 def get_auth_store() -> AuthStore:
     global _auth_store
     if _auth_store is None:
-        # The project already uses DATABASE_PATH as its canonical shared SQLite file.
-        # Do not switch silently to AUTH_DB_PATH and create a second users database.
-        _auth_store = AuthStore(settings.database_path)
+        _auth_store = AuthStore(get_database(
+            settings.database_url,
+            echo=settings.database_echo,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+        ))
         _auth_store.seed_default_admin(
             username=settings.auth_default_admin_username,
             password=settings.auth_default_admin_password,

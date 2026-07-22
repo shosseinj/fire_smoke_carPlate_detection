@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+
 import threading
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -38,73 +39,26 @@ class FaceQualityPolicy:
 class FaceQualitySettingsStore:
     """Persistent singleton policy used to select recognition-quality faces."""
 
-    def __init__(self, database_path: Path, default_policy: FaceQualityPolicy) -> None:
-        self.database_path = database_path.resolve()
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, database: Database | str, default_policy: FaceQualityPolicy) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._create(default_policy.validated())
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def _create(self, default_policy: FaceQualityPolicy) -> None:
+        values = asdict(default_policy)
         with self._connect() as connection:
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS face_quality_settings (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    quality_threshold REAL NOT NULL,
-                    blur_threshold REAL NOT NULL,
-                    min_face_width INTEGER NOT NULL,
-                    min_face_height INTEGER NOT NULL,
-                    min_eye_distance REAL NOT NULL,
-                    max_abs_yaw REAL NOT NULL,
-                    max_abs_pitch REAL NOT NULL,
-                    max_abs_roll REAL NOT NULL,
-                    require_landmarks INTEGER NOT NULL
-                )
-                """
-            )
-            existing = {
-                str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(face_quality_settings)"
-                ).fetchall()
-            }
-            added_width = "min_face_width" not in existing
-            added_height = "min_face_height" not in existing
-            if added_width:
-                connection.execute(
-                    "ALTER TABLE face_quality_settings ADD COLUMN "
-                    f"min_face_width INTEGER NOT NULL DEFAULT {default_policy.min_face_width}"
-                )
-            if added_height:
-                connection.execute(
-                    "ALTER TABLE face_quality_settings ADD COLUMN "
-                    f"min_face_height INTEGER NOT NULL DEFAULT {default_policy.min_face_height}"
-                )
-            if "min_face_size" in existing and (added_width or added_height):
-                connection.execute(
-                    "UPDATE face_quality_settings SET "
-                    "min_face_width = min_face_size, min_face_height = min_face_size"
-                )
-            if "min_face_size" in existing:
-                connection.execute(
-                    "ALTER TABLE face_quality_settings DROP COLUMN min_face_size"
-                )
-            values = asdict(default_policy)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO face_quality_settings (
+                INSERT INTO face_quality_settings (
                     singleton, quality_threshold, blur_threshold,
                     min_face_width, min_face_height,
                     min_eye_distance, max_abs_yaw, max_abs_pitch, max_abs_roll,
                     require_landmarks
                 ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(singleton) DO NOTHING
                 """,
                 (
                     values["quality_threshold"],

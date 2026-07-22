@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,77 +31,28 @@ class UserRecord:
 
 
 class AuthStore:
-    """SQLite-backed user and refresh-token revocation storage."""
+    """PostgreSQL-backed user and refresh-token revocation storage."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, database: Database | str) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.Lock()
         self._init_db()
 
     @property
-    def db_path(self) -> Path:
-        return self._db_path
+    def database_url(self) -> str:
+        return self.database.url
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
         with self._lock, self._connection() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username         TEXT    NOT NULL UNIQUE,
-                    password_hash    TEXT    NOT NULL,
-                    role             TEXT    NOT NULL DEFAULT 'viewer',
-                    is_active        INTEGER NOT NULL DEFAULT 1,
-                    created_at_utc   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    email            TEXT,
-                    full_name        TEXT,
-                    last_login_utc   TEXT,
-                    login_attempts   INTEGER NOT NULL DEFAULT 0,
-                    locked_until_utc TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-
-                CREATE TABLE IF NOT EXISTS revoked_tokens (
-                    jti             TEXT PRIMARY KEY,
-                    revoked_at_utc  TEXT NOT NULL,
-                    expires_at_utc  TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_revoked_expires ON revoked_tokens(expires_at_utc);
-                """
-            )
-            self._migrate_users_table(conn)
-            # Canonicalize any legacy role values already present in this SQLite file.
             conn.execute("UPDATE users SET role = 'admin' WHERE role = 'superuser'")
             conn.execute("UPDATE users SET role = 'viewer' WHERE role = 'user'")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+
 
     @staticmethod
-    def _migrate_users_table(conn: sqlite3.Connection) -> None:
-        """Apply additive, idempotent SQLite upgrades for authentication compatibility."""
-        columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
-        }
-        additions = {
-            "email": "TEXT",
-            "full_name": "TEXT",
-            "last_login_utc": "TEXT",
-            "login_attempts": "INTEGER NOT NULL DEFAULT 0",
-            "locked_until_utc": "TEXT",
-        }
-        for name, sql_type in additions.items():
-            if name not in columns:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {name} {sql_type}")
-
-    @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> UserRecord:
+    def _row_to_record(row: Row) -> UserRecord:
         return UserRecord(
             id=int(row["id"]),
             username=str(row["username"]),
@@ -114,7 +67,7 @@ class AuthStore:
             locked_until_utc=row["locked_until_utc"],
         )
 
-    def _select_user(self, conn: sqlite3.Connection, where: str, value: object) -> UserRecord | None:
+    def _select_user(self, conn: Connection, where: str, value: object) -> UserRecord | None:
         row = conn.execute(
             f"SELECT {_USER_COLUMNS} FROM users WHERE {where}", (value,)
         ).fetchone()
@@ -294,8 +247,9 @@ class AuthStore:
         now = _utc_now_text()
         with self._lock, self._connection() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO revoked_tokens "
-                "(jti, revoked_at_utc, expires_at_utc) VALUES (?, ?, ?)",
+                "INSERT INTO revoked_tokens "
+                "(jti, revoked_at_utc, expires_at_utc) VALUES (?, ?, ?) "
+                "ON CONFLICT(jti) DO NOTHING",
                 (jti, now, expires_at_utc),
             )
 
@@ -320,7 +274,7 @@ class AuthStore:
 
 
 def _utc_now_text() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return utc_now_text()
 
 
 def _hash(password: str) -> str:

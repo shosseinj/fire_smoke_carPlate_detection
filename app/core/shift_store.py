@@ -1,9 +1,11 @@
-"""WorkShift store — raw SQLite with thread-safe RLock pattern."""
+"""WorkShift store — PostgreSQL with thread-safe RLock pattern."""
 
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,7 +68,7 @@ class WorkShiftRecord:
 
 
 def _now() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_now_text()
 
 
 def _validate_time(t: str) -> None:
@@ -116,48 +118,24 @@ def _get_weekday_flag(record: WorkShiftRecord, weekday_idx: int) -> bool:
 
 
 class ShiftStore:
-    """SQLite-backed store for WorkShift records and Personnel assignments."""
+    """PostgreSQL-backed store for WorkShift records and Personnel assignments."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path.resolve()
+    def __init__(self, database: Database | str) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._init_db()
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS work_shifts (
-                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                    shift_name        TEXT    NOT NULL,
-                    shift_type        TEXT    NOT NULL DEFAULT 'morning',
-                    start_time        TEXT    NOT NULL DEFAULT '08:00',
-                    end_time          TEXT    NOT NULL DEFAULT '16:00',
-                    max_minutes_delay INTEGER NOT NULL DEFAULT 15,
-                    max_minutes_early INTEGER NOT NULL DEFAULT 15,
-                    max_overtime_hours REAL   NOT NULL DEFAULT 2.0,
-                    works_saturday    INTEGER NOT NULL DEFAULT 0,
-                    works_sunday      INTEGER NOT NULL DEFAULT 0,
-                    works_monday      INTEGER NOT NULL DEFAULT 1,
-                    works_tuesday     INTEGER NOT NULL DEFAULT 1,
-                    works_wednesday   INTEGER NOT NULL DEFAULT 1,
-                    works_thursday    INTEGER NOT NULL DEFAULT 1,
-                    works_friday      INTEGER NOT NULL DEFAULT 0,
-                    created_at_utc    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                )
-            """)
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     # ── CRUD ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _row_to_shift(row: sqlite3.Row) -> WorkShiftRecord:
+    def _row_to_shift(row: Row) -> WorkShiftRecord:
         return WorkShiftRecord(
             id=row["id"],
             shift_name=row["shift_name"],
@@ -306,7 +284,7 @@ class ShiftStore:
                     "UPDATE personnel SET shift_id = NULL WHERE shift_id = ?",
                     (shift_id,),
                 )
-            except sqlite3.OperationalError:
+            except OperationalError:
                 pass
             cursor = conn.execute(
                 "DELETE FROM work_shifts WHERE id = ?", (shift_id,)
@@ -410,7 +388,7 @@ class ShiftStore:
                     ).fetchone()[0]
                 )
                 unassigned = total_personnel - assigned
-            except sqlite3.OperationalError:
+            except OperationalError:
                 pass  # personnel table may not exist when used independently
             try:
                 shifts = conn.execute(
@@ -418,7 +396,7 @@ class ShiftStore:
                     "FROM work_shifts s LEFT JOIN personnel p ON p.shift_id = s.id "
                     "GROUP BY s.id ORDER BY s.shift_name"
                 ).fetchall()
-            except sqlite3.OperationalError:
+            except OperationalError:
                 shifts = conn.execute(
                     "SELECT id, shift_name, 0 as cnt FROM work_shifts ORDER BY shift_name"
                 ).fetchall()

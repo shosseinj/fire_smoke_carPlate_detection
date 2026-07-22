@@ -1,9 +1,11 @@
-"""Personnel Request store — raw SQLite with thread-safe RLock pattern."""
+"""Personnel Request store — PostgreSQL with thread-safe RLock pattern."""
 
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -50,48 +52,26 @@ class PersonnelRequestRecord:
 
 
 def _now() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_now_text()
 
 
 class RequestStore:
-    """SQLite-backed store for Personnel Requests with overlap validation."""
+    """PostgreSQL-backed store for Personnel Requests with overlap validation."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path.resolve()
+    def __init__(self, database: Database | str) -> None:
+        self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._init_db()
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS personnel_requests (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    personnel_id     INTEGER NOT NULL,
-                    request_type     TEXT    NOT NULL DEFAULT 'leave',
-                    start_date       TEXT    NOT NULL,
-                    end_date         TEXT    NOT NULL,
-                    reason           TEXT,
-                    status           TEXT    NOT NULL DEFAULT 'pending',
-                    approved_by      INTEGER,
-                    rejection_reason TEXT,
-                    created_at_utc   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    FOREIGN KEY (personnel_id) REFERENCES personnel(id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_requests_personnel ON personnel_requests(personnel_id);
-                CREATE INDEX IF NOT EXISTS idx_requests_status ON personnel_requests(status);
-                CREATE INDEX IF NOT EXISTS idx_requests_dates ON personnel_requests(start_date, end_date);
-            """)
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     @staticmethod
-    def _row_to_request(row: sqlite3.Row) -> PersonnelRequestRecord:
+    def _row_to_request(row: Row) -> PersonnelRequestRecord:
         return PersonnelRequestRecord(
             id=row["id"],
             personnel_id=row["personnel_id"],
@@ -137,7 +117,7 @@ class RequestStore:
             raise ValueError(f"Invalid date: {s!r}")
 
     def _check_overlap(
-        self, conn: sqlite3.Connection, personnel_id: int, request_type: str,
+        self, conn: Connection, personnel_id: int, request_type: str,
         start_date: str, end_date: str, exclude_id: int | None = None,
     ) -> None:
         """Raise ValueError if an approved request of the same type overlaps."""

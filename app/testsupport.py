@@ -7,6 +7,7 @@ to avoid conflicts with the installed `tests` namespace package.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,10 +85,13 @@ class CrudTestFailure(Exception):
 
 
 def build_test_settings(tmp_path: Path) -> Any:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("TEST_DATABASE_URL must point to a disposable PostgreSQL database")
     return dc_replace(
         _BASE_SETTINGS,
         processor_mode="mock",
-        database_path=tmp_path / "ai_database",
+        database_url=database_url,
         source_registry_path=tmp_path / "sources.json",
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
@@ -100,6 +104,7 @@ def setup_crud_context(tmp_path: Path) -> CrudTestContext:
     import app.main as main_module
     from app.core import auth as auth_core
     from app.core.auth_store import AuthStore
+    from app.database import get_database
 
     test_settings = build_test_settings(tmp_path)
     test_runtime = build_runtime(test_settings)
@@ -107,7 +112,7 @@ def setup_crud_context(tmp_path: Path) -> CrudTestContext:
     main_module.runtime = test_runtime
 
     old_store = auth_core._auth_store
-    auth_core._auth_store = AuthStore(test_settings.database_path)
+    auth_core._auth_store = AuthStore(get_database(test_settings.database_url))
     auth_core._auth_store.seed_default_admin(AUTH_USER, AUTH_PASS)
 
     client = TestClient(main_module.app)

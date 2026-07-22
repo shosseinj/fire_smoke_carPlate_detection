@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+
 import logging
 import queue
-import sqlite3
 import threading
 import time
 import uuid
@@ -53,7 +54,7 @@ class HumanLogStore:
 
     def __init__(
         self,
-        database_path: Path,
+        database: Database | str,
         saved_media_path: Path,
         *,
         queue_size: int = 128,
@@ -61,8 +62,7 @@ class HumanLogStore:
         video_idle_seconds: float = 5.0,
         snapshot_min_improvement: float = 0.01,
     ) -> None:
-        self.database_path = database_path.resolve()
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
         self.snapshot_dir = media_root / "human_snapshots"
         self.video_dir = media_root / "human_videos"
@@ -98,82 +98,12 @@ class HumanLogStore:
         )
         self._thread.start()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def _create_schema(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS human_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    camera TEXT NOT NULL,
-                    track_id INTEGER NOT NULL,
-                    name TEXT NOT NULL DEFAULT 'Unknown',
-                    first_seen TEXT NOT NULL,
-                    last_seen TEXT NOT NULL,
-                    recognition_score REAL NOT NULL DEFAULT 0,
-                    ref_img_id TEXT,
-                    snapshot_url TEXT NOT NULL DEFAULT '',
-                    video_url TEXT NOT NULL DEFAULT '',
-                    face_video_url TEXT NOT NULL DEFAULT '',
-                    snapshot_quality REAL NOT NULL DEFAULT 0,
-                    best_face_quality REAL NOT NULL DEFAULT 0,
-                    full_frame_video_frames INTEGER NOT NULL DEFAULT 0,
-                    accepted_face_frames INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(session_id, camera, track_id)
-                )
-                """
-            )
-            existing = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(human_logs)").fetchall()
-            }
-            additions = {
-                "video_url": "TEXT NOT NULL DEFAULT ''",
-                "face_video_url": "TEXT NOT NULL DEFAULT ''",
-                "snapshot_quality": "REAL NOT NULL DEFAULT 0",
-                "best_face_quality": "REAL NOT NULL DEFAULT 0",
-                "full_frame_video_frames": "INTEGER NOT NULL DEFAULT 0",
-                "accepted_face_frames": "INTEGER NOT NULL DEFAULT 0",
-                "personnel_id": "INTEGER",
-                "counts_for_attendance": "INTEGER NOT NULL DEFAULT 1",
-            }
-            for column, definition in additions.items():
-                if column not in existing:
-                    connection.execute(
-                        f"ALTER TABLE human_logs ADD COLUMN {column} {definition}"
-                    )
-            if (
-                "human_video_frames" in existing
-                and "full_frame_video_frames" not in existing
-            ):
-                connection.execute(
-                    "UPDATE human_logs SET "
-                    "full_frame_video_frames = human_video_frames"
-                )
-            for obsolete in (
-                "best_face_yaw",
-                "best_face_pitch",
-                "best_face_roll",
-                "human_video_frames",
-            ):
-                if obsolete in existing:
-                    connection.execute(f"ALTER TABLE human_logs DROP COLUMN {obsolete}")
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_human_logs_camera ON human_logs(camera)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_human_logs_name ON human_logs(name)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_human_logs_last_seen ON human_logs(last_seen)"
-            )
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     @staticmethod
     def _bounded_box(

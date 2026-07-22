@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import io
 import json
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
@@ -74,88 +76,26 @@ def validate_national_code(code: str) -> bool:
 
 
 class PersonnelStore:
-    """SQLite-backed store for personnel records and images."""
+    """PostgreSQL-backed store for personnel records and images."""
 
-    def __init__(self, db_path: Path, saved_media_path: Path) -> None:
-        self._db_path = db_path.resolve()
+    def __init__(self, database: Database | str, saved_media_path: Path) -> None:
+        self.database = ensure_database(database)
         self._media_root = saved_media_path.resolve()
         self._snapshot_dir = self._media_root / "personnel_snapshots"
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_db()
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connection(self) -> Connection:
+        return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS personnel (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    fname           TEXT    NOT NULL,
-                    lname           TEXT    NOT NULL,
-                    national_code   TEXT    NOT NULL UNIQUE,
-                    employee_type   TEXT    NOT NULL DEFAULT 'unknown',
-                    degree          TEXT,
-                    last_seen       TEXT,
-                    created_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    updated_at_utc  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_personnel_national_code ON personnel(national_code);
-                CREATE INDEX IF NOT EXISTS idx_personnel_name ON personnel(lname, fname);
-
-                CREATE TABLE IF NOT EXISTS personnel_images (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    personnel_id    INTEGER NOT NULL REFERENCES personnel(id) ON DELETE CASCADE,
-                    storage_key     TEXT    NOT NULL,
-                    description     TEXT,
-                    is_primary      INTEGER NOT NULL DEFAULT 0,
-                    uploaded_at_utc TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    embedding_id    TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_personnel_images_personnel
-                    ON personnel_images(personnel_id);
-                CREATE INDEX IF NOT EXISTS idx_personnel_images_primary
-                    ON personnel_images(personnel_id, is_primary);
-            """)
-            # Check and add last_seen column if missing (migration)
-            existing = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(personnel)").fetchall()
-            }
-            if "last_seen" not in existing:
-                conn.execute(
-                    "ALTER TABLE personnel ADD COLUMN last_seen TEXT"
-                )
-            # Migration: add embedding_id if missing
-            img_existing = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(personnel_images)").fetchall()
-            }
-            if "embedding_id" not in img_existing:
-                conn.execute(
-                    "ALTER TABLE personnel_images ADD COLUMN embedding_id TEXT"
-                )
-            # Migration: add shift_id if missing
-            if "shift_id" not in existing:
-                conn.execute(
-                    "ALTER TABLE personnel ADD COLUMN shift_id INTEGER"
-                )
-                try:
-                    conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_personnel_shift "
-                        "ON personnel(shift_id)"
-                    )
-                except sqlite3.OperationalError:
-                    pass
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     # ── Personnel CRUD ─────────────────────────────────────────────────
 
-    def _row_to_personnel(self, row: sqlite3.Row) -> PersonnelRecord:
+    def _row_to_personnel(self, row: Row) -> PersonnelRecord:
         last_seen: str | None = None
         if "last_seen" in row.keys():
             last_seen = row["last_seen"]
@@ -177,7 +117,7 @@ class PersonnelStore:
         )
 
     def _now(self) -> str:
-        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return utc_now_text()
 
     def create(
         self,
@@ -215,7 +155,7 @@ class PersonnelStore:
                 if row is None:
                     raise RuntimeError("Failed to retrieve created personnel record")
                 return self._row_to_personnel(row)
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 raise ValueError(f"National code already exists: {raw_code}")
 
     def get(self, personnel_id: int) -> PersonnelRecord | None:
@@ -282,7 +222,7 @@ class PersonnelStore:
                     "SELECT * FROM personnel WHERE id = ?", (personnel_id,)
                 ).fetchone()
                 return self._row_to_personnel(row)
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 raise ValueError(f"National code already exists: {raw_code}")
 
     def delete(self, personnel_id: int) -> bool:
@@ -364,7 +304,7 @@ class PersonnelStore:
 
     # ── Personnel Image operations ──────────────────────────────────────
 
-    def _row_to_image(self, row: sqlite3.Row) -> PersonnelImageRecord:
+    def _row_to_image(self, row: Row) -> PersonnelImageRecord:
         embedding_id: str | None = None
         if "embedding_id" in row.keys():
             embedding_id = row["embedding_id"]

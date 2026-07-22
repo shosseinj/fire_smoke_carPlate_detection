@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+
 import threading
 from pathlib import Path
 from typing import Any
@@ -19,78 +20,21 @@ from app.core.types import FramePacket, TaskName, TaskResult
 
 
 class PlateLogStore:
-    """Persistent plate detection logs backed by SQLite."""
+    """Persistent plate detection logs backed by PostgreSQL."""
 
-    def __init__(self, database_path: Path, draw_info:bool, save_plate_snapshot:bool) -> None:
-        self.database_path = database_path
+    def __init__(self, database: Database | str, draw_info: bool, save_plate_snapshot: bool) -> None:
+        self.database = ensure_database(database)
         self.draw_info = draw_info
         self.save_plate_snapshot = save_plate_snapshot
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=10.0,
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def _initialize(self) -> None:
-        with self._lock, self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS plate_logs (
-                    camera TEXT NOT NULL,
-                    time TEXT NOT NULL,
-                    plate TEXT NOT NULL,
-                    snapshot_url TEXT NOT NULL DEFAULT ''
-                )
-                """
-            )
-
-            # Add snapshot_url when the database was created
-            # using the older three-column schema.
-            columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(plate_logs)"
-                ).fetchall()
-            }
-
-            if "snapshot_url" not in columns:
-                connection.execute(
-                    """
-                    ALTER TABLE plate_logs
-                    ADD COLUMN snapshot_url TEXT NOT NULL DEFAULT ''
-                    """
-                )
-
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_plate_logs_time
-                ON plate_logs(time)
-                """
-            )
-
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_plate_logs_camera
-                ON plate_logs(camera)
-                """
-            )
-
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_plate_logs_plate
-                ON plate_logs(plate)
-                """
-            )
-
-            connection.commit()
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     def insert(
         self,
@@ -318,7 +262,7 @@ class PlateLogStore:
                     snapshot_url
                 FROM plate_logs
                 {where_clause}
-                ORDER BY rowid DESC
+                ORDER BY id DESC
                 LIMIT ?
                 """,
                 parameters,

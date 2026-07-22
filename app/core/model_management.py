@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.time_utils import utc_now_text
+
 import json
 import queue
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -24,7 +26,7 @@ MODEL_FORMATS = ("engine", "onnx", "pt")
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_text()
 
 
 def _artifact_url(relative_path: str) -> str:
@@ -108,12 +110,12 @@ class ModelManager:
 
     def __init__(
         self,
-        database_path: Path,
+        database: Database | str,
         model_root: Path,
         *,
         default_config: ModelSelectionConfig,
     ) -> None:
-        self.database_path = database_path.resolve()
+        self.database = ensure_database(database)
         self.model_root = model_root.resolve()
         self.model_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -121,10 +123,8 @@ class ModelManager:
         self._initialize(default_config.validated())
         self._config, self._updated_at = self._load()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self) -> Connection:
+        return self.database.connection()
 
     def relative_path(self, path: Path) -> str:
         resolved = path.resolve()
@@ -142,50 +142,18 @@ class ModelManager:
         return candidate
 
     def _initialize(self, default: ModelSelectionConfig) -> None:
+        values = asdict(default)
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA busy_timeout=10000")
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS model_general_settings (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    fire_smoke_model TEXT NOT NULL,
-                    vehicle_detector_model TEXT NOT NULL,
-                    plate_detector_model TEXT NOT NULL,
-                    preferred_format TEXT NOT NULL,
-                    allow_onnx_fallback INTEGER NOT NULL,
-                    allow_pt_fallback INTEGER NOT NULL,
-                    export_imgsz INTEGER NOT NULL,
-                    export_batch_size INTEGER NOT NULL,
-                    export_workspace_gb REAL NOT NULL,
-                    export_half INTEGER NOT NULL,
-                    export_dynamic INTEGER NOT NULL,
-                    export_timeout_seconds INTEGER NOT NULL DEFAULT 300,
-                    updated_at_utc TEXT NOT NULL
-                )
-                """
-            )
-            columns = {
-                str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(model_general_settings)"
-                )
-            }
-            if "export_timeout_seconds" not in columns:
-                connection.execute(
-                    "ALTER TABLE model_general_settings "
-                    "ADD COLUMN export_timeout_seconds INTEGER NOT NULL DEFAULT 300"
-                )
-            values = asdict(default)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO model_general_settings (
+                INSERT INTO model_general_settings (
                     id, fire_smoke_model, vehicle_detector_model,
                     plate_detector_model, preferred_format,
                     allow_onnx_fallback, allow_pt_fallback, export_imgsz,
                     export_batch_size, export_workspace_gb, export_half,
                     export_dynamic, export_timeout_seconds, updated_at_utc
                 ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
                 """,
                 (
                     values["fire_smoke_model"],
@@ -200,10 +168,9 @@ class ModelManager:
                     int(values["export_half"]),
                     int(values["export_dynamic"]),
                     values["export_timeout_seconds"],
-                    _utc_now(),
+                    utc_now_text(),
                 ),
             )
-            connection.commit()
 
     def _load(self) -> tuple[ModelSelectionConfig, str]:
         with self._connect() as connection:
@@ -456,54 +423,12 @@ class ModelConversionManager:
         )
         self._thread.start()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.models.database_path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self) -> Connection:
+        return self.models.database.connection()
 
     def _initialize_history(self) -> None:
-        with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA busy_timeout=10000")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS model_conversion_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    role TEXT NOT NULL,
-                    source_model TEXT NOT NULL,
-                    output_directory TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at_utc TEXT NOT NULL,
-                    updated_at_utc TEXT NOT NULL,
-                    options_json TEXT NOT NULL,
-                    artifacts_json TEXT NOT NULL,
-                    errors_json TEXT NOT NULL
-                )
-                """
-            )
-            stale = connection.execute(
-                """
-                SELECT job_id, errors_json FROM model_conversion_jobs
-                WHERE status IN ('queued', 'running')
-                """
-            ).fetchall()
-            for row in stale:
-                errors = json.loads(row["errors_json"])
-                errors.append(
-                    {
-                        "format": "job",
-                        "error": "Export interrupted by application restart",
-                    }
-                )
-                connection.execute(
-                    """
-                    UPDATE model_conversion_jobs
-                    SET status = 'failed', updated_at_utc = ?, errors_json = ?
-                    WHERE job_id = ?
-                    """,
-                    (_utc_now(), json.dumps(errors), row["job_id"]),
-                )
-            connection.commit()
+        # The shared Database creates and validates the PostgreSQL schema.
+        return None
 
     def _load_history(self) -> None:
         with self._connect() as connection:

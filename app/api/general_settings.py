@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.engine import make_url
 
 from app.api.models import ModelSettingsPatch
 from app.core.plate_settings_store import PlateDetectionPolicy
@@ -56,8 +57,17 @@ def _json_safe(value: Any) -> Any:
 
 def _snapshot(runtime: Runtime) -> dict[str, Any]:
     application_values = asdict(runtime.settings)
-    if application_values.get("face_qdrant_api_key"):
-        application_values["face_qdrant_api_key"] = "***"
+    if application_values.get("database_url"):
+        application_values["database_url"] = make_url(
+            str(application_values["database_url"])
+        ).render_as_string(hide_password=True)
+    for secret_name in (
+        "face_qdrant_api_key",
+        "jwt_secret_key",
+        "auth_default_admin_password",
+    ):
+        if application_values.get(secret_name):
+            application_values[secret_name] = "***"
     return {
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
