@@ -62,5 +62,7 @@ WORKDIR /workspace
 #     alembic \
 #     qdrant-client==1.18.0
 
+COPY docker-entrypoint.sh /workspace/docker-entrypoint.sh
+RUN chmod +x /workspace/docker-entrypoint.sh
 
 CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9999"]
