@@ -639,8 +639,12 @@ class PersonnelStore:
             pass
 
     def _delete_personnel_files(self, personnel_id: int) -> None:
-        """Delete snapshot and cropped-face files owned by one personnel record."""
-        filename_pattern = f"{personnel_id}_*"
+        """Delete snapshot and cropped-face files owned by one personnel record.
+
+        Files may be stored directly in the flat directory or inside
+        {national_code}/ subdirectories — search recursively.
+        """
+        filename_pattern = f"**/{personnel_id}_*"
         for directory in (self._snapshot_dir, self._cropped_face_dir):
             try:
                 candidates = tuple(directory.glob(filename_pattern))

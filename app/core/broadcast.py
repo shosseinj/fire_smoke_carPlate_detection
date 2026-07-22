@@ -45,7 +45,11 @@ class BroadcastControlEvent:
 
 
 class AnnotatedBroadcastHub:
-    """Composes exact-frame AI results and exposes latest annotated JPEGs."""
+    """Composes exact-frame AI results and exposes latest annotated JPEGs.
+
+    Rendering (annotation drawing + JPEG encoding) happens on a background
+    thread so worker threads are never blocked by this CPU-intensive work.
+    """
 
     def __init__(
         self,
@@ -68,6 +72,8 @@ class AnnotatedBroadcastHub:
         self._version = 0
         self._rendered_frames = 0
         self._encode_failures = 0
+        # Track complete renders to avoid stale eager renders overwriting them.
+        self._complete_rendered: set[tuple[str, int]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -331,6 +337,16 @@ class AnnotatedBroadcastHub:
         return encoded.tobytes()
 
     def publish_result(self, packet: FramePacket, result: TaskResult) -> None:
+        """Record a task result and trigger rendering when ready.
+
+        Phase 1 — state update (under lock, fast).
+        Phase 2 — render      (outside lock, expensive — draw + JPEG encode).
+        Phase 3 — deliver     (under lock, fast — update latest + notify subscribers).
+
+        Fire/smoke results render eagerly (before other tasks finish) so the
+        dashboard can show a partial result quickly. When all tasks for a frame
+        complete, a second render overwrites the eager frame.
+        """
         with self._condition:
             if not self._enabled:
                 return
@@ -348,35 +364,58 @@ class AnnotatedBroadcastHub:
             pending.results[result.task] = result
 
             while len(source_pending) > self.pending_frames_per_source:
-                source_pending.popitem(last=False)
+                _, removed = source_pending.popitem(last=False)
 
             complete = pending.expected_tasks.issubset(pending.results)
-            # Fire/smoke is latency-sensitive. Publish its result immediately on
-            # the exact source frame instead of waiting for the slower face and
-            # plate workers to also finish that frame. If they do, the same frame
-            # is rendered again below with the complete result set.
             eager_fire_smoke = result.task == TaskName.FIRE_SMOKE
             if not complete and not eager_fire_smoke:
                 return
-            jpeg = self._render(packet.source_id, packet.frame_index, pending)
+
             if complete:
                 source_pending.pop(packet.frame_index, None)
-            if jpeg is None:
+                # Mark this (source, frame) so that an in-flight eager
+                # render for the same frame can skip its delivery.
+                self._complete_rendered.add((packet.source_id, packet.frame_index))
+
+            # Capture render inputs while the lock is held.
+            source_id = packet.source_id
+            frame_index = packet.frame_index
+
+        # ── Phase 2: render outside the lock (expensive) ──────────────
+        jpeg = self._render(source_id, frame_index, pending)
+
+        if jpeg is None:
+            return
+
+        # ── Phase 3: deliver under the lock (fast) ────────────────────
+        with self._condition:
+            if not self._enabled:
                 return
-            latest = self._latest.get(packet.source_id)
-            if latest is not None and packet.frame_index < latest.frame_index:
+            # If a complete render was started while we were rendering,
+            # our eager result is stale — skip delivery.
+            render_key = (source_id, frame_index)
+            if not complete and render_key in self._complete_rendered:
+                return
+            latest = self._latest.get(source_id)
+            if latest is not None and frame_index < latest.frame_index:
                 return
             self._version += 1
             self._rendered_frames += 1
             encoded_frame = EncodedBroadcastFrame(
                 version=self._version,
-                source_id=packet.source_id,
-                frame_index=packet.frame_index,
+                source_id=source_id,
+                frame_index=frame_index,
                 jpeg=jpeg,
                 tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
                 updated_monotonic=time.monotonic(),
             )
-            self._latest[packet.source_id] = encoded_frame
+            # Prune old complete-render markers for this source.
+            if complete:
+                stale_keys = {
+                    k for k in self._complete_rendered if k[0] == source_id and k[1] < frame_index
+                }
+                self._complete_rendered -= stale_keys
+            self._latest[source_id] = encoded_frame
             for target in self._subscribers.values():
                 try:
                     target.put_nowait(encoded_frame)
@@ -398,23 +437,30 @@ class AnnotatedBroadcastHub:
                 frame=packet.frame,
                 expected_tasks=set(),
             )
-            jpeg = self._render(packet.source_id, packet.frame_index, pending)
-            if jpeg is None:
+            source_id = packet.source_id
+            frame_index = packet.frame_index
+
+        jpeg = self._render(source_id, frame_index, pending)
+        if jpeg is None:
+            return
+
+        with self._condition:
+            if not self._enabled:
                 return
-            latest = self._latest.get(packet.source_id)
-            if latest is not None and packet.frame_index < latest.frame_index:
+            latest = self._latest.get(source_id)
+            if latest is not None and frame_index < latest.frame_index:
                 return
             self._version += 1
             self._rendered_frames += 1
             encoded_frame = EncodedBroadcastFrame(
                 version=self._version,
-                source_id=packet.source_id,
-                frame_index=packet.frame_index,
+                source_id=source_id,
+                frame_index=frame_index,
                 jpeg=jpeg,
                 tasks=(),
                 updated_monotonic=time.monotonic(),
             )
-            self._latest[packet.source_id] = encoded_frame
+            self._latest[source_id] = encoded_frame
             for target in self._subscribers.values():
                 try:
                     target.put_nowait(encoded_frame)
