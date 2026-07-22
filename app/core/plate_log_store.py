@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
 
+import logging
+import queue
 import threading
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -17,17 +20,44 @@ import cv2
 
 from app.core.types import FramePacket, TaskName, TaskResult
 
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _PendingPlateEvent:
+    packet: FramePacket
+    result: TaskResult
+
 
 
 class PlateLogStore:
     """Persistent plate detection logs backed by PostgreSQL."""
 
-    def __init__(self, database: Database | str, draw_info: bool, save_plate_snapshot: bool) -> None:
+    def __init__(
+        self,
+        database: Database | str,
+        draw_info: bool,
+        save_plate_snapshot: bool,
+        queue_size: int = 128,
+    ) -> None:
         self.database = ensure_database(database)
         self.draw_info = draw_info
         self.save_plate_snapshot = save_plate_snapshot
         self._lock = threading.RLock()
+        self._queue: queue.Queue[_PendingPlateEvent | None] = queue.Queue(
+            maxsize=max(8, int(queue_size))
+        )
+        self._dropped = 0
+        self._saved = 0
+        self._last_error: str | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="plate-log-writer",
+            daemon=True,
+        )
         self._initialize()
+        self._thread.start()
 
     def _connect(self) -> Connection:
         return self.database.connection()
@@ -225,6 +255,44 @@ class PlateLogStore:
             raise
 
         return len(records)
+
+    def observe_result(self, packet: FramePacket, result: TaskResult) -> None:
+        """Queue plate persistence without blocking the inference worker."""
+        if (
+            self._closed
+            or result.error
+            or result.task != TaskName.PLATE_RECOGNITION
+            or not result.data.get("plates")
+        ):
+            return
+        try:
+            queued_packet = replace(packet, frame=packet.frame.copy())
+            self._queue.put_nowait(_PendingPlateEvent(queued_packet, result))
+        except queue.Full:
+            self._dropped += 1
+            LOGGER.warning("Plate log queue is full; newest result was dropped")
+
+    def _run(self) -> None:
+        while True:
+            pending = self._queue.get()
+            try:
+                if pending is None:
+                    return
+                self._saved += self.insert_result(pending.packet, pending.result)
+            except Exception:
+                self._last_error = "plate persistence failed"
+                LOGGER.exception("Plate persistence failed")
+            finally:
+                self._queue.task_done()
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "queued": self._queue.qsize(),
+            "queue_capacity": self._queue.maxsize,
+            "saved": self._saved,
+            "dropped": self._dropped,
+            "last_error": self._last_error,
+        }
     def list(
         self,
         *,
@@ -284,3 +352,10 @@ class PlateLogStore:
             if row is not None
             else 0
         )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        self._thread.join(timeout=10.0)

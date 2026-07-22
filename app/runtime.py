@@ -206,6 +206,7 @@ class Runtime:
             self.video_ingestor.close()
         self.router.close()
         self.fire_smoke_logs.close()
+        self.plate_logs.close()
         self.human_logs.close()
         self.registry.close()
         self.database.dispose()
@@ -219,6 +220,7 @@ class Runtime:
         )
         value["broadcast"] = self.broadcast.status()
         value["plate_log_count"] = self.plate_logs.count()
+        value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
         value["human_logs"] = self.human_logs.status()
         value["personnel_count"] = self.personnel_store.count()
@@ -344,7 +346,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ),
     )
     model_conversions = ModelConversionManager(models)
-    plate_logs = PlateLogStore(database, app_settings.draw_info , app_settings.save_plate_snapshot)
+    plate_logs = PlateLogStore(
+        database,
+        app_settings.draw_info,
+        app_settings.save_plate_snapshot,
+        queue_size=app_settings.plate_log_queue_size,
+    )
     fire_smoke_logs = FireSmokeLogStore(
         database,
         app_settings.saved_media_path,
@@ -397,6 +404,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 engine_fixed_batch=app_settings.fire_engine_fixed_batch,
                 fire_candidate_confidence=operational.fire_confidence,
                 smoke_candidate_confidence=operational.smoke_confidence,
+                fire_low_confidence=app_settings.fire_low_severity_confidence,
+                fire_medium_confidence=app_settings.fire_medium_severity_confidence,
+                fire_high_confidence=app_settings.fire_high_severity_confidence,
+                smoke_low_confidence=app_settings.smoke_low_severity_confidence,
+                smoke_medium_confidence=app_settings.smoke_medium_severity_confidence,
+                smoke_high_confidence=app_settings.smoke_high_severity_confidence,
             ),
             policy_provider=fire_smoke_logs.policy_snapshot,
             model_provider=models.provider("fire_smoke"),
@@ -584,7 +597,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             queue_capacity=app_settings.task_queue_capacity,
             queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
-            result_observer=plate_logs.insert_result,
+            result_observer=plate_logs.observe_result,
             location_observer=location_obs,
         ),
         TaskName.FACE_RECOGNITION: TaskWorker(

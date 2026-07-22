@@ -293,6 +293,8 @@ class AnnotatedBroadcastHub:
             return "F/S: ERROR"
         tracks = result.data.get("tracks", [])
         for track in tracks:
+            if track.get("confirmed") is False and not track.get("alert_active", False):
+                continue
             box = self._bounded_box(track.get("bbox"), frame)
             if box is None:
                 continue

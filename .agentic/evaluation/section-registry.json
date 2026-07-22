@@ -46,7 +46,7 @@
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern. Compose defaults AI ingest to 25 FPS; VIDEO_INGEST_FPS remains an explicit runtime override."
+      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern. Compose defaults AI ingest to 25 FPS; VIDEO_INGEST_FPS remains an explicit runtime override. Fire severity confidence floors are independently configurable from detector admission thresholds."
     },
     {
       "id": "frame-pipeline",
@@ -127,7 +127,7 @@
         "severity_counts", "incident_count"
       ],
       "acceptance": {},
-      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model."
+      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model. Severity confidence floors are separate from detector admission to prevent repeated low-confidence false incidents."
     },
     {
       "id": "plate-processing",
@@ -150,7 +150,7 @@
         "processed_frames", "pipeline_stages", "crop_batch_size"
       ],
       "acceptance": {},
-      "notes": "Mock mode tested. Real OCR requires Hezar model. Iranian format validation tested."
+      "notes": "Mock mode tested. Real OCR requires Hezar model. Iranian format validation tested. Plate persistence uses a bounded background writer so snapshot/database I/O does not block inference."
     },
     {
       "id": "face-processing",

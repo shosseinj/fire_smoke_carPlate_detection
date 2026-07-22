@@ -130,6 +130,12 @@ class Settings:
     fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 0)
     fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
     smoke_confidence: float = _env_float("SMOKE_CONFIDENCE", 0.30)
+    fire_low_severity_confidence: float = _env_float("FIRE_LOW_SEVERITY_CONFIDENCE", 0.45)
+    fire_medium_severity_confidence: float = _env_float("FIRE_MEDIUM_SEVERITY_CONFIDENCE", 0.50)
+    fire_high_severity_confidence: float = _env_float("FIRE_HIGH_SEVERITY_CONFIDENCE", 0.60)
+    smoke_low_severity_confidence: float = _env_float("SMOKE_LOW_SEVERITY_CONFIDENCE", 0.40)
+    smoke_medium_severity_confidence: float = _env_float("SMOKE_MEDIUM_SEVERITY_CONFIDENCE", 0.45)
+    smoke_high_severity_confidence: float = _env_float("SMOKE_HIGH_SEVERITY_CONFIDENCE", 0.55)
 
     plate_detector_weights: Path = _path(
         "PLATE_DETECTOR_WEIGHTS",
@@ -143,6 +149,7 @@ class Settings:
     plate_device: str = os.getenv("PLATE_DEVICE", "0")
     plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 8)
     plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 50.0)
+    plate_log_queue_size: int = _env_int("PLATE_LOG_QUEUE_SIZE", 128)
     plate_imgsz: int = _env_int("PLATE_IMGSZ", 640)
     plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)

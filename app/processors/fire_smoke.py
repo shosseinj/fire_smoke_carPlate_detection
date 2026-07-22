@@ -64,12 +64,12 @@ class FireSmokeSettings:
     medium_severity_min_ratio: float = 0.0
     high_severity_min_count: int = 20
     high_severity_min_ratio: float = 0.0
-    fire_low_confidence: float = 0.0
-    fire_medium_confidence: float = 0.0
-    fire_high_confidence: float = 0.0
-    smoke_low_confidence: float = 0.0
-    smoke_medium_confidence: float = 0.0
-    smoke_high_confidence: float = 0.0
+    fire_low_confidence: float = 0.45
+    fire_medium_confidence: float = 0.50
+    fire_high_confidence: float = 0.60
+    smoke_low_confidence: float = 0.40
+    smoke_medium_confidence: float = 0.45
+    smoke_high_confidence: float = 0.55
     demotion_hold_seconds: float = 5.0
 
     incident_start_severity: HazardSeverity = HazardSeverity.MEDIUM

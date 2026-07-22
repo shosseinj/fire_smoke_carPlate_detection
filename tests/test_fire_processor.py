@@ -125,6 +125,27 @@ def test_default_three_second_count_window_maps_5_10_20_to_severity(
     assert result.data["severity_window_seconds"] == 3.0
 
 
+def test_repeated_low_confidence_fire_does_not_become_high(tmp_path: Path) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            evidence_min_track_hits=1,
+        ),
+        model=FakeModel(confidence=0.40),
+    )
+
+    result = None
+    for index in range(1, 21):
+        result = processor.process_batch(
+            [packet("camera-low-confidence", index, 100.0 + index * 0.1)]
+        )[0]
+
+    assert result is not None
+    assert result.data["severity"] != "high"
+
+
 def test_fire_below_configured_score_is_not_a_detection(tmp_path: Path) -> None:
     processor = FireSmokeProcessor(
         FireSmokeSettings(
