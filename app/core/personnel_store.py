@@ -899,7 +899,7 @@ class PersonnelStore:
                                         else:
                                             enroll_result = face_processor.enroll(
                                                 image,
-                                                person=person_name,
+                                                person=person.national_code,
                                                 ref_img_id=f"{person.id}",
                                             )
                                             embedding_id = enroll_result.get("point_id")
