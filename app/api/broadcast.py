@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.core.broadcast import AnnotatedBroadcastHub, BroadcastControlEvent
 from app.runtime import Runtime
+from app.core.recent_detection_service import build_recent_detections_message
 
 router = APIRouter(tags=["annotated-broadcast"])
 DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
@@ -69,6 +70,18 @@ async def annotated_broadcast_websocket(
     if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
+
+    # Legacy compatibility: immediately send recent detections after connection,
+    # before entering the live annotated-frame subscription loop.
+    try:
+        recent_message = await asyncio.to_thread(build_recent_detections_message, runtime)
+        if recent_message is not None:
+            await websocket.send_json(recent_message)
+    except Exception:
+        # Recent-history loading must never prevent the live stream from connecting.
+        import logging
+        logging.getLogger("uvicorn.error").exception("Failed to send recent detections")
+
     subscriber_id, target = runtime.broadcast.subscribe()
     try:
         while runtime.broadcast.enabled:
