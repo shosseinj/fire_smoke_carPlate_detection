@@ -758,3 +758,22 @@ docker compose logs -f video-ai-router
 
 docker compose down
 ```
+
+## Database-backed operational settings
+
+Runtime-operational values are now seeded once from the startup environment into the
+`general_settings.operational_json` record. After initialization, the database is
+authoritative. Infrastructure values and secrets (database/auth credentials, storage
+roots, model paths and deployment bootstrap options) remain environment based.
+
+- `GET/PATCH /api/v1/settings/general` reads or updates global operational defaults.
+- `GET/PATCH /api/v1/cameras/{camera_id}/settings` reads effective settings or manages
+  per-camera overrides.
+- Sending an explicit `null` for a camera setting clears that override and restores
+  inheritance from General Settings.
+- Camera overrides are persisted in camera metadata under an internal key, but are
+  returned separately as `settings_overrides` and `effective_settings`.
+- General operational changes are applied to live processors and ingestion controls;
+  affected sources are scheduled for a clean restart through the existing ingestor.
+
+Apply Alembic revision `20260722_0006` before starting the updated application.

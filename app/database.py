@@ -304,6 +304,7 @@ general_settings = Table(
     Column("face_det_score", Float, nullable=False, server_default="0.4"),
     Column("human_det_score", Float, nullable=False, server_default="0.4"),
     Column("confirmation_threshold", Float, nullable=False, server_default="0.6"),
+    Column("operational_json", Text, nullable=False, server_default="{}"),
     Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
     Column("updated_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
     *_audit_columns(),

@@ -96,9 +96,9 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
         "deepstream": status["video_ingestor"],
         "model_configuration": {
             "plate_pipeline": "vehicle -> plate -> OCR",
-            "fire_minimum_score": runtime.settings.fire_confidence,
-            "smoke_minimum_score": runtime.settings.smoke_confidence,
-            "plate_minimum_score": runtime.settings.plate_confidence,
+            "fire_minimum_score": runtime.operational_settings().fire_confidence,
+            "smoke_minimum_score": runtime.operational_settings().smoke_confidence,
+            "plate_minimum_score": runtime.operational_settings().plate_confidence,
             "plate_class_ids": list(runtime.settings.plate_class_ids),
             "vehicle_minimum_score": runtime.settings.vehicle_confidence,
             "fire_model": {
@@ -185,7 +185,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
                 or runtime.settings.fire_model_path.is_file()
                 else "fail"
             ),
-            "detail": {"minimum_score": runtime.settings.fire_confidence},
+            "detail": {"minimum_score": runtime.operational_settings().fire_confidence},
         },
         {
             "section": "vehicle_model",
@@ -205,7 +205,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
                 or runtime.settings.plate_detector_weights.is_file()
                 else "fail"
             ),
-            "detail": {"minimum_score": runtime.settings.plate_confidence},
+            "detail": {"minimum_score": runtime.operational_settings().plate_confidence},
         },
         {
             "section": "face_recognition_models",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.core.source_registry import SourceRecord
+from app.core.operational_settings import CAMERA_SETTINGS_METADATA_KEY
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
 from app.schemas import (
@@ -11,6 +12,7 @@ from app.schemas import (
     CameraReplace,
     CameraResponse,
     CameraTaskUpdate,
+    CameraSettingsPatch,
     CameraUpdate,
 )
 
@@ -24,7 +26,7 @@ def get_runtime() -> Runtime:
     return runtime
 
 
-def _response(record: SourceRecord) -> CameraResponse:
+def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraResponse:
     source_uri = record.source_uri
 
     if source_uri:
@@ -38,9 +40,11 @@ def _response(record: SourceRecord) -> CameraResponse:
         source_uri=source_uri,
         frame_width=record.frame_width,
         frame_height=record.frame_height,
-        metadata=dict(record.metadata),
+        metadata={k: v for k, v in record.metadata.items() if k != CAMERA_SETTINGS_METADATA_KEY},
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
+        settings_overrides=dict(record.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {}),
+        effective_settings=(runtime.resolve_camera_settings(record.source_id) if runtime is not None else {}),
     )
 
 
@@ -48,7 +52,7 @@ def _response(record: SourceRecord) -> CameraResponse:
 def list_cameras(
     runtime: Runtime = Depends(get_runtime),
 ) -> list[CameraResponse]:
-    return [_response(item) for item in runtime.registry.list()]
+    return [_response(item, runtime) for item in runtime.registry.list()]
 
 
 @router.post(
@@ -79,7 +83,32 @@ def create_camera(
             detail=str(exc),
         ) from exc
 
-    return _response(record)
+    return _response(record, runtime)
+
+
+@router.get("/{camera_id}/settings")
+def get_camera_settings(camera_id: str, runtime: Runtime = Depends(get_runtime)) -> dict:
+    record = runtime.registry.get(camera_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return {
+        "camera_id": camera_id,
+        "overrides": dict(record.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {}),
+        "effective": runtime.resolve_camera_settings(camera_id),
+    }
+
+
+@router.patch("/{camera_id}/settings")
+def update_camera_settings(camera_id: str, payload: CameraSettingsPatch, runtime: Runtime = Depends(get_runtime)) -> dict:
+    if runtime.registry.get(camera_id) is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    changes = payload.model_dump(exclude_unset=True)
+    try:
+        effective = runtime.update_camera_overrides(camera_id, changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    record = runtime.registry.require(camera_id)
+    return {"camera_id": camera_id, "overrides": dict(record.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {}), "effective": effective}
 
 
 @router.get("/{camera_id}", response_model=CameraResponse)
@@ -95,7 +124,7 @@ def get_camera(
             detail="Camera not found",
         )
 
-    return _response(record)
+    return _response(record, runtime)
 
 
 @router.put(
@@ -117,7 +146,7 @@ def update_camera_tasks(
             camera_id,
             tasks=payload.tasks,
         )
-        return _response(record)
+        return _response(record, runtime)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -198,7 +227,7 @@ def update_cameras_bulk(
                 detail=f"Camera not found: {camera_id}",
             ) from exc
 
-        updated_cameras.append(_response(record))
+        updated_cameras.append(_response(record, runtime))
 
     return updated_cameras
 
@@ -216,7 +245,7 @@ def update_camera(
             camera_id,
             **values,
         )
-        return _response(record)
+        return _response(record, runtime)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -241,7 +270,7 @@ def replace_camera(
             frame_height=payload.frame_height,
             metadata=payload.metadata,
         )
-        return _response(record)
+        return _response(record, runtime)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -259,7 +288,7 @@ def enable_camera(
             camera_id,
             enabled=True,
         )
-        return _response(record)
+        return _response(record, runtime)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -277,7 +306,7 @@ def disable_camera(
             camera_id,
             enabled=False,
         )
-        return _response(record)
+        return _response(record, runtime)
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
