@@ -113,7 +113,7 @@ services:
       HUMAN_VIDEO_IDLE_SECONDS: ${HUMAN_VIDEO_IDLE_SECONDS:-5}
       HUMAN_SNAPSHOT_MIN_IMPROVEMENT: ${HUMAN_SNAPSHOT_MIN_IMPROVEMENT:-0.01}
     ports:
-      - "8000:9999"
+      - "9999:9999"
     volumes:
       - ./app:/workspace/app:ro
       - ./data:/workspace/data
@@ -147,7 +147,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       FACE_QDRANT_URL: http://qdrant:6333
     ports:
-      - "8000:9999"
+      - "9999:9999"
     volumes:
       - .:/workspace
     shm_size: "2gb"

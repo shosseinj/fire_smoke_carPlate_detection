@@ -618,7 +618,7 @@ def list_personnel_images(
 async def upload_personnel_images(
     personnel_id: int,
     files: Annotated[
-        list[UploadFile],
+        list[UploadFile] | None,
         File(
             description="JPEG, PNG, or BMP image files",
             media_type="image/*",
@@ -630,11 +630,10 @@ async def upload_personnel_images(
                 }
             },
         ),
-    ],
+    ] = None,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
     file: UploadFile | None = File(default=None),
-    files: list[UploadFile] | None = File(default=None),
     images: list[UploadFile] | None = File(default=None),
     description: str | None = Form(default=None),
     enable_cropping: bool = Form(default=False),
