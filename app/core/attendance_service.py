@@ -346,25 +346,32 @@ class AttendanceService:
         total_mission_days = 0
         total_remote_days = 0
         total_personal_days = 0
+        total_unpaid_days = 0
+        total_overtime_hours = 0
         leave_details: list[dict[str, Any]] = []
 
         for req in requests:
             req_start = date.fromisoformat(req.start_date)
             req_end = date.fromisoformat(req.end_date)
             days = (req_end - req_start).days + 1
-            if req.request_type == "leave":
+            rt = req.request_type
+            if rt in ("leave", "earned_leave"):
                 total_leave_days += days
-            elif req.request_type == "sick_leave":
+            elif rt in ("sick_leave",):
                 total_sick_days += days
-            elif req.request_type == "mission":
+            elif rt in ("mission",):
                 total_mission_days += days
-            elif req.request_type == "remote_work":
+            elif rt in ("remote_work",):
                 total_remote_days += days
-            elif req.request_type == "personal":
+            elif rt in ("personal",):
                 total_personal_days += days
+            elif rt in ("unpaid_leave",):
+                total_unpaid_days += days
+            elif rt in ("overtime",):
+                total_overtime_hours += (req.duration_minutes or 0) / 60
             leave_details.append({
                 "request_id": req.id,
-                "request_type": req.request_type,
+                "request_type": rt,
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "days": days,
@@ -383,6 +390,8 @@ class AttendanceService:
             "total_mission_days": total_mission_days,
             "total_remote_days": total_remote_days,
             "total_personal_days": total_personal_days,
+            "total_unpaid_days": total_unpaid_days,
+            "total_overtime_hours": total_overtime_hours,
             "total_days_off": total_days_off,
             "details": leave_details,
         }

@@ -26,6 +26,7 @@ from app.api.locations import router as locations_router
 from app.api.shifts import router as shifts_router
 from app.api.holidays import router as holidays_router
 from app.api.requests import router as requests_router
+from app.api.personnel_requests import router as personnel_requests_router
 from app.api.attendance import router as attendance_router
 from app.api.personnel_images import router as personnel_images_router
 from app.config import settings
@@ -163,6 +164,7 @@ app.include_router(locations_router)
 app.include_router(shifts_router)
 app.include_router(holidays_router)
 app.include_router(requests_router)
+app.include_router(personnel_requests_router)
 app.include_router(attendance_router)
 app.include_router(personnel_images_router)
 app.include_router(plate_settings_router)

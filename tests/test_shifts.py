@@ -176,7 +176,7 @@ class TestShiftStore:
         assert "total_shifts" in stats
         assert "total_personnel" in stats
         assert "assigned_personnel" in stats
-        assert "distribution" in stats
+        assert "shift_distribution" in stats
 
     def test_is_overnight(self) -> None:
         assert _is_overnight("22:00", "06:00") is True

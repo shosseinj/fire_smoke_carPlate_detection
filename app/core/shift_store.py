@@ -50,6 +50,7 @@ class WorkShiftRecord:
     shift_type: str
     start_time: str  # HH:MM local
     end_time: str  # HH:MM local
+    timezone_name: str
     max_minutes_delay: int
     max_minutes_early: int
     max_overtime_hours: float
@@ -142,6 +143,7 @@ class ShiftStore:
             shift_type=row["shift_type"],
             start_time=row["start_time"],
             end_time=row["end_time"],
+            timezone_name=row.get("timezone_name", "Asia/Tehran"),
             max_minutes_delay=row["max_minutes_delay"],
             max_minutes_early=row["max_minutes_early"],
             max_overtime_hours=float(row["max_overtime_hours"]),
@@ -180,21 +182,22 @@ class ShiftStore:
         shift_type: str = "morning",
         start_time: str = "08:00",
         end_time: str = "16:00",
-        max_minutes_delay: int = 15,
-        max_minutes_early: int = 15,
-        max_overtime_hours: float = 2.0,
+        timezone_name: str = "Asia/Tehran",
+        max_minutes_delay: int = 0,
+        max_minutes_early: int = 0,
+        max_overtime_hours: float = 8.0,
         **weekday_flags: bool,
     ) -> WorkShiftRecord:
         self._validate(shift_name, shift_type, start_time, end_time,
                        max_minutes_delay, max_minutes_early, max_overtime_hours, weekday_flags)
         now = _now()
         with self._lock, self._connection() as conn:
-            cols = ["shift_name", "shift_type", "start_time", "end_time",
+            cols = ["shift_name", "shift_type", "start_time", "end_time", "timezone_name",
                     "max_minutes_delay", "max_minutes_early", "max_overtime_hours",
                     *WEEKDAY_COLS, "created_at_utc", "updated_at_utc"]
             placeholders = ", ".join("?" for _ in cols)
             values = [
-                shift_name.strip(), shift_type, start_time, end_time,
+                shift_name.strip(), shift_type, start_time, end_time, timezone_name,
                 max_minutes_delay, max_minutes_early, max_overtime_hours,
             ]
             for col in WEEKDAY_COLS:
@@ -225,6 +228,7 @@ class ShiftStore:
         shift_type: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        timezone_name: str | None = None,
         max_minutes_delay: int | None = None,
         max_minutes_early: int | None = None,
         max_overtime_hours: float | None = None,
@@ -240,6 +244,7 @@ class ShiftStore:
             new_type = shift_type if shift_type is not None else existing["shift_type"]
             new_start = start_time if start_time is not None else existing["start_time"]
             new_end = end_time if end_time is not None else existing["end_time"]
+            new_tz = timezone_name if timezone_name is not None else existing.get("timezone_name", "Asia/Tehran")
             new_delay = max_minutes_delay if max_minutes_delay is not None else existing["max_minutes_delay"]
             new_early = max_minutes_early if max_minutes_early is not None else existing["max_minutes_early"]
             new_overtime = max_overtime_hours if max_overtime_hours is not None else existing["max_overtime_hours"]
@@ -253,11 +258,11 @@ class ShiftStore:
                 self._validate(new_name, new_type, new_start, new_end,
                                new_delay, new_early, new_overtime, merged_flags)
             now = _now()
-            set_clauses = ", ".join(f"{col} = ?" for col in
-                ["shift_name", "shift_type", "start_time", "end_time",
-                 "max_minutes_delay", "max_minutes_early", "max_overtime_hours",
-                 *WEEKDAY_COLS, "updated_at_utc"])
-            values = [new_name, new_type, new_start, new_end,
+            set_cols = ["shift_name", "shift_type", "start_time", "end_time", "timezone_name",
+                        "max_minutes_delay", "max_minutes_early", "max_overtime_hours",
+                        *WEEKDAY_COLS, "updated_at_utc"]
+            set_clauses = ", ".join(f"{col} = ?" for col in set_cols)
+            values = [new_name, new_type, new_start, new_end, new_tz,
                       new_delay, new_early, new_overtime]
             for col in WEEKDAY_COLS:
                 values.append(1 if merged_flags[col] else 0)
@@ -271,21 +276,29 @@ class ShiftStore:
             ).fetchone()
             return self._row_to_shift(row)
 
-    def delete(self, shift_id: int) -> bool:
-        """Delete a shift. Affected Personnel get shift_id set to NULL via application logic.
+    def delete(self, shift_id: int, force: bool = False) -> bool:
+        """Delete a shift.
+
+        Without force=True, raise ValueError if any personnel are assigned.
+        With force=True, set affected personnel's shift_id to NULL atomically.
 
         Returns True if a shift was deleted.
         """
         with self._lock, self._connection() as conn:
-            # Set personnel shift_id to NULL for this shift (personnel table may not exist
-            # when ShiftStore is used independently)
-            try:
+            if not force:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM personnel WHERE shift_id = ?", (shift_id,)
+                ).fetchone()[0]
+                if count > 0:
+                    raise ValueError(
+                        f"Cannot delete shift. This shift is assigned to {count} "
+                        f"personnel. Use force=true for forced deletion."
+                    )
+            else:
                 conn.execute(
                     "UPDATE personnel SET shift_id = NULL WHERE shift_id = ?",
                     (shift_id,),
                 )
-            except OperationalError:
-                pass
             cursor = conn.execute(
                 "DELETE FROM work_shifts WHERE id = ?", (shift_id,)
             )
@@ -352,28 +365,64 @@ class ShiftStore:
             return cursor.rowcount > 0
 
     def list_personnel_in_shift(self, shift_id: int) -> list[dict[str, Any]]:
-        """Return Personnel records assigned to a shift."""
+        """Return Personnel records assigned to a shift (legacy format)."""
         with self._lock, self._connection() as conn:
             rows = conn.execute(
-                "SELECT id, fname, lname, national_code, employee_type "
-                "FROM personnel WHERE shift_id = ? ORDER BY lname, fname",
+                "SELECT p.id, p.fname, p.lname, p.national_code, p.department_id, "
+                "p.degree, s.shift_name, s.shift_type, s.start_time, s.end_time, "
+                "s.timezone_name, s.max_minutes_delay, s.max_minutes_early, "
+                "s.max_overtime_hours, s.works_saturday, s.works_sunday, "
+                "s.works_monday, s.works_tuesday, s.works_wednesday, "
+                "s.works_thursday, s.works_friday "
+                "FROM personnel p LEFT JOIN work_shifts s ON p.shift_id = s.id "
+                "WHERE p.shift_id = ? ORDER BY p.lname, p.fname",
                 (shift_id,),
             ).fetchall()
-            return [
-                {
-                    "id": r["id"],
-                    "fname": r["fname"],
-                    "lname": r["lname"],
+            result: list[dict[str, Any]] = []
+            for r in rows:
+                shift_info: dict[str, Any] | None = None
+                if r["shift_name"] is not None:
+                    shift_info = {
+                        "id": shift_id,
+                        "shift_name": r["shift_name"],
+                        "shift_type": r["shift_type"],
+                        "start_time": r["start_time"],
+                        "end_time": r["end_time"],
+                        "timezone_name": r["timezone_name"] or "Asia/Tehran",
+                        "max_minutes_delay": r["max_minutes_delay"],
+                        "max_minutes_early": r["max_minutes_early"],
+                        "max_overtime_hours": float(r["max_overtime_hours"]) if r["max_overtime_hours"] else 0,
+                        "monday": bool(r["works_monday"]),
+                        "tuesday": bool(r["works_tuesday"]),
+                        "wednesday": bool(r["works_wednesday"]),
+                        "thursday": bool(r["works_thursday"]),
+                        "friday": bool(r["works_friday"]),
+                        "saturday": bool(r["works_saturday"]),
+                        "sunday": bool(r["works_sunday"]),
+                        "personnel_count": 0,
+                    }
+                result.append({
+                    "personnel_id": r["id"],
+                    "full_name": f"{r['fname']} {r['lname']}",
                     "national_code": r["national_code"],
-                    "employee_type": r["employee_type"],
-                }
-                for r in rows
-            ]
+                    "department_id": r["department_id"],
+                    "department_name": None,
+                    "degree": r["degree"],
+                    "shift": shift_info,
+                })
+            return result
+
+    def count_personnel_in_shift(self, shift_id: int) -> int:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM personnel WHERE shift_id = ?", (shift_id,)
+            ).fetchone()
+            return int(row[0])
 
     # ── Statistics ───────────────────────────────────────────────────
 
     def statistics(self) -> dict[str, Any]:
-        """Return shift distribution statistics."""
+        """Return shift distribution statistics (legacy format)."""
         with self._lock, self._connection() as conn:
             total_personnel = 0
             assigned = 0
@@ -389,29 +438,30 @@ class ShiftStore:
                 )
                 unassigned = total_personnel - assigned
             except OperationalError:
-                pass  # personnel table may not exist when used independently
+                pass
             try:
                 shifts = conn.execute(
-                    "SELECT s.id, s.shift_name, COUNT(p.id) as cnt "
+                    "SELECT s.id, s.shift_name, s.shift_type, COUNT(p.id) as cnt "
                     "FROM work_shifts s LEFT JOIN personnel p ON p.shift_id = s.id "
-                    "GROUP BY s.id ORDER BY s.shift_name"
+                    "GROUP BY s.id, s.shift_name, s.shift_type ORDER BY s.shift_name"
                 ).fetchall()
             except OperationalError:
                 shifts = conn.execute(
-                    "SELECT id, shift_name, 0 as cnt FROM work_shifts ORDER BY shift_name"
+                    "SELECT id, shift_name, shift_type, 0 as cnt FROM work_shifts ORDER BY shift_name"
                 ).fetchall()
             distribution = [
                 {
-                    "shift_id": r["id"],
                     "shift_name": r["shift_name"],
-                    "assigned_count": int(r["cnt"]),
+                    "shift_type": r["shift_type"],
+                    "personnel_count": int(r["cnt"]),
                 }
                 for r in shifts
+                if int(r["cnt"]) > 0
             ]
             return {
                 "total_shifts": self.count(),
                 "total_personnel": total_personnel,
                 "assigned_personnel": assigned,
                 "unassigned_personnel": unassigned,
-                "distribution": distribution,
+                "shift_distribution": distribution,
             }

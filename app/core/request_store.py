@@ -8,7 +8,7 @@ from app.time_utils import utc_now_text
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,8 @@ VALID_REQUEST_TYPES = frozenset({
     "overtime",
     "personal",
     "other",
+    "earned_leave",
+    "unpaid_leave",
 })
 
 VALID_REQUEST_STATUSES = frozenset({
@@ -31,6 +33,8 @@ VALID_REQUEST_STATUSES = frozenset({
     "rejected",
     "cancelled",
 })
+
+VALID_DURATION_TYPES = frozenset({"daily", "hourly"})
 
 # Default concurrency guard (no overlapping approved requests of the same type for same person)
 OVERLAP_CHECK_TYPES = frozenset({"leave", "sick_leave", "remote_work", "mission", "personal"})
@@ -41,11 +45,19 @@ class PersonnelRequestRecord:
     id: int
     personnel_id: int
     request_type: str
+    duration_type: str | None
     start_date: str  # ISO date YYYY-MM-DD
     end_date: str  # ISO date YYYY-MM-DD
+    start_time: str | None
+    end_time: str | None
+    duration_days: float | None
+    duration_minutes: int | None
     reason: str | None
     status: str
     approved_by: int | None
+    reviewed_by: int | None
+    reviewed_at: str | None
+    admin_notes: str | None
     rejection_reason: str | None
     created_at_utc: str
     updated_at_utc: str
@@ -67,7 +79,6 @@ class RequestStore:
         return self.database.connection()
 
     def _init_db(self) -> None:
-        # Alembic owns the PostgreSQL schema; runtime startup validates it.
         return None
 
     @staticmethod
@@ -76,11 +87,19 @@ class RequestStore:
             id=row["id"],
             personnel_id=row["personnel_id"],
             request_type=row["request_type"],
+            duration_type=row.get("duration_type"),
             start_date=row["start_date"],
             end_date=row["end_date"],
+            start_time=row.get("start_time"),
+            end_time=row.get("end_time"),
+            duration_days=row.get("duration_days"),
+            duration_minutes=row.get("duration_minutes"),
             reason=row["reason"],
             status=row["status"],
             approved_by=row["approved_by"],
+            reviewed_by=row.get("reviewed_by"),
+            reviewed_at=row.get("reviewed_at"),
+            admin_notes=row.get("admin_notes"),
             rejection_reason=row["rejection_reason"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
@@ -98,7 +117,6 @@ class RequestStore:
                 d_val = int(parts[2])
             except (ValueError, IndexError):
                 raise ValueError(f"Invalid date format: {s!r}")
-            # Jalali years are typically 1200-1500; Gregorian years outside that range
             if 1200 <= y <= 1500:
                 try:
                     g = parse_jalali_date(s)
@@ -115,12 +133,20 @@ class RequestStore:
             return g.isoformat()
         except ValueError:
             raise ValueError(f"Invalid date: {s!r}")
+    
+    @staticmethod
+    def _parse_time(t: str | None) -> str | None:
+        if t is None:
+            return None
+        parts = t.split(":")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid time: {t!r}")
+        return f"{int(parts[0]):02d}:{int(parts[1]):02d}:00"
 
     def _check_overlap(
         self, conn: Connection, personnel_id: int, request_type: str,
         start_date: str, end_date: str, exclude_id: int | None = None,
     ) -> None:
-        """Raise ValueError if an approved request of the same type overlaps."""
         if request_type not in OVERLAP_CHECK_TYPES:
             return
         exclude_clause = ""
@@ -146,7 +172,13 @@ class RequestStore:
         request_type: str = "leave",
         start_date: str = "",
         end_date: str = "",
+        duration_type: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        duration_days: float | None = None,
+        duration_minutes: int | None = None,
         reason: str | None = None,
+        status: str = "pending",
     ) -> PersonnelRequestRecord:
         if request_type not in VALID_REQUEST_TYPES:
             raise ValueError(f"Invalid request type: {request_type!r}")
@@ -156,20 +188,26 @@ class RequestStore:
         e = self._normalize_date(end_date)
         if s > e:
             raise ValueError("start_date must not be after end_date")
+        st = self._parse_time(start_time)
+        et = self._parse_time(end_time)
+        if status not in VALID_REQUEST_STATUSES:
+            raise ValueError(f"Invalid status: {status!r}")
         now = _now()
         with self._lock, self._connection() as conn:
-            # Verify personnel exists
             p = conn.execute(
                 "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if p is None:
                 raise ValueError(f"Personnel not found: {personnel_id}")
-            # Overlap check (only for approved, but we check existing pending-approved too)
-            self._check_overlap(conn, personnel_id, request_type, s, e)
             cursor = conn.execute(
-                "INSERT INTO personnel_requests (personnel_id, request_type, start_date, end_date, "
-                "reason, status, created_at_utc, updated_at_utc) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-                (personnel_id, request_type, s, e, reason, now, now),
+                "INSERT INTO personnel_requests "
+                "(personnel_id, request_type, duration_type, start_date, end_date, "
+                "start_time, end_time, duration_days, duration_minutes, "
+                "reason, status, created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (personnel_id, request_type, duration_type, s, e,
+                 st, et, duration_days, duration_minutes,
+                 reason, status, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM personnel_requests WHERE id = ?", (cursor.lastrowid,)
@@ -185,6 +223,34 @@ class RequestStore:
             ).fetchone()
             return self._row_to_request(row) if row is not None else None
 
+    def update_status(
+        self,
+        request_id: int,
+        status: str,
+        reviewed_by: int | None = None,
+        rejection_reason: str | None = None,
+        admin_notes: str | None = None,
+    ) -> PersonnelRequestRecord | None:
+        with self._lock, self._connection() as conn:
+            existing = conn.execute(
+                "SELECT * FROM personnel_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+            if existing is None:
+                return None
+            if status not in VALID_REQUEST_STATUSES:
+                raise ValueError(f"Invalid status: {status!r}")
+            now = _now()
+            conn.execute(
+                "UPDATE personnel_requests SET status=?, reviewed_by=?, "
+                "rejection_reason=?, admin_notes=?, reviewed_at=?, "
+                "updated_at_utc=? WHERE id=?",
+                (status, reviewed_by, rejection_reason, admin_notes, now, now, request_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM personnel_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+            return self._row_to_request(row)
+
     def approve(
         self, request_id: int, approved_by: int, rejection_reason: str | None = None,
     ) -> PersonnelRequestRecord | None:
@@ -197,10 +263,8 @@ class RequestStore:
             if existing["status"] != "pending":
                 raise ValueError(f"Request is already {existing['status']}")
             if rejection_reason:
-                # Reject instead
                 new_status = "rejected"
             else:
-                # Approve — check overlap before finalizing
                 self._check_overlap(
                     conn, existing["personnel_id"], existing["request_type"],
                     existing["start_date"], existing["end_date"], exclude_id=request_id,
@@ -208,9 +272,9 @@ class RequestStore:
                 new_status = "approved"
             now = _now()
             conn.execute(
-                "UPDATE personnel_requests SET status=?, approved_by=?, rejection_reason=?, "
-                "updated_at_utc=? WHERE id=?",
-                (new_status, approved_by, rejection_reason, now, request_id),
+                "UPDATE personnel_requests SET status=?, approved_by=?, reviewed_by=?, "
+                "rejection_reason=?, reviewed_at=?, updated_at_utc=? WHERE id=?",
+                (new_status, approved_by, approved_by, rejection_reason, now, now, request_id),
             )
             row = conn.execute(
                 "SELECT * FROM personnel_requests WHERE id = ?", (request_id,)
@@ -223,7 +287,6 @@ class RequestStore:
         return self.approve(request_id, approved_by, rejection_reason=rejection_reason)
 
     def cancel(self, request_id: int) -> PersonnelRequestRecord | None:
-        """Cancel a request (only pending)."""
         with self._lock, self._connection() as conn:
             existing = conn.execute(
                 "SELECT * FROM personnel_requests WHERE id = ?", (request_id,)
@@ -288,13 +351,23 @@ class RequestStore:
                 conn.execute("SELECT COUNT(*) FROM personnel_requests").fetchone()[0]
             )
 
+    def count_by_status(self) -> dict[str, int]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM personnel_requests GROUP BY status"
+            ).fetchall()
+            return {r["status"]: int(r["cnt"]) for r in rows}
+
+    def count_by_type(self) -> dict[str, int]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT request_type, COUNT(*) as cnt FROM personnel_requests GROUP BY request_type"
+            ).fetchall()
+            return {r["request_type"]: int(r["cnt"]) for r in rows}
+
     def get_approved_requests_in_range(
         self, personnel_id: int | None, start: date, end: date,
     ) -> list[PersonnelRequestRecord]:
-        """Return approved requests overlapping [start, end].
-
-        Uses standard interval overlap: start_date <= range_end AND end_date >= range_start.
-        """
         end_str = end.isoformat()
         start_str = start.isoformat()
         params: list[Any] = [end_str, start_str]

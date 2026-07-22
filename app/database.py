@@ -265,12 +265,23 @@ personnel_requests = Table(
     "personnel_requests", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("personnel_id", Integer, ForeignKey("personnel.id", ondelete="CASCADE"), nullable=False),
-    Column("request_type", Text, nullable=False, server_default="leave"), Column("start_date", Date, nullable=False),
-    Column("end_date", Date, nullable=False), Column("reason", Text), Column("status", Text, nullable=False, server_default="pending"),
-    Column("approved_by", Integer), Column("rejection_reason", Text), *_audit_columns(),
+    Column("request_type", Text, nullable=False, server_default="earned_leave"),
+    Column("duration_type", String(16)),
+    Column("start_date", Date, nullable=False),
+    Column("end_date", Date, nullable=False),
+    Column("start_time", Time),
+    Column("end_time", Time),
+    Column("duration_days", Float),
+    Column("duration_minutes", Integer),
+    Column("reason", Text), Column("status", Text, nullable=False, server_default="pending"),
+    Column("approved_by", Integer), Column("reviewed_by", Integer),
+    Column("reviewed_at", UTC_TS),
+    Column("admin_notes", Text), Column("rejection_reason", Text), *_audit_columns(),
 )
 Index("idx_requests_personnel", personnel_requests.c.personnel_id); Index("idx_requests_status", personnel_requests.c.status)
 Index("idx_requests_dates", personnel_requests.c.start_date, personnel_requests.c.end_date)
+Index("idx_requests_duration_type", personnel_requests.c.duration_type)
+Index("idx_requests_reviewed_by", personnel_requests.c.reviewed_by)
 
 
 face_embeddings = Table(

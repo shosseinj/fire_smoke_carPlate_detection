@@ -27,6 +27,8 @@ class HolidayRecord:
     holiday_type: str
     every_year: bool
     is_active: bool
+    created_by: int | None
+    updated_by: int | None
     created_at_utc: str
     updated_at_utc: str
 
@@ -60,6 +62,8 @@ class HolidayStore:
             holiday_type=row["holiday_type"],
             every_year=bool(row["every_year"]),
             is_active=bool(row["is_active"]),
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
         )
@@ -108,6 +112,7 @@ class HolidayStore:
         description: str | None = None,
         holiday_type: str = "national",
         every_year: bool = False,
+        created_by: int | None = None,
     ) -> HolidayRecord:
         name = name.strip()
         if not name:
@@ -117,7 +122,6 @@ class HolidayStore:
         normalized_date = self._validate_date_str(date_value)
         now = _now()
         with self._lock, self._connection() as conn:
-            # Prevent duplicate active holidays with same date and same every_year flag
             existing = conn.execute(
                 "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? AND is_active = 1",
                 (normalized_date, 1 if every_year else 0),
@@ -127,9 +131,11 @@ class HolidayStore:
                     f"Active holiday already exists for date {normalized_date}"
                 )
             cursor = conn.execute(
-                "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, is_active, "
-                "created_at_utc, updated_at_utc) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                (name, normalized_date, description, holiday_type, 1 if every_year else 0, now, now),
+                "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, "
+                "is_active, created_by, updated_by, created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                (name, normalized_date, description, holiday_type, 1 if every_year else 0,
+                 created_by, created_by, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (cursor.lastrowid,)
@@ -154,6 +160,7 @@ class HolidayStore:
         holiday_type: str | None = None,
         every_year: bool | None = None,
         is_active: bool | None = None,
+        updated_by: int | None = None,
     ) -> HolidayRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
@@ -171,23 +178,43 @@ class HolidayStore:
                 raise ValueError(f"Invalid holiday type: {new_type!r}")
             new_every = 1 if (every_year if every_year is not None else existing["every_year"]) else 0
             new_active = is_active if is_active is not None else bool(existing["is_active"])
+
+            # Check duplicate on reactivation or date change
+            check_date = new_date
+            check_every = bool(new_every)
+            conn.execute(
+                "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? "
+                "AND is_active = 1 AND id != ?",
+                (check_date, new_every, holiday_id),
+            )
+            dup = conn.execute(
+                "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? "
+                "AND is_active = 1 AND id != ?",
+                (check_date, new_every, holiday_id),
+            ).fetchone()
+            if dup is not None:
+                raise ValueError(
+                    f"Active holiday already exists for date {new_date}"
+                )
+
             now = _now()
             conn.execute(
                 "UPDATE holidays SET name=?, date_value=?, description=?, holiday_type=?, "
-                "every_year=?, is_active=?, updated_at_utc=? WHERE id=?",
-                (new_name, new_date, new_desc, new_type, new_every, 1 if new_active else 0, now, holiday_id),
+                "every_year=?, is_active=?, updated_by=?, updated_at_utc=? WHERE id=?",
+                (new_name, new_date, new_desc, new_type, new_every, 1 if new_active else 0,
+                 updated_by, now, holiday_id),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (holiday_id,)
             ).fetchone()
             return self._row_to_holiday(row)
 
-    def delete(self, holiday_id: int) -> bool:
+    def delete(self, holiday_id: int, updated_by: int | None = None) -> bool:
         """Deactivate a holiday rather than physically removing it."""
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE holidays SET is_active = 0, updated_at_utc = ? WHERE id = ?",
-                (_now(), holiday_id),
+                "UPDATE holidays SET is_active = 0, updated_by = ?, updated_at_utc = ? WHERE id = ?",
+                (updated_by, _now(), holiday_id),
             )
             return cursor.rowcount > 0
 
