@@ -317,6 +317,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         shift_store=shift_store,
         holiday_store=holiday_store,
         request_store=request_store,
+        detection_log_store=detection_log_store,
     )
 
     if app_settings.processor_mode == "mock":

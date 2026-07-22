@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from app.core.detection_log_store import DetectionLogRecord, DetectionLogStore
 from app.core.holiday_store import HolidayStore
 from app.core.human_log_store import HumanLogStore
 from app.core.jalali_utils import (
@@ -31,6 +32,8 @@ LOGGER = logging.getLogger(__name__)
 
 # Minimum detection duration (in seconds) for counts_for_attendance
 MIN_ATTENDANCE_SECONDS = 60
+# Each detection_log point-in-time event expands into this window for presence seconds
+ATTENDANCE_DETECTION_WINDOW_SECONDS = 300
 
 
 def _tehran_tz() -> timezone:
@@ -48,12 +51,14 @@ class AttendanceService:
         shift_store: Any,  # ShiftStore
         holiday_store: HolidayStore,
         request_store: RequestStore,
+        detection_log_store: DetectionLogStore | None = None,
     ) -> None:
         self._personnel_store = personnel_store
         self._human_log_store = human_log_store
         self._shift_store = shift_store
         self._holiday_store = holiday_store
         self._request_store = request_store
+        self._detection_log_store = detection_log_store
 
     # ── Helpers ───────────────────────────────────────────────────────
 
@@ -78,10 +83,37 @@ class AttendanceService:
     def _get_detection_logs(
         self, personnel_id: int, utc_start: datetime, utc_end: datetime,
     ) -> list[dict[str, Any]]:
-        """Return human_logs rows for a personnel within UTC range."""
-        return self._human_log_store.get_logs_for_personnel(
+        """Return attendance events merged from human_logs and detection_logs."""
+        results = self._human_log_store.get_logs_for_personnel(
             personnel_id, utc_start.isoformat(), utc_end.isoformat(),
         )
+
+        if self._detection_log_store is not None:
+            dl_records, _ = self._detection_log_store.list_filter(
+                personnel_id=personnel_id,
+                from_date_utc=utc_start.isoformat(),
+                to_date_utc=utc_end.isoformat(),
+                counts_for_attendance=True,
+            )
+            window = ATTENDANCE_DETECTION_WINDOW_SECONDS
+            for r in dl_records:
+                try:
+                    dt = datetime.fromisoformat(r.detection_time.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                last_seen = (dt + timedelta(seconds=window)).isoformat().replace("+00:00", "Z")
+                results.append({
+                    "first_seen": r.detection_time,
+                    "last_seen": last_seen,
+                    "recognition_score": r.confidence,
+                    "counts_for_attendance": int(r.counts_for_attendance),
+                    "personnel_id": r.personnel_id,
+                    "source": "detection_logs",
+                    "log_id": r.id,
+                })
+
+        results.sort(key=lambda x: x["last_seen"])
+        return results
 
     # ── Daily attendance ──────────────────────────────────────────────
 
