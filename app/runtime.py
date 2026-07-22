@@ -614,6 +614,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "router": router,
             "project_root": project_root,
             "target_fps": operational.video_ingest_fps,
+            "gpu_resize_enabled": app_settings.gpu_resize_enabled,
             "loop": operational.video_loop,
             "rtsp_transport": operational.rtsp_transport,
             "rtsp_reconnect_seconds": operational.rtsp_reconnect_seconds,

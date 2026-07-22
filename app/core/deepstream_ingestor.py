@@ -90,6 +90,7 @@ class DeepStreamIngestor:
         project_root: Path,
         target_fps: float = 5.0,
         preview_fps: float = 25.0,
+        gpu_resize_enabled: bool = True,
         loop: bool = True,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
@@ -104,6 +105,8 @@ class DeepStreamIngestor:
         self.project_root = project_root
         self.target_fps = max(0.1, float(target_fps))
         self.preview_fps = max(0.1, float(preview_fps))
+        self.gpu_resize_enabled = bool(gpu_resize_enabled)
+        self._gpu_resize_available = self._detect_gpu_resize()
         self.loop = bool(loop)
         self.rtsp_enabled = bool(rtsp_enabled)
         self.skip_taskless_sources = bool(skip_taskless_sources)
@@ -137,6 +140,34 @@ class DeepStreamIngestor:
         self._open_failures = 0
         self._reconnects = 0
         self._last_error: str | None = None
+
+    def _detect_gpu_resize(self) -> bool:
+        if not self.gpu_resize_enabled:
+            return False
+        try:
+            return bool(
+                hasattr(cv2, "cuda")
+                and hasattr(cv2.cuda, "GpuMat")
+                and hasattr(cv2.cuda, "resize")
+                and cv2.cuda.getCudaEnabledDeviceCount() > 0
+            )
+        except Exception:
+            return False
+
+    def _resize_frame(self, frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        if self._gpu_resize_available:
+            try:
+                gpu_frame = cv2.cuda.GpuMat()
+                gpu_frame.upload(frame)
+                return cv2.cuda.resize(
+                    gpu_frame,
+                    size,
+                    interpolation=cv2.INTER_AREA,
+                ).download()
+            except Exception:
+                self._gpu_resize_available = False
+                LOGGER.warning("GPU resize failed; using CPU fallback", exc_info=True)
+        return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
 
     @staticmethod
     def is_supported_source(record: SourceRecord) -> bool:
@@ -633,10 +664,9 @@ class DeepStreamIngestor:
                     frame
                     if frame.shape[1] == state.frame_width
                     and frame.shape[0] == state.frame_height
-                    else cv2.resize(
+                    else self._resize_frame(
                         frame,
                         (state.frame_width, state.frame_height),
-                        interpolation=cv2.INTER_AREA,
                     )
                 )
                 for state, frame in zip(selected, source_frames)
@@ -751,6 +781,8 @@ class DeepStreamIngestor:
                 "running": self._thread is not None and self._thread.is_alive(),
                 "target_fps": self.target_fps,
                 "preview_fps": self.preview_fps,
+                "gpu_resize_enabled": self.gpu_resize_enabled,
+                "gpu_resize_active": self._gpu_resize_available,
                 "loop": self.loop,
                 "rtsp_enabled": self.rtsp_enabled,
                 "rtsp_transport": self.rtsp_transport,

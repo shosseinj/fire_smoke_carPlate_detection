@@ -93,6 +93,7 @@ class Settings:
     video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 10.0)
     video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 10.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
+    gpu_resize_enabled: bool = _env_bool("GPU_RESIZE_ENABLED", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)
     rtsp_open_timeout_ms: int = _env_int("RTSP_OPEN_TIMEOUT_MS", 20000)

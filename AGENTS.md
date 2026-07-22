@@ -50,6 +50,10 @@ not insert a CPU `videoconvert` stage. The Compose AI-ingest default is 25 FPS, 
 `VIDEO_INGEST_FPS` remains the authoritative override; use the bounded FPS diagnostic
 sampler before raising it further.
 
+When OpenCV exposes CUDA resize, DeepStream uses it for the inference view and falls
+back to CPU resize without changing the NumPy frame contract. The native source frame
+is retained for face evidence and downstream media.
+
 Task workers support `TASK_QUEUE_POLICY=latest_per_source` for bounded-latency CCTV or
 `TASK_QUEUE_POLICY=lossless_fifo` for bounded FIFO admission with backpressure. The
 real-time Compose default is latest-per-source; FIFO is an explicit file/API workload

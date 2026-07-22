@@ -240,6 +240,21 @@ def test_deepstream_decodes_gpu_converted_bgrx_without_cpu_videoconvert() -> Non
     assert frame.tolist() == [[[10, 20, 30], [40, 50, 60]]]
 
 
+def test_deepstream_resize_keeps_cpu_fallback_contract(tmp_path: Path) -> None:
+    ingestor = DeepStreamIngestor(
+        registry=None,  # type: ignore[arg-type]
+        router=None,  # type: ignore[arg-type]
+        project_root=tmp_path,
+        gpu_resize_enabled=False,
+    )
+    frame = np.zeros((4, 8, 3), dtype=np.uint8)
+
+    resized = ingestor._resize_frame(frame, (4, 2))
+
+    assert resized.shape == (2, 4, 3)
+    assert ingestor.status()["gpu_resize_active"] is False
+
+
 def test_deepstream_submits_640_inference_view_with_native_source_frame(
     tmp_path: Path,
 ) -> None:

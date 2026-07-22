@@ -88,7 +88,7 @@
         "per_source_reconnects", "per_source_health", "backend"
       ],
       "acceptance": {},
-      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent. Upstream latest-frame/leaky behavior still limits live losslessness."
+      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent. Inference-view resize uses OpenCV CUDA when available and preserves a CPU fallback. Upstream latest-frame/leaky behavior still limits live losslessness."
     },
     {
       "id": "source-registry",
