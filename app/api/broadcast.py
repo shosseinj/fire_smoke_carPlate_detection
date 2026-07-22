@@ -60,9 +60,8 @@ async def annotated_broadcast_websocket(
     websocket: WebSocket,
     wall: bool = False,
     fullscreen_source: str | None = None,
+    runtime: Runtime = Depends(get_runtime),
 ) -> None:
-    from app.main import runtime
-
     await websocket.accept()
     if not runtime.broadcast.enabled:
         await websocket.close(code=1013, reason="Frontend broadcasting is disabled")

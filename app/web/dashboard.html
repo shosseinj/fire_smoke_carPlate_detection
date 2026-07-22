@@ -358,6 +358,7 @@
       <div class="controls">
         <div class="state" id="broadcastState"><span class="state-dot"></span><span>Connecting</span></div>
         <a class="docs-link" href="/docs" target="_blank" rel="noopener">API / Swagger</a>
+        <a class="docs-link" href="/api/v1/diagnostics/fps?sample_seconds=5" target="_blank" rel="noopener">FPS diagnostics</a>
         <button id="wallFullscreenButton" type="button">Fullscreen wall</button>
         <button id="toggleButton" type="button" disabled>Loading…</button>
       </div>
@@ -533,6 +534,7 @@
         broadcastSocket = socket;
         socket.binaryType = "arraybuffer";
         socket.addEventListener("message", (event) => {
+          if (broadcastSocket !== socket) return;
           if (event.data instanceof ArrayBuffer) {
             updateFrame(event.data);
             return;
@@ -545,7 +547,8 @@
           }
         });
         socket.addEventListener("close", () => {
-          if (broadcastSocket === socket) broadcastSocket = null;
+          if (broadcastSocket !== socket) return;
+          broadcastSocket = null;
           if (broadcasting) {
             clearTimeout(reconnectTimer);
             reconnectTimer = window.setTimeout(connectBroadcastSocket, 1000);

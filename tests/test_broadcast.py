@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import json
+import struct
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from app.api.broadcast import get_runtime, router as broadcast_router
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 
 
-def packet(tasks: list[str]) -> FramePacket:
+def packet(tasks: list[str], source_id: str = "camera-07") -> FramePacket:
     return FramePacket(
-        source_id="camera-07",
+        source_id=source_id,
         frame=np.zeros((180, 320, 3), dtype=np.uint8),
         round_sequence=1,
         frame_index=12,
@@ -182,6 +188,80 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'fullscreenElement?.classList.contains("camera-card")' in dashboard
     assert "reconnectBroadcastSocket()" in dashboard
     assert 'header.render_profile === "full"' in dashboard
+    assert "if (broadcastSocket !== socket) return;" in dashboard
+
+
+def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+    )
+    hub.publish_passthrough(packet([], "camera-07"))
+    hub.publish_passthrough(packet([], "camera-08"))
+    known_sources = {"camera-07", "camera-08"}
+    runtime = SimpleNamespace(
+        broadcast=hub,
+        registry=SimpleNamespace(
+            get=lambda source_id: object() if source_id in known_sources else None
+        ),
+    )
+    app = FastAPI()
+    app.include_router(broadcast_router)
+    app.dependency_overrides[get_runtime] = lambda: runtime
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v1/broadcast/ws?wall=true&fullscreen_source=camera-07"
+        ) as websocket:
+            received: dict[str, tuple[dict, bytes]] = {}
+            for _ in known_sources:
+                payload = websocket.receive_bytes()
+                header_length = struct.unpack("!I", payload[:4])[0]
+                header = json.loads(payload[4 : 4 + header_length])
+                received[header["source_id"]] = (
+                    header,
+                    payload[4 + header_length :],
+                )
+            hub.set_enabled(False)
+
+    fullscreen_header, fullscreen_jpeg = received["camera-07"]
+    wall_header, wall_jpeg = received["camera-08"]
+    assert fullscreen_header["render_profile"] == "full"
+    assert (fullscreen_header["frame_width"], fullscreen_header["frame_height"]) == (
+        320,
+        180,
+    )
+    assert cv2.imdecode(
+        np.frombuffer(fullscreen_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+    ).shape == (180, 320, 3)
+    assert wall_header["render_profile"] == "wall"
+    assert (wall_header["frame_width"], wall_header["frame_height"]) == (160, 90)
+    assert cv2.imdecode(
+        np.frombuffer(wall_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+    ).shape == (90, 160, 3)
+
+
+def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, wall_max_width=160, wall_max_height=160)
+    hub.publish_passthrough(packet([]))
+    runtime = SimpleNamespace(
+        broadcast=hub,
+        registry=SimpleNamespace(get=lambda source_id: object()),
+    )
+    app = FastAPI()
+    app.include_router(broadcast_router)
+    app.dependency_overrides[get_runtime] = lambda: runtime
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/broadcast/ws") as websocket:
+            payload = websocket.receive_bytes()
+            header_length = struct.unpack("!I", payload[:4])[0]
+            header = json.loads(payload[4 : 4 + header_length])
+            hub.set_enabled(False)
+
+    assert header["render_profile"] == "full"
+    assert (header["frame_width"], header["frame_height"]) == (320, 180)
 
 
 def test_face_result_draws_recognized_identity() -> None:

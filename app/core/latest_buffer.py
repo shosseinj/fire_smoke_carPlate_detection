@@ -14,6 +14,8 @@ class BufferStats:
     accepted: int
     stale_replaced: int
     rejected_after_close: int
+    accepted_by_source: dict[str, int]
+    stale_replaced_by_source: dict[str, int]
 
 
 class LatestPerSourceBuffer:
@@ -31,6 +33,8 @@ class LatestPerSourceBuffer:
         self._accepted = 0
         self._stale_replaced = 0
         self._rejected_after_close = 0
+        self._accepted_by_source: dict[str, int] = {}
+        self._stale_replaced_by_source: dict[str, int] = {}
 
     def put(self, packet: FramePacket) -> bool:
         with self._condition:
@@ -39,10 +43,16 @@ class LatestPerSourceBuffer:
                 return False
             if packet.source_id in self._latest:
                 self._stale_replaced += 1
+                self._stale_replaced_by_source[packet.source_id] = (
+                    self._stale_replaced_by_source.get(packet.source_id, 0) + 1
+                )
             else:
                 self._order.append(packet.source_id)
             self._latest[packet.source_id] = packet
             self._accepted += 1
+            self._accepted_by_source[packet.source_id] = (
+                self._accepted_by_source.get(packet.source_id, 0) + 1
+            )
             self._condition.notify()
             return True
 
@@ -82,4 +92,6 @@ class LatestPerSourceBuffer:
                 accepted=self._accepted,
                 stale_replaced=self._stale_replaced,
                 rejected_after_close=self._rejected_after_close,
+                accepted_by_source=dict(self._accepted_by_source),
+                stale_replaced_by_source=dict(self._stale_replaced_by_source),
             )

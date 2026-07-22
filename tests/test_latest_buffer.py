@@ -30,5 +30,8 @@ def test_latest_frame_replaces_stale_frame_without_duplicate_queue_entry() -> No
         ("camera-01", 2),
         ("camera-02", 1),
     ]
-    assert buffer.stats().stale_replaced == 1
+    stats = buffer.stats()
+    assert stats.stale_replaced == 1
+    assert stats.accepted_by_source == {"camera-01": 2, "camera-02": 1}
+    assert stats.stale_replaced_by_source == {"camera-01": 1}
     buffer.close()

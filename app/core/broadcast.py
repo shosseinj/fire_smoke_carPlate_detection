@@ -66,6 +66,7 @@ class AnnotatedBroadcastHub:
         wall_max_width: int = 320,
         wall_max_height: int = 320,
         pending_frames_per_source: int = 12,
+        async_render: bool = True,
     ) -> None:
         self._enabled = enabled
         self.jpeg_quality = max(40, min(jpeg_quality, 100))
@@ -73,6 +74,7 @@ class AnnotatedBroadcastHub:
         self.wall_max_width = max(16, wall_max_width)
         self.wall_max_height = max(16, wall_max_height)
         self.pending_frames_per_source = max(2, pending_frames_per_source)
+        self._async_render = async_render
         self._condition = threading.Condition(threading.RLock())
         self._pending: dict[
             str, OrderedDict[int, PendingAnnotatedFrame]
@@ -86,6 +88,72 @@ class AnnotatedBroadcastHub:
         self._encode_failures = 0
         self._full_encoded_bytes = 0
         self._wall_encoded_bytes = 0
+        self._render_queue: queue.Queue[
+            tuple[str, int, PendingAnnotatedFrame]
+        ] = queue.Queue(maxsize=64)
+        self._render_thread: threading.Thread | None = None
+        self._stop_render = threading.Event()
+        if self._async_render:
+            self._start_render_thread()
+
+    def _start_render_thread(self) -> None:
+        if self._render_thread is not None and self._render_thread.is_alive():
+            return
+        self._stop_render.clear()
+        self._render_thread = threading.Thread(
+            target=self._render_loop,
+            name="broadcast-renderer",
+            daemon=True,
+        )
+        self._render_thread.start()
+
+    def _render_loop(self) -> None:
+        while not self._stop_render.is_set():
+            try:
+                source_id, frame_index, pending = self._render_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self._do_render(source_id, frame_index, pending)
+            except Exception:
+                pass
+
+    def _do_render(self, source_id: str, frame_index: int, pending: PendingAnnotatedFrame) -> None:
+        rendered = self._render(source_id, frame_index, pending)
+        if rendered is None:
+            return
+        jpeg, wall_jpeg, width, height, wall_width, wall_height = rendered
+        with self._condition:
+            latest = self._latest.get(source_id)
+            if latest is not None and frame_index < latest.frame_index:
+                return
+            self._version += 1
+            self._rendered_frames += 1
+            encoded_frame = EncodedBroadcastFrame(
+                version=self._version,
+                source_id=source_id,
+                frame_index=frame_index,
+                jpeg=jpeg,
+                wall_jpeg=wall_jpeg,
+                frame_width=width,
+                frame_height=height,
+                wall_width=wall_width,
+                wall_height=wall_height,
+                tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
+                updated_monotonic=time.monotonic(),
+            )
+            self._latest[source_id] = encoded_frame
+            for target in self._subscribers.values():
+                try:
+                    target.put_nowait(encoded_frame)
+                except queue.Full:
+                    try:
+                        target.get_nowait()
+                        target.task_done()
+                        target.put_nowait(encoded_frame)
+                    except (queue.Empty, queue.Full):
+                        pass
+            self._condition.notify_all()
 
     @property
     def enabled(self) -> bool:
@@ -110,6 +178,13 @@ class AnnotatedBroadcastHub:
                             pass
             self._condition.notify_all()
             return self._enabled
+
+    def close(self) -> None:
+        """Stop the render thread and clean up resources."""
+        self._stop_render.set()
+        if self._render_thread is not None:
+            self._render_thread.join(timeout=2.0)
+        self.set_enabled(False)
 
     def publish_source_change(self, change: SourceChange) -> None:
         record = change.record
@@ -273,7 +348,8 @@ class AnnotatedBroadcastHub:
         frame_index: int,
         pending: PendingAnnotatedFrame,
     ) -> tuple[bytes, bytes, int, int, int, int] | None:
-        frame = pending.frame.copy()
+        # Use in-place operations to reduce frame copies
+        frame = pending.frame
         height, width = frame.shape[:2]
         statuses: list[str] = []
         for task, result in sorted(pending.results.items(), key=lambda item: item[0].value):
@@ -284,10 +360,10 @@ class AnnotatedBroadcastHub:
             elif task == TaskName.FACE_RECOGNITION:
                 statuses.append(self._draw_faces(frame, result))
 
+        # Draw header overlay in-place (no copy needed)
         header_height = min(76, max(64, height // 8))
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (width, header_height), (9, 13, 22), -1)
-        cv2.addWeighted(overlay, 0.86, frame, 0.14, 0, frame)
+        cv2.rectangle(frame, (0, 0), (width, header_height), (9, 13, 22), -1)
+        
         task_text = (
             " + ".join(
                 TASK_LABELS[task]
@@ -338,15 +414,13 @@ class AnnotatedBroadcastHub:
             1,
             cv2.LINE_AA,
         )
-        ok, full_encoded = cv2.imencode(
-            ".jpg",
-            frame,
-            [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
-        )
+        
+        # JPEG encode (CPU)
+        ok, full_jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+        full_jpeg = full_jpeg.tobytes() if ok else b""
         if not ok:
             self._encode_failures += 1
             return None
-        full_jpeg = full_encoded.tobytes()
         scale = min(
             1.0,
             self.wall_max_width / max(width, 1),
@@ -357,20 +431,17 @@ class AnnotatedBroadcastHub:
         if wall_width == width and wall_height == height:
             wall_jpeg = full_jpeg
         else:
+            # Use faster interpolation for wall frame
             wall_frame = cv2.resize(
                 frame,
                 (wall_width, wall_height),
-                interpolation=cv2.INTER_AREA,
+                interpolation=cv2.INTER_LINEAR,
             )
-            wall_ok, wall_encoded = cv2.imencode(
-                ".jpg",
-                wall_frame,
-                [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
-            )
+            wall_ok, wall_jpeg = cv2.imencode(".jpg", wall_frame, [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality])
+            wall_jpeg = wall_jpeg.tobytes() if wall_ok else b""
             if not wall_ok:
                 self._encode_failures += 1
                 return None
-            wall_jpeg = wall_encoded.tobytes()
         self._full_encoded_bytes += len(full_jpeg)
         self._wall_encoded_bytes += len(wall_jpeg)
         return full_jpeg, wall_jpeg, width, height, wall_width, wall_height
@@ -403,6 +474,20 @@ class AnnotatedBroadcastHub:
             eager_fire_smoke = result.task == TaskName.FIRE_SMOKE
             if not complete and not eager_fire_smoke:
                 return
+            
+            # Use async rendering to avoid blocking the main pipeline
+            if self._async_render:
+                try:
+                    self._render_queue.put_nowait(
+                        (packet.source_id, packet.frame_index, pending)
+                    )
+                except queue.Full:
+                    pass  # Drop frame if render queue is full
+                if complete:
+                    source_pending.pop(packet.frame_index, None)
+                return
+            
+            # Synchronous rendering (fallback)
             rendered = self._render(packet.source_id, packet.frame_index, pending)
             if complete:
                 source_pending.pop(packet.frame_index, None)
@@ -449,6 +534,18 @@ class AnnotatedBroadcastHub:
                 frame=packet.frame,
                 expected_tasks=set(),
             )
+            
+            # Use async rendering to avoid blocking the main pipeline
+            if self._async_render:
+                try:
+                    self._render_queue.put_nowait(
+                        (packet.source_id, packet.frame_index, pending)
+                    )
+                except queue.Full:
+                    pass  # Drop frame if render queue is full
+                return
+            
+            # Synchronous rendering (fallback)
             rendered = self._render(packet.source_id, packet.frame_index, pending)
             if rendered is None:
                 return

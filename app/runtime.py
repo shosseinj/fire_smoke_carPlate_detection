@@ -148,7 +148,7 @@ class Runtime:
     def close(self) -> None:
         # End long-lived MJPEG responses first so Uvicorn reload/shutdown cannot
         # wait forever for frontend clients that still have streams open.
-        self.broadcast.set_enabled(False)
+        self.broadcast.close()
         self.model_conversions.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
@@ -509,6 +509,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             result_store=results,
             batch_size=app_settings.fire_batch_size,
             max_wait_ms=app_settings.fire_max_wait_ms,
+            num_threads=app_settings.worker_threads,
             result_callback=broadcast.publish_result,
             result_observer=fire_smoke_logs.observe_result,
             location_observer=location_obs,
@@ -518,6 +519,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             result_store=results,
             batch_size=app_settings.plate_batch_size,
             max_wait_ms=app_settings.plate_max_wait_ms,
+            num_threads=app_settings.worker_threads,
             result_callback=broadcast.publish_result,
             result_observer=plate_logs.insert_result,
             location_observer=location_obs,
@@ -527,6 +529,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             result_store=results,
             batch_size=app_settings.face_batch_size,
             max_wait_ms=app_settings.face_max_wait_ms,
+            num_threads=app_settings.worker_threads,
             result_callback=broadcast.publish_result,
             result_observer=human_logs.observe_result,
             location_observer=location_obs,
@@ -560,6 +563,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 rtsp_stall_timeout_seconds=(
                     app_settings.deepstream_rtsp_stall_timeout_seconds
                 ),
+                skip_taskless_sources=app_settings.skip_taskless_sources,
             )
         elif app_settings.video_ingest_backend == "opencv":
             video_ingestor = VideoFileIngestor(

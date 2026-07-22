@@ -220,6 +220,14 @@ BROADCAST_WALL_MAX_HEIGHT=320
 
 Camera `frame_width` and `frame_height` define the high-resolution dashboard image. The video wall uses an aspect-preserving rendition bounded by `BROADCAST_WALL_MAX_WIDTH` and `BROADCAST_WALL_MAX_HEIGHT`; opening one camera fullscreen automatically switches only that camera to its configured full resolution.
 
+Measure the current per-camera and per-task FPS over a real time window:
+
+```text
+GET /api/v1/diagnostics/fps?sample_seconds=5&expected_fps=25
+```
+
+The report identifies configured ingest caps, decoder starvation, router delivery shortfalls, latest-frame replacements, processor throughput shortfalls, failures, and full-versus-wall broadcast bandwidth. Lower wall resolution reduces WebSocket/browser work; it does not raise the configured ingestion or inference ceiling.
+
 It can also be toggled from the dashboard or through:
 
 ```http

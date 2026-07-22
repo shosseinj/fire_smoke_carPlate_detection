@@ -207,14 +207,15 @@
       "commands": [
         "python -m pytest tests/test_broadcast.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestBroadcastApi\"",
-        "python -m py_compile app/core/broadcast.py"
+        "python -m py_compile app/core/broadcast.py app/api/broadcast.py"
       ],
       "metrics": [
         "active_connections", "frames_published", "bytes_sent",
-        "jpeg_quality", "enabled", "per_camera_mjpeg_clients"
+        "jpeg_quality", "wall_jpeg_quality", "full_resolution", "wall_resolution",
+        "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
       "acceptance": {},
-      "notes": "WebSocket tested with mock mode. Dashboard requires browser."
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Dashboard requires browser validation."
     },
     {
       "id": "api-health",
@@ -438,12 +439,18 @@
       "dependencies": ["configuration"],
       "consumers": ["user-interface"],
       "commands": [
+        "python -m pytest tests/test_fps_diagnostics.py -q",
+        "curl -fsS \"http://127.0.0.1:9999/api/v1/diagnostics/fps?sample_seconds=5&expected_fps=25\"",
         "python -m pytest tests/test_crud_api.py -q -k \"TestDiagnosticsApi\"",
-        "python -m py_compile app/api/diagnostics.py"
+        "python -m py_compile app/api/diagnostics.py app/core/fps_diagnostics.py"
       ],
-      "metrics": [],
+      "metrics": [
+        "decoded_fps", "accepted_fps", "submitted_fps", "processed_fps",
+        "latest_frame_replacement_fps", "batch_latency", "frame_age",
+        "configured_ingest_cap", "broadcast_profile_bandwidth"
+      ],
       "acceptance": {},
-      "notes": "Read-only overview and safe maintenance checks."
+      "notes": "Read-only overview, safe maintenance checks, and bounded live FPS sampling with stage-specific bottleneck classification."
     },
     {
       "id": "api-results",

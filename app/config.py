@@ -90,8 +90,8 @@ class Settings:
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
     video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()
-    video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 25.0)
-    video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 25.0)
+    video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 10.0)
+    video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 10.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)
@@ -121,7 +121,7 @@ class Settings:
     )
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")
     fire_batch_size: int = _env_int("FIRE_SMOKE_BATCH_SIZE", 8)
-    fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 25.0)
+    fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 50.0)
     fire_imgsz: int = _env_int("FIRE_SMOKE_IMGSZ", 640)
     fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 0)
     fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
@@ -138,7 +138,7 @@ class Settings:
     plate_recognizer_dir: Path = _path("PLATE_RECOGNIZER_DIR", "weights/plate_recognizer")
     plate_device: str = os.getenv("PLATE_DEVICE", "0")
     plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 8)
-    plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 25.0)
+    plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 50.0)
     plate_imgsz: int = _env_int("PLATE_IMGSZ", 640)
     plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)
@@ -174,7 +174,7 @@ class Settings:
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
     face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)
-    face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 25.0)
+    face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 50.0)
     face_human_imgsz: int = _env_int("FACE_HUMAN_IMGSZ", 640)
     face_detector_imgsz: int = _env_int("FACE_DETECTOR_IMGSZ", 640)
     face_human_engine_fixed_batch: int = _env_int("FACE_HUMAN_ENGINE_FIXED_BATCH", 0)
@@ -234,6 +234,10 @@ class Settings:
 
     draw_info: bool = _env_bool("draw_info", True)
     save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)
+
+    # Performance tuning
+    worker_threads: int = _env_int("WORKER_THREADS", 1)
+    skip_taskless_sources: bool = _env_bool("SKIP_TASKLESS_SOURCES", True)
 
     # Authentication / JWT. Current names take precedence; legacy names are fallbacks.
     jwt_secret_key: str = str(

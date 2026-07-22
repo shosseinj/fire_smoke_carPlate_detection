@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import time
+from datetime import datetime, timezone
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
 from app.core.deepstream_ingestor import DeepStreamIngestor
+from app.core.fps_diagnostics import build_fps_report
 from app.core.video_ingestor import VideoFileIngestor
 from app.core.types import TaskName
 from app.runtime import Runtime
@@ -21,6 +25,55 @@ def get_runtime() -> Runtime:
     from app.main import runtime
 
     return runtime
+
+
+def _fps_snapshot(runtime: Runtime) -> dict[str, Any]:
+    router_status = runtime.router.status()
+    return {
+        "video_ingestor": (
+            runtime.video_ingestor.status()
+            if runtime.video_ingestor is not None
+            else {"enabled": False, "running": False, "sources": {}}
+        ),
+        "workers": router_status["workers"],
+        "broadcast": runtime.broadcast.status(),
+    }
+
+
+@router.get(
+    "/fps",
+    summary="Measure FPS and identify the limiting stage",
+    description=(
+        "Samples cumulative ingestion, worker, and broadcast counters over a bounded "
+        "window. It reports configured caps, source starvation, task backpressure, "
+        "processor failures, and delivered resolution bandwidth without exposing URIs."
+    ),
+)
+async def fps_diagnostics(
+    sample_seconds: Annotated[float, Query(ge=0.5, le=10.0)] = 2.0,
+    expected_fps: Annotated[float | None, Query(gt=0.0, le=240.0)] = None,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    desired_fps = float(expected_fps or runtime.settings.video_preview_fps)
+    camera_tasks = {
+        camera.source_id: tuple(sorted(task.value for task in camera.tasks))
+        for camera in runtime.registry.list()
+        if camera.enabled
+    }
+    before = _fps_snapshot(runtime)
+    started = time.monotonic()
+    await asyncio.sleep(sample_seconds)
+    observed_seconds = time.monotonic() - started
+    after = _fps_snapshot(runtime)
+    report = build_fps_report(
+        before,
+        after,
+        sample_seconds=observed_seconds,
+        expected_fps=desired_fps,
+        camera_tasks=camera_tasks,
+    )
+    report["sampled_at_utc"] = datetime.now(timezone.utc).isoformat()
+    return report
 
 
 @router.get(

@@ -58,7 +58,9 @@ class DeepStreamSourceState:
     frame_index: int = -1
     source_time_seconds: float | None = None
     decoded_samples: int = 0
+    rate_limited_frames: int = 0
     received_frames: int = 0
+    pre_submit_replacements: int = 0
     submitted_frames: int = 0
     last_frame_monotonic: float = 0.0
     last_error: str | None = None
@@ -95,6 +97,7 @@ class DeepStreamIngestor:
         rtsp_latency_ms: int = 500,
         rtsp_reconnect_seconds: float = 3.0,
         rtsp_stall_timeout_seconds: int = 30,
+        skip_taskless_sources: bool = True,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
     ) -> None:
         self.registry = registry
@@ -104,6 +107,7 @@ class DeepStreamIngestor:
         self.preview_fps = max(0.1, float(preview_fps))
         self.loop = bool(loop)
         self.rtsp_enabled = bool(rtsp_enabled)
+        self.skip_taskless_sources = bool(skip_taskless_sources)
         self.rtsp_transport = (
             rtsp_transport.strip().lower()
             if rtsp_transport.strip().lower() in {"tcp", "udp"}
@@ -290,6 +294,7 @@ class DeepStreamIngestor:
             state.decoded_samples += 1
             minimum_interval = 1.0 / state.delivery_target_fps
             if now - state.last_frame_monotonic < minimum_interval:
+                state.rate_limited_frames += 1
                 return Gst.FlowReturn.OK
 
         try:
@@ -323,6 +328,8 @@ class DeepStreamIngestor:
             state = self._states.get(source_id)
             if state is None:
                 return Gst.FlowReturn.OK
+            if state.latest_version > state.submitted_version:
+                state.pre_submit_replacements += 1
             state.latest_frame = frame
             state.source_frame_width = int(frame.shape[1])
             state.source_frame_height = int(frame.shape[0])
@@ -607,6 +614,14 @@ class DeepStreamIngestor:
                 if state.latest_frame is not None
                 and state.latest_version > state.submitted_version
             ]
+            # Skip task-less sources when optimization is enabled
+            if self.skip_taskless_sources:
+                selected = [
+                    state
+                    for state in selected
+                    if self.registry.get(state.source_id) is not None
+                    and self.registry.get(state.source_id).tasks
+                ]
             source_frames = [state.latest_frame for state in selected]
             frames = [
                 (
@@ -752,7 +767,9 @@ class DeepStreamIngestor:
                         "preserve_source_resolution": state.preserve_source_resolution,
                         "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
+                        "rate_limited_frames": state.rate_limited_frames,
                         "received_frames": state.received_frames,
+                        "pre_submit_replacements": state.pre_submit_replacements,
                         "submitted_frames": state.submitted_frames,
                         "frame_index": state.frame_index,
                         "loop_count": self._loop_counts.get(
