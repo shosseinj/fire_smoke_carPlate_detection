@@ -70,8 +70,7 @@ def _path(name: str, default: str) -> Path:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Unified Video AI Task Router")
     processor_mode: str = os.getenv("PROCESSOR_MODE", "real").strip().lower()
-    print('os.getenv("DATABASE_URL")', os.getenv("DATABASE_URL"))
-    database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+    database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL).strip()
     database_echo: bool = _env_bool("DATABASE_ECHO", False)
     database_pool_size: int = _env_int("DATABASE_POOL_SIZE", 10)
     database_max_overflow: int = _env_int("DATABASE_MAX_OVERFLOW", 20)
