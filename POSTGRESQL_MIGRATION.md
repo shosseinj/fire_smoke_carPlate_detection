@@ -13,7 +13,7 @@ pip install -r requirements-postgres.txt
 The project default is:
 
 ```text
-postgresql+psycopg2://postgres:Reza1995@host.docker.internal:5432/ai_database
+postgresql+psycopg2://postgres:Asd1234@host.docker.internal:5432/ai_database
 ```
 
 Prefer setting it explicitly in the container:

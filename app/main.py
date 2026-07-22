@@ -165,13 +165,7 @@ app.include_router(requests_router)
 app.include_router(attendance_router)
 app.include_router(plate_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,allow_origins=["*"],
-    allow_credentials = True,
-    allow_methods = ["*"],
-    allow_headers = ["*"],
-)
+
 
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:

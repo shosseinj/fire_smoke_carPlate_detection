@@ -427,7 +427,7 @@ class ModelConversionManager:
         return self.models.database.connection()
 
     def _initialize_history(self) -> None:
-        # The shared Database creates and validates the PostgreSQL schema.
+        # Alembic owns the PostgreSQL schema; runtime startup validates it.
         return None
 
     def _load_history(self) -> None:

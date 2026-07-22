@@ -202,6 +202,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         pool_size=app_settings.database_pool_size,
         max_overflow=app_settings.database_max_overflow,
     )
+    database.verify_schema()
     registry = SourceRegistry(database)
     _seed_registry(
         registry,
@@ -391,9 +392,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 vector_size=app_settings.face_vector_size,
                 qdrant_collection=app_settings.face_qdrant_collection,
                 qdrant_url=app_settings.face_qdrant_url,
-                qdrant_path=app_settings.face_qdrant_path,
                 qdrant_api_key=app_settings.face_qdrant_api_key,
-            )
+            ),
+            database=database,
         )
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")

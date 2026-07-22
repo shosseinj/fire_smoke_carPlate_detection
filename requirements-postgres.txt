@@ -1,3 +1,4 @@
-# PostgreSQL database support added by this migration.
+# PostgreSQL persistence and schema migrations.
 SQLAlchemy>=2.0,<3.0
 psycopg2-binary>=2.9,<3.0
+alembic>=1.13,<2.0

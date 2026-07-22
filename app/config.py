@@ -4,12 +4,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / "app" / ".env")
 DEFAULT_DATABASE_URL = (
-    "postgresql+psycopg2://postgres:Asd12345@host.docker.internal:5432/ai_database"
+    "postgresql+psycopg2://postgres:Asd1234@host.docker.internal:5432/ai_database"
 )
 
 
@@ -70,7 +67,7 @@ def _path(name: str, default: str) -> Path:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Unified Video AI Task Router")
     processor_mode: str = os.getenv("PROCESSOR_MODE", "real").strip().lower()
-    database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL).strip()
+    database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
     database_echo: bool = _env_bool("DATABASE_ECHO", False)
     database_pool_size: int = _env_int("DATABASE_POOL_SIZE", 10)
     database_max_overflow: int = _env_int("DATABASE_MAX_OVERFLOW", 20)
@@ -214,7 +211,6 @@ class Settings:
     face_vector_size: int = _env_int("FACE_VECTOR_SIZE", 512)
     face_qdrant_collection: str = os.getenv("FACE_QDRANT_COLLECTION", "faces")
     face_qdrant_url: str | None = os.getenv("FACE_QDRANT_URL") or None
-    face_qdrant_path: Path = _path("FACE_QDRANT_PATH", "data/qdrant")
     face_qdrant_api_key: str | None = os.getenv("FACE_QDRANT_API_KEY") or None
 
     human_media_queue_size: int = _env_int("HUMAN_MEDIA_QUEUE_SIZE", 256)

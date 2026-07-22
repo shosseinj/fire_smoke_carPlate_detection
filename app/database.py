@@ -4,7 +4,6 @@ import re
 import threading
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time, timezone
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -16,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
+ALEMBIC_HEAD_REVISION = "20260722_0001"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -269,7 +270,20 @@ personnel_requests = Table(
 Index("idx_requests_personnel", personnel_requests.c.personnel_id); Index("idx_requests_status", personnel_requests.c.status)
 Index("idx_requests_dates", personnel_requests.c.start_date, personnel_requests.c.end_date)
 
-_AUTOINCREMENT_TABLES = {t.name for t in metadata.tables.values() if "id" in t.c and t.c.id.primary_key and t.c.id.autoincrement is not False}
+
+face_embeddings = Table(
+    "face_embeddings", metadata,
+    Column("id", Text, primary_key=True),
+    Column("person", Text, nullable=False),
+    Column("ref_img_id", Text),
+    Column("embedding", LargeBinary, nullable=False),
+    Column("dimension", Integer, nullable=False),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+)
+Index("idx_face_embeddings_person", face_embeddings.c.person)
+Index("idx_face_embeddings_ref_img", face_embeddings.c.ref_img_id)
+
+_RETURNING_ID_TABLES = {t.name for t in metadata.tables.values() if "id" in t.c and t.c.id.primary_key and t.c.id.autoincrement is not False}
 
 
 def _format_value(value: Any) -> Any:
@@ -305,98 +319,98 @@ class Cursor:
 
 
 def _replace_qmarks(sql: str) -> str:
-    out: list[str] = []; quote: str | None = None; i = 0
+    """Convert the stores' positional placeholders to psycopg2 placeholders."""
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
     while i < len(sql):
         ch = sql[i]
         if quote:
             out.append(ch)
             if ch == quote:
                 if i + 1 < len(sql) and sql[i + 1] == quote:
-                    out.append(sql[i + 1]); i += 1
-                else: quote = None
+                    out.append(sql[i + 1])
+                    i += 1
+                else:
+                    quote = None
         elif ch in {"'", '"'}:
-            quote = ch; out.append(ch)
-        elif ch == "?": out.append("%s")
-        else: out.append(ch)
+            quote = ch
+            out.append(ch)
+        elif ch == "?":
+            out.append("%s")
+        else:
+            out.append(ch)
         i += 1
     return "".join(out)
 
 
-def _translate_sql(sql: str) -> tuple[str | None, str | None]:
-    clean = sql.strip().rstrip(";")
-    if not clean: return None, None
-    upper = clean.upper()
-    if upper.startswith("PRAGMA "):
-        match = re.match(r"PRAGMA\s+table_info\(([^)]+)\)", clean, re.I)
-        return ("__table_info__", match.group(1).strip()) if match else (None, None)
-    if upper.startswith("CREATE TABLE") or upper.startswith("CREATE INDEX"):
-        return None, None
-    clean = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", clean, flags=re.I)
-    ignore = bool(re.search(r"INSERT\s+OR\s+IGNORE", sql, re.I))
-    clean = clean.replace("ORDER BY rowid DESC", "ORDER BY id DESC")
-    clean = clean.replace("ORDER BY rowid", "ORDER BY created_at_utc, camera_id")
-    clean = re.sub(r"substr\(date_value\s*,\s*6\)", "to_char(date_value, 'MM-DD')", clean, flags=re.I)
-    clean = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "SERIAL PRIMARY KEY", clean, flags=re.I)
-    clean = re.sub(r"DEFAULT\s*\(strftime\([^)]*\)\)", "DEFAULT CURRENT_TIMESTAMP", clean, flags=re.I)
-    if upper.startswith("ALTER TABLE"):
-        clean = re.sub(
-            r"\b(created_at_utc|updated_at_utc|last_login_utc|locked_until_utc|"
-            r"uploaded_at_utc|granted_at_utc|matched_at_utc|last_seen|first_seen|time)\s+TEXT\b",
-            lambda match: f"{match.group(1)} TIMESTAMPTZ",
-            clean,
-            flags=re.I,
-        )
-    if ignore and "ON CONFLICT" not in clean.upper(): clean += " ON CONFLICT DO NOTHING"
-    return _replace_qmarks(clean), None
-
-
 class Connection:
+    """Small transaction wrapper around a SQLAlchemy PostgreSQL connection."""
+
     def __init__(self, engine: Engine) -> None:
-        self._conn = engine.connect(); self._closed = False
+        self._conn = engine.connect()
+        self._closed = False
+
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> Cursor:
-        translated, special = _translate_sql(sql)
-        if translated is None: return Cursor([], 0)
-        if translated == "__table_info__":
-            rows = self._conn.exec_driver_sql(
-                "SELECT ordinal_position - 1 AS cid, column_name AS name, data_type AS type, "
-                "CASE WHEN is_nullable='NO' THEN 1 ELSE 0 END AS notnull, column_default AS dflt_value, "
-                "CASE WHEN column_name IN (SELECT kcu.column_name FROM information_schema.table_constraints tc "
-                "JOIN information_schema.key_column_usage kcu ON tc.constraint_name=kcu.constraint_name "
-                "AND tc.table_schema=kcu.table_schema WHERE tc.constraint_type='PRIMARY KEY' "
-                "AND tc.table_schema=current_schema() AND tc.table_name=%s) THEN 1 ELSE 0 END AS pk "
-                "FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s ORDER BY ordinal_position",
-                (special, special),
-            )
-            keys=list(rows.keys()); values=[Row(keys, tuple(r)) for r in rows.fetchall()]
-            return Cursor(values, len(values))
+        statement = _replace_qmarks(sql.strip().rstrip(";"))
+        if not statement:
+            return Cursor([], 0)
         params_tuple = tuple(params or ())
-        insert_match = re.match(r"\s*INSERT\s+INTO\s+([a-zA-Z_][\w]*)", translated, re.I)
-        wants_id = bool(insert_match and insert_match.group(1).lower() in _AUTOINCREMENT_TABLES and "RETURNING" not in translated.upper())
-        if wants_id: translated += " RETURNING id"
-        result = self._conn.exec_driver_sql(translated, params_tuple)
+        insert_match = re.match(r"\s*INSERT\s+INTO\s+([a-zA-Z_][\w]*)", statement, re.I)
+        wants_id = bool(
+            insert_match
+            and insert_match.group(1).lower() in _RETURNING_ID_TABLES
+            and "RETURNING" not in statement.upper()
+        )
+        if wants_id:
+            statement += " RETURNING id"
+        result = self._conn.exec_driver_sql(statement, params_tuple)
         if result.returns_rows:
-            keys=list(result.keys()); raw=result.fetchall(); rows=[Row(keys, tuple(r)) for r in raw]
+            keys = list(result.keys())
+            raw_rows = result.fetchall()
+            rows = [Row(keys, tuple(row)) for row in raw_rows]
             lastrowid = int(rows[0][0]) if wants_id and rows else None
             return Cursor([] if wants_id else rows, result.rowcount, lastrowid)
         return Cursor([], result.rowcount)
+
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> Cursor:
-        total=0
-        for params in seq_of_params: total += max(0, self.execute(sql, params).rowcount)
+        total = 0
+        for params in seq_of_params:
+            total += max(0, self.execute(sql, params).rowcount)
         return Cursor([], total)
-    def executescript(self, script: str) -> None:
-        for statement in script.split(";"): self.execute(statement)
-    def commit(self) -> None: self._conn.commit()
-    def rollback(self) -> None: self._conn.rollback()
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
     def close(self) -> None:
-        if not self._closed: self._conn.close(); self._closed=True
-    def __enter__(self) -> "Connection": return self
+        if not self._closed:
+            self._conn.close()
+            self._closed = True
+
+    def __enter__(self) -> "Connection":
+        return self
+
     def __exit__(self, exc_type, exc, tb) -> None:
-        try: self.rollback() if exc_type else self.commit()
-        finally: self.close()
+        try:
+            self.rollback() if exc_type else self.commit()
+        finally:
+            self.close()
 
 
 class Database:
-    def __init__(self, url: str, *, echo: bool = False, pool_size: int = 10, max_overflow: int = 20) -> None:
+    """Shared PostgreSQL engine. Alembic owns all schema creation and upgrades."""
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        echo: bool = False,
+        pool_size: int = 10,
+        max_overflow: int = 20,
+    ) -> None:
         if not url.startswith(("postgresql+psycopg2://", "postgresql://")):
             raise ValueError("DATABASE_URL must be a PostgreSQL psycopg2 URL")
         self.url = url
@@ -414,19 +428,65 @@ class Database:
             raise RuntimeError(
                 "PostgreSQL requires psycopg2. Install requirements-postgres.txt."
             ) from exc
-        metadata.create_all(self.engine)
-    def connection(self) -> Connection: return Connection(self.engine)
-    def dispose(self) -> None: self.engine.dispose()
+
+    def connection(self) -> Connection:
+        return Connection(self.engine)
+
+    def verify_connection(self) -> None:
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("SELECT 1")
+
+    def verify_schema(self) -> None:
+        required = set(metadata.tables) | {"alembic_version"}
+        with self.engine.connect() as connection:
+            rows = connection.exec_driver_sql(
+                "SELECT tablename FROM pg_catalog.pg_tables "
+                "WHERE schemaname = current_schema()"
+            ).fetchall()
+            existing = {str(row[0]) for row in rows}
+            missing = sorted(required - existing)
+            if missing:
+                raise RuntimeError(
+                    "PostgreSQL schema is not initialized. Run `alembic upgrade head`. "
+                    f"Missing tables: {', '.join(missing)}"
+                )
+            revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+        if revision != ALEMBIC_HEAD_REVISION:
+            raise RuntimeError(
+                "PostgreSQL schema revision is not current. "
+                f"Expected {ALEMBIC_HEAD_REVISION}, found {revision!r}. "
+                "Run `alembic upgrade head`."
+            )
+
+    def dispose(self) -> None:
+        self.engine.dispose()
+
 
 _DATABASES: dict[str, Database] = {}
 _DATABASES_LOCK = threading.Lock()
 
-def get_database(url: str, *, echo: bool = False, pool_size: int = 10, max_overflow: int = 20) -> Database:
+
+def get_database(
+    url: str,
+    *,
+    echo: bool = False,
+    pool_size: int = 10,
+    max_overflow: int = 20,
+) -> Database:
     with _DATABASES_LOCK:
         db = _DATABASES.get(url)
         if db is None:
-            db = Database(url, echo=echo, pool_size=pool_size, max_overflow=max_overflow); _DATABASES[url] = db
+            db = Database(
+                url,
+                echo=echo,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
+            )
+            _DATABASES[url] = db
         return db
+
 
 def ensure_database(value: Database | str) -> Database:
     return value if isinstance(value, Database) else get_database(str(value))

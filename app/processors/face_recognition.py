@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-import sqlite3
 from collections import Counter, deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -14,6 +13,7 @@ import cv2
 import numpy as np
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.database import Database
 from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
 
@@ -52,7 +52,6 @@ class FaceRecognitionSettings:
     vector_size: int = 512
     qdrant_collection: str = "faces"
     qdrant_url: str | None = None
-    qdrant_path: Path | None = None
     qdrant_api_key: str | None = None
     human_crop_padding_ratio: float = 0.08
     face_roi_mosaic_padding: int = 8
@@ -530,26 +529,24 @@ def _normalize_embeddings(values: np.ndarray) -> np.ndarray:
 
 
 class QdrantFaceStore:
+    """Optional remote Qdrant backend, enabled only when FACE_QDRANT_URL is set."""
+
     def __init__(self, settings: FaceRecognitionSettings) -> None:
+        if not settings.qdrant_url:
+            raise ValueError("FACE_QDRANT_URL is required for the Qdrant backend")
         try:
             from qdrant_client import QdrantClient, models
         except ImportError as exc:
-            raise RuntimeError("qdrant-client is required for face recognition") from exc
+            raise RuntimeError("qdrant-client is required when FACE_QDRANT_URL is set") from exc
         self.models = models
         self.collection = settings.qdrant_collection
         self.vector_size = settings.vector_size
         self.lock = threading.RLock()
-        if settings.qdrant_url:
-            self.client = QdrantClient(
-                url=settings.qdrant_url,
-                api_key=settings.qdrant_api_key,
-            )
-            self.mode = "remote"
-        else:
-            path = (settings.qdrant_path or Path("data/qdrant")).resolve()
-            path.mkdir(parents=True, exist_ok=True)
-            self.client = QdrantClient(path=str(path))
-            self.mode = "local"
+        self.client = QdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+        self.mode = "qdrant-remote"
         if not self.client.collection_exists(self.collection):
             self.client.create_collection(
                 collection_name=self.collection,
@@ -672,44 +669,31 @@ class QdrantFaceStore:
             close()
 
 
-class SqliteFaceStore:
-    """Package-free persistent cosine store used until Qdrant is available."""
+class PostgresFaceStore:
+    """PostgreSQL-backed cosine store used as the default face-vector backend."""
 
-    def __init__(self, path: Path, vector_size: int) -> None:
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, database: Database, vector_size: int) -> None:
+        self.database = database
         self.vector_size = int(vector_size)
         self.lock = threading.RLock()
-        self.connection = sqlite3.connect(self.path, check_same_thread=False, timeout=10.0)
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS face_embeddings (
-                id TEXT PRIMARY KEY,
-                person TEXT NOT NULL,
-                ref_img_id TEXT,
-                embedding BLOB NOT NULL,
-                dimension INTEGER NOT NULL
-            )
-            """
-        )
-        self.connection.commit()
 
     def search_batch(self, embeddings: np.ndarray, threshold: float) -> list[FaceMatch]:
-        with self.lock:
-            rows = self.connection.execute(
+        with self.lock, self.database.connection() as connection:
+            rows = connection.execute(
                 "SELECT person, ref_img_id, embedding, dimension FROM face_embeddings"
             ).fetchall()
         if not rows:
             return [FaceMatch() for _ in embeddings]
-        vectors = []
-        metadata = []
-        for person, ref_img_id, raw, dimension in rows:
-            vector = np.frombuffer(raw, dtype=np.float32, count=int(dimension))
+        vectors: list[np.ndarray] = []
+        metadata: list[tuple[str, str | int | None]] = []
+        for row in rows:
+            dimension = int(row["dimension"])
+            raw = bytes(row["embedding"])
+            vector = np.frombuffer(raw, dtype=np.float32, count=dimension)
             if len(vector) != self.vector_size:
                 continue
-            vectors.append(vector)
-            metadata.append((str(person), ref_img_id))
+            vectors.append(vector.copy())
+            metadata.append((str(row["person"]), row["ref_img_id"]))
         if not vectors:
             return [FaceMatch() for _ in embeddings]
         matrix = _normalize_embeddings(np.stack(vectors))
@@ -738,54 +722,55 @@ class SqliteFaceStore:
             raise ValueError(
                 f"Embedding dimension is {len(vector)}; expected {self.vector_size}"
             )
-        with self.lock:
-            self.connection.execute(
-                "INSERT INTO face_embeddings VALUES (?, ?, ?, ?, ?)",
-                (point_id, person, None if ref_img_id is None else str(ref_img_id), vector.tobytes(), len(vector)),
+        with self.lock, self.database.connection() as connection:
+            connection.execute(
+                "INSERT INTO face_embeddings "
+                "(id, person, ref_img_id, embedding, dimension) VALUES (?, ?, ?, ?, ?)",
+                (
+                    point_id,
+                    person,
+                    None if ref_img_id is None else str(ref_img_id),
+                    vector.tobytes(),
+                    len(vector),
+                ),
             )
-            self.connection.commit()
         return point_id
 
     def identities(self, limit: int = 1000) -> list[dict[str, Any]]:
-        with self.lock:
-            rows = self.connection.execute(
-                """
-                SELECT person, ref_img_id, COUNT(*)
-                FROM face_embeddings
-                GROUP BY person, ref_img_id
-                ORDER BY person, ref_img_id
-                LIMIT ?
-                """,
-                (max(1, min(int(limit), 10000)),),
+        bounded_limit = max(1, min(int(limit), 10000))
+        with self.lock, self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT person, ref_img_id, COUNT(*) AS embeddings "
+                "FROM face_embeddings GROUP BY person, ref_img_id "
+                "ORDER BY person, ref_img_id LIMIT ?",
+                (bounded_limit,),
             ).fetchall()
         return [
-            {"person": person, "ref_img_id": ref_img_id, "embeddings": int(count)}
-            for person, ref_img_id, count in rows
+            {
+                "person": str(row["person"]),
+                "ref_img_id": row["ref_img_id"],
+                "embeddings": int(row["embeddings"]),
+            }
+            for row in rows
         ]
 
     def delete_person(self, person: str) -> int:
-        with self.lock:
-            cursor = self.connection.execute(
-                "DELETE FROM face_embeddings WHERE person = ?", (person,)
+        with self.lock, self.database.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM face_embeddings WHERE person = ?",
+                (person,),
             )
-            self.connection.commit()
             return int(cursor.rowcount)
 
     def status(self) -> dict[str, Any]:
-        with self.lock:
+        with self.lock, self.database.connection() as connection:
             count = int(
-                self.connection.execute("SELECT COUNT(*) FROM face_embeddings").fetchone()[0]
+                connection.execute("SELECT COUNT(*) FROM face_embeddings").fetchone()[0]
             )
-        return {
-            "mode": "sqlite-fallback",
-            "path": str(self.path),
-            "points": count,
-            "reason": "qdrant-client is not installed",
-        }
+        return {"mode": "postgresql", "points": count}
 
     def close(self) -> None:
-        with self.lock:
-            self.connection.close()
+        return None
 
 
 class FaceRecognitionProcessor(BatchProcessor):
@@ -799,6 +784,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         face_detector: Any | None = None,
         embedder: FaceEmbedder | None = None,
         vector_store: FaceVectorStore | None = None,
+        database: Database | None = None,
         tracker_backend_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.settings = settings
@@ -806,6 +792,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._face_detector = face_detector
         self._embedder = embedder
         self._vector_store = vector_store
+        self._database = database
         self._tracker_backend_factory = tracker_backend_factory
         self._load_lock = threading.RLock()
         self._trackers: dict[str, SourceFaceTracker] = {}
@@ -867,14 +854,15 @@ class FaceRecognitionProcessor(BatchProcessor):
                 else:
                     raise ValueError("FACE_EMBEDDING_MODEL must be .engine or .onnx")
             if self._vector_store is None:
-                try:
+                if self.settings.qdrant_url:
                     self._vector_store = QdrantFaceStore(self.settings)
-                except RuntimeError as exc:
-                    if "qdrant-client is required" not in str(exc):
-                        raise
-                    qdrant_path = self.settings.qdrant_path or Path("data/qdrant")
-                    self._vector_store = SqliteFaceStore(
-                        qdrant_path.parent / "face_embeddings.sqlite3",
+                else:
+                    if self._database is None:
+                        raise RuntimeError(
+                            "PostgreSQL database is required for the default face-vector store"
+                        )
+                    self._vector_store = PostgresFaceStore(
+                        self._database,
                         self.settings.vector_size,
                     )
 
