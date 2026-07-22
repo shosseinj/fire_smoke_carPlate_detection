@@ -84,6 +84,8 @@ class PersonnelImageResponse(BaseModel):
     uploaded_at_utc: str
     embedding_id: str | None = None
     url: str = ""
+    face_status: int = 0
+    cropped_face_key: str | None = None
 
 
 def _personnel_to_response(p: PersonnelRecord) -> PersonnelResponse:
@@ -245,7 +247,9 @@ async def upload_personnel_zip(
     if not raw:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
     try:
-        result = await run_in_threadpool(_store(runtime).upload_personnel_zip, raw)
+        store = _store(runtime)
+        fp = _face_processor(runtime)
+        result = await run_in_threadpool(store.upload_personnel_zip, raw, fp)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return result
@@ -346,26 +350,53 @@ async def upload_personnel_image(
     if not raw:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
 
-    # Save image to disk first
+    # Always save snapshot first
     storage_key = store._save_image_file(personnel_id, raw, file.filename or "image.jpg")
 
     embedding_id: str | None = None
+    face_status = 0
+    cropped_face_key: str | None = None
     face_processor = _face_processor(runtime)
+
     if face_processor is not None:
-        # Try face enrollment
         image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is not None:
             try:
-                enroll_result = await run_in_threadpool(
-                    face_processor.enroll,
-                    image,
-                    person=f"{person.fname} {person.lname}",
-                    ref_img_id=f"personnel_{personnel_id}",
-                )
-                embedding_id = enroll_result.get("point_id")
-            except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
-                LOGGER.warning("Face enrollment failed for personnel %s: %s", personnel_id, exc)
-                # Non-fatal — image was saved even without face enrollment
+                raw_face_count = await run_in_threadpool(face_processor.count_faces, image)
+            except Exception:
+                raw_face_count = 0
+
+            if raw_face_count == 0:
+                face_status = 0
+            elif raw_face_count >= 2:
+                face_status = 2
+            else:
+                # Exactly one raw face — try enrollment and save cropped face
+                try:
+                    enroll_result = await run_in_threadpool(
+                        face_processor.enroll,
+                        image,
+                        person=person.national_code,
+                        ref_img_id=f"{personnel_id}",
+                    )
+                    embedding_id = enroll_result.get("point_id")
+                    face_status = 1
+
+                    # Save aligned cropped face
+                    success, aligned = await run_in_threadpool(
+                        face_processor.get_aligned_face, image
+                    )
+                    if success and aligned is not None:
+                        success_enc, encoded = cv2.imencode(".jpg", aligned)
+                        if success_enc:
+                            cropped_face_key = store._save_cropped_face_file(
+                                personnel_id, encoded.tobytes(), file.filename or "face.jpg"
+                            )
+                except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
+                    LOGGER.warning(
+                        "Face enrollment failed for personnel %s: %s", personnel_id, exc
+                    )
+                    face_status = 0
         else:
             LOGGER.warning("Could not decode uploaded image for face enrollment")
 
@@ -382,7 +413,10 @@ async def upload_personnel_image(
         store._delete_storage_file(storage_key)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
-    return _image_to_response(img_record)
+    resp = _image_to_response(img_record)
+    resp.face_status = face_status
+    resp.cropped_face_key = cropped_face_key
+    return resp
 
 
 # ── Personnel Images (standalone) ────────────────────────────────────

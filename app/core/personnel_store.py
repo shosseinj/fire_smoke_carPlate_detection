@@ -83,6 +83,8 @@ class PersonnelStore:
         self._media_root = saved_media_path.resolve()
         self._snapshot_dir = self._media_root / "personnel_snapshots"
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self._cropped_face_dir = self._media_root / "personnel_cropped_faces"
+        self._cropped_face_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_db()
 
@@ -496,7 +498,11 @@ class PersonnelStore:
                 errors.append({"row": row_idx, "error": f"{type(exc).__name__}: {exc}"})
         return {"created": created, "skipped": skipped, "errors": errors}
 
-    def upload_personnel_zip(self, data: bytes) -> dict[str, Any]:
+    def upload_personnel_zip(
+        self,
+        data: bytes,
+        face_processor: Any | None = None,
+    ) -> dict[str, Any]:
         """Process a ZIP file containing personnel metadata + images.
 
         Expected structure:
@@ -504,13 +510,20 @@ class PersonnelStore:
           - images/ directory with image files
           - Images are matched to personnel via metadata or filename pattern
 
+        When face_processor is provided, runs face detection and saves
+        cropped faces. Each image entry includes face_status:
+          0 = no face, 1 = one face (enrolled), 2 = multiple faces.
+
         Returns summary dict.
         """
+        import cv2 as cv2_mod
+        import numpy as np_mod
         import zipfile
         from io import BytesIO
 
         created_personnel = 0
         created_images = 0
+        image_results: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
         with zipfile.ZipFile(BytesIO(data)) as zf:
@@ -596,14 +609,62 @@ class PersonnelStore:
                 if person is not None:
                     try:
                         storage_key = self._save_image_file(person.id, file_data, img_filename)
-                        self.create_image(person.id, storage_key)
+
+                        # Face processing
+                        face_status = 0
+                        cropped_face_key: str | None = None
+                        embedding_id: str | None = None
+
+                        if face_processor is not None:
+                            np_arr = np_mod.frombuffer(file_data, dtype=np_mod.uint8)
+                            image = cv2_mod.imdecode(np_arr, cv2_mod.IMREAD_COLOR)
+                            if image is not None:
+                                try:
+                                    raw_count = face_processor.count_faces(image)
+                                except Exception:
+                                    raw_count = 0
+
+                                if raw_count == 0:
+                                    face_status = 0
+                                elif raw_count >= 2:
+                                    face_status = 2
+                                else:
+                                    try:
+                                        enroll_result = face_processor.enroll(
+                                            image,
+                                            person=f"{person.fname} {person.lname}",
+                                            ref_img_id=f"personnel_{person.id}",
+                                        )
+                                        embedding_id = enroll_result.get("point_id")
+                                        face_status = 1
+
+                                        success, aligned = face_processor.get_aligned_face(image)
+                                        if success and aligned is not None:
+                                            ok_enc, encoded = cv2_mod.imencode(".jpg", aligned)
+                                            if ok_enc:
+                                                cropped_face_key = self._save_cropped_face_file(
+                                                    person.id, encoded.tobytes(), img_filename
+                                                )
+                                    except (ValueError, FileNotFoundError, RuntimeError, ImportError):
+                                        face_status = 0
+
+                        self.create_image(
+                            person.id, storage_key,
+                            embedding_id=embedding_id,
+                        )
                         created_images += 1
+                        image_results.append({
+                            "file": name,
+                            "face_status": face_status,
+                            "cropped_face_key": cropped_face_key,
+                        })
                     except Exception as exc:
                         errors.append({"file": name, "error": f"{type(exc).__name__}: {exc}"})
 
         return {
             "created_personnel": created_personnel,
             "created_images": created_images,
+            "image_results": image_results,
             "errors": errors,
         }
 
@@ -612,6 +673,16 @@ class PersonnelStore:
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
         unique_name = f"personnel_{personnel_id}_{uuid.uuid4().hex}{ext}"
         relative_path = f"personnel_snapshots/{unique_name}"
+        dest = self._media_root / relative_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return relative_path
+
+    def _save_cropped_face_file(self, personnel_id: int, data: bytes, original_filename: str) -> str:
+        """Save a cropped face image to disk and return the storage_key (relative to media_root)."""
+        ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
+        unique_name = f"personnel_{personnel_id}_{uuid.uuid4().hex}{ext}"
+        relative_path = f"personnel_cropped_faces/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

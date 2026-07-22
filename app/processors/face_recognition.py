@@ -1972,6 +1972,45 @@ class FaceRecognitionProcessor(BatchProcessor):
             "quality_metrics": metrics,
         }
 
+    def count_faces(self, image: np.ndarray) -> int:
+        """Count raw detected faces in an image (no quality gating)."""
+        self._ensure_dependencies()
+        assert self._face_detector is not None
+        results = self._predict_yolo(
+            self._face_detector,
+            [image],
+            model_path=self.settings.face_model_path,
+            imgsz=self.settings.face_imgsz,
+            confidence=self.settings.face_confidence,
+            fixed_batch=self.settings.face_engine_fixed_batch,
+        )
+        faces = self._faces(results[0])
+        return len(faces)
+
+    def get_aligned_face(self, image: np.ndarray) -> tuple[bool, np.ndarray | None]:
+        """Return aligned face crop (112x112) for a single-face image.
+
+        Returns (success, aligned_face).
+        """
+        self._ensure_dependencies()
+        assert self._face_detector is not None
+        results = self._predict_yolo(
+            self._face_detector,
+            [image],
+            model_path=self.settings.face_model_path,
+            imgsz=self.settings.face_imgsz,
+            confidence=self.settings.face_confidence,
+            fixed_batch=self.settings.face_engine_fixed_batch,
+        )
+        faces = self._faces(results[0])
+        if not faces:
+            return False, None
+        face = faces[0]
+        valid, quality, _, crop, _ = self._quality(image, face)
+        if valid and crop is not None:
+            return True, crop
+        return False, None
+
     def identities(self, limit: int = 1000) -> list[dict[str, Any]]:
         self._ensure_dependencies()
         assert self._vector_store is not None

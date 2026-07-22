@@ -225,7 +225,12 @@ def _create_user_record(
     summary="Authenticate and receive access and refresh tokens",
     responses={401: {"description": "Invalid credentials or locked account"}},
 )
-def login(payload: LoginRequest) -> TokenResponse:
+def login(payload: LoginRequest= Body(
+        example={
+            "username": "superadmin",
+            "password": "SuperAdmin123!"
+        }
+    ),) -> TokenResponse:
     store = get_auth_store()
     user = store.get_user_by_username(payload.username)
     if user is None or not user.is_active:
