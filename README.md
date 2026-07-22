@@ -691,5 +691,14 @@ python3 scripts/build_all_engines.py `  --batch 8`
 --device 0
 
 ```
-
+ docker run --rm -it `
+   --name merged-video-ai-router `
+   --entrypoint /bin/bash `
+   -p 8000:8000 `
+   -p 5432:5432 `
+   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
+   -e VIDEO_INGESTION_ENABLED=true `
+   -e PROCESSOR_MODE=real `
+   -v "${PWD}\:/workspace/" `
+   merged-video-ai-router:v9
 ```

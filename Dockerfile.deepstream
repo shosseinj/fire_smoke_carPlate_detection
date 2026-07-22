@@ -58,7 +58,7 @@ WORKDIR /workspace
 #     "onnxslim>=0.1.82"
 
 
-RUN python3 -m pip install --no-cache-dir    bcrypt passlib openpyxl jdatetime
+RUN python3 -m pip install --no-cache-dir    sqlalchemy psycopg2-binary
 RUN mkdir -p \
     /workspace/data \
     /workspace/saved_media \
