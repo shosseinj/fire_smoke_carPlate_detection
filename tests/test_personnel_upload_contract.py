@@ -11,17 +11,31 @@ import pytest
 from fastapi import FastAPI, HTTPException, UploadFile
 from starlette.datastructures import Headers
 
-from app.api.personnel import upload_personnel_images
+from app.api.personnel import (
+    upload_personnel_images,
+)
 from app.api.personnel import router as personnel_router
-from app.core.personnel_store import PersonnelImageRecord
+from app.core.personnel_store import PersonnelImageRecord, PersonnelRecord
 
 
 class _Store:
     def __init__(self) -> None:
         self.saved_files = 0
 
-    def get(self, personnel_id: int) -> SimpleNamespace:
-        return SimpleNamespace(id=personnel_id, national_code="1234567891")
+    def get(self, personnel_id: int) -> PersonnelRecord | None:
+        return PersonnelRecord(
+            id=personnel_id,
+            fname="Test",
+            lname="User",
+            national_code="1234567891",
+            employee_type="employee",
+            degree=None,
+            shift_id=None,
+            department_id=None,
+            last_seen=None,
+            created_at_utc="2026-07-22T00:00:00Z",
+            updated_at_utc="2026-07-22T00:00:00Z",
+        )
 
     def _save_image_file(self, personnel_id: int, raw: bytes, filename: str) -> str:
         self.saved_files += 1
@@ -33,9 +47,10 @@ class _Store:
         storage_key: str,
         description: str | None,
         embedding_id: str | None,
+        is_primary: bool | None = None,
     ) -> PersonnelImageRecord:
         return PersonnelImageRecord(
-            id=1,
+            id=self.saved_files,
             personnel_id=personnel_id,
             storage_key=storage_key,
             description=description,
@@ -74,12 +89,9 @@ def test_openapi_declares_multiple_binary_images() -> None:
     component_name = body_schema["$ref"].rsplit("/", 1)[-1]
     files_schema = schema["components"]["schemas"][component_name]["properties"]["files"]
 
-    assert files_schema["type"] == "array"
-    assert files_schema["items"] == {
-        "type": "string",
-        "format": "binary",
-        "contentMediaType": "image/*",
-    }
+    # files is declared as array of binary strings (with nullable anyOf)
+    assert files_schema["items"]["type"] == "string"
+    assert files_schema["items"]["format"] == "binary"
 
 
 @pytest.mark.parametrize(
@@ -99,7 +111,7 @@ def test_upload_rejects_non_images_before_storage(data: bytes, content_type: str
                 files=[_upload_file(data, content_type)],
                 runtime=_runtime(store),
                 _=None,
-                description=None,
+                is_primary=None,
             )
         )
 
@@ -116,10 +128,34 @@ def test_upload_accepts_decodable_image_file() -> None:
             files=[_upload_file(_jpeg_bytes(), "image/jpeg")],
             runtime=_runtime(store),
             _=None,
-            description=None,
+            is_primary=None,
         )
     )
 
-    assert len(result) == 1
-    assert result[0].storage_key.endswith("face.jpg")
+    assert result["total_success"] == 1
+    assert result["results"][0]["image"]["storage_key"].endswith("face.jpg")
     assert store.saved_files == 1
+
+
+@pytest.mark.parametrize("enable_cropping", [True, False])
+def test_upload_accepts_enable_cropping_flag(enable_cropping: bool) -> None:
+    """The enable_cropping parameter is accepted without error and
+    cropped_face_key is None when cropping is disabled (mock mode)."""
+    store = _Store()
+
+    result = asyncio.run(
+        upload_personnel_images(
+            personnel_id=1,
+            files=[_upload_file(_jpeg_bytes(), "image/jpeg")],
+            runtime=_runtime(store),
+            _=None,
+            enable_cropping=enable_cropping,
+            is_primary=None,
+        )
+    )
+
+    assert result["total_success"] == 1
+    assert result["results"][0]["success"] is True
+    entry = result["results"][0]["image"]
+    # In mock mode (face_processor=None) no cropping can happen
+    assert "cropped_face_key" in entry

@@ -10,9 +10,9 @@ This file is the shared operating contract for Codex, OpenCode, and any sub-agen
 - Python: 3.10+
 - Production runtime: NVIDIA GPU inside the DeepStream Docker image
 - Main entrypoint: `python3 run.py`
-- API documentation: `http://127.0.0.1:8000/docs`
-- Dashboard: `http://127.0.0.1:8000/dashboard`
-- Health and runtime evidence: `http://127.0.0.1:8000/health`
+- API documentation: `http://127.0.0.1:9999/docs`
+- Dashboard: `http://127.0.0.1:9999/dashboard`
+- Health and runtime evidence: `http://127.0.0.1:9999/health`
 
 ## Product priorities
 
@@ -153,8 +153,8 @@ Compare failures with the baseline. A pre-existing failure must be reported clea
 Runtime, ingestion, model, API, WebSocket, concurrency, or performance changes require live validation in the actual target container when available:
 
 ```bash
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS http://127.0.0.1:8000/api/v1/models/settings
+curl -fsS http://127.0.0.1:9999/health
+curl -fsS http://127.0.0.1:9999/api/v1/models/settings
 docker logs --tail 200 merged-video-ai-router
 ```
 
@@ -335,8 +335,8 @@ python3 -m app.model_export_worker \
 Inspect live state:
 
 ```bash
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS http://127.0.0.1:8000/api/v1/models/settings
+curl -fsS http://127.0.0.1:9999/health
+curl -fsS http://127.0.0.1:9999/api/v1/models/settings
 docker logs --tail 200 merged-video-ai-router
 ```
 
@@ -358,6 +358,91 @@ docker logs --tail 200 merged-video-ai-router
 Treat a user request as desired behavior, not as a complete file list. Infer and implement every necessary change across configuration, schemas, endpoints, WebSockets, UI, services, workers, queues, processing pipelines, model invocation, persistence, event payloads, logging, metrics, deployment, documentation, and tests.
 
 Never leave a feature locally implemented but unreachable. When an option changes externally controlled behavior, determine and update the correct external interface even when the user did not explicitly mention an endpoint or UI control. When no external interface is required, document the verified reason.
+
+## Maintenance-phase behavior
+
+This project is in maintenance and fine-tuning. Assume existing behavior should remain stable unless the user explicitly changes its contract. Treat each request as a behavioral outcome and inspect the complete connected lifecycle before editing code.
+
+Apply the following proportionally to the risk and reach of each maintenance request. A small local fix needs a targeted audit, not a project-wide inventory:
+
+1. Trace the affected entity or value from every input through validation, persistence, processing, output, and cleanup.
+2. Build a concise impact map covering API contracts, UI/client calls, stores, database constraints, files, model or vector systems, caches, background workers, events, logs, tests, and deployment state that actually participate in the behavior.
+3. Identify resources owned by the affected entity. Create, update, and delete operations must keep those resources consistent and must not leave orphaned state.
+4. Search targeted names, types, routes, or helpers for plausible analogous locations. When analogues exist, classify them in the impact map as `AFFECTED`, `NOT_AFFECTED`, or `DEFERRED_WITH_REASON`.
+5. Apply a shared fix to analogous locations only when they enforce the same verified invariant and the change is safe. Do not perform speculative project-wide refactors.
+6. Prefer one established validator, service, cleanup helper, or contract definition over copied implementations. Remove duplication only when the replacement is behaviorally equivalent and covered by tests.
+7. Verify direct behavior, connected side effects, compatibility, and at least one negative or failure path. A successful local function call is not enough when downstream state exists.
+8. Preserve unrelated working behavior and user-owned worktree changes. Maintenance work is not permission to redesign a stable section.
+
+### Entity lifecycle and ownership
+
+Before changing CRUD behavior, identify all state owned by or referencing the entity. Deletion is complete only when the intended database records and all owned external artifacts are removed or deliberately retained according to a verified rule.
+
+For example, deleting Personnel may require coordinated handling of:
+
+- the personnel database row and dependent image rows;
+- Qdrant face vectors and identity aliases;
+- original files under `personnel_snapshots`;
+- aligned files under `personnel_cropped_faces`;
+- cached results or background work that can recreate stale state;
+- foreign-key references, detection history, attendance history, and audit records that must be preserved, nulled, or deleted according to the existing contract;
+- API, WebSocket, and UI state that must stop exposing the deleted entity.
+
+Never infer that all related history should be deleted. Distinguish owned artifacts from historical or audit records, verify existing retention behavior, and test both cleanup and preservation.
+
+### Contract and file-type consistency
+
+External contracts must describe and validate the real payload, not merely accept a loosely typed value.
+
+- Image endpoints use multipart `UploadFile` fields with binary image OpenAPI metadata and centralized runtime validation selected from MIME, extension, magic-byte, size, and decode checks according to the endpoint's established contract. Do not require a filename extension when that contract permits extensionless uploads.
+- Excel import endpoints advertise and validate Excel workbook types and reject unrelated or malformed files.
+- ZIP import endpoints advertise and validate ZIP archives, inspect archive safety, and reject unrelated or malformed files.
+- File metadata in OpenAPI is a client hint; server-side validation remains mandatory.
+- When one upload contract is corrected, audit analogous upload endpoints for the same mismatch. Change them only when the same defect is confirmed, and add focused contract tests for each affected endpoint.
+
+Apply the same reasoning to identifiers, enums, timestamps, optional foreign keys, pagination shapes, response models, and permission checks. Do not report every database integrity failure as the same business error; map verified constraints to accurate, actionable messages.
+
+### Connectivity and regression checks
+
+For a change in one section, test the connected boundaries that can be affected. Examples include create/list/search consistency, model enrollment followed by deletion, file creation followed by rollback and cleanup, database mutation followed by API/WebSocket visibility, and configuration changes followed by actual container startup.
+
+If a shared change affects multiple modules, add one focused test per distinct contract plus an integration test for the connected flow. Record pre-existing failures separately and do not weaken tests to hide them.
+
+### Phased TODO execution
+
+Every maintenance task must be managed through a visible phased TODO list. Create it after the initial repository and worktree inspection and before application-code edits. Keep exactly one phase `IN_PROGRESS` at a time and update the list whenever a phase finishes, fails, or materially changes.
+
+Use these statuses:
+
+- `TODO`: not started;
+- `IN_PROGRESS`: active work;
+- `DONE`: acceptance evidence collected;
+- `BLOCKED`: cannot continue safely without user input or an external dependency.
+
+Use this default phase structure, combining low-risk phases only when the task is genuinely small:
+
+1. `Baseline and reproduction`: confirm the actual failure, current contract, worktree state, and target runtime.
+2. `Impact and ownership map`: trace connected inputs, stores, external resources, outputs, analogous locations, risks, and acceptance tests.
+3. `Direct implementation`: implement the smallest coherent fix for the requested behavior.
+4. `Connected consistency`: repair verified downstream effects and affected analogous contracts without speculative expansion.
+5. `Validation`: run static, focused, integration, regression, runtime, and deployment checks in the required order as applicable.
+6. `Knowledge and handoff`: update durable project knowledge when necessary, review the final diff, and report evidence, remaining risks, rollback, and any deferred items.
+
+A phase is not `DONE` because code was written. Mark it `DONE` only after its stated evidence or acceptance check passes. If new evidence invalidates an earlier phase, reopen that phase and update the TODO list instead of silently continuing.
+
+The TODO list is an execution control, not a ceremonial plan. Keep it concise, reference concrete modules or contracts, and do not create redundant subtasks that repeat the same investigation or validation.
+
+### Reuse and redundancy control
+
+Do not solve the same invariant repeatedly in route handlers. Before adding logic, search for an existing service, validator, serializer, cleanup helper, or test fixture. Extend the authoritative implementation when safe, then migrate affected callers deliberately. Avoid parallel legacy/current implementations unless compatibility is verified and explicitly required.
+
+When similar code cannot be unified safely, keep the implementations separate and record the reason. Three similar lines are preferable to a risky abstraction; repeated business rules that can drift require a shared owner.
+
+### Maintenance knowledge updates
+
+At each investigation, implementation, and validation stage, consider whether a newly verified fact is reusable project knowledge. Follow the `Knowledge maintenance` rules below and update `AGENTS.md` or the appropriate `.agentic` file only when the fact is stable and useful for future maintenance, such as an ownership relationship, integration constraint, required validation, authoritative helper, runtime command, or known failure mode.
+
+Do not update knowledge files merely to narrate the current task. Avoid duplicate rules, consolidate overlapping guidance, and never record guesses, transient logs, credentials, private URLs, or one-off debugging details.
 
 ## Required workflow before code
 

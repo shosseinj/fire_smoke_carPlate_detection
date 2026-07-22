@@ -792,14 +792,6 @@ class PersonnelStore:
                                         )
                                         embedding_id = enroll_result.get("point_id")
                                         face_status = 1
-
-                                        success, aligned = face_processor.get_aligned_face(image)
-                                        if success and aligned is not None:
-                                            ok_enc, encoded = cv2_mod.imencode(".jpg", aligned)
-                                            if ok_enc:
-                                                cropped_face_key = self._save_cropped_face_file(
-                                                    person.id, encoded.tobytes(), img_filename
-                                                )
                                     except (ValueError, FileNotFoundError, RuntimeError, ImportError):
                                         face_status = 0
 

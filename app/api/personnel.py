@@ -613,7 +613,6 @@ def list_personnel_images(
     "/{personnel_id}/images",
     summary="Upload face image(s) for a personnel record",
     status_code=status.HTTP_201_CREATED,
-    response_model=list[PersonnelImageResponse],
 )
 async def upload_personnel_images(
     personnel_id: int,
@@ -633,9 +632,6 @@ async def upload_personnel_images(
     ] = None,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-    file: UploadFile | None = File(default=None),
-    images: list[UploadFile] | None = File(default=None),
-    description: str | None = Form(default=None),
     enable_cropping: bool = Form(default=False),
     is_primary: str | None = Form(default=None),
 ) -> Any:
@@ -644,18 +640,9 @@ async def upload_personnel_images(
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
 
-    # Determine which field was used
     upload_files: list[UploadFile] = []
-    mode = "current"
     if files is not None:
         upload_files = files if isinstance(files, list) else [files]
-        mode = "current"
-    elif images is not None:
-        upload_files = images if isinstance(images, list) else [images]
-        mode = "legacy"
-    elif file is not None:
-        upload_files = [file]
-        mode = "single"
 
     if not upload_files:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No files provided")
@@ -726,20 +713,21 @@ async def upload_personnel_images(
                     if process_result.success:
                         embedding_id = process_result.vector_point_id
                         face_status = 1
-                        try:
-                            success, aligned = await run_in_threadpool(
-                                face_processor.get_aligned_face, image
-                            )
-                            if success and aligned is not None:
-                                success_enc, encoded = cv2.imencode(".jpg", aligned)
-                                if success_enc:
-                                    cropped_face_key = store._save_cropped_face_file(
-                                        personnel_id, encoded.tobytes(), img_file.filename or "face.jpg"
-                                    )
-                        except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
-                            LOGGER.warning(
-                                "Cropped face save failed for personnel %s: %s", personnel_id, exc
-                            )
+                        if enable_cropping:
+                            try:
+                                success, aligned = await run_in_threadpool(
+                                    face_processor.get_aligned_face, image
+                                )
+                                if success and aligned is not None:
+                                    success_enc, encoded = cv2.imencode(".jpg", aligned)
+                                    if success_enc:
+                                        cropped_face_key = store._save_cropped_face_file(
+                                            personnel_id, encoded.tobytes(), img_file.filename or "face.jpg"
+                                        )
+                            except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
+                                LOGGER.warning(
+                                    "Cropped face save failed for personnel %s: %s", personnel_id, exc
+                                )
                     else:
                         face_status = 0
             else:
@@ -758,7 +746,7 @@ async def upload_personnel_images(
             img_record = store.create_image(
                 personnel_id=personnel_id,
                 storage_key=storage_key,
-                description=description,
+                description=None,
                 embedding_id=embedding_id,
                 is_primary=is_primary_val,
             )
@@ -783,34 +771,16 @@ async def upload_personnel_images(
             })
 
     if all_failed:
-        from app.config import settings as app_settings
-        detail: Any = {"detail": "All images failed processing"}
-        if mode == "current":
-            detail = {
-                "detail": {
-                    "total_success": 0,
-                    "total_failed": len(upload_files),
-                    "results": results,
-                    "personnel": dataclass_to_dict(person),
-                }
-            }
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, **detail)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "total_success": 0,
+                "total_failed": len(upload_files),
+                "results": results,
+                "personnel": dataclass_to_dict(person),
+            },
+        )
 
-    # Legacy mode: return bare array of legacy image responses
-    if mode == "legacy":
-        legacy_imgs = [_legacy_image_response(img, store) for img in saved_images]
-        return [img.model_dump() for img in legacy_imgs]
-
-    # Single-file mode: return single PersonnelImageResponse with face info
-    if mode == "single":
-        resp = _image_to_response(saved_images[0], store)
-        first_result = next((r for r in results if r.get("image")), None)
-        if first_result:
-            resp.face_status = first_result["image"].get("face_status", 0)
-            resp.cropped_face_key = first_result["image"].get("cropped_face_key")
-        return resp
-
-    # Current batch mode
     person_dict = dataclass_to_dict(person)
     person_dict["images"] = []
     for img in saved_images:

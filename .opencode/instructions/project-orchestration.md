@@ -2,6 +2,8 @@
 
 For implementation and Excel-catalog migration work, use the `realtime-orchestrator` workflow.
 
+Use `todowrite` to manage work in visible phases. Keep one phase in progress at a time, update it as work advances, and require evidence before completion. Follow the phased TODO structure defined in `AGENTS.md`.
+
 Before application-code edits, provide:
 
 - current-repository facts relevant to the request;

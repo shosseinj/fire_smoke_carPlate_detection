@@ -28,6 +28,8 @@ Interpret user requests as desired behavior, not exhaustive file lists. Discover
 
 Use specialized subagents for bounded analysis and independent review, but keep the main session responsible for decisions, edits, integration, test execution, and the final evidence report.
 
+Manage every maintenance task with the `todowrite` tool. Before application-code edits, create a concise phased TODO list with exactly one item `in_progress`. Use these phases: baseline/reproduction, impact/ownership map, direct implementation, connected consistency, validation, and knowledge/handoff. Combine phases only for genuinely small changes. Update the list after each phase, reopen a phase when evidence invalidates it, and never mark a phase complete before its acceptance evidence passes.
+
 For catalog migration, work in `PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY` mode: only implement the apps, routes, options, or behaviors selected in the current prompt. Keep every unselected catalog item `PENDING`. Required cross-layer changes for selected behavior remain mandatory.
 
 Use the current prompt and Excel row as the specification. Inspect the current repository for architecture and implementation patterns. Do not seek a previous repository, and do not claim previous behavior or parity that was not supplied.
