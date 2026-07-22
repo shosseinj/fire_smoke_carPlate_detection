@@ -316,3 +316,42 @@ def test_human_result_draws_human_bounding_box() -> None:
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     assert float(image[45:135, 60:130].mean()) > 0.0
+
+
+def test_face_overlay_is_retained_briefly_for_intermediate_frames() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False, face_overlay_ttl_ms=500)
+    face_packet = packet(["face_recognition"])
+    hub.publish_result(
+        face_packet,
+        result(
+            TaskName.FACE_RECOGNITION,
+            {"humans": [{"bbox": [60, 45, 130, 135], "track_id": 4}], "faces": []},
+        ),
+    )
+    next_packet = packet(["face_recognition", "fire_smoke"])
+    next_packet = FramePacket(
+        source_id=next_packet.source_id,
+        frame=next_packet.frame,
+        round_sequence=2,
+        frame_index=13,
+        captured_monotonic=time.monotonic(),
+        captured_at_utc=next_packet.captured_at_utc,
+        metadata=next_packet.metadata,
+    )
+    hub.publish_result(
+        next_packet,
+        TaskResult(
+            task=TaskName.FIRE_SMOKE,
+            source_id=next_packet.source_id,
+            round_sequence=2,
+            frame_index=13,
+            captured_at_utc=next_packet.captured_at_utc,
+            processed_at_utc=next_packet.captured_at_utc,
+            processing_ms=1.0,
+            data={"tracks": []},
+        ),
+    )
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert hub.status()["face_overlay_cache_hits"] == 1

@@ -54,6 +54,11 @@ When OpenCV exposes CUDA resize, DeepStream uses it for the inference view and f
 back to CPU resize without changing the NumPy frame contract. The native source frame
 is retained for face evidence and downstream media.
 
+The broadcast hub retains the most recent face/human result for a short configurable
+TTL (`BROADCAST_FACE_OVERLAY_TTL_MS`, default 250 ms) so slower face inference does not
+make boxes flicker off every intermediate real-time frame. This is display smoothing,
+not a claim that inference ran on every displayed frame.
+
 Task workers support `TASK_QUEUE_POLICY=latest_per_source` for bounded-latency CCTV or
 `TASK_QUEUE_POLICY=lossless_fifo` for bounded FIFO admission with backpressure. The
 real-time Compose default is latest-per-source; FIFO is an explicit file/API workload

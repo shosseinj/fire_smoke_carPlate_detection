@@ -29,6 +29,7 @@ TASK_LABELS = {
 class PendingAnnotatedFrame:
     frame: np.ndarray
     expected_tasks: set[TaskName]
+    captured_monotonic: float = 0.0
     results: dict[TaskName, TaskResult] = field(default_factory=dict)
 
 
@@ -69,6 +70,7 @@ class AnnotatedBroadcastHub:
         wall_max_width: int = 320,
         wall_max_height: int = 320,
         pending_frames_per_source: int = 12,
+        face_overlay_ttl_ms: float = 250.0,
         async_render: bool = True,
     ) -> None:
         self._enabled = enabled
@@ -77,6 +79,7 @@ class AnnotatedBroadcastHub:
         self.wall_max_width = max(16, wall_max_width)
         self.wall_max_height = max(16, wall_max_height)
         self.pending_frames_per_source = max(2, pending_frames_per_source)
+        self.face_overlay_ttl_seconds = max(0.0, float(face_overlay_ttl_ms) / 1000.0)
         self._async_render = async_render
         self._condition = threading.Condition(threading.RLock())
         self._pending: dict[
@@ -91,6 +94,8 @@ class AnnotatedBroadcastHub:
         self._encode_failures = 0
         self._full_encoded_bytes = 0
         self._wall_encoded_bytes = 0
+        self._face_overlay_cache_hits = 0
+        self._latest_face_results: dict[str, tuple[float, TaskResult]] = {}
         self._render_queue: queue.Queue[
             tuple[str, int, PendingAnnotatedFrame]
         ] = queue.Queue(maxsize=64)
@@ -219,6 +224,7 @@ class AnnotatedBroadcastHub:
         with self._condition:
             self._pending.pop(change.source_id, None)
             self._latest.pop(change.source_id, None)
+            self._latest_face_results.pop(change.source_id, None)
             if self._enabled:
                 for target in self._subscribers.values():
                     try:
@@ -360,7 +366,24 @@ class AnnotatedBroadcastHub:
         frame = pending.frame
         height, width = frame.shape[:2]
         statuses: list[str] = []
-        for task, result in sorted(pending.results.items(), key=lambda item: item[0].value):
+        results = dict(pending.results)
+        if (
+            TaskName.FACE_RECOGNITION in pending.expected_tasks
+            and TaskName.FACE_RECOGNITION not in results
+            and self.face_overlay_ttl_seconds > 0
+        ):
+            with self._condition:
+                cached = self._latest_face_results.get(source_id)
+            if cached is not None:
+                cached_at, cached_result = cached
+                if (
+                    cached_result.frame_index <= frame_index
+                    and time.monotonic() - cached_at <= self.face_overlay_ttl_seconds
+                ):
+                    results[TaskName.FACE_RECOGNITION] = cached_result
+                    with self._condition:
+                        self._face_overlay_cache_hits += 1
+        for task, result in sorted(results.items(), key=lambda item: item[0].value):
             if task == TaskName.FIRE_SMOKE:
                 statuses.append(self._draw_fire_smoke(frame, result))
             elif task == TaskName.PLATE_RECOGNITION:
@@ -465,11 +488,14 @@ class AnnotatedBroadcastHub:
                 pending = PendingAnnotatedFrame(
                     frame=packet.frame.copy(),
                     expected_tasks=expected,
+                    captured_monotonic=packet.captured_monotonic,
                 )
                 source_pending[packet.frame_index] = pending
             else:
                 pending.expected_tasks.update(expected)
             pending.results[result.task] = result
+            if result.task == TaskName.FACE_RECOGNITION:
+                self._latest_face_results[packet.source_id] = (time.monotonic(), result)
 
             while len(source_pending) > self.pending_frames_per_source:
                 source_pending.popitem(last=False)
@@ -541,6 +567,7 @@ class AnnotatedBroadcastHub:
             pending = PendingAnnotatedFrame(
                 frame=packet.frame,
                 expected_tasks=set(),
+                captured_monotonic=packet.captured_monotonic,
             )
             
             # Use async rendering to avoid blocking the main pipeline
@@ -652,6 +679,8 @@ class AnnotatedBroadcastHub:
                 "wall_max_height": self.wall_max_height,
                 "full_encoded_bytes": self._full_encoded_bytes,
                 "wall_encoded_bytes": self._wall_encoded_bytes,
+                "face_overlay_ttl_ms": self.face_overlay_ttl_seconds * 1000.0,
+                "face_overlay_cache_hits": self._face_overlay_cache_hits,
                 "websocket_subscribers": len(self._subscribers),
                 "active_streams": {
                     source_id: {

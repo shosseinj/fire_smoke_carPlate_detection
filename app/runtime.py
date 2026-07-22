@@ -280,6 +280,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         wall_jpeg_quality=operational.broadcast_wall_jpeg_quality,
         wall_max_width=operational.broadcast_wall_max_width,
         wall_max_height=operational.broadcast_wall_max_height,
+        face_overlay_ttl_ms=app_settings.broadcast_face_overlay_ttl_ms,
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_settings = PlateSettingsStore(

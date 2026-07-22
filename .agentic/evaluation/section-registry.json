@@ -215,7 +215,7 @@
         "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
       "acceptance": {},
-      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Face/human boxes are rendered server-side from TaskResult humans/faces; renderer failures are logged. Dashboard requires browser validation."
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Face/human boxes are rendered server-side from TaskResult humans/faces; a short configurable face-overlay TTL smooths slower-task flicker and renderer failures are logged. Dashboard requires browser validation."
     },
     {
       "id": "api-health",
