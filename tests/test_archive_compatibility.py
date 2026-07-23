@@ -16,16 +16,16 @@ def test_verified_legacy_aliases_are_registered() -> None:
     from app.api.cameras import router as cameras
     from app.api.legacy_model_exports import router as exports
     from app.api.legacy_websocket import root_router as websocket
-    from app.api.locations import router as locations
+    from app.api.locations import buildings_router, sections_router, rooms_router
 
     assert "GET" in _methods(cameras, "/api/v1/cameras/")
     assert "POST" in _methods(cameras, "/api/v1/cameras/")
-    assert "PATCH" in _methods(locations, "/api/v1/buildings/{building_id}")
-    assert "PATCH" in _methods(locations, "/api/v1/sections/{section_id}")
+    assert "PATCH" in _methods(buildings_router, "/buildings/{building_id}")
+    assert "PATCH" in _methods(sections_router, "/sections/{section_id}")
     assert "PATCH" in _methods(
-        locations, "/api/v1/sections/{section_id}/assign-camera/{camera_id}"
+        sections_router, "/sections/{section_id}/assign-camera/{camera_id}"
     )
-    assert "DELETE" in _methods(locations, "/api/v1/rooms/{room_id}/revoke/{personnel_id}")
+    assert "DELETE" in _methods(rooms_router, "/rooms/{room_id}/revoke/{personnel_id}")
     assert "DELETE" in _methods(exports, "/api/v1/model-exports/{job_id}")
     assert {route.path for route in websocket.routes} >= {
         "/ws/live/{camera_id}",

@@ -197,37 +197,37 @@ class TestLocationsCrud:
     MODULE = "locations"
 
     def test_building_crud(self, crud):
-        resp = crud.client.post("/api/v1/buildings/", json={"name": "CRUD Bld", "address": "123 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/buildings/", json={"name": "CRUD Bld", "address": "123 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
         bid = resp.json()["id"]
-        resp = crud.client.get("/api/v1/buildings/", headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.get("/buildings/", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        resp = crud.client.get(f"/api/v1/buildings/{bid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.get(f"/buildings/{bid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        resp = crud.client.put(f"/api/v1/buildings/{bid}", json={"name": "Updated Bld"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.patch(f"/buildings/{bid}", json={"name": "Updated Bld"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        resp = crud.client.delete(f"/api/v1/buildings/{bid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.delete(f"/buildings/{bid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code in (200, 204), resp.text
 
     def test_section_crud(self, crud):
-        resp = crud.client.post("/api/v1/buildings/", json={"name": "Bld for Sec", "address": "456 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/buildings/", json={"name": "Bld for Sec", "address": "456 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         bid = resp.json()["id"]
-        resp = crud.client.post("/api/v1/sections/", json={"name": "CRUD Sec", "building_id": bid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/sections/", json={"section_name": "CRUD Sec", "building_id": bid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
-        resp = crud.client.delete(f"/api/v1/sections/{resp.json()['id']}", headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.delete(f"/sections/{resp.json()['id']}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code in (200, 204), resp.text
 
     def test_room_crud(self, crud):
-        resp = crud.client.post("/api/v1/buildings/", json={"name": "Bld for Room", "address": "789 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/buildings/", json={"name": "Bld for Room", "address": "789 Test"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         bid = resp.json()["id"]
-        resp = crud.client.post("/api/v1/sections/", json={"name": "Sec for Room", "building_id": bid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/sections/", json={"section_name": "Sec for Room", "building_id": bid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         sid = resp.json()["id"]
-        resp = crud.client.post("/api/v1/rooms/", json={"name": "CRUD Room", "section_id": sid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/rooms/", json={"room_name": "CRUD Room", "section_id": sid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
         rid = resp.json()["id"]
-        resp = crud.client.put(f"/api/v1/rooms/{rid}", json={"name": "Updated Room"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.put(f"/rooms/{rid}", json={"room_name": "Updated Room"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        resp = crud.client.delete(f"/api/v1/rooms/{rid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.delete(f"/rooms/{rid}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code in (200, 204), resp.text
 
 

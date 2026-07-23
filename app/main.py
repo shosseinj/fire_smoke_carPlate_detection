@@ -27,7 +27,7 @@ from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
 from app.api.personnel import router as personnel_router
-from app.api.locations import router as locations_router
+from app.api.locations import buildings_router, sections_router, rooms_router
 from app.api.shifts import router as shifts_router
 from app.api.holidays import router as holidays_router
 from app.api.requests import router as requests_router
@@ -154,6 +154,9 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
 )
 app.include_router(auth_router)
+app.include_router(buildings_router)
+app.include_router(sections_router)
+app.include_router(rooms_router)
 app.include_router(diagnostics_router)
 app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
@@ -173,7 +176,6 @@ app.include_router(fire_logs_router)
 app.include_router(faces_router)
 app.include_router(humans_router)
 app.include_router(personnel_router)
-app.include_router(locations_router)
 app.include_router(shifts_router)
 app.include_router(holidays_router)
 app.include_router(requests_router)
