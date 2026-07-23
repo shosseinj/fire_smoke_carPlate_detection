@@ -93,6 +93,25 @@ def gregorian_to_jalali_str(g_date: date, sep: str = "-") -> str:
 # ── Local day boundaries ──────────────────────────────────────────────
 
 
+def local_date_range_bounds_utc(
+    start_date: date, end_date: date, tz: timezone | None = None
+) -> tuple[datetime, datetime]:
+    if tz is None:
+        tz = _get_tehran_tz()
+    if end_date < start_date:
+        raise ValueError("end_date must not be before start_date")
+    utc_start, _ = local_day_utc_range(start_date, tz)
+    _, utc_end = local_day_utc_range(end_date, tz)
+    return utc_start, utc_end
+
+
+def jalali_datetime_string(utc_dt: datetime, tz_name: str = "Asia/Tehran") -> str:
+    from zoneinfo import ZoneInfo
+    local_dt = utc_dt.astimezone(ZoneInfo(tz_name))
+    j_date = jdatetime.date.fromgregorian(date=local_dt.date())
+    return f"{j_date.year:04d}-{j_date.month:02d}-{j_date.day:02d} {local_dt.hour:02d}:{local_dt.minute:02d}:{local_dt.second:02d}"
+
+
 def local_day_utc_range(local_date: date, tz: timezone | None = None) -> tuple[datetime, datetime]:
     """Return (utc_start, utc_end) half-open range for a local business date.
 
