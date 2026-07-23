@@ -1,0 +1,71 @@
+{
+  "project": {
+    "name": "Unified Video AI Task Router",
+    "name_en": "Unified Video AI Task Router",
+    "description": "Dynamic source/task routing for batched fire/smoke, face recognition, and Iranian plate recognition.",
+    "current_version": "2.0.0",
+    "api_version": "v1"
+  },
+  "releases": [
+    {
+      "version": "2.0.0",
+      "title": "Dynamic task routing with DeepStream",
+      "release_date": "2026-07-01",
+      "status": "current",
+      "summary": "Production release with real-time task routing, face recognition, plate OCR, and fire/smoke detection.",
+      "features": [
+        {
+          "number": "2.0-01",
+          "title": "Fire/smoke severity pipeline",
+          "description": "Rolling-window severity with TensorRT acceleration.",
+          "category": "detection",
+          "change_type": "new"
+        },
+        {
+          "number": "2.0-02",
+          "title": "Iranian plate OCR pipeline",
+          "description": "Vehicle yolo -> plate yolo -> OCR with seven-digit and Persian letter validation.",
+          "category": "detection",
+          "change_type": "new"
+        },
+        {
+          "number": "2.0-03",
+          "title": "Face recognition pipeline",
+          "description": "Human YOLO-pose, face detection, quality gates, ArcFace embeddings, Qdrant search.",
+          "category": "recognition",
+          "change_type": "new"
+        },
+        {
+          "number": "2.0-04",
+          "title": "DeepStream GPU ingestion",
+          "description": "NVIDIA DeepStream SDK with RTSP and local file support.",
+          "category": "performance",
+          "change_type": "new"
+        }
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "title": "Initial release",
+      "release_date": "2026-01-15",
+      "status": "previous",
+      "summary": "Initial release with basic fire/smoke and plate detection.",
+      "features": [
+        {
+          "number": "1.0-01",
+          "title": "Fire/smoke detection",
+          "description": "Basic fire and smoke detection with configurable confidence thresholds.",
+          "category": "detection",
+          "change_type": "new"
+        },
+        {
+          "number": "1.0-02",
+          "title": "Plate detection",
+          "description": "Iranian plate detection and OCR.",
+          "category": "detection",
+          "change_type": "new"
+        }
+      ]
+    }
+  ]
+}
