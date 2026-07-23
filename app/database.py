@@ -254,14 +254,6 @@ human_logs = Table(
 )
 Index("idx_human_logs_camera", human_logs.c.camera); Index("idx_human_logs_name", human_logs.c.name); Index("idx_human_logs_last_seen", human_logs.c.last_seen)
 
-plate_logs = Table(
-    "plate_logs", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True), Column("camera", Text, nullable=False),
-    Column("time", UTC_TS, nullable=False), Column("plate", Text, nullable=False),
-    Column("snapshot_url", Text, nullable=False, server_default=""), Column("details_json", Text, nullable=False, server_default="{}"),
-)
-Index("idx_plate_logs_time", plate_logs.c.time); Index("idx_plate_logs_camera", plate_logs.c.camera); Index("idx_plate_logs_plate", plate_logs.c.plate)
-
 car_plates = Table(
     "car_plates", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -273,16 +265,54 @@ car_plates = Table(
     Column("usage_type", String(32), nullable=False),
     Column("vehicle_type", String(32), nullable=False),
     Column("owner_name", String(200), nullable=False),
-    Column("owner_phone", String(32), nullable=False),
+    Column("owner_phone", String(16), nullable=False),
     Column("color", String(50)), Column("brand", String(80)), Column("model", String(80)),
     Column("manufacture_year", Integer), Column("description", Text),
     Column("is_active", Integer, nullable=False, server_default="1"),
     Column("deleted_at_utc", UTC_TS),
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("created_by", Integer), Column("updated_by", Integer),
 )
 Index("idx_car_plates_owner_phone", car_plates.c.owner_phone)
 Index("idx_car_plates_active", car_plates.c.is_active)
+Index("idx_car_plates_usage_type", car_plates.c.usage_type)
+Index("idx_car_plates_vehicle_type", car_plates.c.vehicle_type)
+
+plate_logs = Table(
+    "plate_logs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("camera", Text, nullable=False),
+    Column("time", UTC_TS, nullable=False),
+    Column("plate", Text, nullable=False),
+    Column("snapshot_url", Text, nullable=False, server_default=""),
+    Column("details_json", Text, nullable=False, server_default="{}"),
+    Column("plate_id", Integer),
+    Column("plate_full_number", String(32)),
+    Column("raw_plate_text", String(64)),
+    Column("detection_time", UTC_TS),
+    Column("camera_id", String(200)),
+    Column("confidence", Float),
+    Column("direction", String(16), server_default="unknown"),
+    Column("source_type", String(16), server_default="camera"),
+    Column("snapshot_path", String(512)),
+    Column("plate_crop_path", String(512)),
+    Column("is_verified", Integer, server_default="0"),
+    Column("created_by_user_id", Integer),
+    Column("verified_by_user_id", Integer),
+    Column("verified_at", UTC_TS),
+    Column("notes", Text),
+    Column("created_at", UTC_TS),
+    Column("updated_at", UTC_TS),
+)
+Index("idx_plate_logs_time", plate_logs.c.time)
+Index("idx_plate_logs_camera", plate_logs.c.camera)
+Index("idx_plate_logs_plate", plate_logs.c.plate)
+Index("idx_plate_logs_plate_id", plate_logs.c.plate_id)
+Index("idx_plate_logs_full_number", plate_logs.c.plate_full_number)
+Index("idx_plate_logs_camera_id", plate_logs.c.camera_id)
+Index("idx_plate_logs_detection_time", plate_logs.c.detection_time)
+Index("idx_plate_logs_direction", plate_logs.c.direction)
 
 plate_general_settings = Table(
     "plate_general_settings", metadata,

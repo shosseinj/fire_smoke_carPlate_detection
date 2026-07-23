@@ -1,52 +1,144 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator, computed_field
 
 from app.core.auth import get_current_user, require_role
 from app.core.auth_store import UserRecord
+from app.core.plate_constants import (
+    PLATE_ALPHABETS_BY_USAGE,
+    PERSIAN_PLATE_ALPHABETS,
+    PlateFormat,
+    PlateUsageType,
+    VehicleType,
+    normalize_owner_phone,
+    normalize_persian_text,
+)
 from app.runtime import Runtime
 
 
 router = APIRouter(prefix="/api/v1/car-plates", tags=["car-plates"])
 
 
-class CarPlateCreate(BaseModel):
-    left_digits: str = Field(pattern=r"^\d{2}$")
-    plate_alphabet: str = Field(min_length=1, max_length=1)
-    right_digits: str = Field(pattern=r"^\d{3}$")
-    iran_code: str = Field(pattern=r"^\d{2}$")
-    plate_format: str = "standard"
-    usage_type: str
-    vehicle_type: str
-    owner_name: str = Field(min_length=2, max_length=200)
-    owner_phone: str = Field(min_length=1, max_length=32)
-    color: str | None = None
-    brand: str | None = None
-    model: str | None = None
-    manufacture_year: int | None = Field(default=None, ge=1300, le=1600)
-    description: str | None = None
+class CarPlateBase(BaseModel):
+    left_digits: str = Field(..., pattern=r"^\d{2}$")
+    plate_alphabet: str = Field(..., min_length=1, max_length=1)
+    right_digits: str = Field(..., pattern=r"^\d{3}$")
+    iran_code: str = Field(..., pattern=r"^\d{2}$")
+    plate_format: PlateFormat = PlateFormat.STANDARD
+    usage_type: PlateUsageType
+    vehicle_type: VehicleType
+    owner_name: str = Field(..., min_length=2, max_length=200)
+    owner_phone: str
+    color: Optional[str] = Field(default=None, max_length=50)
+    brand: Optional[str] = Field(default=None, max_length=80)
+    model: Optional[str] = Field(default=None, max_length=80)
+    manufacture_year: Optional[int] = Field(default=None, ge=1300, le=1600)
+    description: Optional[str] = None
     is_active: bool = True
+
+    @field_validator("plate_alphabet", mode="before")
+    @classmethod
+    def normalize_plate_alphabet(cls, value: object) -> object:
+        normalized = normalize_persian_text(value)
+        if normalized not in PERSIAN_PLATE_ALPHABETS:
+            raise ValueError("حرف پلاک باید یکی از حروف فارسی مجاز باشد")
+        return normalized
+
+    @field_validator("owner_name", "color", "brand", "model", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> object:
+        return normalize_persian_text(value)
+
+    @field_validator("owner_phone", mode="before")
+    @classmethod
+    def normalize_phone(cls, value: object) -> object:
+        return normalize_owner_phone(value)
+
+    @model_validator(mode="after")
+    def validate_alphabet_for_usage(self) -> CarPlateBase:
+        allowed = PLATE_ALPHABETS_BY_USAGE.get(self.usage_type.value)
+        if allowed and self.plate_alphabet not in allowed:
+            raise ValueError(
+                f"حرف پلاک «{self.plate_alphabet}» برای نوع کاربری «{self.usage_type.value}» مجاز نیست"
+            )
+        return self
+
+
+class CarPlateCreate(CarPlateBase):
+    pass
 
 
 class CarPlateUpdate(BaseModel):
-    left_digits: str | None = Field(default=None, pattern=r"^\d{2}$")
-    plate_alphabet: str | None = Field(default=None, min_length=1, max_length=1)
-    right_digits: str | None = Field(default=None, pattern=r"^\d{3}$")
-    iran_code: str | None = Field(default=None, pattern=r"^\d{2}$")
-    plate_format: str | None = None
-    usage_type: str | None = None
-    vehicle_type: str | None = None
-    owner_name: str | None = Field(default=None, min_length=2, max_length=200)
-    owner_phone: str | None = Field(default=None, max_length=32)
-    color: str | None = None
-    brand: str | None = None
-    model: str | None = None
-    manufacture_year: int | None = Field(default=None, ge=1300, le=1600)
-    description: str | None = None
-    is_active: bool | None = None
+    left_digits: Optional[str] = Field(default=None, pattern=r"^\d{2}$")
+    plate_alphabet: Optional[str] = Field(default=None, min_length=1, max_length=1)
+    right_digits: Optional[str] = Field(default=None, pattern=r"^\d{3}$")
+    iran_code: Optional[str] = Field(default=None, pattern=r"^\d{2}$")
+    plate_format: Optional[PlateFormat] = None
+    usage_type: Optional[PlateUsageType] = None
+    vehicle_type: Optional[VehicleType] = None
+    owner_name: Optional[str] = Field(default=None, min_length=2, max_length=200)
+    owner_phone: Optional[str] = None
+    color: Optional[str] = Field(default=None, max_length=50)
+    brand: Optional[str] = Field(default=None, max_length=80)
+    model: Optional[str] = Field(default=None, max_length=80)
+    manufacture_year: Optional[int] = Field(default=None, ge=1300, le=1600)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    @field_validator("plate_alphabet", mode="before")
+    @classmethod
+    def normalize_plate_alphabet(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = normalize_persian_text(value)
+        if normalized not in PERSIAN_PLATE_ALPHABETS:
+            raise ValueError("حرف پلاک باید یکی از حروف فارسی مجاز باشد")
+        return normalized
+
+    @field_validator("owner_name", "color", "brand", "model", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> object:
+        return normalize_persian_text(value)
+
+    @field_validator("owner_phone", mode="before")
+    @classmethod
+    def normalize_phone(cls, value: object) -> object:
+        if value is None:
+            return None
+        return normalize_owner_phone(value)
+
+    @model_validator(mode="after")
+    def validate_alphabet_for_usage(self) -> CarPlateUpdate:
+        if self.usage_type is not None and self.plate_alphabet is not None:
+            allowed = PLATE_ALPHABETS_BY_USAGE.get(self.usage_type.value)
+            if allowed and self.plate_alphabet not in allowed:
+                raise ValueError(
+                    f"حرف پلاک «{self.plate_alphabet}» برای نوع کاربری «{self.usage_type.value}» مجاز نیست"
+                )
+        return self
+
+
+class CarPlateResponse(CarPlateBase):
+    id: int
+    created_at_utc: Optional[datetime] = None
+    updated_at_utc: Optional[datetime] = None
+    deleted_at_utc: Optional[datetime] = None
+    created_by: Optional[int] = None
+    updated_by: Optional[int] = None
+
+    @computed_field
+    @property
+    def formatted_plate(self) -> str:
+        return f"{self.left_digits} {self.plate_alphabet} {self.right_digits} ایران {self.iran_code}"
+
+    @computed_field
+    @property
+    def normalized_plate(self) -> str:
+        return f"{self.left_digits}{self.plate_alphabet}{self.right_digits}{self.iran_code}"
 
 
 def get_runtime() -> Runtime:
@@ -55,13 +147,20 @@ def get_runtime() -> Runtime:
     return runtime
 
 
-@router.get("")
-@router.get("/")
+def _get_plate_or_404(plate_id: int, runtime: Runtime) -> dict[str, Any]:
+    value = runtime.car_plates.get(plate_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail="پلاک خودرو یافت نشد")
+    return value
+
+
+@router.get("", response_model=list[CarPlateResponse])
+@router.get("/", response_model=list[CarPlateResponse])
 def list_car_plates(
     active_only: bool = True,
     search: str | None = Query(default=None, max_length=200),
-    usage_type: str | None = Query(default=None, max_length=32),
-    vehicle_type: str | None = Query(default=None, max_length=32),
+    usage_type: PlateUsageType | None = None,
+    vehicle_type: VehicleType | None = None,
     owner_phone: str | None = Query(default=None, max_length=32),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
@@ -71,43 +170,64 @@ def list_car_plates(
     return runtime.car_plates.list(
         active_only=active_only,
         search=search,
-        usage_type=usage_type,
-        vehicle_type=vehicle_type,
+        usage_type=usage_type.value if usage_type else None,
+        vehicle_type=vehicle_type.value if vehicle_type else None,
         owner_phone=owner_phone,
         skip=skip,
         limit=limit,
     )
 
 
-@router.get("/{plate_id}")
-def get_car_plate(plate_id: int, _: UserRecord = Depends(get_current_user), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
-    value = runtime.car_plates.get(plate_id)
-    if value is None:
-        raise HTTPException(status_code=404, detail="Car plate not found")
-    return value
+@router.get("/{plate_id}", response_model=CarPlateResponse)
+def get_car_plate(
+    plate_id: int,
+    _: UserRecord = Depends(get_current_user),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    return _get_plate_or_404(plate_id, runtime)
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-@router.post("/", status_code=status.HTTP_201_CREATED)
-def create_car_plate(payload: CarPlateCreate, _: UserRecord = Depends(require_role("admin")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+@router.post("", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
+def create_car_plate(
+    payload: CarPlateCreate,
+    admin_user: UserRecord = Depends(require_role("admin")),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    data = payload.model_dump(mode="json")
+    data["created_by"] = admin_user.id
+    data["updated_by"] = admin_user.id
     try:
-        return runtime.car_plates.create(payload.model_dump())
+        return runtime.car_plates.create(data)
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
-            raise HTTPException(status_code=409, detail="Car plate already exists") from exc
+            raise HTTPException(status_code=409, detail="این پلاک قبلاً ثبت شده است") from exc
         raise
 
 
-@router.patch("/{plate_id}")
-def update_car_plate(plate_id: int, payload: CarPlateUpdate, _: UserRecord = Depends(require_role("admin")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
-    value = runtime.car_plates.update(plate_id, payload.model_dump(exclude_unset=True))
-    if value is None:
-        raise HTTPException(status_code=404, detail="Car plate not found")
-    return value
+@router.patch("/{plate_id}", response_model=CarPlateResponse)
+def update_car_plate(
+    plate_id: int,
+    payload: CarPlateUpdate,
+    admin_user: UserRecord = Depends(require_role("admin")),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    plate = _get_plate_or_404(plate_id, runtime)
+    updates = payload.model_dump(exclude_unset=True, mode="json")
+    updates["updated_by"] = admin_user.id
+    result = runtime.car_plates.update(plate_id, updates)
+    if result is None:
+        raise HTTPException(status_code=404, detail="پلاک خودرو یافت نشد")
+    return result
 
 
 @router.delete("/{plate_id}")
-def delete_car_plate(plate_id: int, _: UserRecord = Depends(require_role("superuser")), runtime: Runtime = Depends(get_runtime)) -> dict[str, str]:
+def delete_car_plate(
+    plate_id: int,
+    superuser: UserRecord = Depends(require_role("superuser")),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, str]:
+    _get_plate_or_404(plate_id, runtime)
     if not runtime.car_plates.delete(plate_id):
-        raise HTTPException(status_code=404, detail="Car plate not found")
-    return {"message": "Car plate deleted successfully"}
+        raise HTTPException(status_code=404, detail="پلاک خودرو یافت نشد")
+    return {"message": "پلاک خودرو با موفقیت حذف شد"}

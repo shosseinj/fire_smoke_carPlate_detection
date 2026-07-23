@@ -8,12 +8,10 @@ import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 from app.core.types import TaskName, TaskResult
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.types import FramePacket
-from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
 import cv2
@@ -359,3 +357,105 @@ class PlateLogStore:
         self._closed = True
         self._queue.put(None)
         self._thread.join(timeout=10.0)
+
+    @staticmethod
+    def _now_utc() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def list_logs(
+        self,
+        *,
+        plate_id: int | None = None,
+        plate_full_number: str | None = None,
+        camera_id: str | None = None,
+        direction: str | None = None,
+        source_type: str | None = None,
+        is_verified: bool | None = None,
+        detected_from: str | None = None,
+        detected_to: str | None = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = ["1=1"]
+        params: list[Any] = []
+        if plate_id is not None:
+            clauses.append("plate_id = ?")
+            params.append(plate_id)
+        if plate_full_number:
+            clauses.append("plate_full_number = ?")
+            params.append(plate_full_number)
+        if camera_id:
+            clauses.append("camera_id = ?")
+            params.append(camera_id)
+        if direction:
+            clauses.append("direction = ?")
+            params.append(direction)
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if is_verified is not None:
+            clauses.append("is_verified = ?")
+            params.append(1 if is_verified else 0)
+        if detected_from:
+            clauses.append("detection_time >= ?")
+            params.append(detected_from)
+        if detected_to:
+            clauses.append("detection_time <= ?")
+            params.append(detected_to)
+        params.extend([max(0, skip), max(1, min(limit, 500))])
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM plate_logs WHERE " + " AND ".join(clauses) + " ORDER BY detection_time DESC, id DESC OFFSET ? LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._serialize_plate_log(dict(row)) for row in rows]
+
+    def get_log(self, log_id: int) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT * FROM plate_logs WHERE id = ?", (log_id,)).fetchone()
+        return self._serialize_plate_log(dict(row)) if row else None
+
+    def create_log(self, values: dict[str, Any]) -> dict[str, Any]:
+        now = self._now_utc()
+        fields = dict(values)
+        fields.setdefault("source_type", "camera")
+        fields.setdefault("direction", "unknown")
+        fields.setdefault("created_at", now)
+        fields.setdefault("updated_at", now)
+        columns = list(fields)
+        params = [fields[name] for name in fields]
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO plate_logs ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) RETURNING id",
+                params,
+            )
+            log_id = int(cursor.fetchone()[0])
+            connection.commit()
+        return self.get_log(log_id) or {}
+
+    def update_log(self, log_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        if not values:
+            return self.get_log(log_id)
+        assignments = [f"{name} = ?" for name in values] + ["updated_at = ?"]
+        params = [values[name] for name in values] + [self._now_utc(), log_id]
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE plate_logs SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+            connection.commit()
+            if cursor.rowcount == 0:
+                return None
+        return self.get_log(log_id)
+
+    def delete_log(self, log_id: int) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute("DELETE FROM plate_logs WHERE id = ?", (log_id,))
+            connection.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _serialize_plate_log(value: dict[str, Any]) -> dict[str, Any]:
+        if "is_verified" in value:
+            value["is_verified"] = bool(value["is_verified"])
+        return value
