@@ -754,33 +754,6 @@ class TestDeveloperAndProcessorTestsApi:
         assert rejected.json()["status_code"] == 400
 
 
-class TestLegacyGeneralSettingsApi:
-    MODULE = "legacy_settings"
-
-    def test_get_patch_validation_and_permissions(self, crud):
-        base = "/api/v1/general-settings"
-        current = crud.client.get(
-            base,
-            headers={"Authorization": f"Bearer {crud.viewer_token}"},
-        )
-        assert current.status_code == 200
-        assert isinstance(current.json(), dict)
-
-        invalid = crud.client.patch(
-            base,
-            json={"margin_level": 0.5},
-            headers={"Authorization": f"Bearer {crud.admin_token}"},
-        )
-        assert invalid.status_code == 422
-
-        forbidden = crud.client.patch(
-            base,
-            json={"draw_box": False},
-            headers={"Authorization": f"Bearer {crud.viewer_token}"},
-        )
-        assert forbidden.status_code == 403
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # HEALTH
 # ═══════════════════════════════════════════════════════════════════════
@@ -824,7 +797,6 @@ CRUD_TEST_CLASSES: dict[str, type] = {
     "detection_logs": TestDetectionLogsApi,
     "personnel_requests": TestPersonnelRequestsApi,
     "developer_and_processor_tests": TestDeveloperAndProcessorTestsApi,
-    "legacy_settings": TestLegacyGeneralSettingsApi,
     "health": TestHealthEndpoint,
 }
 

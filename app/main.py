@@ -8,15 +8,14 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
-from app.api.legacy_websocket import root_router as legacy_root_websocket_router
-from app.api.legacy_websocket import router as legacy_websocket_router
+
 from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
 from app.api.car_plates import router as car_plates_router
 from app.api.plate_settings import router as plate_settings_router
 from app.api.models import router as models_router
-from app.api.legacy_model_exports import router as legacy_model_exports_router
+
 from app.api.general_settings import router as general_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
 from app.api.fire_logs import router as fire_logs_router
@@ -37,7 +36,7 @@ from app.api.personnel_images import router as personnel_images_router
 from app.api.detection_logs import router as detection_logs_router
 from app.api.developer import router as developer_router
 from app.api.project_info import router as project_info_router
-from app.api.legacy_settings import router as legacy_settings_router
+
 from app.config import settings
 from app.runtime import build_runtime
 
@@ -158,14 +157,12 @@ app.include_router(diagnostics_router)
 app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
 app.include_router(models_router)
-app.include_router(legacy_model_exports_router)
 app.include_router(sources_router)
 app.include_router(cameras_router)
 app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)
-app.include_router(legacy_websocket_router)
-app.include_router(legacy_root_websocket_router)
+
 app.include_router(plate_logs_router)
 app.include_router(car_plates_router)
 app.include_router(fire_smoke_logs_router)
@@ -183,7 +180,6 @@ app.include_router(detection_logs_router)
 app.include_router(plate_settings_router)
 app.include_router(developer_router)
 app.include_router(project_info_router)
-app.include_router(legacy_settings_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(

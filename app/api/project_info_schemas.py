@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,7 +24,7 @@ class ReleaseInfo(BaseModel):
 
     version: str = Field(pattern=r"^\d+\.\d+\.\d+$", examples=["1.2.0"])
     title: str = Field(min_length=1)
-    release_date: date | None = None
+    release_date: Optional[date] = None
     status: Literal["current", "previous", "planned", "deprecated"]
     summary: str = Field(min_length=1)
     features: list[ReleaseFeature] = Field(default_factory=list)

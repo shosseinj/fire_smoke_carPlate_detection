@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -40,11 +41,11 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
-    full_name: str | None = None
+    full_name: Optional[str] = None
     role: str
     is_active: bool
     created_at: datetime
-    last_login: datetime | None = None
+    last_login: Optional[datetime] = None
 
 
 class AuthError(BaseModel):
@@ -60,7 +61,7 @@ class CreateUserRequest(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     email: str
     confirm_password: str
-    full_name: str | None = None
+    full_name: Optional[str] = None
 
 
 class CreateUserResponse(BaseModel):
