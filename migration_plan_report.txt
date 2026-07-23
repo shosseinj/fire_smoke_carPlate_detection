@@ -1,0 +1,208 @@
+Legacy-to-Current App Migration Report
+=======================================
+
+Source archive: old.zip
+Current project: app/api, app/core, app/processors, tests
+
+Purpose
+-------
+Examine the overlapping applications in old.zip and the current project one by
+one, then make the current APIs, endpoints, request schemas, response shapes,
+permissions, persistence, and side effects as compatible with the legacy
+project as safely possible.
+
+No application code was changed while preparing this report.
+
+Recommended Migration Order
+----------------------------
+
+Phase 0 - Shared Contracts
+
+1. Authentication
+   Legacy area: backend/app/routers/auth.py
+   Current area: app/api/auth.py, app/api/auth_schemas.py
+   Scope: login, token, refresh, logout, users, roles, current user, password
+   changes, permissions, and legacy response compatibility.
+
+Phase 1 - Reference Data and Ownership
+
+2. Locations
+   Scope: buildings, sections, rooms, room access, personnel-room relations,
+   section-camera relations, pagination, and response shapes.
+   Current area: app/api/locations.py, app/core/location_store.py
+
+3. Personnel
+   Scope: CRUD, search, national-code validation, Excel import, ZIP import,
+   response compatibility, and cleanup behavior.
+   Current area: app/api/personnel.py, app/core/personnel_store.py
+
+4. Personnel Images
+   Scope: image listing, upload, deletion, media responses, face enrollment,
+   vector cleanup, and file cleanup.
+   Current area: app/api/personnel_images.py,
+   app/core/personnel_image_service.py
+
+5. Shifts
+   Scope: CRUD, statistics, shift types, personnel assignment, weekday fields,
+   and legacy response translation.
+   Current area: app/api/shifts.py, app/core/shift_store.py
+
+6. Holidays
+   Scope: CRUD, date checks, active/type filters, Jalali date compatibility,
+   and request-duration integration.
+   Current area: app/api/holidays.py, app/core/holiday_store.py
+
+Phase 2 - Camera and Runtime Configuration
+
+7. Cameras
+   Scope: CRUD, active cameras, effective settings, batch activation,
+   health-check, bulk creation/deletion, legacy fields, and ID mapping.
+   Current area: app/api/cameras.py, app/core/source_registry.py
+
+8. Sources
+   Scope: current source-registration contract and its relationship to legacy
+   camera endpoints.
+   Current area: app/api/sources.py
+
+9. General Settings
+   Scope: legacy /general-settings routes, reset behavior, settings mapping,
+   runtime propagation, and secret masking.
+   Current area: app/api/general_settings.py, app/api/legacy_settings.py
+
+10. Plate Settings
+    Scope: general and per-camera plate settings and compatibility with legacy
+    camera configuration.
+    Current area: app/api/plate_settings.py, app/core/plate_settings_store.py
+
+Phase 3 - Personnel Workflows
+
+11. Personnel Requests
+    Scope: create/list/detail, my-requests, approval/rejection, duration
+    calculation, statistics, fake-data behavior, and status translation.
+    Current area: app/api/personnel_requests.py, app/api/requests.py
+
+12. Attendance
+    Scope: daily/monthly summaries, yearly leave, performance, and detection
+    log attendance linkage.
+    Current area: app/api/attendance.py, app/core/attendance_service.py
+
+Phase 4 - Detection and Event Data
+
+13. Detection Logs
+    Legacy prefix: /api/v1/logs
+    Scope: creation, filtering, summaries, historical import, media endpoints,
+    personnel assignment, attendance toggling, deletion, and rich responses.
+    Current area: app/api/detection_logs.py,
+    app/core/detection_log_store.py, app/core/legacy_detection_service.py
+
+14. Fire Logs
+    Scope: CRUD, hazard type, severity, confidence, timestamps, camera IDs,
+    media fields, permissions, and retention.
+    Current area: app/api/fire_logs.py, app/core/fire_smoke_log_store.py
+
+15. Car Plates
+    Scope: Iranian plate component validation, owner fields, permissions,
+    duplicate/not-found behavior, and CRUD response compatibility.
+    Current area: app/api/car_plates.py, app/core/car_plate_store.py
+
+16. Plate Logs
+    Scope: collection, detail, create, update, delete, normalized plate fields,
+    confidence, direction, verification, snapshots, and timestamps.
+    Current area: app/api/plate_logs.py, app/core/plate_log_store.py
+    Priority: high. The current implementation appears to expose fewer legacy
+    item-level operations than the archive.
+
+Phase 5 - Model and Administrative Operations
+
+17. Model Exports
+    Scope: export creation, job status, deletion, artifact cleanup, and legacy
+    field compatibility.
+    Current area: app/api/legacy_model_exports.py
+
+18. Model Management
+    Scope: model catalog, conversion jobs, artifact selection, fallback order,
+    downloads, and runtime model resolution.
+    Current area: app/api/models.py, app/core/model_management.py
+
+19. Developer APIs
+    Scope: app discovery, URL discovery, OpenAPI summaries, test-request
+    allowlists, and developer-role restrictions.
+    Current area: app/api/developer.py
+
+20. Import Progress
+    Scope: progress creation/status/deletion and integration with personnel or
+    other imports.
+    Status: no confirmed direct current equivalent; investigate before coding.
+
+21. Project Information
+    Scope: project metadata, version information, release information, and
+    not-found behavior.
+    Status: no clear direct current equivalent; investigate before coding.
+
+Phase 6 - Live Runtime and Output
+
+22. Legacy WebSocket Compatibility
+    Scope: camera live WebSocket, connection status, and video-page behavior.
+    Current area: app/api/legacy_websocket.py
+
+23. Broadcast
+    Scope: broadcast state, MJPEG streams, snapshots, annotated output,
+    bounded result retention, and source-ID compatibility.
+    Current area: app/api/broadcast.py, app/core/broadcast.py
+
+24. Results
+    Scope: recent results, result WebSocket, router status, and event payload
+    compatibility.
+    Current area: app/api/results.py, app/core/result_store.py
+
+25. Processor and Operational APIs
+    Scope: faces, humans, fire/smoke settings, diagnostics, frame submission,
+    processor test endpoints, and runtime health.
+    Current areas: app/api/faces.py, humans.py, diagnostics.py, frames.py,
+    fire_smoke_logs.py, processor_tests.py
+
+Highest-Priority Compatibility Gaps
+------------------------------------
+
+- Plate-log item-level GET, PATCH, and DELETE operations.
+- Import-progress routes and their current replacement, if any.
+- Project-info/version routes and their current replacement, if any.
+- Exact legacy response shapes for locations, personnel, plates, and model
+  exports.
+- Legacy integer camera IDs versus current string source IDs.
+- Legacy base64 personnel-image responses versus current media/file URLs.
+- Legacy personnel-request statuses versus current internal statuses.
+- Legacy settings reset behavior versus partitioned current settings.
+
+Per-App Completion Checklist
+----------------------------
+
+For each numbered app:
+
+1. Inventory every legacy route and method from old.zip.
+2. Match each route to the current router, store, service, or mark it missing.
+3. Compare request fields, defaults, enums, validation, and authentication.
+4. Compare status codes, response fields, nesting, timestamps, and errors.
+5. Verify persistence, foreign keys, files, vectors, events, and cleanup.
+6. Implement only the confirmed compatibility changes.
+7. Add focused tests for success, invalid input, permissions, not-found, and
+   downstream side effects.
+8. Run the focused tests before moving to the next app.
+9. Run cross-module regression tests after completing each phase.
+
+Important Constraints
+---------------------
+
+- Preserve the current project's real-time architecture unless compatibility
+  requires a verified change.
+- Do not expose credentials, private camera URLs, tokens, or sensitive payloads.
+- Do not delete or rewrite unrelated worktree changes.
+- Do not claim legacy parity until routes, schemas, responses, permissions,
+  persistence, and connected outputs have been tested.
+- Unselected or not-yet-reviewed apps should remain unchanged until their step.
+
+Current Worktree Note
+---------------------
+
+Existing user changes were present in several test files, plus CRUD-testing
+configuration and an agent_test_failures.log file. These files were preserved.

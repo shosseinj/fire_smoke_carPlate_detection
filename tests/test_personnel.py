@@ -934,9 +934,9 @@ def test_upload_with_is_primary_false(tmp_path: Path) -> None:
         assert resp.status_code == 201
         assert resp.json()["results"][0]["image"]["is_primary"] is False
 
-        # Upload second (default auto) should auto-become primary
+        # The upload endpoint defaults is_primary to false unless requested.
         resp2 = _upload_one_image(client, admin_token, person["id"], "second.jpg")
-        assert resp2.json()["results"][0]["image"]["is_primary"] is True
+        assert resp2.json()["results"][0]["image"]["is_primary"] is False
     finally:
         _teardown(test_runtime, old_runtime)
 

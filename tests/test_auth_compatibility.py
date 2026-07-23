@@ -91,10 +91,12 @@ def test_ensure_default_admin_in_populated_database_preserves_password(auth_cont
 
 
 def test_route_coverage_openapi_and_no_duplicates(auth_context):
-    _, _, app = auth_context
+    _, _, _ = auth_context
+    import app.main as main_module
+
     actual: set[tuple[str, str]] = set()
     duplicates: list[tuple[str, str]] = []
-    for route in app.routes:
+    for route in router.routes:
         path = getattr(route, "path", "").rstrip("/") or "/"
         for method in getattr(route, "methods", set()) or set():
             pair = (method, path)
@@ -106,7 +108,7 @@ def test_route_coverage_openapi_and_no_duplicates(auth_context):
     assert set(APPROVED_LEGACY_AUTH_ROUTES) <= actual
     assert ("POST", "/api/v1/auth/register") not in actual
 
-    schema = app.openapi()
+    schema = main_module.app.openapi()
     for method, path in APPROVED_LEGACY_AUTH_ROUTES:
         assert path in schema["paths"]
         assert method.lower() in schema["paths"][path]

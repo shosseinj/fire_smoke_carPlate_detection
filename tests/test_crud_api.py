@@ -509,6 +509,278 @@ class TestFramesApi:
         assert resp.status_code in (200, 202, 422), resp.text
 
 
+# =======================================================================
+# LEGACY CRUD AND DISCOVERY ROUTES
+# =======================================================================
+
+class TestCarPlatesCrud:
+    MODULE = "car_plates"
+
+    PLATE_DATA = {
+        "left_digits": "12",
+        "plate_alphabet": "A",
+        "right_digits": "345",
+        "iran_code": "67",
+        "usage_type": "private",
+        "vehicle_type": "car",
+        "owner_name": "CRUD Owner",
+        "owner_phone": "09000000000",
+    }
+
+    def test_create_list_get_update_delete_and_permissions(self, crud):
+        base = "/api/v1/car-plates"
+        response = crud.client.post(
+            base,
+            json=self.PLATE_DATA,
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert response.status_code == 201, response.text
+        item = response.json()
+        assert item["left_digits"] == "12"
+        plate_id = item["id"]
+
+        listed = crud.client.get(
+            base,
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert listed.status_code == 200
+        assert any(value["id"] == plate_id for value in listed.json())
+
+        fetched = crud.client.get(
+            f"{base}/{plate_id}",
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert fetched.status_code == 200
+        assert fetched.json()["owner_name"] == "CRUD Owner"
+
+        updated = crud.client.patch(
+            f"{base}/{plate_id}",
+            json={"owner_name": "Updated Owner"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["owner_name"] == "Updated Owner"
+
+        forbidden = crud.client.post(
+            base,
+            json={**self.PLATE_DATA, "right_digits": "346"},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert forbidden.status_code == 403
+
+        invalid = crud.client.post(
+            base,
+            json={**self.PLATE_DATA, "left_digits": "1"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert invalid.status_code == 422
+
+        missing = crud.client.get(
+            f"{base}/99999999",
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert missing.status_code == 404
+
+        deleted = crud.client.delete(
+            f"{base}/{plate_id}",
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert deleted.status_code == 200
+        assert crud.client.get(
+            f"{base}/{plate_id}",
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        ).status_code == 404
+
+
+class TestFireLogsCrud:
+    MODULE = "fire_logs"
+
+    LOG_DATA = {
+        "detection_time": "2026-07-21T00:00:00Z",
+        "camera_id": "crud-fire-camera",
+        "hazard_type": "fire",
+        "severity": "high",
+        "confidence": 0.91,
+    }
+
+    def test_create_list_get_validation_and_permissions(self, crud):
+        base = "/api/v1/fire-logs"
+        created = crud.client.post(
+            base,
+            json=self.LOG_DATA,
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert created.status_code == 201, created.text
+        item = created.json()
+        assert item["camera"] == "crud-fire-camera"
+        log_id = item["id"]
+
+        listed = crud.client.get(
+            base,
+            params={"camera_id": "crud-fire-camera", "limit": 10},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert listed.status_code == 200
+        assert any(value["id"] == log_id for value in listed.json())
+
+        fetched = crud.client.get(
+            f"{base}/{log_id}",
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert fetched.status_code == 200
+        assert fetched.json()["severity"] == "high"
+
+        invalid = crud.client.post(
+            base,
+            json={**self.LOG_DATA, "severity": "critical"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert invalid.status_code == 422
+
+        forbidden = crud.client.post(
+            base,
+            json={**self.LOG_DATA, "camera_id": "another-camera"},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert forbidden.status_code == 403
+
+        missing = crud.client.get(
+            f"{base}/99999999",
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert missing.status_code == 404
+
+
+class TestDetectionLogsApi:
+    MODULE = "detection_logs"
+
+    def test_filter_validation_not_found_and_permissions(self, crud):
+        base = "/api/v1/logs"
+        listed = crud.client.get(
+            f"{base}/filter",
+            params={"period": "today", "limit": 10},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert listed.status_code == 200
+        assert isinstance(listed.json(), list)
+
+        invalid_period = crud.client.get(
+            f"{base}/filter",
+            params={"period": "invalid"},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert invalid_period.status_code == 400
+
+        missing = crud.client.get(
+            f"{base}/99999999",
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert missing.status_code == 404
+
+        unauthenticated = crud.client.get(f"{base}/filter")
+        assert unauthenticated.status_code == 401
+
+
+class TestPersonnelRequestsApi:
+    MODULE = "personnel_requests"
+
+    def test_list_not_found_validation_and_permissions(self, crud):
+        base = "/api/v1/personnel-requests"
+        listed = crud.client.get(
+            f"{base}/",
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert listed.status_code == 200
+        assert isinstance(listed.json(), list)
+
+        missing = crud.client.get(
+            f"{base}/99999999",
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert missing.status_code == 404
+
+        invalid_personnel = crud.client.post(
+            f"{base}/",
+            json={
+                "personnel_id": 99999999,
+                "request_type": "earned_leave",
+                "start_date": "1405/01/01",
+                "end_date": "1405/01/02",
+            },
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert invalid_personnel.status_code == 404
+
+        forbidden = crud.client.get(f"{base}/", headers={"Authorization": f"Bearer {crud.viewer_token}"})
+        assert forbidden.status_code == 403
+
+
+class TestDeveloperAndProcessorTestsApi:
+    MODULE = "developer_and_processor_tests"
+
+    def test_public_discovery_and_not_found_contracts(self, crud):
+        info = crud.client.get("/api/v1/project-info")
+        assert info.status_code == 200
+        assert {"name", "current_version"} <= info.json()["project"].keys()
+
+        apps = crud.client.get("/api/v1/developer/apps")
+        assert apps.status_code == 200
+        assert apps.json()["success"] is True
+        assert apps.json()["total_apps"] >= 0
+        assert isinstance(apps.json()["items"], list)
+
+        missing = crud.client.get("/api/v1/project-info/releases/does-not-exist")
+        assert missing.status_code == 404
+
+        models = crud.client.get("/api/v1/tests/face/models")
+        assert models.status_code == 200
+        assert {"human_detector", "face_detector", "embedding_model"} <= models.json().keys()
+
+    def test_admin_test_request_allowlist_and_authentication(self, crud):
+        forbidden = crud.client.post(
+            "/api/v1/developer/test-request",
+            json={"method": "GET", "url": "/api/v1/health"},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert forbidden.status_code == 403
+
+        rejected = crud.client.post(
+            "/api/v1/developer/test-request",
+            json={"method": "DELETE", "url": "/api/v1/diagnostics/overview"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["success"] is False
+        assert rejected.json()["status_code"] == 400
+
+
+class TestLegacyGeneralSettingsApi:
+    MODULE = "legacy_settings"
+
+    def test_get_patch_validation_and_permissions(self, crud):
+        base = "/api/v1/general-settings"
+        current = crud.client.get(
+            base,
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert current.status_code == 200
+        assert isinstance(current.json(), dict)
+
+        invalid = crud.client.patch(
+            base,
+            json={"margin_level": 0.5},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert invalid.status_code == 422
+
+        forbidden = crud.client.patch(
+            base,
+            json={"draw_box": False},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert forbidden.status_code == 403
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # HEALTH
 # ═══════════════════════════════════════════════════════════════════════
@@ -547,6 +819,12 @@ CRUD_TEST_CLASSES: dict[str, type] = {
     "results": TestResultsApi,
     "attendance": TestAttendanceApi,
     "frames": TestFramesApi,
+    "car_plates": TestCarPlatesCrud,
+    "fire_logs": TestFireLogsCrud,
+    "detection_logs": TestDetectionLogsApi,
+    "personnel_requests": TestPersonnelRequestsApi,
+    "developer_and_processor_tests": TestDeveloperAndProcessorTestsApi,
+    "legacy_settings": TestLegacyGeneralSettingsApi,
     "health": TestHealthEndpoint,
 }
 

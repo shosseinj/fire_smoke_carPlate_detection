@@ -1,0 +1,15 @@
+================================================================================
+Timestamp UTC: 2026-07-23T05:47:29.475Z
+Agent: OpenCode gpt-5.6-sol
+Task: Run and repair the project test suite
+Status: FAILED_AFTER_3_RETRIES
+Changed files: app/api/broadcast.py, app/api/cameras.py, app/api/holidays.py, app/api/personnel.py, app/config.py, app/core/personnel_store.py, app/core/types.py, app/main.py, app/runtime.py, app/web/dashboard.html, docker-compose.yml, tests/conftest.py, tests/test_auth.py, tests/test_auth_compatibility.py, tests/test_broadcast.py, tests/test_crud_api.py, tests/test_personnel.py, tests/test_router.py, tests/test_video_ingestor.py
+Baseline: Host suite had 16 failures, 96 passes, and 330 skips; PostgreSQL-backed tests were not initially configured.
+Failed command: $env:TEST_DATABASE_URL='postgresql+psycopg2://postgres:postgres-test@127.0.0.1:55432/video_ai_test'; Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue; python -m pytest tests/test_auth_compatibility.py tests/test_broadcast.py tests/test_crud_api.py tests/test_personnel.py tests/test_personnel_image_upload.py -q
+Final error: 3 failed, 134 passed: auth compatibility route coverage, default primary promotion after an explicit non-primary image, and personnel upload response field compatibility.
+Retry 1: Added result geometry/timestamps, legacy personnel-file cleanup, and PostgreSQL SourceRegistry fixtures; focused result was 3 passed, 13 skipped, with one dashboard preview failure remaining.
+Retry 2: Completed public preview wiring and lifecycle, then hardened preview and fixture safety; host suite passed 99 with 343 skips, but running the disposable PostgreSQL suite exposed 19 failures.
+Retry 3: Corrected verified legacy/current test modes, holiday auth typing, shift test payloads, personnel ZIP surname handling, explicit non-primary handling, and stale test assertions; focused result improved to 134 passed and 3 failed.
+Current diagnosis: AUTH_APP route coverage still does not include the complete auth router contract; automatic primary selection checks image count rather than whether a primary exists; personnel upload serialization still disagrees with the no-legacy-fields response contract.
+Manual next step: Inspect AUTH_APP router construction, change default primary selection to query for an existing primary image, define one authoritative personnel upload response schema, then rerun the failed focused command followed by the full PostgreSQL suite.
+================================================================================

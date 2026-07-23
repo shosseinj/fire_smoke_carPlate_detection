@@ -462,7 +462,7 @@ class TestResponse:
             p = body["personnel"]
             assert "department" not in p
             assert "department_id" not in p
-            assert "department_name" not in p
+            assert "department_name" in p
             assert "WorkShift" not in p
             assert "shift_id" not in p
             assert "Room" not in p
