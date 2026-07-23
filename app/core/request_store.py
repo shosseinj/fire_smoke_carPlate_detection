@@ -319,6 +319,8 @@ class RequestStore:
         personnel_id: int | None = None,
         request_type: str | None = None,
         status: str | None = None,
+        start_date_from: str | None = None,
+        start_date_to: str | None = None,
     ) -> tuple[list[PersonnelRequestRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -331,6 +333,12 @@ class RequestStore:
         if status is not None:
             where_clauses.append("status = ?")
             params.append(status)
+        if start_date_from is not None:
+            where_clauses.append("start_date >= ?")
+            params.append(start_date_from)
+        if start_date_to is not None:
+            where_clauses.append("start_date <= ?")
+            params.append(start_date_to)
         where = ""
         if where_clauses:
             where = " WHERE " + " AND ".join(where_clauses)
@@ -350,6 +358,15 @@ class RequestStore:
             return int(
                 conn.execute("SELECT COUNT(*) FROM personnel_requests").fetchone()[0]
             )
+
+    def count_by_status_for_personnel(self, personnel_id: int) -> dict[str, int]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM personnel_requests "
+                "WHERE personnel_id = ? GROUP BY status",
+                (personnel_id,),
+            ).fetchall()
+            return {r["status"]: int(r["cnt"]) for r in rows}
 
     def count_by_status(self) -> dict[str, int]:
         with self._lock, self._connection() as conn:

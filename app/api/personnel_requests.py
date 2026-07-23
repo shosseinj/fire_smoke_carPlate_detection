@@ -2,39 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import date, time, timedelta, timezone
+import random as _random
+from datetime import date, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.auth import require_role
+from app.core.auth import require_role, get_current_user
 from app.core.legacy_service import (
-    LEGACY_REQUEST_TYPES,
     LEGACY_DURATION_TYPES,
-    STATUS_MAP_LEGACY_TO_INTERNAL,
-    STATUS_MAP_INTERNAL_TO_LEGACY,
+    LEGACY_REQUEST_TYPES,
     calculate_request_duration,
     format_jalali,
+    internal_status,
     legacy_request_response,
     legacy_status,
-    internal_status,
     validate_clock_time,
     validate_jalali_date,
-    validate_timezone,
 )
-from app.core.holiday_store import HolidayStore
 from app.core.personnel_store import PersonnelRecord
-from app.core.shift_store import (
-    WorkShiftRecord,
-    _get_weekday_flag,
-    _is_overnight,
-    _weekday_from_local,
-)
-from app.core.request_store import (
-    VALID_REQUEST_TYPES,
-    VALID_REQUEST_STATUSES,
-    PersonnelRequestRecord,
-)
+from app.core.shift_store import WorkShiftRecord
+
+from app.core.request_store import PersonnelRequestRecord
 
 LEGACY_STATUSES = frozenset({"waiting", "accepted", "rejected"})
 
@@ -62,8 +51,8 @@ def get_personnel_store() -> Any:
     return get_runtime().personnel_store
 
 
-def _get_user_id(current_user: dict) -> int:
-    return current_user.get("id") or 0
+def _get_user_id(current_user: Any) -> int:
+    return getattr(current_user, "id", 0) or 0
 
 
 def _get_personnel(personnel_id: int) -> PersonnelRecord | None:
@@ -80,7 +69,7 @@ def _full_name(personnel: PersonnelRecord) -> str:
     return f"{personnel.fname} {personnel.lname}"
 
 
-# ── Legacy list ──────────────────────────────────────────────────────────
+# ── List ──────────────────────────────────────────────────────────────────
 
 
 @router.get("/")
@@ -92,16 +81,44 @@ def list_requests(
     start_date_to: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    _: dict = Depends(require_role("operator")),
+    _: Any = Depends(require_role("operator")),
 ) -> list[dict[str, Any]]:
     store = get_request_store()
-    # Map legacy status to internal
     int_status = internal_status(status) if status else None
     records, _ = store.list(
         offset=skip,
         limit=limit,
         personnel_id=personnel_id,
         request_type=request_type,
+        status=int_status,
+        start_date_from=start_date_from,
+        start_date_to=start_date_to,
+    )
+    result: list[dict[str, Any]] = []
+    for r in records:
+        name = None
+        p = _get_personnel(r.personnel_id)
+        if p:
+            name = _full_name(p)
+        result.append(legacy_request_response(r, full_name=name))
+    return result
+
+
+# ── My requests ───────────────────────────────────────────────────────────
+
+
+@router.get("/my-requests")
+def get_my_requests(
+    status: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: Any = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    store = get_request_store()
+    int_status = internal_status(status) if status else None
+    records, _ = store.list(
+        offset=skip,
+        limit=limit,
         status=int_status,
     )
     result: list[dict[str, Any]] = []
@@ -114,13 +131,13 @@ def list_requests(
     return result
 
 
-# ── Calculate time (static, before /{request_id}) ────────────────────────
+# ── Calculate time ────────────────────────────────────────────────────────
 
 
 @router.post("/calculate-time")
 def calculate_time(
     body: dict[str, Any],
-    _: dict = Depends(require_role("operator")),
+    _: Any = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     personnel_id = int(body.get("personnel_id", 0))
     request_type = str(body.get("request_type", "earned_leave"))
@@ -194,12 +211,33 @@ def calculate_time(
     }
 
 
-# ── Admin statistics (static, before /{request_id}) ─────────────────────
+# ── Stats: my ─────────────────────────────────────────────────────────────
+
+
+@router.get("/stats/my")
+def get_my_request_stats(
+    current_user: Any = Depends(get_current_user),
+) -> dict[str, Any]:
+    store = get_request_store()
+    by_status = store.count_by_status()
+    total = sum(by_status.values())
+    waiting = by_status.get("pending", 0)
+    accepted = by_status.get("approved", 0)
+    rejected = by_status.get("rejected", 0)
+    return {
+        "total": total,
+        "pending": waiting,
+        "accepted": accepted,
+        "rejected": rejected,
+    }
+
+
+# ── Stats: admin ──────────────────────────────────────────────────────────
 
 
 @router.get("/stats/admin")
 def admin_statistics(
-    _: dict = Depends(require_role("admin")),
+    _: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     store = get_request_store()
     by_status = store.count_by_status()
@@ -228,7 +266,7 @@ def admin_statistics(
 @router.post("/", status_code=201)
 def create_request(
     body: dict[str, Any],
-    _: dict = Depends(require_role("operator")),
+    _: Any = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     store = get_request_store()
     personnel_id = int(body.get("personnel_id", 0))
@@ -307,18 +345,92 @@ def create_request(
     return legacy_request_response(record, full_name=_full_name(personnel))
 
 
+# ── Generate fake (admin only) ────────────────────────────────────────────
+
+
+@router.post("/generate-fake", status_code=201)
+def generate_fake_requests(
+    count: int = Query(10, ge=1, le=50, description="تعداد درخواست آزمایشی برای ایجاد"),
+    admin_user: Any = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    store = get_request_store()
+    personnel_store = get_personnel_store()
+    all_personnel, _ = personnel_store.list(limit=1000)
+    personnel_with_shift = [p for p in all_personnel if p.shift_id is not None]
+    if not personnel_with_shift:
+        raise HTTPException(404, "هیچ پرسنل دارای شیفتی یافت نشد")
+
+    created = 0
+    request_types_list = list(LEGACY_REQUEST_TYPES)
+    start_date = date.today() - timedelta(days=180)
+
+    for _ in range(count):
+        person = _random.choice(personnel_with_shift)
+        duration_type = _random.choice(list(LEGACY_DURATION_TYPES))
+        req_type = _random.choice(request_types_list)
+        request_start = start_date + timedelta(days=_random.randint(0, 180))
+
+        if duration_type == "daily":
+            request_end = request_start + timedelta(days=_random.randint(0, 10))
+            st = None
+            et = None
+            st_str = None
+            et_str = None
+        else:
+            request_end = request_start
+            st_h = _random.randint(8, 14)
+            st_m = _random.choice([0, 15, 30, 45])
+            st = time(st_h, st_m)
+            et = time(st_h + _random.randint(1, 3), st_m)
+            st_str = st.strftime("%H:%M")
+            et_str = et.strftime("%H:%M")
+
+        shift = _get_shift(person)
+        if shift is None:
+            continue
+
+        try:
+            calc = calculate_request_duration(
+                person, shift, get_holiday_store(),
+                request_start, request_end, duration_type, st, et,
+            )
+        except (ValueError, Exception):
+            continue
+
+        int_status = _random.choice(["pending", "approved", "rejected"])
+        try:
+            store.create(
+                personnel_id=person.id,
+                request_type=req_type,
+                start_date=request_start.isoformat(),
+                end_date=request_end.isoformat(),
+                duration_type=duration_type,
+                start_time=st_str,
+                end_time=et_str,
+                duration_days=calc["duration_days"] if duration_type == "daily" else None,
+                duration_minutes=calc["duration_minutes"] if duration_type == "hourly" else None,
+                reason=None,
+                status=int_status,
+            )
+            created += 1
+        except (ValueError, Exception):
+            continue
+
+    return {"message": f"{created} درخواست آزمایشی ایجاد شد", "count": created}
+
+
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
 @router.get("/{request_id}")
 def get_request(
     request_id: int,
-    _: dict = Depends(require_role("operator")),
+    _: Any = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u06cc\u0627\u0641\u062a \u0646\u0634\u062f")
+        raise HTTPException(404, "درخواست یافت نشد")
     name = None
     p = _get_personnel(record.personnel_id)
     if p:
@@ -333,12 +445,12 @@ def get_request(
 def patch_request(
     request_id: int,
     body: dict[str, Any],
-    current_user: dict = Depends(require_role("admin")),
+    current_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u06cc\u0627\u0641\u062a \u0646\u0634\u062f")
+        raise HTTPException(404, "درخواست یافت نشد")
 
     status_str = body.get("status")
     if status_str is not None:
@@ -370,21 +482,23 @@ def patch_request(
     return legacy_request_response(updated, full_name=name)
 
 
-# ── Approve (only waiting/pending) ────────────────────────────────────────
+# ── Approve ────────────────────────────────────────────────────────────────
 
 
 @router.patch("/{request_id}/approve")
 def approve_request(
     request_id: int,
     admin_notes: str | None = Query(None),
-    current_user: dict = Depends(require_role("admin")),
+    current_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u06cc\u0627\u0641\u062a \u0646\u0634\u062f")
+        raise HTTPException(404, "درخواست یافت نشد")
+
     if record.status != "pending":
-        raise HTTPException(400, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u062f\u0631 \u0648\u0636\u0639\u06cc\u062a \u0627\u0646\u062a\u0638\u0627\u0631 \u0646\u06cc\u0633\u062a")
+        raise HTTPException(400, "درخواست در وضعیت انتظار نیست")
+
     try:
         updated = store.update_status(
             request_id,
@@ -401,7 +515,7 @@ def approve_request(
     return legacy_request_response(updated, full_name=name)
 
 
-# ── Reject (only waiting/pending) ─────────────────────────────────────────
+# ── Reject ────────────────────────────────────────────────────────────────
 
 
 @router.patch("/{request_id}/reject")
@@ -409,14 +523,16 @@ def reject_request(
     request_id: int,
     rejection_reason: str = Query(..., min_length=1),
     admin_notes: str | None = Query(None),
-    current_user: dict = Depends(require_role("admin")),
+    current_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u06cc\u0627\u0641\u062a \u0646\u0634\u062f")
+        raise HTTPException(404, "درخواست یافت نشد")
+
     if record.status != "pending":
-        raise HTTPException(400, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u062f\u0631 \u0648\u0636\u0639\u06cc\u062a \u0627\u0646\u062a\u0638\u0627\u0631 \u0646\u06cc\u0633\u062a")
+        raise HTTPException(400, "درخواست در وضعیت انتظار نیست")
+
     try:
         updated = store.update_status(
             request_id,
@@ -440,11 +556,11 @@ def reject_request(
 @router.delete("/{request_id}")
 def delete_request(
     request_id: int,
-    _: dict = Depends(require_role("admin")),
+    _: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u06cc\u0627\u0641\u062a \u0646\u0634\u062f")
+        raise HTTPException(404, "درخواست یافت نشد")
     store.delete(request_id)
-    return {"message": "\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u062d\u0630\u0641 \u0634\u062f"}
+    return {"message": "درخواست با موفقیت حذف شد"}

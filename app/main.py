@@ -112,10 +112,6 @@ OPENAPI_TAGS = [
         "description": "Standalone personnel image operations: retrieve, delete, set primary image.",
     },
     {
-        "name": "locations",
-        "description": "Hierarchical location management: buildings, sections, rooms with polygon zones, camera assignment, personnel room access, and detection-room matching.",
-    },
-    {
         "name": "Shifts",
         "description": "Work shift definitions, weekday schedules, personnel assignment, and statistics.",
     },
