@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260723_0007"
+ALEMBIC_HEAD_REVISION = "20260723_0008"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -356,6 +356,7 @@ general_settings = Table(
     Column("face_det_score", Float, nullable=False, server_default="0.4"),
     Column("human_det_score", Float, nullable=False, server_default="0.4"),
     Column("confirmation_threshold", Float, nullable=False, server_default="0.6"),
+    Column("force", Integer, nullable=False, server_default="0"),
     Column("operational_json", Text, nullable=False, server_default="{}"),
     Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
     Column("updated_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
@@ -366,6 +367,8 @@ general_settings = Table(
     CheckConstraint("face_det_score >= 0.0 AND face_det_score <= 1.0", name="ck_face_det_score_range"),
     CheckConstraint("human_det_score >= 0.0 AND human_det_score <= 1.0", name="ck_human_det_score_range"),
     CheckConstraint("confirmation_threshold >= 0.0 AND confirmation_threshold <= 1.0", name="ck_confirmation_threshold_range"),
+    CheckConstraint("force IN (0, 1)", name="ck_general_settings_force"),
+    CheckConstraint("confirmation_threshold >= face_rec_score", name="ck_confirmation_ge_face_rec"),
 )
 
 model_conversion_jobs = Table(
@@ -410,6 +413,24 @@ face_embeddings = Table(
 )
 Index("idx_face_embeddings_person", face_embeddings.c.person)
 Index("idx_face_embeddings_ref_img", face_embeddings.c.ref_img_id)
+
+import_progress = Table(
+    "import_progress", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("import_type", Text, nullable=False),
+    Column("source_filename", Text, nullable=False),
+    Column("total_rows", Integer, nullable=False, server_default="0"),
+    Column("imported_rows", Integer, nullable=False, server_default="0"),
+    Column("skipped_rows", Integer, nullable=False, server_default="0"),
+    Column("failed_rows", Integer, nullable=False, server_default="0"),
+    Column("status", Text, nullable=False, server_default="running"),
+    Column("error_message", Text),
+    Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    *_audit_columns(),
+)
+Index("idx_import_progress_type", import_progress.c.import_type)
+Index("idx_import_progress_status", import_progress.c.status)
+Index("idx_import_progress_created_by", import_progress.c.created_by)
 
 _RETURNING_ID_TABLES = {
     table.name

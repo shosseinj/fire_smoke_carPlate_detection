@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.engine import make_url
 
 from app.api.models import ModelSettingsPatch
+from app.core.auth import require_role
+from app.core.auth_store import UserRecord
 from app.core.plate_settings_store import PlateDetectionPolicy
 from app.fire_core.policy import FireSmokePolicyConfig
 from app.runtime import Runtime
@@ -134,11 +136,12 @@ def get_general_settings(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
 
 @router.patch(
     "/general",
-    summary="Update online general settings",
-    description="Only supplied dynamic sections and fields are changed.",
+    summary="بروزرسانی تنظیمات عمومی آنلاین",
+    description="فقط بخش‌ها و فیلدهای ارسال‌شده تغییر می‌کنند.",
 )
 def update_general_settings(
     payload: GeneralSettingsPatch,
+    current_user: UserRecord = Depends(require_role("admin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:
@@ -158,7 +161,7 @@ def update_general_settings(
         if payload.operational is not None:
             changes = payload.operational.model_dump(exclude_unset=True)
             if changes:
-                runtime.general_settings.update({"operational": changes})
+                runtime.general_settings.update(changes, updated_by=current_user.id)
                 runtime.apply_operational_settings()
         if payload.fire_smoke_detection is not None:
             _, current = runtime.fire_smoke_logs.policy_snapshot()
@@ -171,4 +174,16 @@ def update_general_settings(
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _snapshot(runtime)
+
+
+@router.post(
+    "/general/reset",
+    summary="بازنشانی تنظیمات عمومی به مقادیر پیش‌فرض",
+)
+def reset_general_settings(
+    current_user: UserRecord = Depends(require_role("admin")),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    runtime.general_settings.reset(updated_by=current_user.id)
     return _snapshot(runtime)

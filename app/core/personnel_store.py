@@ -668,16 +668,44 @@ class PersonnelStore:
 
     def generate_import_template(self) -> bytes:
         import openpyxl
+        from openpyxl.styles import Font, Alignment
         wb = openpyxl.Workbook()
+
         ws = wb.active
-        ws.title = "Personnel Import"
-        headers = ["fname", "lname", "national_code", "employee_type", "degree"]
+        ws.title = "ورود اطلاعات"
+        headers = [
+            "نام", "نام خانوادگی",
+            "کد ملی", "نوع استخدام",
+            "مدرک تحصیلی",
+        ]
         ws.append(headers)
-        ws.append(["Example", "User", "0012345678", "employee", "Bachelor"])
         for cell in ws[1]:
-            cell.font = openpyxl.styles.Font(bold=True)
-        for i, header in enumerate(headers, 1):
-            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 20
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="right")
+        col_widths = [16, 20, 16, 16, 16]
+        for i, w in enumerate(col_widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        ws.append(["مثال", "کاربر", "0012345678", "employee", "Bachelor"])
+
+        ws_guide = wb.create_sheet("راهنما", 0)
+        guide_lines = [
+            "راهنمای واردسازی پرسنل", "",
+            "ستون‌ها:",
+            "A: نام (اجباری)",
+            "B: نام خانوادگی (اجباری)",
+            "C: کد ملی ۱۰ رقمی (اجباری، دارای جمع کنترلی)",
+            "D: نوع استخدام (contractor/customer/guest/employee/unknown)",
+            "E: مدرک تحصیلی (بیسواد/زیر دیپلم/دیپلم/فوق دیپلم/لیسانس/فوق لیسانس/دکتری)",
+            "", "توجه:",
+            "- ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
+            "- ردیف‌های خالی رد می‌شوند",
+            "- کد ملی باید ۱۰ رقمی و معتبر باشد",
+        ]
+        for i, line in enumerate(guide_lines, 1):
+            ws_guide.cell(row=i, column=1, value=line)
+        ws_guide.column_dimensions["A"].width = 60
+        ws_guide.protection.sheet = True
+
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)

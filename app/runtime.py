@@ -31,6 +31,7 @@ from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.import_progress_store import ImportProgressStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
@@ -75,6 +76,7 @@ class Runtime:
     holiday_store: HolidayStore
     request_store: RequestStore
     detection_log_store: DetectionLogStore
+    import_progress: ImportProgressStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
@@ -84,8 +86,13 @@ class Runtime:
 
     def resolve_camera_settings(self, camera_id: str) -> dict[str, object]:
         general = self.operational_settings().to_dict()
+        gs = self.general_settings.get()
+        force = gs.force
         camera = self.registry.require(camera_id)
         overrides = dict(camera.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {})
+        if force:
+            from app.core.settings_policy import resolve_all_camera_settings
+            return resolve_all_camera_settings(overrides, general, force=True)
         return {**general, **overrides}
 
     def update_camera_overrides(self, camera_id: str, changes: dict[str, object]) -> dict[str, object]:
@@ -398,6 +405,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
+    import_progress = ImportProgressStore(database)
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
@@ -694,6 +702,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         holiday_store=holiday_store,
         request_store=request_store,
         detection_log_store=detection_log_store,
+        import_progress=import_progress,
         general_settings=general_settings,
         video_ingestor=video_ingestor,
         media_preview=media_preview,

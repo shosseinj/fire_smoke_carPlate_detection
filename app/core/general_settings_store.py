@@ -12,7 +12,7 @@ from app.time_utils import utc_now_text
 _GENERAL_COLUMNS = (
     "id, enable_processing, process_fire, process_plate, counts_for_attendance, "
     "margin_level, draw_box, draw_face, draw_skeleton, draw_zones, face_rec_score, "
-    "face_det_score, human_det_score, confirmation_threshold, operational_json, "
+    "face_det_score, human_det_score, confirmation_threshold, force, operational_json, "
     "created_by, updated_by, created_at_utc, updated_at_utc"
 )
 
@@ -21,7 +21,7 @@ _DEFAULTS: dict[str, Any] = {
     "counts_for_attendance": True, "margin_level": 1.0, "draw_box": True,
     "draw_face": True, "draw_skeleton": False, "draw_zones": True,
     "face_rec_score": 0.4, "face_det_score": 0.4, "human_det_score": 0.4,
-    "confirmation_threshold": 0.6,
+    "confirmation_threshold": 0.6, "force": False,
 }
 
 
@@ -41,6 +41,7 @@ class GeneralSettingsRecord:
     face_det_score: float
     human_det_score: float
     confirmation_threshold: float
+    force: bool
     operational: OperationalSettings
     created_by: int | None
     updated_by: int | None
@@ -57,6 +58,7 @@ class GeneralSettingsRecord:
             "draw_zones": self.draw_zones, "face_rec_score": self.face_rec_score,
             "face_det_score": self.face_det_score, "human_det_score": self.human_det_score,
             "confirmation_threshold": self.confirmation_threshold,
+            "force": self.force,
             "operational": self.operational.to_dict(),
             "created_at": self.created_at_utc, "updated_at": self.updated_at_utc,
             "created_by": self.created_by, "updated_by": self.updated_by,
@@ -88,7 +90,7 @@ class GeneralSettingsStore:
             draw_skeleton=bool(row["draw_skeleton"]), draw_zones=bool(row["draw_zones"]),
             face_rec_score=float(row["face_rec_score"]), face_det_score=float(row["face_det_score"]),
             human_det_score=float(row["human_det_score"]), confirmation_threshold=float(row["confirmation_threshold"]),
-            operational=operational, created_by=row["created_by"], updated_by=row["updated_by"],
+            force=bool(int(row["force"])), operational=operational, created_by=row["created_by"], updated_by=row["updated_by"],
             created_at_utc=str(row["created_at_utc"]), updated_at_utc=str(row["updated_at_utc"]),
         )
 
@@ -98,8 +100,8 @@ class GeneralSettingsStore:
             if row is None:
                 now = utc_now_text()
                 conn.execute(
-                    "INSERT INTO general_settings (id, enable_processing, process_fire, process_plate, counts_for_attendance, margin_level, draw_box, draw_face, draw_skeleton, draw_zones, face_rec_score, face_det_score, human_det_score, confirmation_threshold, operational_json, created_at_utc, updated_at_utc) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (1, 0, 0, 1, 1.0, 1, 1, 0, 1, 0.4, 0.4, 0.4, 0.6, json.dumps(self._default_operational.to_dict(), sort_keys=True), now, now),
+                    "INSERT INTO general_settings (id, enable_processing, process_fire, process_plate, counts_for_attendance, margin_level, draw_box, draw_face, draw_skeleton, draw_zones, face_rec_score, face_det_score, human_det_score, confirmation_threshold, force, operational_json, created_at_utc, updated_at_utc) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (1, 0, 0, 1, 1.0, 1, 1, 0, 1, 0.4, 0.4, 0.4, 0.6, 0, json.dumps(self._default_operational.to_dict(), sort_keys=True), now, now),
                 )
                 conn.commit()
             elif not row["operational_json"] or row["operational_json"] == "{}":
@@ -113,14 +115,21 @@ class GeneralSettingsStore:
                 raise RuntimeError("General settings singleton not found")
             return self._row_to_record(row)
 
+    def _validate_face_thresholds(self, face_rec_score: float | None, confirmation_threshold: float | None) -> None:
+        if face_rec_score is not None and confirmation_threshold is not None and confirmation_threshold < face_rec_score:
+            raise ValueError("confirmation_threshold باید بزرگ‌تر یا مساوی face_rec_score باشد")
+
     def update(self, changes: dict[str, Any], updated_by: int | None = None) -> GeneralSettingsRecord:
         with self._lock, self._connection() as conn:
             current = self.get()
             sets: list[str] = []
             params: list[Any] = []
-            bool_fields = {"enable_processing", "process_fire", "process_plate", "counts_for_attendance", "draw_box", "draw_face", "draw_skeleton", "draw_zones"}
+            bool_fields = {"enable_processing", "process_fire", "process_plate", "counts_for_attendance", "draw_box", "draw_face", "draw_skeleton", "draw_zones", "force"}
             float_fields = {"margin_level", "face_rec_score", "face_det_score", "human_det_score", "confirmation_threshold"}
             operational_changes = dict(changes.pop("operational", {}) or {})
+            face_rec_score = changes.get("face_rec_score", current.face_rec_score if "confirmation_threshold" in changes else None)
+            confirmation_threshold = changes.get("confirmation_threshold", current.confirmation_threshold if "face_rec_score" in changes else None)
+            self._validate_face_thresholds(face_rec_score, confirmation_threshold)
             for key, value in changes.items():
                 if key in bool_fields:
                     sets.append(f"{key} = ?"); params.append(1 if value else 0)

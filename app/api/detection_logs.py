@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -491,24 +490,57 @@ def yearly_leave_summary(
 @router.get("/import-excel/template")
 def import_excel_template(
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
+) -> Response:
+    import io
     wb = openpyxl.Workbook()
+
     ws = wb.active
-    ws.title = "ImportTemplate"
+    ws.title = "ورود اطلاعات"
     headers = [
         "کد ملی", "سال", "ماه", "روز", "ساعت", "دقیقه",
         "شناسه اتاق", "دسترسی مجاز", "لحاظ در حضور و غیاب",
     ]
     ws.append(headers)
     for cell in ws[1]:
+        cell.font = openpyxl.styles.Font(bold=True)
         cell.alignment = Alignment(horizontal="right")
-    tmp = NamedTemporaryFile(delete=False, suffix=".xlsx")
-    wb.save(tmp.name)
-    tmp.close()
-    return FileResponse(
-        tmp.name,
-        filename="import_template.xlsx",
+    col_widths = [15, 8, 8, 8, 8, 8, 12, 12, 12]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    ws.append(["0012345678", 1403, 6, 15, 8, 30, "", "1", "1"])
+
+    ws_guide = wb.create_sheet("راهنما", 0)
+    guide_lines = [
+        "راهنمای واردسازی لاگ‌های تشخیص",
+        "",
+        "ستون‌ها:",
+        "A: کد ملی (۱۰ رقمی، اجباری)",
+        "B: سال شمسی (۴ رقمی، اجباری)",
+        "C: ماه شمسی (۱-۱۲، اجباری)",
+        "D: روز شمسی (۱-۳۱، اجباری)",
+        "E: ساعت (۰-۲۳، پیش‌فرض ۰)",
+        "F: دقیقه (۰-۵۹، پیش‌فرض ۰)",
+        "G: شناسه اتاق (عددی، اختیاری)",
+        "H: دسترسی مجاز (0 یا 1، پیش‌فرض 1)",
+        "I: لحاظ در حضور و غیاب (0 یا 1، پیش‌فرض 1)",
+        "",
+        "توجه:",
+        "- ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
+        "- ردیف‌های خالی رد می‌شوند",
+    ]
+    ws_guide.append(["راهنمای واردسازی"])
+    for i, line in enumerate(guide_lines, 1):
+        ws_guide.cell(row=i, column=1, value=line)
+    ws_guide.column_dimensions["A"].width = 60
+    ws_guide.protection.sheet = True
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=import_template.xlsx"},
     )
 
 

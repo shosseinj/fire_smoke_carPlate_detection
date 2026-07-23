@@ -16,24 +16,24 @@ router = APIRouter(prefix="/api/v1/fire-logs", tags=["fire-logs"])
 
 class FireLogCreate(BaseModel):
     detection_time: datetime
-    camera_id: str = Field(min_length=1)
-    hazard_type: str
-    severity: str = Field(pattern="^(low|medium|high)$")
-    confidence: float | None = Field(default=None, ge=0, le=1)
-    snapshot_url: str | None = None
-    video_url: str | None = None
-    thumbnail_url: str | None = None
+    camera_id: str = Field(min_length=1, description="شناسه دوربین")
+    hazard_type: str = Field(description="نوع خطر")
+    severity: str = Field(pattern="^(low|medium|high)$", description="شدت")
+    confidence: float | None = Field(default=None, ge=0, le=1, description="میزان اطمینان")
+    snapshot_url: str | None = Field(default=None, description="آدرس تصویر لحظه‌ای")
+    video_url: str | None = Field(default=None, description="آدرس ویدیو")
+    thumbnail_url: str | None = Field(default=None, description="آدرس تصویر بندانگشتی")
 
 
 class FireLogUpdate(BaseModel):
-    detection_time: datetime | None = None
-    camera_id: str | None = None
-    hazard_type: str | None = None
-    severity: str | None = None
-    confidence: float | None = Field(default=None, ge=0, le=1)
-    snapshot_url: str | None = None
-    video_url: str | None = None
-    thumbnail_url: str | None = None
+    detection_time: datetime | None = Field(default=None, description="زمان تشخیص")
+    camera_id: str | None = Field(default=None, description="شناسه دوربین")
+    hazard_type: str | None = Field(default=None, description="نوع خطر")
+    severity: str | None = Field(default=None, description="شدت")
+    confidence: float | None = Field(default=None, ge=0, le=1, description="میزان اطمینان")
+    snapshot_url: str | None = Field(default=None, description="آدرس تصویر لحظه‌ای")
+    video_url: str | None = Field(default=None, description="آدرس ویدیو")
+    thumbnail_url: str | None = Field(default=None, description="آدرس تصویر بندانگشتی")
 
 
 def get_runtime() -> Runtime:
@@ -69,7 +69,7 @@ def list_fire_logs(
 def get_fire_log(log_id: int, _: UserRecord = Depends(get_current_user), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     value = runtime.fire_smoke_logs.get(log_id)
     if value is None:
-        raise HTTPException(status_code=404, detail="Fire or smoke log not found")
+        raise HTTPException(status_code=404, detail="لاگ حریق یا دود یافت نشد")
     return value
 
 
@@ -83,12 +83,12 @@ def create_fire_log(payload: FireLogCreate, _: UserRecord = Depends(require_role
 def update_fire_log(log_id: int, payload: FireLogUpdate, _: UserRecord = Depends(require_role("superuser")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     value = runtime.fire_smoke_logs.update_manual(log_id, payload.model_dump(exclude_unset=True))
     if value is None:
-        raise HTTPException(status_code=404, detail="Fire or smoke log not found")
+        raise HTTPException(status_code=404, detail="لاگ حریق یا دود یافت نشد")
     return value
 
 
 @router.delete("/{log_id}")
 def delete_fire_log(log_id: int, _: UserRecord = Depends(require_role("superuser")), runtime: Runtime = Depends(get_runtime)) -> dict[str, str]:
     if not runtime.fire_smoke_logs.delete(log_id):
-        raise HTTPException(status_code=404, detail="Fire or smoke log not found")
-    return {"message": "Fire or smoke log deleted successfully"}
+        raise HTTPException(status_code=404, detail="لاگ حریق یا دود یافت نشد")
+    return {"message": "لاگ حریق یا دود با موفقیت حذف شد"}
