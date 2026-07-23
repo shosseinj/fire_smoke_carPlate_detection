@@ -256,6 +256,9 @@ class FireSmokeLogStore:
         *,
         camera: str | None = None,
         severity: str | None = None,
+        hazard_type: str | None = None,
+        detected_from: str | None = None,
+        detected_to: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -266,6 +269,15 @@ class FireSmokeLogStore:
         if severity:
             clauses.append("severity = ?")
             parameters.append(severity.strip().lower())
+        if hazard_type:
+            clauses.append("details_json LIKE ?")
+            parameters.append(f'%"hazard_type": "{hazard_type.strip()}"%')
+        if detected_from:
+            clauses.append("time >= ?")
+            parameters.append(detected_from)
+        if detected_to:
+            clauses.append("time <= ?")
+            parameters.append(detected_to)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         parameters.append(max(1, min(int(limit), 1000)))
         with self._lock, self._connect() as connection:

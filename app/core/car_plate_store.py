@@ -16,7 +16,17 @@ class CarPlateStore:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def list(self, *, active_only: bool = True, search: str | None = None, skip: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+    def list(
+        self,
+        *,
+        active_only: bool = True,
+        search: str | None = None,
+        usage_type: str | None = None,
+        vehicle_type: str | None = None,
+        owner_phone: str | None = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
         clauses = ["deleted_at_utc IS NULL"]
         params: list[Any] = []
         if active_only:
@@ -25,6 +35,10 @@ class CarPlateStore:
             clauses.append("(owner_name ILIKE ? OR owner_phone ILIKE ? OR brand ILIKE ? OR model ILIKE ?)")
             value = f"%{search.strip()}%"
             params.extend([value] * 4)
+        for column, value in (("usage_type", usage_type), ("vehicle_type", vehicle_type), ("owner_phone", owner_phone)):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value.strip())
         params.extend([max(0, skip), max(1, min(limit, 500))])
         with self.database.connection() as connection:
             rows = connection.execute(

@@ -60,7 +60,7 @@ def _legacy_response(record: SourceRecord, runtime: Runtime) -> dict[str, object
         "id": record.source_id,
         "camera_id": record.source_id,
         "camera_name": record.name,
-        "camera_url": record.source_uri,
+        "camera_url": VideoFileIngestor.redact_uri(record.source_uri) if record.source_uri else None,
         "camera_type": "rtsp" if (record.source_uri or "").lower().startswith("rtsp") else "file",
         "resolution": f"{record.frame_width}x{record.frame_height}",
         "fps": runtime.resolve_camera_settings(record.source_id).get("video_ingest_fps"),
@@ -80,6 +80,7 @@ class LegacyCameraHealthCheckRequest(BaseModel):
 
 
 @router.get("", response_model=list[CameraResponse])
+@router.get("/", response_model=list[CameraResponse], include_in_schema=False)
 def list_cameras(
     runtime: Runtime = Depends(get_runtime),
 ) -> list[CameraResponse]:
@@ -215,6 +216,12 @@ def legacy_delete_all_cameras(runtime: Runtime = Depends(get_runtime)) -> dict[s
     "",
     response_model=CameraResponse,
     status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/",
+    response_model=CameraResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
 )
 def create_camera(
     payload: CameraCreate,

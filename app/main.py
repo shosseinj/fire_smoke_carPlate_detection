@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
+from app.api.legacy_websocket import root_router as legacy_root_websocket_router
 from app.api.legacy_websocket import router as legacy_websocket_router
 from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
@@ -164,6 +165,7 @@ app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)
 app.include_router(legacy_websocket_router)
+app.include_router(legacy_root_websocket_router)
 app.include_router(plate_logs_router)
 app.include_router(car_plates_router)
 app.include_router(fire_smoke_logs_router)

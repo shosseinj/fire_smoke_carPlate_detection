@@ -215,6 +215,7 @@ def get_building(
 
 
 @router.put("/buildings/{building_id}", summary="Update a building")
+@router.patch("/buildings/{building_id}", include_in_schema=False)
 def update_building(
     building_id: int,
     payload: BuildingUpdateRequest,
@@ -318,6 +319,7 @@ def get_section(
 
 
 @router.put("/sections/{section_id}", summary="Update a section")
+@router.patch("/sections/{section_id}", include_in_schema=False)
 def update_section(
     section_id: int,
     payload: SectionUpdateRequest,
@@ -363,6 +365,10 @@ def delete_section(
     "/sections/{section_id}/assign-camera/{camera_id}",
     summary="Assign a camera to a section",
     status_code=status.HTTP_200_OK,
+)
+@router.patch(
+    "/sections/{section_id}/assign-camera/{camera_id}",
+    include_in_schema=False,
 )
 def assign_camera_to_section(
     section_id: int,
@@ -573,6 +579,10 @@ def grant_room_access(
 @router.post(
     "/rooms/{room_id}/revoke/{personnel_id}",
     summary="Revoke personnel access from a room",
+)
+@router.delete(
+    "/rooms/{room_id}/revoke/{personnel_id}",
+    include_in_schema=False,
 )
 def revoke_room_access(
     room_id: int,

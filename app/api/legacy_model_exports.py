@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.models import ModelConversionRequest
 from app.core.auth import require_role
@@ -70,3 +70,18 @@ def get_legacy_model_export(
         raise HTTPException(status_code=404, detail="Export job not found") from exc
     result["status_url"] = f"/api/v1/model-exports/{job_id}"
     return result
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_legacy_model_export(
+    job_id: str,
+    _: UserRecord = Depends(require_role("admin")),
+    runtime: Runtime = Depends(get_runtime),
+) -> Response:
+    try:
+        deleted = runtime.model_conversions.delete(job_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

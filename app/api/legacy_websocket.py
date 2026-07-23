@@ -13,6 +13,7 @@ from app.runtime import Runtime
 
 
 router = APIRouter(prefix="/api/v1/ws", tags=["legacy-websocket"])
+root_router = APIRouter(prefix="/ws", tags=["legacy-websocket"])
 VIDEO_PAGE_PATH = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
 _connection_count = 0
 
@@ -102,3 +103,10 @@ def legacy_connection_status() -> dict[str, object]:
 @router.get("/video-page", response_class=HTMLResponse)
 async def legacy_video_page() -> HTMLResponse:
     return HTMLResponse(VIDEO_PAGE_PATH.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
+
+
+# The archive mounted these routes directly at /ws. Keep the current /api/v1/ws
+# contract while exposing the verified legacy base path as an explicit alias.
+root_router.add_api_websocket_route("/live/{camera_id}", legacy_live_feed)
+root_router.add_api_route("/connections/status", legacy_connection_status, methods=["GET"])
+root_router.add_api_route("/video-page", legacy_video_page, methods=["GET"], response_class=HTMLResponse)

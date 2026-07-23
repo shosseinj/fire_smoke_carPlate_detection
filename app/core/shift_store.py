@@ -173,8 +173,6 @@ class ShiftStore:
             raise ValueError("max_minutes_early must be nonnegative")
         if max_overtime_hours < 0:
             raise ValueError("max_overtime_hours must be nonnegative")
-        if not any(weekday_flags.get(col, False) for col in WEEKDAY_COLS):
-            raise ValueError("At least one weekday must be selected")
 
     def create(
         self,
@@ -219,6 +217,16 @@ class ShiftStore:
             row = conn.execute(
                 "SELECT * FROM work_shifts WHERE id = ?", (shift_id,)
             ).fetchone()
+            return self._row_to_shift(row) if row is not None else None
+
+    def get_by_name(self, shift_name: str, exclude_id: int | None = None) -> WorkShiftRecord | None:
+        with self._lock, self._connection() as conn:
+            query = "SELECT * FROM work_shifts WHERE shift_name = ?"
+            parameters: list[Any] = [shift_name]
+            if exclude_id is not None:
+                query += " AND id != ?"
+                parameters.append(exclude_id)
+            row = conn.execute(query, parameters).fetchone()
             return self._row_to_shift(row) if row is not None else None
 
     def update(

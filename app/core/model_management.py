@@ -785,6 +785,28 @@ class ModelConversionManager:
             result["status_url"] = f"/api/v1/models/conversions/{job.job_id}"
             return result
 
+    def delete(self, job_id: str) -> bool:
+        """Delete a finished conversion record and its generated artifacts."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            if job.status in {"queued", "running"}:
+                raise RuntimeError("A running conversion job cannot be deleted")
+            for artifact in job.artifacts:
+                self.models.resolve_path(artifact).unlink(missing_ok=True)
+            self.models.resolve_path(job.output_directory).joinpath(
+                Path(job.source_model).name
+            ).unlink(missing_ok=True)
+            with self._connect() as connection:
+                connection.execute(
+                    "DELETE FROM model_conversion_jobs WHERE job_id = ?",
+                    (job_id,),
+                )
+                connection.commit()
+            del self._jobs[job_id]
+            return True
+
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [

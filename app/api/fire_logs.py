@@ -47,12 +47,22 @@ def get_runtime() -> Runtime:
 def list_fire_logs(
     camera_id: str | None = None,
     severity: str | None = Query(default=None, pattern="^(low|medium|high)$"),
+    hazard_type: str | None = Query(default=None, max_length=64),
+    detected_from: str | None = Query(default=None),
+    detected_to: str | None = Query(default=None),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
-    return runtime.fire_smoke_logs.list(camera=camera_id, severity=severity, limit=skip + limit)[skip:]
+    return runtime.fire_smoke_logs.list(
+        camera=camera_id,
+        severity=severity,
+        hazard_type=hazard_type,
+        detected_from=detected_from,
+        detected_to=detected_to,
+        limit=skip + limit,
+    )[skip:]
 
 
 @router.get("/{log_id}")

@@ -60,12 +60,23 @@ def get_runtime() -> Runtime:
 def list_car_plates(
     active_only: bool = True,
     search: str | None = Query(default=None, max_length=200),
+    usage_type: str | None = Query(default=None, max_length=32),
+    vehicle_type: str | None = Query(default=None, max_length=32),
+    owner_phone: str | None = Query(default=None, max_length=32),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
-    return runtime.car_plates.list(active_only=active_only, search=search, skip=skip, limit=limit)
+    return runtime.car_plates.list(
+        active_only=active_only,
+        search=search,
+        usage_type=usage_type,
+        vehicle_type=vehicle_type,
+        owner_phone=owner_phone,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/{plate_id}")
