@@ -265,8 +265,8 @@ class PersonnelStore:
     ) -> PersonnelRecord:
         fname = fname.strip()
         lname = lname.strip()
-        if not fname or not lname:
-            raise ValueError("fname and lname are required")
+        if not fname:
+            raise ValueError("fname is required")
         raw_code = normalize_national_code(national_code)
         if not validate_national_code(raw_code):
             raise ValueError(f"Invalid Iranian national code: {national_code}")
@@ -336,11 +336,9 @@ class PersonnelStore:
             if existing is None:
                 return None
             new_fname = fname.strip() if fname else existing["fname"]
-            new_lname = lname.strip() if lname else existing["lname"]
+            new_lname = lname.strip() if lname is not None else existing["lname"]
             if fname is not None and not new_fname:
                 raise ValueError("fname cannot be blank")
-            if lname is not None and not new_lname:
-                raise ValueError("lname cannot be blank")
             raw_code = existing["national_code"]
             if national_code is not None:
                 raw_code = normalize_national_code(national_code)
@@ -531,13 +529,15 @@ class PersonnelStore:
             ).fetchone()
             if existing is None:
                 raise ValueError(f"Personnel not found: {personnel_id}")
-            if is_primary is not None and is_primary:
+            if is_primary is True:
                 conn.execute(
                     "UPDATE personnel_images SET is_primary = 0 "
                     "WHERE personnel_id = ? AND is_primary = 1",
                     (personnel_id,),
                 )
                 primary_flag = 1
+            elif is_primary is False:
+                primary_flag = 0
             else:
                 image_count = conn.execute(
                     "SELECT COUNT(*) FROM personnel_images WHERE personnel_id = ?",
@@ -644,10 +644,17 @@ class PersonnelStore:
         Files may be stored directly in the flat directory or inside
         {national_code}/ subdirectories — search recursively.
         """
-        filename_pattern = f"**/{personnel_id}_*"
+        filename_patterns = (
+            f"**/{personnel_id}_*",
+            f"**/personnel_{personnel_id}_*",
+        )
         for directory in (self._snapshot_dir, self._cropped_face_dir):
             try:
-                candidates = tuple(directory.glob(filename_pattern))
+                candidates = {
+                    path
+                    for pattern in filename_patterns
+                    for path in directory.glob(pattern)
+                }
             except OSError:
                 continue
             for path in candidates:

@@ -69,7 +69,7 @@ def test_fire_frame_is_eager_then_upgraded_with_both_exact_results() -> None:
     )
 
     hub.publish_result(source_packet, fire_result)
-    fire_encoded = hub.latest("camera-07")
+    fire_encoded = hub.wait_next("camera-07", 0, timeout=1.0)
     assert fire_encoded is not None
     first_version = fire_encoded.version
     fire_delivered = target.get(timeout=1.0)
@@ -78,7 +78,7 @@ def test_fire_frame_is_eager_then_upgraded_with_both_exact_results() -> None:
     target.task_done()
 
     hub.publish_result(source_packet, plate_result)
-    encoded = hub.latest("camera-07")
+    encoded = hub.wait_next("camera-07", first_version, timeout=1.0)
     assert encoded is not None
     assert encoded.version > first_version
     assert encoded.frame_index == source_packet.frame_index
@@ -137,7 +137,7 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
 
     hub.publish_passthrough(source_packet)
 
-    encoded = hub.latest("camera-07")
+    encoded = hub.wait_next("camera-07", 0, timeout=1.0)
     assert encoded is not None
     assert encoded.tasks == ()
     image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -154,7 +154,7 @@ def test_wall_rendition_is_bounded_and_full_rendition_keeps_camera_size() -> Non
 
     hub.publish_passthrough(packet([]))
 
-    encoded = hub.latest("camera-07")
+    encoded = hub.wait_next("camera-07", 0, timeout=1.0)
     assert encoded is not None
     full_jpeg, full_width, full_height, full_profile = encoded.rendition(
         full_resolution=True
@@ -183,7 +183,7 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
         Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
     ).read_text(encoding="utf-8")
 
-    assert 'new URLSearchParams({ wall: "true" })' in dashboard
+    assert 'new URLSearchParams({ metadata_only: "true" })' in dashboard
     assert 'parameters.set("fullscreen_source", fullscreenSourceId)' in dashboard
     assert 'fullscreenElement?.classList.contains("camera-card")' in dashboard
     assert "reconnectBroadcastSocket()" in dashboard
@@ -283,7 +283,7 @@ def test_face_result_draws_recognized_identity() -> None:
             },
         ),
     )
-    encoded = hub.latest("camera-07")
+    encoded = hub.wait_next("camera-07", 0, timeout=1.0)
     assert encoded is not None
 
 

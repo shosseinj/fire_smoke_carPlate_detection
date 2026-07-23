@@ -2,40 +2,24 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
 from datetime import date
-from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.core.shift_store import (
-    WEEKDAY_COLS,
     ShiftStore,
-    WorkShiftRecord,
     _is_overnight,
     _weekday_from_local,
 )
+from app.database import Database
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def store() -> ShiftStore:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    s = ShiftStore(db_path)
-    yield s
-    # Force-close any remaining SQLite connections
-    if hasattr(s, '_lock'):
-        with s._lock:
-            pass  # flush pending operations
-    try:
-        db_path.unlink(missing_ok=True)
-    except PermissionError:
-        pass
+def store(postgres_database: Database) -> ShiftStore:
+    return ShiftStore(postgres_database)
 
 
 # ── Store unit tests ──────────────────────────────────────────────────
@@ -72,7 +56,8 @@ class TestShiftStore:
         assert shift.shift_type == "morning"
         assert shift.start_time == "08:00"
         assert shift.end_time == "16:00"
-        assert shift.max_minutes_delay == 15
+        assert shift.max_minutes_delay == 0
+        assert shift.max_overtime_hours == 8.0
 
     def test_create_invalid_type(self, store: ShiftStore) -> None:
         with pytest.raises(ValueError, match="Invalid shift type"):

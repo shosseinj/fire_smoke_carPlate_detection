@@ -183,8 +183,10 @@ def _personnel_to_response(p: PersonnelRecord, store: PersonnelStore | None = No
     dept_name: str | None = None
     shift_name: str | None = None
     if store is not None:
-        dept_name = store._resolve_department_name(p.department_id)
-        shift_name = store._resolve_shift_name(p.shift_id)
+        resolve_department = getattr(store, "_resolve_department_name", None)
+        resolve_shift = getattr(store, "_resolve_shift_name", None)
+        dept_name = resolve_department(p.department_id) if resolve_department else None
+        shift_name = resolve_shift(p.shift_id) if resolve_shift else None
     return PersonnelResponse(
         id=p.id,
         fname=p.fname,
@@ -790,7 +792,7 @@ async def upload_personnel_images(
             },
         )
 
-    person_dict = dataclass_to_dict(person)
+    person_dict = _personnel_to_response(person, store).model_dump()
     person_dict["images"] = []
     for img in saved_images:
         img_dict = dataclass_to_dict(img)

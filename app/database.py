@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260722_0006"
+ALEMBIC_HEAD_REVISION = "20260723_0007"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -262,6 +262,28 @@ plate_logs = Table(
 )
 Index("idx_plate_logs_time", plate_logs.c.time); Index("idx_plate_logs_camera", plate_logs.c.camera); Index("idx_plate_logs_plate", plate_logs.c.plate)
 
+car_plates = Table(
+    "car_plates", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("left_digits", String(2), nullable=False),
+    Column("plate_alphabet", String(1), nullable=False),
+    Column("right_digits", String(3), nullable=False),
+    Column("iran_code", String(2), nullable=False),
+    Column("plate_format", String(32), nullable=False, server_default="standard"),
+    Column("usage_type", String(32), nullable=False),
+    Column("vehicle_type", String(32), nullable=False),
+    Column("owner_name", String(200), nullable=False),
+    Column("owner_phone", String(32), nullable=False),
+    Column("color", String(50)), Column("brand", String(80)), Column("model", String(80)),
+    Column("manufacture_year", Integer), Column("description", Text),
+    Column("is_active", Integer, nullable=False, server_default="1"),
+    Column("deleted_at_utc", UTC_TS),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+)
+Index("idx_car_plates_owner_phone", car_plates.c.owner_phone)
+Index("idx_car_plates_active", car_plates.c.is_active)
+
 plate_general_settings = Table(
     "plate_general_settings", metadata,
     Column("id", Integer, primary_key=True), Column("vehicle_confidence", Float, nullable=False),
@@ -359,7 +381,14 @@ face_embeddings = Table(
 Index("idx_face_embeddings_person", face_embeddings.c.person)
 Index("idx_face_embeddings_ref_img", face_embeddings.c.ref_img_id)
 
-_RETURNING_ID_TABLES = {t.name for t in metadata.tables.values() if "id" in t.c and t.c.id.primary_key and t.c.id.autoincrement is not False}
+_RETURNING_ID_TABLES = {
+    table.name
+    for table in metadata.tables.values()
+    if "id" in table.c
+    and table.c.id.primary_key
+    and isinstance(table.c.id.type, Integer)
+    and table.c.id.autoincrement is not False
+}
 
 
 def _format_value(value: Any) -> Any:

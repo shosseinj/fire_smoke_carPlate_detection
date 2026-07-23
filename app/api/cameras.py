@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import base64
+from urllib.parse import urlsplit
+
+import cv2
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
 
 from app.core.source_registry import SourceRecord
+from app.core.media_preview import preview_stream_path
 from app.core.operational_settings import CAMERA_SETTINGS_METADATA_KEY
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
@@ -48,11 +54,161 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
     )
 
 
+def _legacy_response(record: SourceRecord, runtime: Runtime) -> dict[str, object]:
+    """Expose the old camera field names without changing the native contract."""
+    return {
+        "id": record.source_id,
+        "camera_id": record.source_id,
+        "camera_name": record.name,
+        "camera_url": record.source_uri,
+        "camera_type": "rtsp" if (record.source_uri or "").lower().startswith("rtsp") else "file",
+        "resolution": f"{record.frame_width}x{record.frame_height}",
+        "fps": runtime.resolve_camera_settings(record.source_id).get("video_ingest_fps"),
+        "is_active": record.enabled,
+        "created_at": record.created_at_utc,
+        "updated_at": record.updated_at_utc,
+    }
+
+
+class LegacyCameraBatchActiveUpdate(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    active_status: list[bool] = Field(min_length=1)
+
+
+class LegacyCameraHealthCheckRequest(BaseModel):
+    camera_url: str = Field(min_length=1)
+
+
 @router.get("", response_model=list[CameraResponse])
 def list_cameras(
     runtime: Runtime = Depends(get_runtime),
 ) -> list[CameraResponse]:
     return [_response(item, runtime) for item in runtime.registry.list()]
+
+
+@router.get("/preview-config")
+def get_preview_config(
+    request: Request,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict:
+    configured_base = runtime.settings.media_preview_whep_base_url
+    if configured_base:
+        parsed = urlsplit(configured_base)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise HTTPException(status_code=500, detail="Invalid public preview URL")
+        whep_base_url = configured_base
+    else:
+        hostname = request.url.hostname or "127.0.0.1"
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        whep_base_url = f"{request.url.scheme}://{hostname}:8889"
+    return {
+        "enabled": runtime.settings.media_preview_enabled,
+        "whep_base_url": whep_base_url,
+        "sources": [
+            {
+                "source_id": record.source_id,
+                "name": record.name,
+                "enabled": record.enabled,
+                "tasks": sorted(task.value for task in record.tasks),
+                "frame_width": record.frame_width,
+                "frame_height": record.frame_height,
+                "preview_path": preview_stream_path(record.source_id),
+            }
+            for record in runtime.registry.list()
+        ],
+    }
+
+
+@router.get("/active")
+def list_active_cameras_legacy(runtime: Runtime = Depends(get_runtime)) -> list[dict[str, object]]:
+    return [_legacy_response(item, runtime) for item in runtime.registry.list() if item.enabled]
+
+
+@router.get("/active/effective")
+def list_active_effective_cameras_legacy(runtime: Runtime = Depends(get_runtime)) -> list[dict[str, object]]:
+    return [
+        {
+            **_legacy_response(item, runtime),
+            "effective_settings": runtime.resolve_camera_settings(item.source_id),
+        }
+        for item in runtime.registry.list()
+        if item.enabled
+    ]
+
+
+@router.get("/{camera_id}/effective-settings")
+def get_effective_camera_settings_legacy(
+    camera_id: str,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, object]:
+    record = runtime.registry.get(camera_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return {**_legacy_response(record, runtime), "effective_settings": runtime.resolve_camera_settings(camera_id)}
+
+
+@router.patch("/batch-active")
+def update_camera_active_legacy(
+    payload: LegacyCameraBatchActiveUpdate,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, object]:
+    if len(payload.ids) != len(payload.active_status):
+        raise HTTPException(status_code=400, detail="ids and active_status must have equal lengths")
+    missing: list[str] = []
+    updated = 0
+    for camera_id, enabled in zip(payload.ids, payload.active_status):
+        if runtime.registry.get(camera_id) is None:
+            missing.append(camera_id)
+            continue
+        runtime.registry.update(camera_id, enabled=enabled)
+        updated += 1
+    return {"updated_count": updated, "failed_ids": missing}
+
+
+@router.post("/health-check")
+def check_camera_health_legacy(payload: LegacyCameraHealthCheckRequest) -> dict[str, object]:
+    capture = cv2.VideoCapture(payload.camera_url)
+    try:
+        if not capture.isOpened():
+            return {"status": "unhealthy", "message": "Camera could not be opened", "snapshot": None}
+        success, frame = capture.read()
+        if not success or frame is None:
+            return {"status": "unhealthy", "message": "Camera frame could not be read", "snapshot": None}
+        encoded, buffer = cv2.imencode(".jpg", frame)
+        if not encoded:
+            return {"status": "unhealthy", "message": "Camera frame could not be encoded", "snapshot": None}
+        return {
+            "status": "healthy",
+            "message": "Camera is active",
+            "snapshot": f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('ascii')}",
+        }
+    finally:
+        capture.release()
+
+
+@router.post("/create-cameras")
+def legacy_create_cameras(runtime: Runtime = Depends(get_runtime)) -> dict[str, object]:
+    """Keep the legacy setup route reachable without copying its private seed URLs."""
+    cameras = [_legacy_response(item, runtime) for item in runtime.registry.list()]
+    return {
+        "message": "Use the current camera create endpoint to add sources",
+        "delete_previous": False,
+        "cameras": cameras,
+    }
+
+
+@router.delete("/delete-all-cameras")
+def legacy_delete_all_cameras(runtime: Runtime = Depends(get_runtime)) -> dict[str, int]:
+    deleted_count = sum(1 for item in runtime.registry.list() if runtime.registry.delete(item.source_id))
+    return {"deleted_count": deleted_count}
 
 
 @router.post(

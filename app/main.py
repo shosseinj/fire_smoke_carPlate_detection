@@ -8,13 +8,17 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
+from app.api.legacy_websocket import router as legacy_websocket_router
 from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
+from app.api.car_plates import router as car_plates_router
 from app.api.plate_settings import router as plate_settings_router
 from app.api.models import router as models_router
+from app.api.legacy_model_exports import router as legacy_model_exports_router
 from app.api.general_settings import router as general_settings_router
 from app.api.fire_smoke_logs import router as fire_smoke_logs_router
+from app.api.fire_logs import router as fire_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.processor_tests import router as processor_tests_router
 from app.api.sources import router as sources_router
@@ -153,13 +157,17 @@ app.include_router(diagnostics_router)
 app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
 app.include_router(models_router)
+app.include_router(legacy_model_exports_router)
 app.include_router(sources_router)
 app.include_router(cameras_router)
 app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)
+app.include_router(legacy_websocket_router)
 app.include_router(plate_logs_router)
+app.include_router(car_plates_router)
 app.include_router(fire_smoke_logs_router)
+app.include_router(fire_logs_router)
 app.include_router(faces_router)
 app.include_router(humans_router)
 app.include_router(personnel_router)
@@ -197,6 +205,7 @@ def health() -> dict:
         "registered_sources": len(runtime.registry.list()),
         "router_started": status["started"],
         "video_ingestor": status["video_ingestor"],
+        "media_preview": status["media_preview"],
         "broadcast": status["broadcast"],
         "plate_log_count": status["plate_log_count"],
         "fire_smoke_logs": status["fire_smoke_logs"],

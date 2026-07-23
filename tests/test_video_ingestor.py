@@ -91,8 +91,10 @@ class FakeElement:
         self.connections.append((signal, callback))
 
 
-def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
-    registry = SourceRegistry()
+def test_video_files_are_sampled_as_one_camera_round(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
     registry.create(
         SourceRecord(
             source_id="camera-01",
@@ -151,8 +153,10 @@ def test_video_files_are_sampled_as_one_camera_round(tmp_path: Path) -> None:
     ingestor.close()
 
 
-def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(tmp_path: Path) -> None:
-    registry = SourceRegistry()
+def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
     router = RecordingRouter(registry)
     ingestor = DeepStreamIngestor(
         registry=registry,
@@ -185,8 +189,10 @@ def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(tmp_path: Pa
     assert "example.mp4" in ingestor._resolve_uri(local.source_uri or "")
 
 
-def test_deepstream_static_only_mode_excludes_rtsp_before_open(tmp_path: Path) -> None:
-    registry = SourceRegistry()
+def test_deepstream_static_only_mode_excludes_rtsp_before_open(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
     registry.create(
         SourceRecord(
             source_id="camera-01",
@@ -214,9 +220,9 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(tmp_path: Path) -
 
 
 def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
-    tmp_path: Path,
+    tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
-    registry = SourceRegistry()
+    registry = source_registry
     ingestor = DeepStreamIngestor(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]
@@ -256,9 +262,9 @@ def test_deepstream_resize_keeps_cpu_fallback_contract(tmp_path: Path) -> None:
 
 
 def test_deepstream_submits_640_inference_view_with_native_source_frame(
-    tmp_path: Path,
+    tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
-    registry = SourceRegistry()
+    registry = source_registry
     registry.create(
         SourceRecord(
             source_id="camera-face",
@@ -302,9 +308,9 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
 
 
 def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(
-    tmp_path: Path,
+    tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
-    registry = SourceRegistry()
+    registry = source_registry
     ingestor = DeepStreamIngestor(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]
@@ -327,8 +333,10 @@ def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(
     assert ingestor.status()["preview_fps"] == 25
 
 
-def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -> None:
-    registry = SourceRegistry()
+def test_deepstream_skips_unused_audio_during_decoder_autoplug(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
     ingestor = DeepStreamIngestor(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]
@@ -350,9 +358,9 @@ def test_deepstream_skips_unused_audio_during_decoder_autoplug(tmp_path: Path) -
 
 
 def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
-    tmp_path: Path,
+    tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
-    registry = SourceRegistry()
+    registry = source_registry
     ingestor = DeepStreamIngestor(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]

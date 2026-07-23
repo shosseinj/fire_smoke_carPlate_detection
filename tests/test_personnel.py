@@ -13,14 +13,17 @@ from app.config import settings
 from app.runtime import build_runtime
 
 
+pytestmark = pytest.mark.usefixtures("postgres_database")
+
+
 # ── Test helpers ─────────────────────────────────────────────────────
 
 
 def _test_database_url() -> str:
-    """Return DATABASE_URL from environment or raise a clear error."""
-    url = os.environ.get("DATABASE_URL")
+    """Return the disposable PostgreSQL URL configured for tests."""
+    url = os.environ.get("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+        pytest.skip("TEST_DATABASE_URL must point to a disposable PostgreSQL database")
     return url
 
 
@@ -138,7 +141,7 @@ def test_create_personnel(tmp_path: Path) -> None:
         assert body["employee_type"] == "employee"
         assert body["degree"] == "Bachelor"
         assert body["id"] > 0
-        assert body["created_at_utc"] is not None
+        assert body["created_at"] is not None
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -313,7 +316,7 @@ def test_search_personnel_not_found(tmp_path: Path) -> None:
     try:
         token = _admin_token(client)
         resp = client.get(
-            f"/api/v1/personnel/search/{VALID_CODE_2}",
+            f"/api/v1/personnel/search/{VALID_CODE_2}?contract=current",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 404
@@ -395,7 +398,7 @@ def test_list_images(tmp_path: Path) -> None:
 
         op_token = _operator_token(client)
         resp = client.get(
-            f"/api/v1/personnel/{person_id}/images",
+            f"/api/v1/personnel/{person_id}/images?contract=current",
             headers={"Authorization": f"Bearer {op_token}"},
         )
         assert resp.status_code == 200
@@ -537,7 +540,7 @@ def test_import_excel(tmp_path: Path) -> None:
         buf.seek(0)
 
         resp = client.post(
-            "/api/v1/personnel/import-excel",
+            "/api/v1/personnel/import-excel?contract=current",
             files={"file": ("import.xlsx", buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -730,7 +733,7 @@ def test_delete_image_last_primary_no_promotion(tmp_path: Path) -> None:
 
         # Verify the person has no images
         list_resp = client.get(
-            f"/api/v1/personnel/{person['id']}/images",
+                f"/api/v1/personnel/{person['id']}/images?contract=current",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert list_resp.json()["count"] == 0
@@ -847,11 +850,12 @@ def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
             )
 
         # Verify the log exists with personnel_id
-        cursor = conn.execute(
-            "SELECT COUNT(*) FROM human_logs WHERE personnel_id = ?",
-            (person["id"],),
-        )
-        assert cursor.fetchone()[0] == 1
+        with store._lock, store._connection() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM human_logs WHERE personnel_id = ?",
+                (person["id"],),
+            )
+            assert cursor.fetchone()[0] == 1
 
         # Delete personnel
         client.delete(
@@ -860,11 +864,12 @@ def test_delete_personnel_preserves_detections(tmp_path: Path) -> None:
         )
 
         # Verify detection record still exists but personnel_id is NULL
-        cursor = conn.execute(
-            "SELECT personnel_id FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
-            ("test-session", "cam1", 1),
-        )
-        row = cursor.fetchone()
+        with store._lock, store._connection() as conn:
+            cursor = conn.execute(
+                "SELECT personnel_id FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("test-session", "cam1", 1),
+            )
+            row = cursor.fetchone()
         assert row is not None, "Detection record should still exist"
         assert row["personnel_id"] is None, "personnel_id should be NULL"
     finally:

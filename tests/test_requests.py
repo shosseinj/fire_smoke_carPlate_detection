@@ -2,32 +2,34 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from app.core.personnel_store import PersonnelStore
 from app.core.request_store import (
-    OVERLAP_CHECK_TYPES,
     RequestStore,
     VALID_REQUEST_STATUSES,
     VALID_REQUEST_TYPES,
 )
+from app.database import Database
 
 
 @pytest.fixture
-def stores() -> tuple[RequestStore, PersonnelStore, Path]:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    media_path = db_path.parent
-    rs = RequestStore(db_path)
-    ps = PersonnelStore(db_path, media_path)
-    yield rs, ps, db_path
-    try:
-        db_path.unlink(missing_ok=True)
-    except PermissionError:
-        pass
+def stores(
+    postgres_database: Database,
+    tmp_path: Path,
+) -> tuple[RequestStore, PersonnelStore, Path]:
+    with postgres_database.connection() as connection:
+        connection.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            ("request-reviewer", "unused-in-store-tests", "admin"),
+        )
+    return (
+        RequestStore(postgres_database),
+        PersonnelStore(postgres_database, tmp_path / "media"),
+        tmp_path,
+    )
 
 
 @pytest.fixture
@@ -170,10 +172,11 @@ class TestRequestStore:
         req1 = rs.create(personnel_id=person_id, request_type="leave",
                          start_date="2026-08-10", end_date="2026-08-15")
         rs.approve(req1.id, approved_by=1)
-        # Same type overlapping — should fail
+        # Pending requests may overlap; approval enforces the conflict.
+        req2 = rs.create(personnel_id=person_id, request_type="leave",
+                         start_date="2026-08-12", end_date="2026-08-14")
         with pytest.raises(ValueError, match="Overlapping approved"):
-            rs.create(personnel_id=person_id, request_type="leave",
-                      start_date="2026-08-12", end_date="2026-08-14")
+            rs.approve(req2.id, approved_by=1)
 
     def test_overlap_different_type_allowed(self, stores: tuple[RequestStore, PersonnelStore, Path], person_id: int) -> None:
         rs, _, _ = stores
@@ -184,6 +187,7 @@ class TestRequestStore:
         req2 = rs.create(personnel_id=person_id, request_type="sick_leave",
                          start_date="2026-08-12", end_date="2026-08-14")
         assert req2.id > 0
+        assert rs.approve(req2.id, approved_by=1).status == "approved"
 
     def test_valid_request_types(self) -> None:
         assert "leave" in VALID_REQUEST_TYPES

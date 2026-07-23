@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 from app.core.plate_settings_store import PlateDetectionPolicy, PlateSettingsStore
+from app.database import Database
 
 
-def test_camera_overrides_inherit_general_settings_and_persist(tmp_path: Path) -> None:
-    database_path = tmp_path / "cameras.sqlite3"
+def test_camera_overrides_inherit_general_settings_and_persist(
+    postgres_database: Database,
+) -> None:
     initial = PlateDetectionPolicy(
         vehicle_confidence=0.35,
         plate_confidence=0.30,
@@ -17,7 +18,7 @@ def test_camera_overrides_inherit_general_settings_and_persist(tmp_path: Path) -
         min_vehicle_area_ratio=0.025,
         vehicle_crop_padding_ratio=0.05,
     )
-    store = PlateSettingsStore(database_path, default_policy=initial)
+    store = PlateSettingsStore(postgres_database, default_policy=initial)
 
     camera = store.update_camera(
         "camera-01",
@@ -39,7 +40,7 @@ def test_camera_overrides_inherit_general_settings_and_persist(tmp_path: Path) -
     assert store.resolve("camera-01").plate_confidence == 0.44
 
     reopened = PlateSettingsStore(
-        database_path,
+        postgres_database,
         default_policy=PlateDetectionPolicy(plate_confidence=0.01),
     )
     persisted = reopened.camera("camera-01")
@@ -48,9 +49,11 @@ def test_camera_overrides_inherit_general_settings_and_persist(tmp_path: Path) -
     assert persisted["effective"]["min_vehicle_width_pixels"] == 180
 
 
-def test_resetting_camera_settings_restores_all_general_values(tmp_path: Path) -> None:
+def test_resetting_camera_settings_restores_all_general_values(
+    postgres_database: Database,
+) -> None:
     store = PlateSettingsStore(
-        tmp_path / "cameras.sqlite3",
+        postgres_database,
         default_policy=PlateDetectionPolicy(),
     )
     store.update_camera("camera-02", {"ocr_confidence": 0.80})

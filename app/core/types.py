@@ -48,6 +48,9 @@ class TaskResult:
     captured_at_utc: str
     processed_at_utc: str
     processing_ms: float
+    frame_width: int | None = None
+    frame_height: int | None = None
+    source_time_seconds: float | None = None
     data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
@@ -68,6 +71,9 @@ class TaskResult:
             captured_at_utc=packet.captured_at_utc,
             processed_at_utc=datetime.now(timezone.utc).isoformat(),
             processing_ms=round(processing_ms, 3),
+            frame_width=int(packet.frame.shape[1]),
+            frame_height=int(packet.frame.shape[0]),
+            source_time_seconds=packet.source_time_seconds,
             data=data,
         )
 
@@ -88,6 +94,9 @@ class TaskResult:
             captured_at_utc=packet.captured_at_utc,
             processed_at_utc=datetime.now(timezone.utc).isoformat(),
             processing_ms=round(processing_ms, 3),
+            frame_width=int(packet.frame.shape[1]),
+            frame_height=int(packet.frame.shape[0]),
+            source_time_seconds=packet.source_time_seconds,
             error=str(error),
         )
 
@@ -100,6 +109,9 @@ class TaskResult:
             "captured_at_utc": self.captured_at_utc,
             "processed_at_utc": self.processed_at_utc,
             "processing_ms": self.processing_ms,
+            "frame_width": self.frame_width,
+            "frame_height": self.frame_height,
+            "source_time_seconds": self.source_time_seconds,
             "data": self.data,
             "error": self.error,
         }

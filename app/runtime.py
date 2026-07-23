@@ -14,12 +14,14 @@ from app.core.operational_settings import OperationalSettings, CAMERA_SETTINGS_M
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
 from app.core.plate_log_store import PlateLogStore
+from app.core.car_plate_store import CarPlateStore
 from app.core.plate_settings_store import PlateDetectionPolicy, PlateSettingsStore
 from app.core.model_management import (
     ModelConversionManager,
     ModelManager,
     ModelSelectionConfig,
 )
+from app.core.media_preview_publisher import MediaPreviewPublisher
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
@@ -60,6 +62,7 @@ class Runtime:
     router: TaskRouter
     broadcast: AnnotatedBroadcastHub
     plate_logs: PlateLogStore
+    car_plates: CarPlateStore
     plate_settings: PlateSettingsStore
     models: ModelManager
     model_conversions: ModelConversionManager
@@ -76,6 +79,7 @@ class Runtime:
     detection_log_store: DetectionLogStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
+    media_preview: MediaPreviewPublisher | None = None
 
     def operational_settings(self):
         return self.general_settings.get().operational
@@ -191,9 +195,16 @@ class Runtime:
                     LOGGER.warning("FACE_RECOGNITION_NOT_READY %s", exc)
         self.router.start()
         try:
+            if self.media_preview is not None:
+                try:
+                    self.media_preview.start()
+                except Exception as exc:
+                    LOGGER.warning("MEDIA_PREVIEW_NOT_READY %s", exc)
             if self.video_ingestor is not None:
                 self.video_ingestor.start()
         except Exception:
+            if self.media_preview is not None:
+                self.media_preview.close()
             self.router.close()
             raise
 
@@ -202,6 +213,8 @@ class Runtime:
         # wait forever for frontend clients that still have streams open.
         self.broadcast.close()
         self.model_conversions.close()
+        if self.media_preview is not None:
+            self.media_preview.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
         self.router.close()
@@ -219,6 +232,11 @@ class Runtime:
             else {"enabled": False, "running": False}
         )
         value["broadcast"] = self.broadcast.status()
+        value["media_preview"] = (
+            self.media_preview.status()
+            if self.media_preview is not None
+            else {"enabled": False, "running": False}
+        )
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
@@ -352,6 +370,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         app_settings.save_plate_snapshot,
         queue_size=app_settings.plate_log_queue_size,
     )
+    car_plates = CarPlateStore(database)
     fire_smoke_logs = FireSmokeLogStore(
         database,
         app_settings.saved_media_path,
@@ -653,6 +672,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             )
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
+    media_preview = MediaPreviewPublisher(
+        registry=registry,
+        project_root=project_root,
+        publish_base=app_settings.media_preview_publish_base,
+        enabled=app_settings.media_preview_enabled,
+        rtsp_enabled=app_settings.rtsp_ingestion_enabled,
+        rtsp_transport=operational.rtsp_transport,
+        rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
+        reconnect_seconds=operational.rtsp_reconnect_seconds,
+    )
     return Runtime(
         settings=app_settings,
         database=database,
@@ -661,6 +690,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         router=router,
         broadcast=broadcast,
         plate_logs=plate_logs,
+        car_plates=car_plates,
         plate_settings=plate_settings,
         models=models,
         model_conversions=model_conversions,
@@ -677,4 +707,5 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         detection_log_store=detection_log_store,
         general_settings=general_settings,
         video_ingestor=video_ingestor,
+        media_preview=media_preview,
     )

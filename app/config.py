@@ -111,6 +111,13 @@ class Settings:
     broadcast_face_overlay_ttl_ms: float = _env_float(
         "BROADCAST_FACE_OVERLAY_TTL_MS", 250.0
     )
+    media_preview_enabled: bool = _env_bool("MEDIA_PREVIEW_ENABLED", False)
+    media_preview_publish_base: str = os.getenv(
+        "MEDIA_PREVIEW_PUBLISH_BASE", "rtsp://mediamtx:8554"
+    ).strip()
+    media_preview_whep_base_url: str = os.getenv(
+        "MEDIA_PREVIEW_WHEP_BASE_URL", ""
+    ).rstrip("/")
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
     fire_severity_window_seconds: float = _env_float(
         "FIRE_SEVERITY_WINDOW_SECONDS", 3.0

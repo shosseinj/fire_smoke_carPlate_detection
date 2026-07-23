@@ -1,4 +1,21 @@
 services:
+  postgres-test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: video_ai_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres-test
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d video_ai_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   qdrant:
     image: qdrant/qdrant:v1.18.3
     restart: unless-stopped
@@ -13,6 +30,15 @@ services:
       retries: 12
       start_period: 5s
 
+  mediamtx:
+    image: bluenviron/mediamtx:1.13.1
+    restart: unless-stopped
+    volumes:
+      - ./deploy/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8889:8889"
+      - "8189:8189/udp"
+
   video-ai-router:
     image: merged-video-ai-router:v9
     build:
@@ -21,8 +47,16 @@ services:
       args:
         INSTALL_AI_REQUIREMENTS: ${INSTALL_AI_REQUIREMENTS:-0}
     working_dir: /workspace
+    entrypoint: /bin/sh
     command:
-      - /workspace/docker-entrypoint.sh
+      - -c
+      - >-
+        python3 -m alembic upgrade head &&
+        exec python3 -m uvicorn app.main:app
+        --host 0.0.0.0
+        --port 9999
+        --reload
+        --reload-dir /workspace/app
     env_file: ./app/.env
     environment:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-real}
@@ -37,6 +71,9 @@ services:
       BROADCAST_WALL_MAX_WIDTH: ${BROADCAST_WALL_MAX_WIDTH:-320}
       BROADCAST_WALL_MAX_HEIGHT: ${BROADCAST_WALL_MAX_HEIGHT:-320}
       BROADCAST_FACE_OVERLAY_TTL_MS: ${BROADCAST_FACE_OVERLAY_TTL_MS:-250}
+      MEDIA_PREVIEW_ENABLED: ${MEDIA_PREVIEW_ENABLED:-true}
+      MEDIA_PREVIEW_PUBLISH_BASE: ${MEDIA_PREVIEW_PUBLISH_BASE:-rtsp://mediamtx:8554}
+      MEDIA_PREVIEW_WHEP_BASE_URL: "${MEDIA_PREVIEW_WHEP_BASE_URL:-}"
       VIDEO_LOOP: ${VIDEO_LOOP:-true}
       RTSP_INGESTION_ENABLED: ${RTSP_INGESTION_ENABLED:-true}
       RTSP_TRANSPORT: ${RTSP_TRANSPORT:-tcp}
@@ -130,6 +167,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      mediamtx:
+        condition: service_started
     deploy:
       resources:
         reservations:

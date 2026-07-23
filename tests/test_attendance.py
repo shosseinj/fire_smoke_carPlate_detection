@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import tempfile
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -15,19 +14,23 @@ from app.core.human_log_store import HumanLogStore
 from app.core.personnel_store import PersonnelStore
 from app.core.request_store import RequestStore
 from app.core.shift_store import ShiftStore
+from app.database import Database
 
 
 @pytest.fixture
-def stores() -> dict[str, Any]:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    media_path = db_path.parent
-    shift_store = ShiftStore(db_path)
-    holiday_store = HolidayStore(db_path)
-    request_store = RequestStore(db_path)
-    personnel_store = PersonnelStore(db_path, media_path)
+def stores(postgres_database: Database, tmp_path: Path) -> dict[str, Any]:
+    media_path = tmp_path / "media"
+    with postgres_database.connection() as connection:
+        connection.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            ("attendance-reviewer", "unused-in-store-tests", "admin"),
+        )
+    shift_store = ShiftStore(postgres_database)
+    holiday_store = HolidayStore(postgres_database)
+    request_store = RequestStore(postgres_database)
+    personnel_store = PersonnelStore(postgres_database, media_path)
     human_log_store = HumanLogStore(
-        database_path=db_path,
+        database=postgres_database,
         saved_media_path=media_path,
         queue_size=16,
     )
@@ -39,7 +42,7 @@ def stores() -> dict[str, Any]:
         request_store=request_store,
     )
     yield {
-        "db_path": db_path,
+        "database": postgres_database,
         "shift": shift_store,
         "holiday": holiday_store,
         "request": request_store,
@@ -48,10 +51,6 @@ def stores() -> dict[str, Any]:
         "service": svc,
     }
     human_log_store.close()
-    try:
-        db_path.unlink(missing_ok=True)
-    except PermissionError:
-        pass
 
 
 def _make_personnel(stores: dict[str, Any]) -> int:

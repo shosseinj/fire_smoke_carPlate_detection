@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import numpy as np
 
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.database import Database, metadata
 from app.fire_core.policy import FireSmokePolicyConfig
 
 
 def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     tmp_path: Path,
+    postgres_database: Database,
 ) -> None:
-    database = tmp_path / "logs.sqlite3"
-    store = FireSmokeLogStore(database, tmp_path / "media")
+    store = FireSmokeLogStore(postgres_database, tmp_path / "media")
     packet = FramePacket(
         source_id="camera-fire",
         frame=np.zeros((64, 64, 3), dtype=np.uint8),
@@ -99,11 +99,4 @@ def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     assert rows[0]["snapshot_url"].startswith("/media/fire_smoke_snapshots/")
     snapshot = tmp_path / "media" / rows[0]["snapshot_url"].removeprefix("/media/")
     assert snapshot.is_file()
-    with sqlite3.connect(database) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-    assert {"fire_smoke_logs", "fire_smoke_settings"}.issubset(tables)
+    assert {"fire_smoke_logs", "fire_smoke_settings"}.issubset(metadata.tables)

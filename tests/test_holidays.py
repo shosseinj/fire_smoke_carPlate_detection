@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import tempfile
 from datetime import date
-from pathlib import Path
 
 import pytest
 
 from app.core.holiday_store import HolidayStore
+from app.database import Database
 
 
 @pytest.fixture
-def store() -> HolidayStore:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    s = HolidayStore(db_path)
-    yield s
-    try:
-        db_path.unlink(missing_ok=True)
-    except PermissionError:
-        pass
+def store(postgres_database: Database) -> HolidayStore:
+    return HolidayStore(postgres_database)
 
 
 class TestHolidayStore:

@@ -222,11 +222,17 @@
         pointer-events: auto;
         backdrop-filter: blur(8px);
       }
-      .stream-shell img {
+      .stream-shell video,
+      .stream-shell canvas {
+        position: absolute;
+        inset: 0;
         display: block;
         width: 100%;
         height: 100%;
         object-fit: contain;
+      }
+      .stream-shell canvas {
+        pointer-events: none;
       }
       .stream-status {
         position: absolute;
@@ -384,8 +390,14 @@
       let sourcesSignature = "";
       let synchronizationRunning = false;
       let broadcastSocket = null;
+      let resultSocket = null;
       let reconnectTimer = null;
       let fullscreenSourceId = null;
+      let previewBaseUrl = "";
+      let previewAvailable = false;
+      const previewStates = new Map();
+      const previewRetryTimers = new Map();
+      const OVERLAY_STALE_MS = 4000;
       const frameStats = new Map();
       const metricElements = new Map();
       let sessionReceivedFrames = 0;
@@ -432,9 +444,7 @@
       const taskLabel = (task) => (task === "fire_smoke" ? "Fire / Smoke" : task === "face_recognition" ? "Face Recognition" : "Plate Recognition");
 
       function renderSources() {
-        for (const image of document.querySelectorAll("img[data-object-url]")) {
-          URL.revokeObjectURL(image.dataset.objectUrl);
-        }
+        for (const sourceId of previewStates.keys()) closePreview(sourceId);
         cameraGrid.innerHTML = "";
         metricElements.clear();
         for (const source of sources) {
@@ -444,7 +454,8 @@
           const chips = source.tasks.map((task) => `<span class="task-chip ${task === "fire_smoke" ? "fire" : ""}">${taskLabel(task)}</span>`).join("");
           card.innerHTML = `
           <div class="stream-shell">
-            <img alt="Annotated stream for ${source.name}" data-source-id="${source.source_id}">
+            <video aria-label="Live preview for ${source.name}" data-source-id="${source.source_id}" autoplay muted playsinline></video>
+            <canvas data-overlay-for="${source.source_id}"></canvas>
             <div class="stream-toolbar">
               <div class="stream-profile">
                 <span class="fps-badge" data-fps-for="${source.source_id}">0.0 FPS</span>
@@ -465,7 +476,7 @@
             </div>
             <div class="task-list">${chips}</div>
           </div>`;
-          const image = card.querySelector("img");
+          const video = card.querySelector("video");
           const status = card.querySelector(".stream-status");
           metricElements.set(source.source_id, {
             fps: card.querySelector("[data-fps-for]"),
@@ -473,11 +484,7 @@
             frames: card.querySelector("[data-frames-for]"),
             index: card.querySelector("[data-index-for]"),
           });
-          image.addEventListener("load", () => status.classList.add("hidden"));
-          image.addEventListener("error", () => {
-            status.textContent = broadcasting ? "Waiting for AI output…" : "Frontend broadcast disabled";
-            status.classList.remove("hidden");
-          });
+          video.addEventListener("playing", () => status.classList.add("hidden"));
           card.querySelector("[data-fullscreen-source]").addEventListener("click", async () => {
             if (document.fullscreenElement === card) {
               await document.exitFullscreen();
@@ -500,8 +507,8 @@
         if (headerLength <= 0 || headerLength + 4 >= view.byteLength) return;
         const headerBytes = new Uint8Array(payload, 4, headerLength);
         const header = JSON.parse(new TextDecoder().decode(headerBytes));
-        const image = [...document.querySelectorAll("img[data-source-id]")].find((item) => item.dataset.sourceId === header.source_id);
-        if (!image) return;
+        const video = document.querySelector(`video[data-source-id="${header.source_id}"]`);
+        if (!video) return;
         const now = performance.now();
         const stats = statsFor(header.source_id);
         stats.arrivals.push(now);
@@ -514,34 +521,202 @@
           elements.resolution.textContent = `${profile} · ${header.frame_width}×${header.frame_height}`;
         }
         sessionReceivedFrames += 1;
-        const jpeg = new Uint8Array(payload, 4 + headerLength);
-        const nextUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
-        const previousUrl = image.dataset.objectUrl;
-        image.dataset.objectUrl = nextUrl;
-        image.src = nextUrl;
-        if (previousUrl) {
-          image.addEventListener("load", () => URL.revokeObjectURL(previousUrl), { once: true });
+      }
+
+      function waitForIceGathering(peer) {
+        if (peer.iceGatheringState === "complete") return Promise.resolve();
+        return new Promise((resolve) => {
+          const changed = () => {
+            if (peer.iceGatheringState !== "complete") return;
+            peer.removeEventListener("icegatheringstatechange", changed);
+            resolve();
+          };
+          peer.addEventListener("icegatheringstatechange", changed);
+        });
+      }
+
+      function waitForIceGatheringBounded(peer) {
+        return Promise.race([
+          waitForIceGathering(peer),
+          new Promise((_, reject) => window.setTimeout(() => reject(new Error("ICE gathering timed out")), 5000)),
+        ]);
+      }
+
+      function scheduleOverlayFrame(video, callback) {
+        if (typeof video.requestVideoFrameCallback === "function") {
+          video.requestVideoFrameCallback(callback);
+        } else {
+          window.requestAnimationFrame(callback);
         }
+      }
+
+      function schedulePreviewRetry(sourceId) {
+        if (previewRetryTimers.has(sourceId) || !broadcasting || !previewAvailable) return;
+        previewRetryTimers.set(sourceId, window.setTimeout(() => {
+          previewRetryTimers.delete(sourceId);
+          const source = sources.find((item) => item.source_id === sourceId);
+          if (source?.enabled && broadcasting) openPreview(source);
+        }, 1500));
+      }
+
+      async function closePreview(sourceId) {
+        const timer = previewRetryTimers.get(sourceId);
+        if (timer) window.clearTimeout(timer);
+        previewRetryTimers.delete(sourceId);
+        const state = previewStates.get(sourceId);
+        previewStates.delete(sourceId);
+        if (!state) return;
+        state.closed = true;
+        state.peer.close();
+        state.video.srcObject = null;
+        if (state.sessionUrl) {
+          try {
+            await fetch(state.sessionUrl, { method: "DELETE" });
+          } catch (_) {
+            // The MediaMTX session may already be gone after a network failure.
+          }
+        }
+      }
+
+      function overlayItems(result) {
+        return [
+          ...(result.data?.tracks || []),
+          ...(result.data?.plates || []),
+          ...(result.data?.faces || []),
+          ...(result.data?.humans || []),
+        ];
+      }
+
+      function drawOverlays(sourceId) {
+        const state = previewStates.get(sourceId);
+        if (!state || state.closed) return;
+        const { video, canvas, taskResults } = state;
+        const width = video.videoWidth || 1;
+        const height = video.videoHeight || 1;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        const context = canvas.getContext("2d");
+        context.clearRect(0, 0, width, height);
+        const now = Date.now();
+        for (const result of taskResults.values()) {
+          if (now - result.receivedAt > OVERLAY_STALE_MS) continue;
+          if (Number.isFinite(result.source_time_seconds) && Math.abs(video.currentTime - result.source_time_seconds) > 2) continue;
+          const sourceWidth = result.frame_width || width;
+          const sourceHeight = result.frame_height || height;
+          context.strokeStyle = result.task === "fire_smoke" ? "#ff5c5c" : result.task === "face_recognition" ? "#42f59b" : "#42d7ff";
+          context.lineWidth = Math.max(2, width / 500);
+          for (const item of overlayItems(result)) {
+            const bbox = item.bbox;
+            if (!Array.isArray(bbox) || bbox.length < 4) continue;
+            context.strokeRect(
+              bbox[0] * width / sourceWidth,
+              bbox[1] * height / sourceHeight,
+              (bbox[2] - bbox[0]) * width / sourceWidth,
+              (bbox[3] - bbox[1]) * height / sourceHeight,
+            );
+          }
+        }
+        scheduleOverlayFrame(video, () => drawOverlays(sourceId));
+      }
+
+      async function openPreview(source) {
+        await closePreview(source.source_id);
+        if (!broadcasting || !previewAvailable || !source.enabled || !previewBaseUrl) return;
+        const video = document.querySelector(`video[data-source-id="${source.source_id}"]`);
+        const canvas = document.querySelector(`[data-overlay-for="${source.source_id}"]`);
+        const status = document.querySelector(`[data-status-for="${source.source_id}"]`);
+        if (!video || !canvas) return;
+        const peer = new RTCPeerConnection();
+        const state = { peer, video, canvas, taskResults: new Map(), sessionUrl: null, closed: false };
+        previewStates.set(source.source_id, state);
+        peer.addTransceiver("video", { direction: "recvonly" });
+        peer.addEventListener("track", (event) => { video.srcObject = event.streams[0]; });
+        peer.addEventListener("connectionstatechange", () => {
+          if (["failed", "disconnected", "closed"].includes(peer.connectionState) && !state.closed) {
+            closePreview(source.source_id);
+            schedulePreviewRetry(source.source_id);
+          }
+        });
+        try {
+          await peer.setLocalDescription(await peer.createOffer());
+          await waitForIceGatheringBounded(peer);
+          const controller = new AbortController();
+          const requestTimeout = window.setTimeout(() => controller.abort(), 5000);
+          const response = await fetch(`${previewBaseUrl}/${source.preview_path}/whep`, {
+            method: "POST",
+            headers: { "Content-Type": "application/sdp" },
+            body: peer.localDescription.sdp,
+            signal: controller.signal,
+          });
+          window.clearTimeout(requestTimeout);
+          if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
+          const location = response.headers.get("Location");
+          if (location) state.sessionUrl = new URL(location, response.url).href;
+          await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+          scheduleOverlayFrame(video, () => drawOverlays(source.source_id));
+        } catch (error) {
+          status.textContent = `Preview unavailable: ${error.message}`;
+          status.classList.remove("hidden");
+          await closePreview(source.source_id);
+          schedulePreviewRetry(source.source_id);
+        }
+      }
+
+      function connectResultSocket() {
+        if (!broadcasting || !previewAvailable) return;
+        if (resultSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(resultSocket.readyState)) return;
+        const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/results/ws`);
+        resultSocket = socket;
+        socket.addEventListener("message", (event) => {
+          if (resultSocket !== socket) return;
+          const result = JSON.parse(event.data);
+          if (!result.task || !result.source_id) return;
+          const state = previewStates.get(result.source_id);
+          if (!state) return;
+          const taskResults = state.taskResults;
+          result.receivedAt = Date.now();
+          taskResults.set(result.task, result);
+        });
+        socket.addEventListener("close", () => {
+          if (resultSocket !== socket) return;
+          resultSocket = null;
+          if (broadcasting && previewAvailable) window.setTimeout(connectResultSocket, 1000);
+        });
+      }
+
+      function disconnectResultSocket() {
+        if (!resultSocket) return;
+        const socket = resultSocket;
+        resultSocket = null;
+        socket.close(1000, "Preview disabled");
       }
 
       function connectBroadcastSocket() {
         if (!broadcasting) return;
         if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-        const parameters = new URLSearchParams({ wall: "true" });
+        const parameters = new URLSearchParams({ metadata_only: "true" });
         if (fullscreenSourceId) parameters.set("fullscreen_source", fullscreenSourceId);
         const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws?${parameters}`);
         broadcastSocket = socket;
         socket.binaryType = "arraybuffer";
         socket.addEventListener("message", (event) => {
           if (broadcastSocket !== socket) return;
-          if (event.data instanceof ArrayBuffer) {
-            updateFrame(event.data);
-            return;
-          }
-          try {
-            const message = JSON.parse(event.data);
-            if (message.type === "camera_changed") synchronizeDashboard();
+            try {
+              const message = JSON.parse(event.data);
+              if (message.type === "frame_metadata") {
+                const stats = statsFor(message.source_id);
+                const now = performance.now();
+                stats.arrivals.push(now);
+                stats.total += 1;
+                stats.lastArrival = now;
+                stats.frameIndex = message.frame_index;
+                sessionReceivedFrames += 1;
+              }
+              if (message.type === "camera_changed") synchronizeDashboard();
           } catch (_) {
             // Ignore keepalives or extensions unknown to this dashboard version.
           }
@@ -573,22 +748,27 @@
       }
 
       function applyStreams() {
-        for (const image of document.querySelectorAll("img[data-source-id]")) {
-          const sourceId = image.dataset.sourceId;
+        for (const video of document.querySelectorAll("video[data-source-id]")) {
+          const sourceId = video.dataset.sourceId;
           const status = document.querySelector(`[data-status-for="${sourceId}"]`);
-          if (broadcasting) {
-            status.textContent = "Waiting for multiplexed AI stream…";
+          if (broadcasting && previewAvailable) {
+            status.textContent = "Connecting public preview…";
             status.classList.remove("hidden");
+            const source = sources.find((item) => item.source_id === sourceId);
+            if (source) openPreview(source);
           } else {
-            if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
-            delete image.dataset.objectUrl;
-            image.removeAttribute("src");
+            closePreview(sourceId);
             status.textContent = "Frontend broadcast disabled";
             status.classList.remove("hidden");
           }
         }
-        if (broadcasting) connectBroadcastSocket();
-        else disconnectBroadcastSocket();
+        if (broadcasting && previewAvailable) {
+          connectBroadcastSocket();
+          connectResultSocket();
+        } else {
+          disconnectBroadcastSocket();
+          disconnectResultSocket();
+        }
       }
 
       function showState(enabled) {
@@ -611,7 +791,7 @@
             tasks: [...source.tasks].sort(),
             frame_width: source.frame_width,
             frame_height: source.frame_height,
-            source_uri: source.source_uri,
+            preview_path: source.preview_path,
           })),
         );
       }
@@ -620,13 +800,12 @@
         if (synchronizationRunning) return;
         synchronizationRunning = true;
         try {
-          const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/cameras", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
+          const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/cameras/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
           if (!sourcesResponse.ok || !stateResponse.ok) throw new Error("API unavailable");
-          const cameras = await sourcesResponse.json();
-          const nextSources = cameras.map((camera) => ({
-            ...camera,
-            source_id: camera.camera_id,
-          }));
+          const previewConfig = await sourcesResponse.json();
+          previewBaseUrl = previewConfig.whep_base_url;
+          previewAvailable = previewConfig.enabled;
+          const nextSources = previewConfig.sources;
           const state = await stateResponse.json();
           showState(state.enabled);
           const nextSignature = signatureFor(nextSources);
@@ -680,6 +859,12 @@
         for (const button of document.querySelectorAll("[data-fullscreen-source]")) {
           button.textContent = fullscreenElement === button.closest(".camera-card") ? "Exit fullscreen" : "Fullscreen";
         }
+      });
+
+      window.addEventListener("beforeunload", () => {
+        for (const sourceId of previewStates.keys()) closePreview(sourceId);
+        disconnectBroadcastSocket();
+        disconnectResultSocket();
       });
 
       synchronizeDashboard();

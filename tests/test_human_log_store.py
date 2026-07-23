@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-import sqlite3
 
 import cv2
 import numpy as np
 
 from app.core.human_log_store import HumanLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.database import Database, metadata
 
 
 def packet(frame_index: int) -> FramePacket:
@@ -61,8 +61,11 @@ def result(
     )
 
 
-def test_one_log_per_human_track_is_upgraded_after_recognition(tmp_path: Path) -> None:
-    store = HumanLogStore(tmp_path / "logs.sqlite3", tmp_path / "media")
+def test_one_log_per_human_track_is_upgraded_after_recognition(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    store = HumanLogStore(postgres_database, tmp_path / "media")
     try:
         first = packet(1)
         recognized = packet(2)
@@ -82,8 +85,8 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(tmp_path: Path) -
         rows = store.list(camera="camera-01", track_id=13)
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice"
-        assert rows[0]["first_seen"] == "2026-07-18T00:00:01+00:00"
-        assert rows[0]["last_seen"] == "2026-07-18T00:00:03+00:00"
+        assert rows[0]["first_seen"] == "2026-07-18T00:00:01Z"
+        assert rows[0]["last_seen"] == "2026-07-18T00:00:03Z"
         assert rows[0]["recognition_score"] == 0.93
         assert rows[0]["snapshot_quality"] == 0.97
         assert rows[0]["best_face_quality"] == 0.90
@@ -124,9 +127,12 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(tmp_path: Path) -
         store.close()
 
 
-def test_best_face_is_saved_when_full_frame_sample_is_not_due(tmp_path: Path) -> None:
+def test_best_face_is_saved_when_full_frame_sample_is_not_due(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
     store = HumanLogStore(
-        tmp_path / "logs.sqlite3",
+        postgres_database,
         tmp_path / "media",
         video_fps=10.0,
     )
@@ -161,65 +167,18 @@ def test_best_face_is_saved_when_full_frame_sample_is_not_due(tmp_path: Path) ->
         store.close()
 
 
-def test_legacy_human_log_schema_removes_pose_and_crop_video_fields(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "logs.sqlite3"
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE human_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                camera TEXT NOT NULL,
-                track_id INTEGER NOT NULL,
-                name TEXT NOT NULL DEFAULT 'Unknown',
-                first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL,
-                recognition_score REAL NOT NULL DEFAULT 0,
-                ref_img_id TEXT,
-                snapshot_url TEXT NOT NULL DEFAULT '',
-                video_url TEXT NOT NULL DEFAULT '',
-                face_video_url TEXT NOT NULL DEFAULT '',
-                snapshot_quality REAL NOT NULL DEFAULT 0,
-                best_face_quality REAL NOT NULL DEFAULT 0,
-                best_face_yaw REAL,
-                best_face_pitch REAL,
-                best_face_roll REAL,
-                human_video_frames INTEGER NOT NULL DEFAULT 0,
-                accepted_face_frames INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(session_id, camera, track_id)
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO human_logs (
-                session_id, camera, track_id, first_seen, last_seen,
-                human_video_frames
-            ) VALUES ('old-session', 'camera-01', 13, 'start', 'end', 7)
-            """
-        )
-
-    store = HumanLogStore(path, tmp_path / "media")
-    try:
-        row = store.list(track_id=13)[0]
-        assert row["full_frame_video_frames"] == 7
-        with sqlite3.connect(path) as connection:
-            columns = [
-                item[1]
-                for item in connection.execute("PRAGMA table_info(human_logs)")
-            ]
-        assert "human_video_frames" not in columns
-        assert "best_face_yaw" not in columns
-        assert "best_face_pitch" not in columns
-        assert "best_face_roll" not in columns
-    finally:
-        store.close()
+def test_postgresql_human_log_schema_uses_current_fields() -> None:
+    columns = metadata.tables["human_logs"].c
+    assert "full_frame_video_frames" in columns
+    assert "human_video_frames" not in columns
+    assert "best_face_yaw" not in columns
+    assert "best_face_pitch" not in columns
+    assert "best_face_roll" not in columns
 
 
 def test_media_is_cropped_and_encoded_from_native_source_resolution(
     tmp_path: Path,
+    postgres_database: Database,
 ) -> None:
     source_frame = np.zeros((360, 480, 3), dtype=np.uint8)
     source_frame[30:330, 60:420] = (40, 160, 240)
@@ -234,7 +193,7 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
         [159, 189],
         [219, 189],
     ]
-    store = HumanLogStore(tmp_path / "logs.sqlite3", tmp_path / "media")
+    store = HumanLogStore(postgres_database, tmp_path / "media")
     try:
         store.observe_result(inference, detected)
         store.flush()

@@ -60,6 +60,7 @@ def update_broadcast_state(
 async def annotated_broadcast_websocket(
     websocket: WebSocket,
     wall: bool = False,
+    metadata_only: bool = False,
     fullscreen_source: str | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> None:
@@ -71,19 +72,18 @@ async def annotated_broadcast_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    # Legacy compatibility: immediately send recent detections after connection,
-    # before entering the live annotated-frame subscription loop.
-    try:
-        recent_message = await asyncio.to_thread(build_recent_detections_message, runtime)
-        if recent_message is not None:
-            await websocket.send_json(recent_message)
-    except Exception:
-        # Recent-history loading must never prevent the live stream from connecting.
-        import logging
-        logging.getLogger("uvicorn.error").exception("Failed to send recent detections")
-
     subscriber_id, target = runtime.broadcast.subscribe()
     try:
+        # Subscribe first so live events queue while recent history is loaded.
+        try:
+            recent_message = await asyncio.to_thread(build_recent_detections_message, runtime)
+            if recent_message is not None:
+                await websocket.send_json(recent_message)
+        except Exception:
+            # Recent-history loading must never prevent the live stream from connecting.
+            import logging
+            logging.getLogger("uvicorn.error").exception("Failed to send recent detections")
+
         while runtime.broadcast.enabled:
             try:
                 frame = await asyncio.to_thread(target.get, True, 20.0)
@@ -95,6 +95,18 @@ async def annotated_broadcast_websocket(
                     break
                 if isinstance(frame, BroadcastControlEvent):
                     await websocket.send_json(frame.payload)
+                    continue
+                if metadata_only:
+                    await websocket.send_json(
+                        {
+                            "type": "frame_metadata",
+                            "source_id": frame.source_id,
+                            "frame_index": frame.frame_index,
+                            "tasks": list(frame.tasks),
+                            "frame_width": frame.frame_width,
+                            "frame_height": frame.frame_height,
+                        }
+                    )
                     continue
                 jpeg, width, height, profile = frame.rendition(
                     full_resolution=not wall or frame.source_id == fullscreen_source

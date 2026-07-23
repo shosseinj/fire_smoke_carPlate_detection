@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from app.core.location_store import (
@@ -14,22 +9,15 @@ from app.core.location_store import (
     point_in_polygon,
     parse_polygon,
 )
+from app.database import Database
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def db_path() -> Path:
-    tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
-    tmp.close()
-    yield Path(tmp.name)
-    os.unlink(tmp.name)
-
-
-@pytest.fixture
-def store(db_path: Path) -> LocationStore:
-    return LocationStore(db_path)
+def store(postgres_database: Database) -> LocationStore:
+    return LocationStore(postgres_database)
 
 
 # ── Polygon utility tests ──────────────────────────────────────────────

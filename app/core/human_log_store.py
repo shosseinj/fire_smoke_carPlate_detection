@@ -502,10 +502,10 @@ class HumanLogStore:
                     SET name = ?, last_seen = ?, recognition_score = ?, ref_img_id = ?,
                         snapshot_url = ?, video_url = ?, face_video_url = ?,
                         snapshot_quality = ?,
-                        best_face_quality = CASE WHEN ? THEN ? ELSE best_face_quality END,
+                        best_face_quality = CASE WHEN ? = 1 THEN ? ELSE best_face_quality END,
                         full_frame_video_frames = full_frame_video_frames + ?,
                         accepted_face_frames = accepted_face_frames + ?,
-                        personnel_id = CASE WHEN ? THEN ? ELSE personnel_id END
+                        personnel_id = CASE WHEN ? = 1 THEN ? ELSE personnel_id END
                     WHERE session_id = ? AND camera = ? AND track_id = ?
                     """,
                     (

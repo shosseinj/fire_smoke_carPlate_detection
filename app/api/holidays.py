@@ -27,8 +27,10 @@ def get_holiday_store() -> Any:
     return get_runtime().holiday_store
 
 
-def _get_current_user_id(current_user: dict) -> int | None:
-    return current_user.get("id")
+def _get_current_user_id(current_user: Any) -> int | None:
+    if isinstance(current_user, dict):
+        return current_user.get("id")
+    return getattr(current_user, "id", None)
 
 
 def _resolve_usernames(store: Any, record: HolidayRecord) -> tuple[str | None, str | None]:

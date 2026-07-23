@@ -132,10 +132,10 @@ class HolidayStore:
                 )
             cursor = conn.execute(
                 "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, "
-                "is_active, created_by, updated_by, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                "is_active, created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
                 (name, normalized_date, description, holiday_type, 1 if every_year else 0,
-                 created_by, created_by, now, now),
+                 now, now),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (cursor.lastrowid,)
@@ -200,9 +200,9 @@ class HolidayStore:
             now = _now()
             conn.execute(
                 "UPDATE holidays SET name=?, date_value=?, description=?, holiday_type=?, "
-                "every_year=?, is_active=?, updated_by=?, updated_at_utc=? WHERE id=?",
+                "every_year=?, is_active=?, updated_at_utc=? WHERE id=?",
                 (new_name, new_date, new_desc, new_type, new_every, 1 if new_active else 0,
-                 updated_by, now, holiday_id),
+                 now, holiday_id),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (holiday_id,)
@@ -213,8 +213,8 @@ class HolidayStore:
         """Deactivate a holiday rather than physically removing it."""
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE holidays SET is_active = 0, updated_by = ?, updated_at_utc = ? WHERE id = ?",
-                (updated_by, _now(), holiday_id),
+                "UPDATE holidays SET is_active = 0, updated_at_utc = ? WHERE id = ?",
+                (_now(), holiday_id),
             )
             return cursor.rowcount > 0
 

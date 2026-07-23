@@ -282,6 +282,56 @@ class FireSmokeLogStore:
             row = connection.execute("SELECT COUNT(*) AS count FROM fire_smoke_logs").fetchone()
         return int(row["count"] if row else 0)
 
+    def get(self, log_id: int) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, camera, time, incident_id, severity, fire_count, smoke_count, "
+                "fire_confidence, smoke_confidence, window_seconds, snapshot_url FROM fire_smoke_logs WHERE id = ?",
+                (log_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_manual(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO fire_smoke_logs (camera, time, severity, fire_count, smoke_count, "
+                "fire_confidence, smoke_confidence, window_seconds, snapshot_url, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                (
+                    str(values["camera_id"]), values["detection_time"].isoformat(), values["severity"],
+                    int(values.get("fire_count", 0)), int(values.get("smoke_count", 0)),
+                    float(values.get("confidence") or 0.0), float(values.get("confidence") or 0.0),
+                    0.0, values.get("snapshot_url") or "", "{}",
+                ),
+            )
+            log_id = int(cursor.fetchone()[0])
+            connection.commit()
+        return self.get(log_id) or {}
+
+    def update_manual(self, log_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        mapping = {
+            "camera_id": "camera", "detection_time": "time", "severity": "severity",
+            "snapshot_url": "snapshot_url",
+        }
+        updates = [(mapping[key], value.isoformat() if isinstance(value, datetime) else value) for key, value in values.items() if key in mapping]
+        if not updates:
+            return self.get(log_id)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE fire_smoke_logs SET {', '.join(f'{key} = ?' for key, _ in updates)} WHERE id = ?",
+                [value for _, value in updates] + [log_id],
+            )
+            connection.commit()
+            if cursor.rowcount == 0:
+                return None
+        return self.get(log_id)
+
+    def delete(self, log_id: int) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute("DELETE FROM fire_smoke_logs WHERE id = ?", (log_id,))
+            connection.commit()
+            return cursor.rowcount > 0
+
     def status(self) -> dict[str, Any]:
         return {
             "count": self.count(),

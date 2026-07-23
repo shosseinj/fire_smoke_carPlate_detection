@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import time
 from pathlib import Path
 
@@ -8,6 +7,7 @@ import numpy as np
 
 from app.core.plate_log_store import PlateLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.database import Database, metadata
 
 
 def plate_result() -> TaskResult:
@@ -26,9 +26,10 @@ def plate_result() -> TaskResult:
     )
 
 
-def test_plate_log_table_saves_detection_and_snapshot_url(tmp_path: Path) -> None:
-    database_path = tmp_path / "plate_logs.sqlite3"
-    store = PlateLogStore(database_path, draw_info=False, save_plate_snapshot=False)
+def test_plate_log_table_saves_detection_and_snapshot_url(
+    postgres_database: Database,
+) -> None:
+    store = PlateLogStore(postgres_database, draw_info=False, save_plate_snapshot=False)
 
     source_packet = FramePacket(
         source_id="camera-01",
@@ -41,18 +42,18 @@ def test_plate_log_table_saves_detection_and_snapshot_url(tmp_path: Path) -> Non
     assert store.insert_result(source_packet, plate_result()) == 1
     rows = store.list()
     assert rows[0]["camera"] == "camera-01"
-    assert rows[0]["time"] == "2026-07-15T08:00:01+00:00"
+    assert rows[0]["time"] == "2026-07-15T08:00:01Z"
     assert rows[0]["plate"] == "23ن92917"
     assert rows[0]["snapshot_url"].startswith("/media/plate_snapshots/")
 
-    with sqlite3.connect(database_path) as connection:
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(plate_logs)")]
-    assert columns == ["camera", "time", "plate", "snapshot_url"]
+    assert set(metadata.tables["plate_logs"].c.keys()) == {
+        "id", "camera", "time", "plate", "snapshot_url", "details_json"
+    }
 
 
-def test_manual_plate_log_insert_and_filters(tmp_path: Path) -> None:
+def test_manual_plate_log_insert_and_filters(postgres_database: Database) -> None:
     store = PlateLogStore(
-        tmp_path / "plate_logs.sqlite3",
+        postgres_database,
         draw_info=False,
         save_plate_snapshot=False,
     )

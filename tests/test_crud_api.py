@@ -33,6 +33,7 @@ from app.testsupport import (
 pytestmark = [
     pytest.mark.crud,
     pytest.mark.api,
+    pytest.mark.usefixtures("postgres_database"),
 ]
 
 SHIFT_DATA = {
@@ -40,18 +41,18 @@ SHIFT_DATA = {
     "shift_type": "morning",
     "start_time": "08:00",
     "end_time": "16:00",
-    "works_saturday": False,
-    "works_sunday": True,
-    "works_monday": True,
-    "works_tuesday": True,
-    "works_wednesday": True,
-    "works_thursday": True,
-    "works_friday": False,
+    "saturday": False,
+    "sunday": True,
+    "monday": True,
+    "tuesday": True,
+    "wednesday": True,
+    "thursday": True,
+    "friday": False,
 }
 
 
 @pytest.fixture
-def crud(tmp_path: Path) -> CrudTestContext:
+def crud(tmp_path: Path, postgres_database) -> CrudTestContext:
     ctx = setup_crud_context(tmp_path)
     yield ctx
     teardown_crud_context(ctx)
@@ -86,7 +87,7 @@ class TestAuthCrud:
         resp = crud.client.get("/api/v1/auth/users", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
         data = resp.json()
-        assert "users" in data or "total" in data
+        assert isinstance(data, list)
 
     def test_token_refresh(self, crud):
         resp = crud.client.post("/api/v1/auth/token", data={"username": "admin", "password": "admin123"})
@@ -173,7 +174,7 @@ class TestPersonnelCrud:
         resp = crud.client.get("/api/v1/personnel/", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
         data = resp.json()
-        assert "items" in data or "total" in data
+        assert isinstance(data, list)
 
     def test_get_update_delete_personnel(self, crud):
         resp = crud.client.post("/api/v1/personnel/", json={"fname": "Cycle", "lname": "Test", "national_code": "9876543210", "employee_type": "employee"}, headers={"Authorization": f"Bearer {crud.admin_token}"})

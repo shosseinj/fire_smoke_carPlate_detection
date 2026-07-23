@@ -10,6 +10,7 @@ from app.core.model_management import (
     ModelManager,
     ModelSelectionConfig,
 )
+from app.database import Database
 
 
 def create_models(root: Path) -> ModelSelectionConfig:
@@ -32,10 +33,13 @@ def create_models(root: Path) -> ModelSelectionConfig:
     )
 
 
-def test_catalog_selection_and_engine_onnx_pt_fallback(tmp_path: Path) -> None:
+def test_catalog_selection_and_engine_onnx_pt_fallback(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
     root = tmp_path / "weights"
     config = create_models(root)
-    store = ModelManager(tmp_path / "settings.sqlite3", root, default_config=config)
+    store = ModelManager(postgres_database, root, default_config=config)
 
     catalog = store.catalog(role="fire_smoke")
     assert {item["format"] for item in catalog} == {"pt", "onnx", "engine"}
@@ -77,7 +81,7 @@ def test_catalog_selection_and_engine_onnx_pt_fallback(tmp_path: Path) -> None:
     )
 
     reopened = ModelManager(
-        tmp_path / "settings.sqlite3",
+        postgres_database,
         root,
         default_config=config,
     )
@@ -99,11 +103,12 @@ class FailingEngineExporter:
 
 def test_conversion_job_falls_back_to_onnx_without_blocking_request(
     tmp_path: Path,
+    postgres_database: Database,
 ) -> None:
     root = tmp_path / "weights"
     config = create_models(root)
     (root / "fire_smoke/fire_nano.onnx").unlink()
-    store = ModelManager(tmp_path / "settings.sqlite3", root, default_config=config)
+    store = ModelManager(postgres_database, root, default_config=config)
     manager = ModelConversionManager(
         store,
         exporter_factory=FailingEngineExporter,
@@ -152,12 +157,15 @@ def test_conversion_job_falls_back_to_onnx_without_blocking_request(
         reopened.close()
 
 
-def test_stage_uploaded_pt_rejects_paths_and_preserves_file(tmp_path: Path) -> None:
+def test_stage_uploaded_pt_rejects_paths_and_preserves_file(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
     from io import BytesIO
 
     root = tmp_path / "weights"
     config = create_models(root)
-    store = ModelManager(tmp_path / "settings.sqlite3", root, default_config=config)
+    store = ModelManager(postgres_database, root, default_config=config)
     manager = ModelConversionManager(store, exporter_factory=FailingEngineExporter)
     try:
         staged = manager.stage_uploaded_pt(
@@ -188,12 +196,13 @@ def test_stage_uploaded_pt_rejects_paths_and_preserves_file(tmp_path: Path) -> N
 def test_subprocess_engine_timeout_continues_with_onnx(
     tmp_path: Path,
     monkeypatch,
+    postgres_database: Database,
 ) -> None:
     root = tmp_path / "weights"
     config = create_models(root)
     (root / "fire_smoke/fire_nano.engine").unlink()
     (root / "fire_smoke/fire_nano.onnx").unlink()
-    store = ModelManager(tmp_path / "settings.sqlite3", root, default_config=config)
+    store = ModelManager(postgres_database, root, default_config=config)
 
     def fake_run(command, **kwargs):
         model_format = command[command.index("--format") + 1]

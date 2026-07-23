@@ -24,14 +24,17 @@ from app.config import settings
 from app.runtime import build_runtime
 
 
+pytestmark = pytest.mark.usefixtures("postgres_database")
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
 def _test_database_url() -> str:
-    """Return DATABASE_URL from environment or raise a clear error."""
-    url = os.environ.get("DATABASE_URL")
+    """Return the disposable PostgreSQL URL configured for tests."""
+    url = os.environ.get("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+        pytest.skip("TEST_DATABASE_URL must point to a disposable PostgreSQL database")
     return url
 
 

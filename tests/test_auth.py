@@ -17,14 +17,19 @@ from app.core.auth import (
     get_auth_store,
     hash_password,
 )
+from app.core.auth_store import AuthStore
+from app.database import Database
 from app.runtime import build_runtime
 
 
+pytestmark = pytest.mark.usefixtures("postgres_database")
+
+
 def _test_database_url() -> str:
-    """Return DATABASE_URL from environment or raise a clear error."""
-    url = os.environ.get("DATABASE_URL")
+    """Return the disposable PostgreSQL URL configured for tests."""
+    url = os.environ.get("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("DATABASE_URL environment variable not set — PostgreSQL required for tests")
+        pytest.skip("TEST_DATABASE_URL must point to a disposable PostgreSQL database")
     return url
 
 
@@ -248,7 +253,15 @@ def test_login_response_structure(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         body = response.json()
-        assert set(body.keys()) == {"access_token", "token_type", "role"}
+        assert {
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "role",
+            "username",
+            "user_id",
+            "expires_in",
+        } <= set(body)
         assert isinstance(body["access_token"], str)
         assert len(body["access_token"]) > 0
         assert body["token_type"] == "bearer"
@@ -256,10 +269,8 @@ def test_login_response_structure(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_auth_store_seed_only_once(tmp_path: Path) -> None:
-    store = get_auth_store()
-    store._db_path = tmp_path / "test_auth.sqlite3"
-    store._init_db()
+def test_auth_store_seed_only_once(postgres_database: Database) -> None:
+    store = AuthStore(postgres_database)
     seeded = store.seed_default_admin("admin", "admin123")
     assert seeded is not None
     assert store.count_users() == 1
@@ -268,10 +279,8 @@ def test_auth_store_seed_only_once(tmp_path: Path) -> None:
     assert store.count_users() == 1
 
 
-def test_auth_store_verify_credentials(tmp_path: Path) -> None:
-    store = get_auth_store()
-    store._db_path = tmp_path / "test_auth2.sqlite3"
-    store._init_db()
+def test_auth_store_verify_credentials(postgres_database: Database) -> None:
+    store = AuthStore(postgres_database)
     store.seed_default_admin("operator", "op123", role="operator")
     user = store.verify_credentials("operator", "op123")
     assert user is not None
@@ -757,12 +766,10 @@ def test_list_users_as_admin(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         body = response.json()
-        assert "users" in body
-        assert "total" in body
-        assert body["total"] >= 1
-        assert len(body["users"]) >= 1
+        assert isinstance(body, list)
+        assert len(body) >= 1
         # Verify no password hash in response
-        assert "password_hash" not in body["users"][0]
+        assert "password_hash" not in body[0]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -1151,7 +1158,7 @@ def test_disabled_auth_skips_role_checks(tmp_path: Path) -> None:
         response = client.get("/api/v1/auth/users")
         assert response.status_code == 200
         body = response.json()
-        assert "users" in body
+        assert isinstance(body, list)
     finally:
         os.environ.pop("DISABLE_AUTH", None)
         _teardown(test_runtime, old_runtime)

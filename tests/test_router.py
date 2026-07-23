@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import numpy as np
 
@@ -13,8 +12,7 @@ from app.core.worker import TaskWorker
 from app.processors.mock import MockProcessor
 
 
-def build_router(tmp_path: Path) -> tuple[TaskRouter, ResultStore, SourceRegistry, MockProcessor, MockProcessor]:
-    registry = SourceRegistry(tmp_path / "sources.json")
+def build_router(registry: SourceRegistry) -> tuple[TaskRouter, ResultStore, SourceRegistry, MockProcessor, MockProcessor]:
     for index in range(1, 15):
         tasks: set[TaskName]
         enabled = True
@@ -65,8 +63,8 @@ def wait_for_results(store: ResultStore, count: int) -> list[dict]:
     return store.recent(limit=100)
 
 
-def test_routes_one_round_to_expected_tasks(tmp_path: Path) -> None:
-    router, results, _, fire, plate = build_router(tmp_path)
+def test_routes_one_round_to_expected_tasks(source_registry: SourceRegistry) -> None:
+    router, results, _, fire, plate = build_router(source_registry)
     router.start()
     try:
         summary = router.submit_round(
@@ -89,8 +87,8 @@ def test_routes_one_round_to_expected_tasks(tmp_path: Path) -> None:
         router.close()
 
 
-def test_dynamic_disable_and_task_change_apply_without_restart(tmp_path: Path) -> None:
-    router, results, registry, _, _ = build_router(tmp_path)
+def test_dynamic_disable_and_task_change_apply_without_restart(source_registry: SourceRegistry) -> None:
+    router, results, registry, _, _ = build_router(source_registry)
     router.start()
     try:
         registry.update("camera-01", enabled=False)
@@ -108,8 +106,8 @@ def test_dynamic_disable_and_task_change_apply_without_restart(tmp_path: Path) -
         router.close()
 
 
-def test_enabled_camera_with_no_tasks_uses_play_only_callback(tmp_path: Path) -> None:
-    router, results, registry, _, _ = build_router(tmp_path)
+def test_enabled_camera_with_no_tasks_uses_play_only_callback(source_registry: SourceRegistry) -> None:
+    router, results, registry, _, _ = build_router(source_registry)
     packets = []
     router.play_only_callback = packets.append
     registry.update("camera-06", enabled=True, tasks=set())
@@ -131,8 +129,8 @@ def test_enabled_camera_with_no_tasks_uses_play_only_callback(tmp_path: Path) ->
         router.close()
 
 
-def test_fifty_sources_can_be_routed_without_global_camera_limit(tmp_path: Path) -> None:
-    registry = SourceRegistry(tmp_path / "fifty.json")
+def test_fifty_sources_can_be_routed_without_global_camera_limit(source_registry: SourceRegistry) -> None:
+    registry = source_registry
     for index in range(1, 51):
         registry.create(
             SourceRecord(
@@ -172,8 +170,8 @@ def test_fifty_sources_can_be_routed_without_global_camera_limit(tmp_path: Path)
         router.close()
 
 
-def test_face_recognition_has_an_independent_worker(tmp_path: Path) -> None:
-    registry = SourceRegistry(tmp_path / "face.json")
+def test_face_recognition_has_an_independent_worker(source_registry: SourceRegistry) -> None:
+    registry = source_registry
     registry.create(
         SourceRecord(
             source_id="face-camera",

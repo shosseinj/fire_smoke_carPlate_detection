@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 pytest.importorskip("psycopg2")
@@ -13,13 +11,9 @@ from fastapi.testclient import TestClient
 from app.api.auth import router
 from app.core import auth as auth_core
 from app.core.auth_store import AuthStore
-from app.database import get_database, metadata
+from app.database import Database
 
-TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
-pytestmark = pytest.mark.skipif(
-    not TEST_DATABASE_URL,
-    reason="TEST_DATABASE_URL must point to a disposable PostgreSQL database",
-)
+pytestmark = pytest.mark.usefixtures("postgres_database")
 
 
 APPROVED_LEGACY_AUTH_ROUTES = [
@@ -36,15 +30,13 @@ APPROVED_LEGACY_AUTH_ROUTES = [
     ("DELETE", "/api/v1/auth/users/{user_id}"),
 ]
 
+AUTH_APP = FastAPI()
+AUTH_APP.include_router(router)
+
 
 @pytest.fixture()
-def auth_context():
-    assert TEST_DATABASE_URL is not None
-    database = get_database(TEST_DATABASE_URL)
-    with database.engine.begin() as connection:
-        connection.execute(metadata.tables["revoked_tokens"].delete())
-        connection.execute(metadata.tables["users"].delete())
-    store = AuthStore(database)
+def auth_context(postgres_database: Database):
+    store = AuthStore(postgres_database)
     store.seed_default_admin(
         "admin",
         "StrongPass1!",
@@ -53,17 +45,12 @@ def auth_context():
     )
     old_store = auth_core._auth_store
     auth_core._auth_store = store
-    app = FastAPI()
-    app.include_router(router)
-    client = TestClient(app)
+    client = TestClient(AUTH_APP)
     try:
-        yield client, store, app
+        yield client, store, AUTH_APP
     finally:
         client.close()
         auth_core._auth_store = old_store
-        with database.engine.begin() as connection:
-            connection.execute(metadata.tables["revoked_tokens"].delete())
-            connection.execute(metadata.tables["users"].delete())
 
 
 def login(client: TestClient, username: str = "admin", password: str = "StrongPass1!") -> dict:
@@ -126,12 +113,15 @@ def test_route_coverage_openapi_and_no_duplicates(auth_context):
     assert "/api/v1/auth/register" not in schema["paths"]
 
 
-def test_postgresql_auth_schema_uses_timezone_aware_columns():
-    assert TEST_DATABASE_URL is not None
-    database = get_database(TEST_DATABASE_URL)
+def test_postgresql_auth_schema_uses_timezone_aware_columns(
+    postgres_database: Database,
+):
     from sqlalchemy import inspect
 
-    columns = {column["name"]: column for column in inspect(database.engine).get_columns("users")}
+    columns = {
+        column["name"]: column
+        for column in inspect(postgres_database.engine).get_columns("users")
+    }
     assert {"email", "full_name", "last_login_utc", "login_attempts", "locked_until_utc"} <= columns.keys()
     assert getattr(columns["created_at_utc"]["type"], "timezone", False) is True
     assert getattr(columns["last_login_utc"]["type"], "timezone", False) is True

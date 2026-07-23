@@ -4,21 +4,29 @@ from dataclasses import replace
 from pathlib import Path
 import json
 import logging
-import sqlite3
+import os
 import time
 
 import numpy as np
+import pytest
 
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.core.deepstream_ingestor import DeepStreamIngestor
+from app.database import get_database, metadata
 from app.runtime import build_runtime
+
+
+pytestmark = pytest.mark.usefixtures("postgres_database")
+
+
+def _test_database_url() -> str:
+    return os.environ["TEST_DATABASE_URL"]
 
 
 def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path) -> None:
     seed_path = tmp_path / "sources.json"
-    test_db_path = tmp_path / "ai_database"
     seed_path.write_text(
         json.dumps(
             [
@@ -37,7 +45,7 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
     test_settings = replace(
         settings,
         processor_mode="mock",
-        database_path=tmp_path / "ai_database",
+        database_url=_test_database_url(),
         source_registry_path=seed_path,
         video_ingestion_enabled=False,
     )
@@ -50,10 +58,8 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
     finally:
         first_runtime.close()
 
-    with sqlite3.connect(test_db_path) as connection:
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(cameras)").fetchall()
-        }
+    columns = set(metadata.tables["cameras"].c.keys())
+    with get_database(_test_database_url()).connection() as connection:
         assert {
             "camera_id",
             "name",
@@ -83,7 +89,7 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing-sources.json",
             video_ingestion_enabled=False,
         )
@@ -108,6 +114,8 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                 assert created.json()["camera_id"] == "camera-live"
                 assert "secret" not in created.json()["source_uri"]
                 event = websocket.receive_json()
+                if event.get("type") != "camera_changed":
+                    event = websocket.receive_json()
                 assert event == {
                     "type": "camera_changed",
                     "action": "created",
@@ -181,7 +189,7 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing-sources.json",
             video_ingestion_enabled=False,
         )
@@ -268,7 +276,7 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "sources.json",
             video_ingestion_enabled=False,
         )
@@ -360,7 +368,7 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "sources.json",
             video_ingest_backend="deepstream",
         )
@@ -379,7 +387,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing.json",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
@@ -472,7 +480,7 @@ def test_general_model_settings_and_play_only_camera_api(
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing.json",
             saved_media_path=tmp_path / "media",
             model_root_path=model_root,
@@ -572,7 +580,7 @@ def test_general_model_settings_and_play_only_camera_api(
                 round_sequence=999,
             )
             assert summary["task_submissions"] == 0
-            latest = test_runtime.broadcast.latest(camera_id)
+            latest = test_runtime.broadcast.wait_next(camera_id, 0, timeout=1.0)
             assert latest is not None
             assert latest.tasks == ()
     finally:
@@ -588,7 +596,7 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing.json",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
@@ -653,7 +661,7 @@ def test_get_all_sections_returns_all_groups(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing.json",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
@@ -705,7 +713,7 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
         replace(
             settings,
             processor_mode="mock",
-            database_path=tmp_path / "ai_database",
+            database_url=_test_database_url(),
             source_registry_path=tmp_path / "missing.json",
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
