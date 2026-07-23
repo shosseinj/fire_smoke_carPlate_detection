@@ -982,32 +982,6 @@ def _run_store_tests(store: Any, label: str) -> list[dict[str, Any]]:
     return tests
 
 
-def _run_service_tests(runtime: Runtime) -> list[dict[str, Any]]:
-    """Read-only attendance service validation."""
-    tests: list[dict[str, Any]] = []
-    try:
-        svc = runtime.attendance_service
-        assert svc is not None
-        tests.append(_test("attendance_init", _TEST_PASS))
-    except Exception as exc:
-        tests.append(_test("attendance_init", _TEST_FAIL, str(exc)))
-        return tests
-    # Try daily summary if a personnel exists
-    try:
-        records, total = runtime.personnel_store.list(limit=1)
-        if total > 0:
-            from datetime import date
-            daily = svc.compute_daily_summary(records[0].id, str(date.today()))
-            assert isinstance(daily, dict)
-            assert "status" in daily
-            tests.append(_test("attendance_daily", _TEST_PASS, f"status={daily['status']}"))
-        else:
-            tests.append(_test("attendance_daily", _TEST_SKIP, "no personnel records"))
-    except Exception as exc:
-        tests.append(_test("attendance_daily", _TEST_FAIL, str(exc)))
-    return tests
-
-
 def _run_model_tests(runtime: Runtime, model_paths: dict[str, Path]) -> list[dict[str, Any]]:
     """Read-only model file validation."""
     tests: list[dict[str, Any]] = []
@@ -1087,11 +1061,6 @@ def all_sections_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, An
         store_results.append(_test("locations_counts", _TEST_FAIL, str(exc)))
     all_tests["stores"] = {"tests": store_results}
     all_results.extend(store_results)
-
-    # ── Service tests ─────────────────────────────────────────────────
-    service_results = _run_service_tests(runtime)
-    all_tests["services"] = {"tests": service_results}
-    all_results.extend(service_results)
 
     # ── Data store tests ──────────────────────────────────────────────
     ds_results: list[dict[str, Any]] = []
@@ -1264,24 +1233,7 @@ async def all_sections_smoke_test(
     except Exception as exc:
         smoke_results["requests"] = {"status": "ERROR", "detail": str(exc)}
 
-    # 6. Attendance smoke (lightweight — compute daily for a known personnel)
-    try:
-        svc = runtime.attendance_service
-        personnel_list, total = runtime.personnel_store.list(limit=5)
-        if total > 0:
-            test_person = personnel_list[0]
-            daily = svc.compute_daily_summary(test_person.id, str(date.today()))
-            smoke_results["attendance"] = {
-                "status": "PASS",
-                "personnel_id": test_person.id,
-                "daily_status": daily.get("status", "no_data"),
-            }
-        else:
-            smoke_results["attendance"] = {"status": "SKIP", "detail": "No personnel records exist"}
-    except Exception as exc:
-        smoke_results["attendance"] = {"status": "ERROR", "detail": str(exc)}
-
-    # 7. Infrastructure health
+    # 6. Infrastructure health
     infra_checks = _infrastructure_health_check(runtime)
     smoke_results["infrastructure"] = infra_checks
 

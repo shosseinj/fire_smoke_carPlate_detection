@@ -10,7 +10,7 @@ from app.core.auth_store import UserRecord
 from app.runtime import Runtime
 
 
-router = APIRouter(prefix="/api/v1/car-plates", tags=["legacy-car-plates"])
+router = APIRouter(prefix="/api/v1/car-plates", tags=["car-plates"])
 
 
 class CarPlateCreate(BaseModel):

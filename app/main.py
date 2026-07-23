@@ -31,7 +31,6 @@ from app.api.shifts import router as shifts_router
 from app.api.holidays import router as holidays_router
 from app.api.requests import router as requests_router
 from app.api.personnel_requests import router as personnel_requests_router
-from app.api.attendance import router as attendance_router
 from app.api.personnel_images import router as personnel_images_router
 from app.api.detection_logs import router as detection_logs_router
 from app.api.developer import router as developer_router
@@ -43,90 +42,34 @@ from app.runtime import build_runtime
 runtime = build_runtime(settings)
 
 OPENAPI_TAGS = [
-    {
-        "name": "system-diagnostics",
-        "description": "Maintenance checks, configuration visibility, and controlled pipeline restart.",
-    },
-    {
-        "name": "processor-tests",
-        "description": "Per-stage pipeline testing for face recognition, fire/smoke, and plate recognition. Upload images to test individual components from Swagger.",
-    },
-    {
-        "name": "general-settings",
-        "description": "One place for model selection, dynamic policies, startup config, and camera modes.",
-    },
-    {
-        "name": "model-management",
-        "description": "Model catalog, TensorRT and ONNX conversion jobs, selection, and fallback order.",
-    },
-    {
-        "name": "cameras",
-        "description": "Authoritative camera-table CRUD, sizing, enable/disable, and task assignment.",
-    },
-    {
-        "name": "frame-routing",
-        "description": "Upload JPEG/PNG frames to test fire/smoke and plate model routing from Swagger.",
-    },
-    {
-        "name": "fire-smoke",
-        "description": "Stable incident logs and online rolling-window severity configuration.",
-    },
-    {
-        "name": "face-recognition",
-        "description": "Enrollment, identity management, and persistent landmark/pose quality gates.",
-    },
-    {
-        "name": "human-tracking",
-        "description": "ByteTrack identity history, best snapshots, full-frame videos, and quality-approved aligned-face videos.",
-    },
-    {
-        "name": "plate-settings",
-        "description": "General defaults and per-camera overrides with automatic inheritance.",
-    },
-    {
-        "name": "plate-logs",
-        "description": "Persistent recognized-plate records and snapshots.",
-    },
-    {
-        "name": "results",
-        "description": "Recent model results, worker status, and result WebSocket.",
-    },
-    {
-        "name": "annotated-broadcast",
-        "description": "Dashboard, annotated streams, snapshots, and multiplexed WebSocket.",
-    },
-    {
-        "name": "sources",
-        "description": "Backward-compatible alias for the camera registry.",
-    },
-    {
-        "name": "authentication",
-        "description": "JWT-based login, token lifecycle (OAuth2 token, refresh, logout), user creation, user management, and self-service password change. Obtain a token via /login or /token and use it as Bearer token in the Authorization header.",
-    },
-    {
-        "name": "personnel",
-        "description": "Personnel management: CRUD, image upload with face enrollment, import/export via Excel and ZIP, Iranian national code validation.",
-    },
-    {
-        "name": "personnel-images",
-        "description": "Standalone personnel image operations: retrieve, delete, set primary image.",
-    },
-    {
-        "name": "Shifts",
-        "description": "Work shift definitions, weekday schedules, personnel assignment, and statistics.",
-    },
-    {
-        "name": "Holidays",
-        "description": "Holiday definitions with annual recurrence, active/inactive status, and date checks.",
-    },
-    {
-        "name": "Personnel Requests",
-        "description": "Personnel leave, sick leave, mission, remote work, and overtime requests with approval workflow.",
-    },
-    {
-        "name": "Attendance",
-        "description": "Daily, monthly, and yearly attendance reports. Daily summary, monthly performance, leave analysis, and log attendance toggle.",
-    },
+    {"name": "authentication"},
+    {"name": "Buildings"},
+    {"name": "Sections"},
+    {"name": "Rooms"},
+    {"name": "system-diagnostics"},
+    {"name": "processor-tests"},
+    {"name": "general-settings"},
+    {"name": "model-management"},
+    {"name": "sources"},
+    {"name": "cameras"},
+    {"name": "frame-routing"},
+    {"name": "results"},
+    {"name": "annotated-broadcast"},
+    {"name": "plate-logs"},
+    {"name": "car-plates"},
+    {"name": "fire-smoke"},
+    {"name": "fire-logs"},
+    {"name": "face-recognition"},
+    {"name": "human-tracking"},
+    {"name": "personnel"},
+    {"name": "plate-settings"},
+    {"name": "Shifts"},
+    {"name": "Holidays"},
+    {"name": "Personnel Requests"},
+    {"name": "personnel-images"},
+    {"name": "Detection Logs"},
+    {"name": "Developer"},
+    {"name": "Project Information"},
 ]
 
 
@@ -174,7 +117,6 @@ app.include_router(shifts_router)
 app.include_router(holidays_router)
 app.include_router(requests_router)
 app.include_router(personnel_requests_router)
-app.include_router(attendance_router)
 app.include_router(personnel_images_router)
 app.include_router(detection_logs_router)
 app.include_router(plate_settings_router)

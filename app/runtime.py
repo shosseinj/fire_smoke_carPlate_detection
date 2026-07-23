@@ -30,7 +30,6 @@ from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
-from app.core.attendance_service import AttendanceService
 from app.core.detection_log_store import DetectionLogStore
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
@@ -75,7 +74,6 @@ class Runtime:
     shift_store: ShiftStore
     holiday_store: HolidayStore
     request_store: RequestStore
-    attendance_service: AttendanceService
     detection_log_store: DetectionLogStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
@@ -400,14 +398,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
-    attendance_service = AttendanceService(
-        personnel_store=personnel_store,
-        human_log_store=human_logs,
-        shift_store=shift_store,
-        holiday_store=holiday_store,
-        request_store=request_store,
-        detection_log_store=detection_log_store,
-    )
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
@@ -703,7 +693,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         shift_store=shift_store,
         holiday_store=holiday_store,
         request_store=request_store,
-        attendance_service=attendance_service,
         detection_log_store=detection_log_store,
         general_settings=general_settings,
         video_ingestor=video_ingestor,

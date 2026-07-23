@@ -723,15 +723,6 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
     main_module.runtime = test_runtime
     try:
         with TestClient(main_module.app) as client:
-            # Pre-seed a personnel record so attendance smoke has data
-            # Use a unique valid national code that does not conflict with smoke-test codes
-            test_runtime.personnel_store.create(  # noqa: unused side-effect creates record for attendance
-                fname="Test",
-                lname="AllSections",
-                national_code="0012345679",
-                employee_type="employee",
-            )
-
             resp = client.post("/api/v1/tests/all")
             assert resp.status_code == 200
             body = resp.json()
@@ -739,7 +730,7 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
             # Every section must be present
             expected_sections = [
                 "personnel", "locations", "shifts", "holidays",
-                "requests", "attendance", "infrastructure",
+                "requests", "infrastructure",
             ]
             for section in expected_sections:
                 assert section in body, f"Missing section: {section}"

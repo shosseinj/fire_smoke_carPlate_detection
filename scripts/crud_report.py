@@ -189,13 +189,7 @@ MODULE_ENDPOINTS: dict[str, list[dict[str, str]]] = {
         {"method": "GET", "path": "/api/v1/results/recent", "operation": "list recent"},
         {"method": "GET", "path": "/api/v1/router/status", "operation": "read router status"},
     ],
-    "attendance": [
-        {"method": "GET", "path": "/api/v1/attendance/daily/{pid}", "operation": "daily summary"},
-        {"method": "GET", "path": "/api/v1/attendance/monthly/{pid}", "operation": "monthly summary"},
-        {"method": "GET", "path": "/api/v1/attendance/monthly-performance", "operation": "monthly performance"},
-        {"method": "GET", "path": "/api/v1/attendance/yearly-leave/{pid}", "operation": "yearly leave"},
-        {"method": "PUT", "path": "/api/v1/attendance/log/{id}/toggle-attendance", "operation": "toggle attendance"},
-    ],
+    
     "frames": [
         {"method": "POST", "path": "/api/v1/frame-rounds/jpeg", "operation": "submit frame"},
     ],

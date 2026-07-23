@@ -11,7 +11,7 @@ from app.core.auth_store import UserRecord
 from app.runtime import Runtime
 
 
-router = APIRouter(prefix="/api/v1/fire-logs", tags=["legacy-fire-logs"])
+router = APIRouter(prefix="/api/v1/fire-logs", tags=["fire-logs"])
 
 
 class FireLogCreate(BaseModel):

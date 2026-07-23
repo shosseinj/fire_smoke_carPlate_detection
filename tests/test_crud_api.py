@@ -482,14 +482,6 @@ class TestResultsApi:
 # ATTENDANCE
 # ═══════════════════════════════════════════════════════════════════════
 
-class TestAttendanceApi:
-    MODULE = "attendance"
-
-    def test_monthly_performance(self, crud):
-        resp = crud.client.get("/api/v1/attendance/monthly-performance?year=2026&month=7", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # FRAMES
 # ═══════════════════════════════════════════════════════════════════════
@@ -790,7 +782,7 @@ CRUD_TEST_CLASSES: dict[str, type] = {
     "plate_logs": TestPlateLogsApi,
     "plate_settings": TestPlateSettingsApi,
     "results": TestResultsApi,
-    "attendance": TestAttendanceApi,
+    
     "frames": TestFramesApi,
     "car_plates": TestCarPlatesCrud,
     "fire_logs": TestFireLogsCrud,

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
-import re
-from pathlib import Path
-from typing import Any
+from datetime import datetime
 from typing import Annotated
 
 import cv2
@@ -29,6 +26,7 @@ from app.core.personnel_image_service import (
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.runtime import Runtime
 from app.core.auth_store import UserRecord
+from typing import Optional
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -55,208 +53,72 @@ def _image_processor(runtime: Runtime) -> PersonnelImageProcessor:
     return PersonnelImageProcessor(_face_processor(runtime))
 
 
-# ── Shared helpers ───────────────────────────────────────────────
-
-def _contract_mode(
-    skip: int | None = None,
-    offset: int | None = None,
-    search: str | None = None,
-    employee_type: str | None = None,
-    contract: str | None = None,
-) -> str:
-    """Determine response contract mode based on query parameters.
-
-    Returns 'legacy' for old bare-array format or 'current' for wrapper format.
-    """
-    if contract == "current":
-        return "current"
-    if contract == "legacy":
-        return "legacy"
-    if skip is not None:
-        return "legacy"
-    if offset is not None or search is not None or employee_type is not None:
-        return "current"
-    return "legacy"
-
-
 # ── Pydantic models ─────────────────────────────────────────────────
 
 class PersonnelCreateRequest(BaseModel):
-    fname: str = Field(..., min_length=1, max_length=200)
-    lname: str = Field(..., min_length=1, max_length=200)
-    national_code: str = Field(..., min_length=1, max_length=20)
-    employee_type: str = Field(default="unknown")
-    degree: str | None = Field(default=None, max_length=200)
-    department_id: int | None = Field(default=None)
-    shift_id: int | None = Field(default=None)
+    fname: str = Field(min_length=1, max_length=200)
+    lname: str = Field(min_length=1, max_length=200)
+    national_code: str = Field(min_length=1, max_length=20)
+    employee_type: Optional[str] = None
+    degree: Optional[str] = Field(default=None, max_length=200)
+    department_id: Optional[int] = None
+    shift_id: Optional[int] = None
 
 
 class PersonnelUpdateRequest(BaseModel):
-    fname: str | None = Field(default=None, min_length=1, max_length=200)
-    lname: str | None = Field(default=None, min_length=1, max_length=200)
-    national_code: str | None = Field(default=None, min_length=1, max_length=20)
-    employee_type: str | None = Field(default=None)
-    degree: str | None = Field(default=None, max_length=200)
-    department_id: int | None = Field(default=None)
-    shift_id: int | None = Field(default=None)
+    fname: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    lname: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    national_code: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    employee_type: Optional[str] = None
+    degree: Optional[str] = Field(default=None, max_length=200)
+    department_id: Optional[int] = None
+    shift_id: Optional[int] = None
 
 
-class PersonnelResponse(BaseModel):
+class SimplePersonnelResponse(BaseModel):
     id: int
     fname: str
     lname: str
     national_code: str
-    employee_type: str
-    degree: str | None = None
-    department_name: str | None = None
-    shift_name: str | None = None
-    last_seen: str | None = None
-    created_at_utc: str
-    updated_at_utc: str
+    employee_type: Optional[str] = None
+    department_name: Optional[str] = None
+    shift_name: Optional[str] = None
+    degree: Optional[str] = None
+    created_at: datetime
 
 
 class PersonnelImageResponse(BaseModel):
     id: int
-    personnel_id: int
-    storage_key: str
-    description: str | None = None
-    is_primary: bool
-    uploaded_at_utc: str
-    embedding_id: str | None = None
-    url: str = ""
-    face_status: int = 0
-    cropped_face_key: str | None = None
-
-
-class LegacyPersonnelResponse(BaseModel):
-    id: int
-    fname: str
-    lname: str
-    national_code: str
-    employee_type: str | None
-    department_name: str | None = None
-    shift_name: str | None = None
-    degree: str | None = None
-    created_at: str
-
-
-class LegacyPersonnelImageResponse(BaseModel):
-    id: int
-    image_base64: str | None = None
+    image_base64: Optional[str] = None
     personnel_id: int
     is_primary: bool
-    uploaded_at: str | None = None
-
-
-class LegacyPersonnelWithImagesResponse(BaseModel):
-    id: int
-    fname: str
-    lname: str
-    national_code: str
-    employee_type: str | None
-    department_name: str | None = None
-    shift_name: str | None = None
-    degree: str | None = None
-    created_at: str
-    rooms: list = Field(default_factory=list)
-    images: list[LegacyPersonnelImageResponse] = Field(default_factory=list)
-    primary_image: LegacyPersonnelImageResponse | None = None
-
-
-class BatchImageResult(BaseModel):
-    success: bool
-    failure_code: str | None = None
-    failure_message: str | None = None
-    image: dict | None = None
-
-
-class BatchUploadResponse(BaseModel):
-    total_success: int
-    total_failed: int
-    results: list[BatchImageResult]
-    personnel: dict
+    uploaded_at: Optional[datetime] = None
 
 
 # ── Converters ───────────────────────────────────────────────────
 
-def _personnel_to_response(p: PersonnelRecord, store: PersonnelStore | None = None) -> PersonnelResponse:
-    dept_name: str | None = None
-    shift_name: str | None = None
-    if store is not None:
-        resolve_department = getattr(store, "_resolve_department_name", None)
-        resolve_shift = getattr(store, "_resolve_shift_name", None)
-        dept_name = resolve_department(p.department_id) if resolve_department else None
-        shift_name = resolve_shift(p.shift_id) if resolve_shift else None
-    return PersonnelResponse(
+def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
+    return SimplePersonnelResponse(
         id=p.id,
         fname=p.fname,
         lname=p.lname,
         national_code=p.national_code,
         employee_type=p.employee_type,
-        degree=p.degree,
-        department_name=dept_name,
-        shift_name=shift_name,
-        last_seen=p.last_seen,
-        created_at_utc=p.created_at_utc,
-        updated_at_utc=p.updated_at_utc,
-    )
-
-
-def _legacy_personnel_response(p: PersonnelRecord, store: PersonnelStore | None = None) -> LegacyPersonnelResponse:
-    dept_name: str | None = None
-    shift_name: str | None = None
-    if store is not None:
-        dept_name = store._resolve_department_name(p.department_id)
-        shift_name = store._resolve_shift_name(p.shift_id)
-    return LegacyPersonnelResponse(
-        id=p.id,
-        fname=p.fname,
-        lname=p.lname,
-        national_code=p.national_code,
-        employee_type=p.employee_type,
-        department_name=dept_name,
-        shift_name=shift_name,
+        department_name=store._resolve_department_name(p.department_id),
+        shift_name=store._resolve_shift_name(p.shift_id),
         degree=p.degree,
         created_at=p.created_at_utc,
     )
 
 
-def _image_to_response(img: PersonnelImageRecord, store: PersonnelStore | None = None) -> PersonnelImageResponse:
-    from app.config import settings
-    base_url = getattr(settings, "external_base_url", "")
-    url = f"{base_url}/media/{img.storage_key}"
+def _image_to_base64_response(img: PersonnelImageRecord, store: PersonnelStore) -> PersonnelImageResponse:
     return PersonnelImageResponse(
         id=img.id,
-        personnel_id=img.personnel_id,
-        storage_key=img.storage_key,
-        description=img.description,
-        is_primary=img.is_primary,
-        uploaded_at_utc=img.uploaded_at_utc,
-        embedding_id=img.embedding_id,
-        url=url,
-    )
-
-
-def _legacy_image_response(img: PersonnelImageRecord, store: PersonnelStore | None = None) -> LegacyPersonnelImageResponse:
-    base64_str: str | None = None
-    if store is not None:
-        base64_str = store.read_image_base64(img.storage_key)
-    return LegacyPersonnelImageResponse(
-        id=img.id,
-        image_base64=base64_str,
+        image_base64=store.read_image_base64(img.storage_key),
         personnel_id=img.personnel_id,
         is_primary=img.is_primary,
         uploaded_at=img.uploaded_at_utc,
     )
-
-
-def _enrich_url(item: dict) -> dict:
-    from app.config import settings
-    base_url = getattr(settings, "external_base_url", "")
-    for img in item.get("images", []):
-        if "storage_key" in img:
-            img["url"] = f"{base_url}/media/{img['storage_key']}"
-    return item
 
 
 # ── Personnel CRUD ──────────────────────────────────────────────────
@@ -264,31 +126,16 @@ def _enrich_url(item: dict) -> dict:
 
 @router.get("/", summary="List all personnel records")
 def list_personnel(
-    skip: int | None = Query(default=None, ge=0, description="Legacy offset (skip)"),
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    offset: int | None = Query(default=None, ge=0, description="Current offset"),
     employee_type: str | None = Query(default=None),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
-    contract: str | None = Query(default=None, description="'current' for wrapper, 'legacy' for bare array"),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
-) -> Any:
+) -> list:
     store = _store(runtime)
-    mode = _contract_mode(skip=skip, offset=offset, search=search, employee_type=employee_type, contract=contract)
-    actual_offset = skip if skip is not None else (offset if offset is not None else 0)
-    records, total = store.list(
-        offset=actual_offset,
-        limit=limit,
-        employee_type=employee_type,
-        search=search,
-    )
-    if mode == "legacy":
-        return [_legacy_personnel_response(r, store) for r in records]
-    return {
-        "items": [_personnel_to_response(r, store) for r in records],
-        "count": len(records),
-        "total": total,
-    }
+    records, _ = store.list(offset=skip, limit=limit, employee_type=employee_type, search=search)
+    return [_personnel_simple(r, store) for r in records]
 
 
 @router.post("/", summary="Create a new personnel record", status_code=status.HTTP_201_CREATED)
@@ -296,7 +143,7 @@ def create_personnel(
     payload: PersonnelCreateRequest,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-) -> Any:
+) -> SimplePersonnelResponse:
     store = _store(runtime)
     try:
         record = store.create(
@@ -310,38 +157,20 @@ def create_personnel(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    return _legacy_personnel_response(record, store)
+    return _personnel_simple(record, store)
 
 
 @router.get("/search/{national_code}", summary="Search personnel by national code")
 def search_personnel(
     national_code: str,
-    contract: str | None = Query(default=None, description="'current' for 404 on not found"),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
-) -> Any:
+) -> SimplePersonnelResponse | None:
     store = _store(runtime)
     record = store.get_by_national_code(national_code)
     if record is None:
-        if contract == "current":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
         return None
-    if contract == "current":
-        return _personnel_to_response(record, store)
-    return _legacy_personnel_response(record, store)
-
-
-@router.get("/with-images", summary="List personnel records with their images")
-def list_personnel_with_images(
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
-    runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
-) -> dict:
-    store = _store(runtime)
-    items, total = store.list_with_images(offset=offset, limit=limit)
-    enriched = [_enrich_url(item) for item in items]
-    return {"items": enriched, "count": len(enriched), "total": total}
+    return _personnel_simple(record, store)
 
 
 # ── Import / Export / Bulk ───────────────────────────────────────────
@@ -419,14 +248,13 @@ async def create_personnel_with_images(
         store.delete(person.id)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="All images failed processing")
 
-    legacy_imgs = [_legacy_image_response(img, store) for img in saved_images]
+    imgs = [_image_to_base64_response(img, store).model_dump() for img in saved_images]
     primary_img = next((img for img in saved_images if img.is_primary), None)
-    legacy_person = _legacy_personnel_response(person, store)
     return {
-        **legacy_person.model_dump(),
+        **_personnel_simple(person, store).model_dump(),
         "rooms": [],
-        "images": [img.model_dump() for img in legacy_imgs],
-        "primary_image": _legacy_image_response(primary_img, store).model_dump() if primary_img else None,
+        "images": imgs,
+        "primary_image": _image_to_base64_response(primary_img, store).model_dump() if primary_img else None,
     }
 
 
@@ -440,8 +268,7 @@ async def import_excel(
     file: UploadFile = File(...),
     update_existing: bool = Form(default=False),
     skip_invalid_rows: bool = Form(default=True),
-    contract: str | None = Query(default=None),
-) -> Any:
+) -> dict:
     store = _store(runtime)
     raw = await file.read()
     if not raw:
@@ -450,8 +277,6 @@ async def import_excel(
         result = await run_in_threadpool(store.import_from_excel, raw)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    if contract == "current":
-        return result
     total = result["created"] + result["skipped"] + len(result["errors"])
     return {
         "summary": {
@@ -535,17 +360,14 @@ async def upload_personnel_zip(
 @router.get("/{personnel_id}", summary="Get a personnel record by ID")
 def get_personnel(
     personnel_id: int,
-    contract: str | None = Query(default=None),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
-) -> Any:
+) -> SimplePersonnelResponse:
     store = _store(runtime)
     record = store.get(personnel_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
-    if contract == "current":
-        return _personnel_to_response(record, store)
-    return _legacy_personnel_response(record, store)
+    return _personnel_simple(record, store)
 
 
 @router.put("/{personnel_id}", summary="Update a personnel record")
@@ -554,7 +376,7 @@ def update_personnel(
     payload: PersonnelUpdateRequest,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
-) -> Any:
+) -> SimplePersonnelResponse:
     store = _store(runtime)
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
@@ -568,7 +390,7 @@ def update_personnel(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
-    return _legacy_personnel_response(record, store)
+    return _personnel_simple(record, store)
 
 
 @router.delete("/{personnel_id}", summary="Delete a personnel record", status_code=status.HTTP_204_NO_CONTENT)
@@ -604,20 +426,14 @@ def delete_personnel(
 )
 def list_personnel_images(
     personnel_id: int,
-    contract: str | None = Query(default=None),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
-) -> Any:
+) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
     images = store.list_images(personnel_id)
-    if contract == "legacy" or contract is None:
-        return [_legacy_image_response(img, store) for img in images]
-    return {
-        "items": [_image_to_response(img, store) for img in images],
-        "count": len(images),
-    }
+    return [_image_to_base64_response(img, store) for img in images]
 
 
 @router.post(
@@ -645,7 +461,7 @@ async def upload_personnel_images(
     _: UserRecord = Depends(require_role("admin")),
     enable_cropping: bool = Form(default=False),
     is_primary: str | None = Form(default=None),
-) -> Any:
+) -> dict:
     store = _store(runtime)
     person = store.get(personnel_id)
     if person is None:
@@ -658,17 +474,8 @@ async def upload_personnel_images(
     if not upload_files:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No files provided")
 
-    from app.config import settings as app_settings
-    max_files = getattr(app_settings, "max_images_per_request", 10)
-    if len(upload_files) > max_files:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Maximum {max_files} files per request",
-        )
-
     face_processor = _face_processor(runtime)
     processor = _image_processor(runtime)
-    person_name = f"{person.fname} {person.lname}"
     results: list[dict] = []
     saved_images: list[PersonnelImageRecord] = []
     all_failed = True
@@ -679,22 +486,12 @@ async def upload_personnel_images(
     for img_file in upload_files:
         raw = await img_file.read()
         if not raw:
-            results.append({
-                "success": False,
-                "failure_code": "empty_file",
-                "failure_message": "File is empty",
-                "image": None,
-            })
+            results.append({"success": False, "failure_code": "empty_file", "failure_message": "File is empty", "image": None})
             continue
 
         validation = validate_uploaded_image(raw, img_file.filename or "image.jpg", img_file.content_type)
         if not validation.valid:
-            results.append({
-                "success": False,
-                "failure_code": validation.failure_code,
-                "failure_message": validation.failure_message,
-                "image": None,
-            })
+            results.append({"success": False, "failure_code": validation.failure_code, "failure_message": validation.failure_message, "image": None})
             continue
 
         storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg", person.national_code)
@@ -715,84 +512,47 @@ async def upload_personnel_images(
                 elif raw_face_count >= 2:
                     face_status = 2
                 else:
-                    process_result = processor.process_image(
-                        raw,
-                        person_name=person.national_code,
-                        ref_img_id=f"{personnel_id}",
-                        enable_cropping=enable_cropping,
-                    )
+                    process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=f"{personnel_id}", enable_cropping=enable_cropping)
                     if process_result.success:
                         embedding_id = process_result.vector_point_id
                         face_status = 1
                         if enable_cropping:
                             try:
-                                success, aligned = await run_in_threadpool(
-                                    face_processor.get_aligned_face, image
-                                )
+                                success, aligned = await run_in_threadpool(face_processor.get_aligned_face, image)
                                 if success and aligned is not None:
                                     success_enc, encoded = cv2.imencode(".jpg", aligned)
                                     if success_enc:
-                                        cropped_face_key = store._save_cropped_face_file(
-                                            personnel_id, encoded.tobytes(), img_file.filename or "face.jpg", person.national_code
-                                        )
+                                        cropped_face_key = store._save_cropped_face_file(personnel_id, encoded.tobytes(), img_file.filename or "face.jpg", person.national_code)
                             except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
-                                LOGGER.warning(
-                                    "Cropped face save failed for personnel %s: %s", personnel_id, exc
-                                )
+                                LOGGER.warning("Cropped face save failed for personnel %s: %s", personnel_id, exc)
                     else:
                         face_status = 0
             else:
                 LOGGER.warning("Could not decode uploaded image for face enrollment")
         else:
-            process_result = processor.process_image(
-                raw,
-                person_name=person.national_code,
-                ref_img_id=f"{personnel_id}",
-                enable_cropping=enable_cropping,
-            )
+            process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=f"{personnel_id}", enable_cropping=enable_cropping)
             if process_result.success:
                 embedding_id = process_result.vector_point_id
 
         try:
-            img_record = store.create_image(
-                personnel_id=personnel_id,
-                storage_key=storage_key,
-                description=None,
-                embedding_id=embedding_id,
-                is_primary=is_primary_val,
-            )
+            img_record = store.create_image(personnel_id=personnel_id, storage_key=storage_key, description=None, embedding_id=embedding_id, is_primary=is_primary_val)
             saved_images.append(img_record)
             all_failed = False
             img_dict = dataclass_to_dict(img_record)
             img_dict["face_status"] = face_status
             img_dict["cropped_face_key"] = cropped_face_key
-            results.append({
-                "success": True,
-                "failure_code": None,
-                "failure_message": None,
-                "image": img_dict,
-            })
+            results.append({"success": True, "failure_code": None, "failure_message": None, "image": img_dict})
         except ValueError as exc:
             store._delete_storage_file(storage_key)
-            results.append({
-                "success": False,
-                "failure_code": "storage_error",
-                "failure_message": str(exc),
-                "image": None,
-            })
+            results.append({"success": False, "failure_code": "storage_error", "failure_message": str(exc), "image": None})
 
     if all_failed:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "total_success": 0,
-                "total_failed": len(upload_files),
-                "results": results,
-                "personnel": dataclass_to_dict(person),
-            },
+            detail={"total_success": 0, "total_failed": len(upload_files), "results": results, "personnel": dataclass_to_dict(person)},
         )
 
-    person_dict = _personnel_to_response(person, store).model_dump()
+    person_dict = dataclass_to_dict(person)
     person_dict["images"] = []
     for img in saved_images:
         img_dict = dataclass_to_dict(img)
@@ -811,63 +571,3 @@ async def upload_personnel_images(
         "results": results,
         "personnel": person_dict,
     }
-
-
-# ── Personnel Images (standalone) ────────────────────────────────────
-
-
-@router.get(
-    "/images/{image_id}",
-    summary="Get an image record by ID",
-    tags=["personnel-images"],
-)
-def get_personnel_image(
-    image_id: int,
-    runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
-) -> PersonnelImageResponse:
-    img = _store(runtime).get_image(image_id)
-    if img is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    return _image_to_response(img)
-
-
-@router.delete(
-    "/images/{image_id}",
-    summary="Delete a personnel image",
-    tags=["personnel-images"],
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def delete_personnel_image(
-    image_id: int,
-    runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
-) -> Response:
-    store = _store(runtime)
-    img = store.get_image(image_id)
-    if img is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    if img.embedding_id:
-        processor = _face_processor(runtime)
-        if processor is not None:
-            processor.delete_points([img.embedding_id])
-    deleted = store.delete_image(image_id)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.put(
-    "/images/{image_id}/set-primary",
-    summary="Set an image as the primary image for its personnel",
-    tags=["personnel-images"],
-)
-def set_primary_image(
-    image_id: int,
-    runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
-) -> PersonnelImageResponse:
-    img = _store(runtime).set_primary_image(image_id)
-    if img is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    return _image_to_response(img)

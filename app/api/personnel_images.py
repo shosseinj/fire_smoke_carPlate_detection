@@ -41,11 +41,10 @@ def _image_processor(runtime: Runtime) -> PersonnelImageProcessor:
     return PersonnelImageProcessor(_face_processor(runtime))
 
 
-def _legacy_image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
-    base64_str = store.read_image_base64(img.storage_key)
+def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
     return {
         "id": img.id,
-        "image_base64": base64_str,
+        "image_base64": store.read_image_base64(img.storage_key),
         "personnel_id": img.personnel_id,
         "is_primary": img.is_primary,
         "uploaded_at": img.uploaded_at_utc,
@@ -65,7 +64,7 @@ def list_personnel_images(
     if store.get(personnel_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
     images = store.list_images(personnel_id)
-    return [_legacy_image_response(img, store) for img in images]
+    return [_image_response(img, store) for img in images]
 
 
 @router.post(
@@ -87,7 +86,6 @@ async def upload_personnel_images(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
 
     processor = _image_processor(runtime)
-    person_name = f"{person.fname} {person.lname}"
     saved_images: list[PersonnelImageRecord] = []
 
     for idx, img_file in enumerate(images):
@@ -121,7 +119,7 @@ async def upload_personnel_images(
     if not saved_images:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="All images failed processing")
 
-    return [_legacy_image_response(img, store) for img in saved_images]
+    return [_image_response(img, store) for img in saved_images]
 
 
 @router.delete(

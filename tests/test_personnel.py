@@ -316,10 +316,11 @@ def test_search_personnel_not_found(tmp_path: Path) -> None:
     try:
         token = _admin_token(client)
         resp = client.get(
-            f"/api/v1/personnel/search/{VALID_CODE_2}?contract=current",
+            f"/api/v1/personnel/search/{VALID_CODE_2}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json() is None
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -398,13 +399,13 @@ def test_list_images(tmp_path: Path) -> None:
 
         op_token = _operator_token(client)
         resp = client.get(
-            f"/api/v1/personnel/{person_id}/images?contract=current",
+            f"/api/v1/personnel/{person_id}/images",
             headers={"Authorization": f"Bearer {op_token}"},
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["count"] >= 1
-        assert len(body["items"]) >= 1
+        assert isinstance(body, list)
+        assert len(body) >= 1
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -474,36 +475,6 @@ def test_delete_image_promotes_next(tmp_path: Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# with-images endpoint
-# ═══════════════════════════════════════════════════════════════════
-
-
-def test_list_with_images(tmp_path: Path) -> None:
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        admin_token = _admin_token(client)
-        person = _create_test_person(client, admin_token)
-
-        # Upload an image
-        _upload_one_image(client, admin_token, person["id"])
-
-        op_token = _operator_token(client)
-        resp = client.get(
-            "/api/v1/personnel/with-images",
-            headers={"Authorization": f"Bearer {op_token}"},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["count"] >= 1
-        # The person record should have images nested
-        found = [item for item in body["items"] if item["id"] == person["id"]]
-        assert len(found) == 1
-        assert len(found[0]["images"]) >= 1
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-# ═══════════════════════════════════════════════════════════════════
 # Import-export tests
 # ═══════════════════════════════════════════════════════════════════
 
@@ -540,15 +511,15 @@ def test_import_excel(tmp_path: Path) -> None:
         buf.seek(0)
 
         resp = client.post(
-            "/api/v1/personnel/import-excel?contract=current",
+            "/api/v1/personnel/import-excel",
             files={"file": ("import.xlsx", buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["created"] == 2
-        assert body["skipped"] == 0
-        assert len(body["errors"]) == 0
+        assert body["summary"]["created"] == 2
+        assert body["summary"]["skipped"] == 0
+        assert len(body["failed_rows"]) == 0
 
         # Verify personnel were created
         search = client.get(
@@ -577,7 +548,6 @@ def test_endpoints_require_auth(tmp_path: Path) -> None:
             ("PUT", "/api/v1/personnel/1"),
             ("DELETE", "/api/v1/personnel/1"),
             ("GET", "/api/v1/personnel/search/1234567891"),
-            ("GET", "/api/v1/personnel/with-images"),
             ("GET", "/api/v1/personnel/1/images"),
             ("GET", "/api/v1/personnel/images/1"),
             ("DELETE", "/api/v1/personnel/images/1"),
