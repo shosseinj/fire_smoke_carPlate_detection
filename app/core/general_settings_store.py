@@ -139,7 +139,7 @@ class GeneralSettingsStore:
                 updated = current.operational.updated(operational_changes)
                 sets.append("operational_json = ?"); params.append(json.dumps(updated.to_dict(), sort_keys=True))
             sets.append("updated_at_utc = ?"); params.append(utc_now_text())
-            if updated_by is not None:
+            if updated_by is not None and updated_by > 0:
                 sets.append("updated_by = ?"); params.append(updated_by)
             params.append(1)
             conn.execute(f"UPDATE general_settings SET {', '.join(sets)} WHERE id = ?", params)
