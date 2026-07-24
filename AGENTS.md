@@ -132,7 +132,55 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Binary WS delivers JPEG frames: connect to `ws://host/api/v1/broadcast/ws` without params
 - Results WS delivers overlays: connect to `ws://host/api/v1/results/ws`
 
-## Multi-agent workflow
+## Polygon zone system
+
+### Overview
+
+The polygon zone system detects when a tracked human enters or exits a defined polygonal region (zone) in a camera's field of view. Zones are stored as `polygon_json` on the `rooms` table, where each room can have an associated polygon defining its boundary in image pixel coordinates (e.g., `[[x1,y1],[x2,y2],...]` with at least 3 points for a valid polygon).
+
+### Zone hierarchy
+
+    Building → Section → Room (with polygon_json)
+
+Cameras are assigned to a `section_id` (via camera metadata or the `section_id` column). Every room in that section with a `polygon_json` is checked for each detection.
+
+### Entry/exit detection
+
+- **Human foot point**: `((x1 + x2) / 2, y2)` computed from the human bounding box `[x1, y1, x2, y2]`. This is the center-bottom point, representing where the person's feet are.
+- **Point-in-polygon**: The PNPoly ray-casting algorithm (`point_in_polygon()` in `location_store.py`) checks containment.
+- **Transition tracking**: The `LocationStore` maintains an in-memory `_entry_state` dictionary keyed by `(camera_id, track_id, room_id)`. When a foot point transitions from outside → inside, a match record with `transition_type='entered'` is created. When inside → outside, `transition_type='exited'` is created.
+- **Heartbeat**: When a track remains inside the same zone, matches are still recorded but with `transition_type=None` (heartbeat).
+
+### Pipeline
+
+1. `FaceRecognitionProcessor.process_batch()` outputs humans with bbox and track_id.
+2. `TaskWorker` calls `location_observer(packet, result)` for each successful result.
+3. `_build_location_observer()` in `runtime.py` resolves the camera's `section_id`, computes the human foot point, and calls `LocationStore.match_detection_to_rooms()`.
+4. `LocationStore.match_detection_to_rooms()` checks polygon containment for all rooms in that section and inserts match records with transition tracking.
+
+### API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/rooms/` | GET | List rooms with polygon_points |
+| `/rooms/{id}` | GET | Get room with polygon_points |
+| `/rooms/` | POST | Create room with polygon_points |
+| `/rooms/{id}` | PUT | Update room polygon_points |
+| `/rooms/{id}/matches` | GET | List all polygon matches for a room |
+| `/rooms/{id}/entry-exits` | GET | List only entry/exit transitions (filters by transition_type) |
+
+The `polygon_points` field in room create/update accepts `[[x,y], [x,y], ...]` with at least 3 points.
+
+### Database schema
+
+- `rooms.polygon_json` — TEXT column storing JSON array of `[x, y]` points.
+- `detection_room_matches` — stores each polygon match with:
+  - `transition_type` — 'entered', 'exited', or NULL (heartbeat/static match)
+  - `track_id` — Integer track ID for transition tracking
+  - `detection_type` — 'face_recognition', 'plate_recognition', or 'fire_smoke'
+  - `detection_event_id`, `room_id`, `personnel_id`, `camera_id`, `matched_at_utc`
+
+### Multi-agent workflow
 
 Use multiple agents when the task contains independent investigation, implementation, testing, or review work. One primary agent must act as coordinator.
 

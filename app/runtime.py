@@ -505,7 +505,15 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ls: LocationStore,
         reg: SourceRegistry,
     ) -> Callable[[FramePacket, TaskResult], None]:
-        """Return a location_observer that matches detected objects to room polygons."""
+        """Return a location_observer that matches detected objects to room polygons.
+
+        For FACE_RECOGNITION results, the human foot point is used
+        (center bottom of the human bounding box: ((x1+x2)/2, y2))
+        to determine polygon entry/exit, rather than the face center point.
+        This ensures that a human's foot position determines zone transitions.
+
+        Entry/exit transition tracking is enabled via track_id.
+        """
         def location_observer(packet: FramePacket, result: TaskResult) -> None:
             if result.error:
                 return
@@ -529,16 +537,20 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             detections: list[dict[str, object]] = []
 
             if result.task == TaskName.FACE_RECOGNITION:
-                faces = result.data.get("faces", [])
-                for face in faces:
-                    bbox = face.get("bbox")
+                # Use HUMAN foot point for polygon zone entry/exit detection,
+                # not face center. The foot point is computed from the human
+                # bounding box as ((x1+x2)/2, y2).
+                humans = result.data.get("humans", [])
+                for human in humans:
+                    bbox = human.get("bbox")
                     if bbox and len(bbox) >= 4:
-                        cx = (bbox[0] + bbox[2]) / 2.0
-                        cy = (bbox[1] + bbox[3]) / 2.0
+                        foot_x, foot_y = LocationStore._human_foot_point(bbox)
+                        track_id = human.get("track_id")
                         detections.append({
-                            "cx": cx,
-                            "cy": cy,
-                            "personnel_id": face.get("personnel_id") or face.get("person"),
+                            "cx": foot_x,
+                            "cy": foot_y,
+                            "track_id": track_id,
+                            "personnel_id": human.get("personnel_id") or human.get("person"),
                             "detection_event_id": frame_index,
                         })
             elif result.task == TaskName.PLATE_RECOGNITION:
@@ -551,6 +563,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         detections.append({
                             "cx": cx,
                             "cy": cy,
+                            "track_id": None,
                             "personnel_id": None,
                             "detection_event_id": frame_index,
                         })
@@ -564,6 +577,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         detections.append({
                             "cx": cx,
                             "cy": cy,
+                            "track_id": None,
                             "personnel_id": None,
                             "detection_event_id": frame_index,
                         })
@@ -578,6 +592,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         bbox_center_y=det["cy"],
                         personnel_id=det["personnel_id"],
                         camera_id=source_id,
+                        track_id=det.get("track_id"),
                     )
                 except Exception:
                     LOGGER.exception(

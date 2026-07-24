@@ -151,6 +151,8 @@ class DetectionMatchResponse(BaseModel):
     room_id: int
     personnel_id: int | None = None
     camera_id: str | None = None
+    track_id: int | None = None
+    transition_type: str | None = None
     matched_at_utc: str
 
 
@@ -649,6 +651,52 @@ def remove_room(
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     _store(runtime).delete_room(room_id)
     return {"message": "اتاق با موفقیت حذف شد"}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Zone Entry/Exit Events
+# ═════════════════════════════════════════════════════════════════════
+
+
+@rooms_router.get("/{room_id}/entry-exits")
+def list_room_entry_exits(
+    room_id: int,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    transition_type: str | None = Query(default=None, description="Filter by 'entered' or 'exited'"),
+    runtime: Runtime = Depends(get_runtime),
+    _: UserRecord = Depends(require_role("operator")),
+) -> dict:
+    """List zone entry/exit events for a specific room/polygon.
+
+    Returns events where a detected human entered or exited the polygon zone.
+    When transition_type is specified, filters to only 'entered' or 'exited' events.
+    """
+    store = _store(runtime)
+    room = store.get_room(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    records, total = store.list_matches_for_room(
+        room_id=room_id, limit=limit, offset=offset,
+        transition_type=transition_type,
+    )
+    return {
+        "items": [
+            DetectionMatchResponse(
+                id=m.id,
+                detection_type=m.detection_type,
+                detection_event_id=m.detection_event_id,
+                room_id=m.room_id,
+                personnel_id=m.personnel_id,
+                camera_id=m.camera_id,
+                matched_at_utc=m.matched_at_utc,
+            )
+            for m in records
+            if m.transition_type is not None  # Only show actual entry/exit transitions
+        ],
+        "count": sum(1 for m in records if m.transition_type is not None),
+        "total": sum(1 for m in records if m.transition_type is not None),
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════

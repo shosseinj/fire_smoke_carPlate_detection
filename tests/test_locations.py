@@ -400,6 +400,171 @@ class TestPolygonMatching:
         assert len(matches) >= 2
 
 
+# ── Zone Entry/Exit Transition tests ────────────────────────────────────
+
+
+class TestZoneEntryExit:
+    def test_human_foot_point(self) -> None:
+        """Human foot point should be ((x1+x2)/2, y2)."""
+        foot_x, foot_y = LocationStore._human_foot_point([10, 20, 100, 200])
+        assert foot_x == 55.0  # (10+100)/2
+        assert foot_y == 200.0  # y2
+
+    def test_human_foot_point_empty_bbox(self) -> None:
+        """Empty bbox returns (0, 0)."""
+        foot_x, foot_y = LocationStore._human_foot_point([])
+        assert foot_x == 0.0
+        assert foot_y == 0.0
+
+    def test_human_foot_point_partial_bbox(self) -> None:
+        """Bbox with fewer than 4 elements returns (0, 0)."""
+        foot_x, foot_y = LocationStore._human_foot_point([10, 20])
+        assert foot_x == 0.0
+        assert foot_y == 0.0
+
+    def test_entry_transition(self, store: LocationStore) -> None:
+        """First detection inside a polygon should have transition_type='entered'."""
+        bld = store.create_building("Test")
+        sec = store.create_section("Floor 1", building_id=bld.id)
+        polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        room = store.create_room("Zone", section_id=sec.id, polygon_json=polygon)
+
+        matches = store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=100.0,
+            bbox_center_y=100.0,
+            personnel_id=1,
+            camera_id="cam-zone-1",
+            track_id=1,
+        )
+        assert len(matches) >= 1
+        match = matches[0]
+        assert match.transition_type == "entered"
+        assert match.track_id == 1
+
+    def test_exit_transition(self, store: LocationStore) -> None:
+        """Point previously inside, now outside should produce transition_type='exited'."""
+        bld = store.create_building("Test")
+        sec = store.create_section("Floor 1", building_id=bld.id)
+        polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        room = store.create_room("Zone", section_id=sec.id, polygon_json=polygon)
+
+        # First call: inside -> entered
+        store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=100.0,
+            bbox_center_y=100.0,
+            camera_id="cam-exit-1",
+            track_id=42,
+        )
+        # Second call: outside -> exited
+        matches = store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=2,
+            bbox_center_x=500.0,
+            bbox_center_y=500.0,
+            camera_id="cam-exit-1",
+            track_id=42,
+        )
+        assert len(matches) >= 1
+        match = matches[0]
+        assert match.transition_type == "exited"
+        assert match.track_id == 42
+
+    def test_no_transition_for_unknown_track(self, store: LocationStore) -> None:
+        """Point outside polygon without previous state should produce no match."""
+        bld = store.create_building("Test")
+        sec = store.create_section("Floor 1", building_id=bld.id)
+        polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        store.create_room("Zone", section_id=sec.id, polygon_json=polygon)
+
+        matches = store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=500.0,
+            bbox_center_y=500.0,
+            camera_id="cam-no-trans",
+            track_id=99,
+        )
+        # No previous state + outside = no match at all
+        assert len(matches) == 0
+
+    def test_entered_then_inside_still_inside(self, store: LocationStore) -> None:
+        """Point inside twice in a row: first produces 'entered', second has no transition."""
+        bld = store.create_building("Test")
+        sec = store.create_section("Floor 1", building_id=bld.id)
+        polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        room = store.create_room("Zone", section_id=sec.id, polygon_json=polygon)
+
+        # First: inside -> entered
+        matches1 = store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=100.0,
+            bbox_center_y=100.0,
+            camera_id="cam-still",
+            track_id=7,
+        )
+        assert len(matches1) >= 1
+        assert matches1[0].transition_type == "entered"
+
+        # Second: still inside -> no transition, but match still recorded
+        matches2 = store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=2,
+            bbox_center_x=50.0,
+            bbox_center_y=50.0,
+            camera_id="cam-still",
+            track_id=7,
+        )
+        # Match should still be created (heartbeat), but transition is None
+        assert len(matches2) >= 1
+        # transition_type should be None since still inside (no new transition)
+        assert matches2[0].transition_type is None
+
+    def test_list_matches_filter_by_transition(self, store: LocationStore) -> None:
+        """list_matches_for_room should filter by transition_type."""
+        bld = store.create_building("Test")
+        sec = store.create_section("Floor 1", building_id=bld.id)
+        polygon = "[[0,0],[200,0],[200,200],[0,200]]"
+        room = store.create_room("Zone", section_id=sec.id, polygon_json=polygon)
+
+        # Enter
+        store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=100.0,
+            bbox_center_y=100.0,
+            camera_id="cam-filter",
+            track_id=5,
+        )
+        # Exit
+        store.match_detection_to_rooms(
+            section_id=sec.id,
+            detection_type="face_recognition",
+            detection_event_id=2,
+            bbox_center_x=500.0,
+            bbox_center_y=500.0,
+            camera_id="cam-filter",
+            track_id=5,
+        )
+
+        entered, total_in = store.list_matches_for_room(room.id, transition_type="entered")
+        assert total_in >= 1
+
+        exited, total_out = store.list_matches_for_room(room.id, transition_type="exited")
+        assert total_out >= 1
+
+
 # ── Section Camera Assignment tests ────────────────────────────────────
 
 

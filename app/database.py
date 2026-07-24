@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260723_0008"
+ALEMBIC_HEAD_REVISION = "20260724_0009"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -231,6 +231,8 @@ detection_room_matches = Table(
     Column("room_id", Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False),
     Column("personnel_id", Integer),
     Column("camera_id", Text),
+    Column("track_id", Integer),
+    Column("transition_type", Text),
     Column("matched_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
 )
 Index("idx_matches_room", detection_room_matches.c.room_id); Index("idx_matches_personnel", detection_room_matches.c.personnel_id)

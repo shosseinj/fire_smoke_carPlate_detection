@@ -1059,6 +1059,27 @@ def all_sections_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, An
         store_results.append(_test("locations_counts", _TEST_PASS, f"buildings={b},sections={s},rooms={r}"))
     except Exception as exc:
         store_results.append(_test("locations_counts", _TEST_FAIL, str(exc)))
+    # Polygon zone functions
+    try:
+        from app.core.location_store import point_in_polygon, parse_polygon
+        square = [[0, 0], [100, 0], [100, 100], [0, 100]]
+        inside = point_in_polygon(50, 50, square)
+        outside = point_in_polygon(200, 200, square)
+        parsed = parse_polygon("[[0,0],[100,0],[100,100],[0,100]]")
+        assert inside is True
+        assert outside is False
+        assert len(parsed) == 4
+        store_results.append(_test("polygon_zone_utils", _TEST_PASS))
+    except Exception as exc:
+        store_results.append(_test("polygon_zone_utils", _TEST_FAIL, str(exc)))
+    # Human foot point utility
+    try:
+        foot_x, foot_y = LocationStore._human_foot_point([10, 20, 100, 200])
+        assert abs(foot_x - 55.0) < 0.001
+        assert abs(foot_y - 200.0) < 0.001
+        store_results.append(_test("human_foot_point", _TEST_PASS))
+    except Exception as exc:
+        store_results.append(_test("human_foot_point", _TEST_FAIL, str(exc)))
     all_tests["stores"] = {"tests": store_results}
     all_results.extend(store_results)
 

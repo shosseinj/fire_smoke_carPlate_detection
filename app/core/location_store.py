@@ -63,6 +63,8 @@ class DetectionRoomMatchRecord:
     personnel_id: int | None
     camera_id: str | None
     matched_at_utc: str
+    track_id: int | None = None
+    transition_type: str | None = None
 
 
 def point_in_polygon(px: float, py: float, polygon: list[list[float]]) -> bool:
@@ -110,6 +112,8 @@ class LocationStore:
         self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._init_db()
+        # Tracks entry/exit state: key=(camera_id, track_id, room_id) -> is_inside
+        self._entry_state: dict[tuple[str, int, int], bool] = {}
 
     def _connection(self) -> Connection:
         return self.database.connection()
@@ -575,6 +579,41 @@ class LocationStore:
 
     # ── Detection Room Matching (polygon matching) ─────────────────────
 
+    @staticmethod
+    def _human_foot_point(bbox: list[float]) -> tuple[float, float]:
+        """Compute the foot point (center bottom) of a human bounding box.
+
+        The foot point is defined as ((x1 + x2) / 2, y2) where
+        bbox = [x1, y1, x2, y2] in pixel coordinates.
+        """
+        if not bbox or len(bbox) < 4:
+            return (0.0, 0.0)
+        return ((float(bbox[0]) + float(bbox[2])) / 2.0, float(bbox[3]))
+
+    def _resolve_transition(
+        self,
+        camera_id: str | None,
+        track_id: int | None,
+        room_id: int,
+        is_inside: bool,
+    ) -> str | None:
+        """Determine entry/exit transition based on previous state.
+
+        Returns 'entered', 'exited', or None if no transition.
+        """
+        if track_id is None or camera_id is None:
+            # Without track_id we cannot track transitions
+            return "entered" if is_inside else None
+        key = (camera_id, track_id, room_id)
+        was_inside = self._entry_state.get(key, False)
+        if is_inside and not was_inside:
+            self._entry_state[key] = True
+            return "entered"
+        elif not is_inside and was_inside:
+            self._entry_state[key] = False
+            return "exited"
+        return None
+
     def match_detection_to_rooms(
         self,
         section_id: int,
@@ -584,12 +623,18 @@ class LocationStore:
         bbox_center_y: float,
         personnel_id: int | None = None,
         camera_id: str | None = None,
+        *,
+        track_id: int | None = None,
     ) -> list[DetectionRoomMatchRecord]:
         """Match a detection point to rooms via polygon containment.
 
         Checks every room in the given section for polygon containment
         of the specified point. The caller is responsible for resolving
         the section_id from the camera/source.
+
+        When track_id is provided, entry/exit transition tracking is
+        enabled: each result includes a transition_type field set to
+        'entered', 'exited', or None.
 
         Returns a list of DetectionRoomMatchRecord for each matched room.
         """
@@ -608,27 +653,43 @@ class LocationStore:
                 polygon = parse_polygon(room["polygon_json"])
                 if len(polygon) < 3:
                     continue
-                if point_in_polygon(bbox_center_x, bbox_center_y, polygon):
-                    cursor = conn.execute(
-                        "INSERT INTO detection_room_matches "
-                        "(detection_type, detection_event_id, room_id, personnel_id, camera_id, matched_at_utc) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (detection_type, detection_event_id, room["id"], personnel_id, camera_id, now),
-                    )
-                    row = conn.execute(
-                        "SELECT * FROM detection_room_matches WHERE id = ?",
-                        (cursor.lastrowid,),
-                    ).fetchone()
-                    if row is not None:
-                        matched.append(DetectionRoomMatchRecord(
-                            id=row["id"],
-                            detection_type=row["detection_type"],
-                            detection_event_id=row["detection_event_id"],
-                            room_id=row["room_id"],
-                            personnel_id=row["personnel_id"],
-                            camera_id=row["camera_id"],
-                            matched_at_utc=row["matched_at_utc"],
-                        ))
+                is_inside = point_in_polygon(bbox_center_x, bbox_center_y, polygon)
+                # Determine transition type
+                transition = self._resolve_transition(
+                    camera_id=camera_id,
+                    track_id=track_id,
+                    room_id=room["id"],
+                    is_inside=is_inside,
+                )
+                if not is_inside and transition is None:
+                    # Point is outside and no transition (was outside before)
+                    continue
+                if is_inside and transition is None and track_id is not None:
+                    # Still inside - record as heartbeat (no transition)
+                    pass
+                cursor = conn.execute(
+                    "INSERT INTO detection_room_matches "
+                    "(detection_type, detection_event_id, room_id, personnel_id, camera_id, track_id, transition_type, matched_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (detection_type, detection_event_id, room["id"], personnel_id,
+                     camera_id, track_id, transition, now),
+                )
+                row = conn.execute(
+                    "SELECT * FROM detection_room_matches WHERE id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                if row is not None:
+                    matched.append(DetectionRoomMatchRecord(
+                        id=row["id"],
+                        detection_type=row["detection_type"],
+                        detection_event_id=row["detection_event_id"],
+                        room_id=row["room_id"],
+                        personnel_id=row["personnel_id"],
+                        camera_id=row["camera_id"],
+                        track_id=row["track_id"],
+                        transition_type=row["transition_type"],
+                        matched_at_utc=row["matched_at_utc"],
+                    ))
             return matched
 
     def get_matches_for_detection(
@@ -648,23 +709,31 @@ class LocationStore:
                     room_id=row["room_id"],
                     personnel_id=row["personnel_id"],
                     camera_id=row["camera_id"],
+                    track_id=row["track_id"],
+                    transition_type=row["transition_type"],
                     matched_at_utc=row["matched_at_utc"],
                 )
                 for row in rows
             ]
 
     def list_matches_for_room(
-        self, room_id: int, limit: int = 50, offset: int = 0
+        self, room_id: int, limit: int = 50, offset: int = 0,
+        transition_type: str | None = None,
     ) -> tuple[list[DetectionRoomMatchRecord], int]:
+        where_clause = "WHERE room_id = ?"
+        params: list[Any] = [room_id]
+        if transition_type is not None:
+            where_clause += " AND transition_type = ?"
+            params.append(transition_type)
         with self._lock, self._connection() as conn:
             total = conn.execute(
-                "SELECT COUNT(*) FROM detection_room_matches WHERE room_id = ?",
-                (room_id,),
+                f"SELECT COUNT(*) FROM detection_room_matches {where_clause}",
+                params,
             ).fetchone()[0]
             rows = conn.execute(
-                "SELECT * FROM detection_room_matches WHERE room_id = ? "
+                f"SELECT * FROM detection_room_matches {where_clause} "
                 "ORDER BY matched_at_utc DESC LIMIT ? OFFSET ?",
-                (room_id, limit, offset),
+                [*params, limit, offset],
             ).fetchall()
             records = [
                 DetectionRoomMatchRecord(
@@ -674,6 +743,8 @@ class LocationStore:
                     room_id=row["room_id"],
                     personnel_id=row["personnel_id"],
                     camera_id=row["camera_id"],
+                    track_id=row["track_id"],
+                    transition_type=row["transition_type"],
                     matched_at_utc=row["matched_at_utc"],
                 )
                 for row in rows
