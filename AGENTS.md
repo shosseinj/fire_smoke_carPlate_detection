@@ -99,6 +99,39 @@ The three independent inference workers are:
 
 Model fallback priority is `.engine → .onnx → .pt` when fallbacks are enabled. Persistent selections in the model database override configuration defaults. Confirm the active artifact through `/api/v1/models/settings` and runtime logs instead of trusting filenames alone.
 
+## Dashboard and broadcast system
+
+The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
+
+### 1. JPEG fallback mode (default, always active)
+- Connects to the broadcast WebSocket (`/api/v1/broadcast/ws`) without `metadata_only`
+- Receives binary frames: 4-byte header length (uint32 BE) + JSON header + JPEG bytes
+- Displays server-annotated JPEG frames on `<img class="jpeg-fallback">` elements using `URL.createObjectURL()`
+- Works without WebRTC/MediaMTX/GStreamer; the `AnnotatedBroadcastHub` renders annotations server-side
+- Variable: `useJpegFallback = true` in `synchronizeDashboard()`
+
+### 2. WebRTC preview mode (optional enhancement)
+- Uses WHIP/WHEP protocol via MediaMTX server (port 8789) for real-time H264 video
+- Requires `MEDIA_PREVIEW_ENABLED=true`, GStreamer, and MediaMTX
+- The `MediaPreviewPublisher` remuxes H264 from sources to RTSP and publishes to MediaMTX
+- The MP4 file source pipeline has known EOS issues - file-based previews may fail repeatedly
+
+### Broadcast hub (`app/core/broadcast.py`)
+- `AnnotatedBroadcastHub` renders frames asynchronously in a background thread
+- Produces full-res and wall-res JPEG per source
+- `publish_result()` accepts `FramePacket` + `TaskResult` and queues annotation + encoding
+- `publish_passthrough()` broadcasts frames without AI overlay
+- Binary WS format: `struct.pack("!I", len(header)) + header.encode() + jpeg_bytes`
+- The WebSocket handler (`/api/v1/broadcast/ws`) supports `metadata_only` and `fullscreen_source` query params
+- MJPEG fallback at `/api/v1/broadcast/streams/{source_id}.mjpg`
+- Snapshot at `/api/v1/broadcast/snapshots/{source_id}.jpg`
+
+### Broadcast health checklist
+- Broadcast enabled and rendering: check `GET /api/v1/broadcast/state`
+- Dashboard loads: check `GET /dashboard`
+- Binary WS delivers JPEG frames: connect to `ws://host/api/v1/broadcast/ws` without params
+- Results WS delivers overlays: connect to `ws://host/api/v1/results/ws`
+
 ## Multi-agent workflow
 
 Use multiple agents when the task contains independent investigation, implementation, testing, or review work. One primary agent must act as coordinator.

@@ -234,6 +234,15 @@
       .stream-shell canvas {
         pointer-events: none;
       }
+      .jpeg-fallback {
+        position: absolute;
+        inset: 0;
+        display: none;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #03050a;
+      }
       .stream-status {
         position: absolute;
         inset: 0;
@@ -395,8 +404,10 @@
       let fullscreenSourceId = null;
       let previewBaseUrl = "";
       let previewAvailable = false;
+      let useJpegFallback = false;
       const previewStates = new Map();
       const previewRetryTimers = new Map();
+      const jpegBlobUrls = new Map();
       const OVERLAY_STALE_MS = 4000;
       const frameStats = new Map();
       const metricElements = new Map();
@@ -443,8 +454,16 @@
 
       const taskLabel = (task) => (task === "fire_smoke" ? "Fire / Smoke" : task === "face_recognition" ? "Face Recognition" : "Plate Recognition");
 
+      function clearJpegBlobs() {
+        for (const [, entry] of jpegBlobUrls) {
+          URL.revokeObjectURL(entry.url);
+        }
+        jpegBlobUrls.clear();
+      }
+
       function renderSources() {
         for (const sourceId of previewStates.keys()) closePreview(sourceId);
+        clearJpegBlobs();
         cameraGrid.innerHTML = "";
         metricElements.clear();
         for (const source of sources) {
@@ -456,6 +475,7 @@
           <div class="stream-shell">
             <video aria-label="Live preview for ${source.name}" data-source-id="${source.source_id}" autoplay muted playsinline></video>
             <canvas data-overlay-for="${source.source_id}"></canvas>
+            <img class="jpeg-fallback" data-jpeg-for="${source.source_id}" alt="JPEG fallback for ${source.name}" />
             <div class="stream-toolbar">
               <div class="stream-profile">
                 <span class="fps-badge" data-fps-for="${source.source_id}">0.0 FPS</span>
@@ -698,25 +718,73 @@
         if (!broadcasting) return;
         if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-        const parameters = new URLSearchParams({ metadata_only: "true" });
+        const parameters = new URLSearchParams();
+        if (!useJpegFallback) {
+          parameters.set("metadata_only", "true");
+        }
         if (fullscreenSourceId) parameters.set("fullscreen_source", fullscreenSourceId);
         const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws?${parameters}`);
         broadcastSocket = socket;
         socket.binaryType = "arraybuffer";
         socket.addEventListener("message", (event) => {
           if (broadcastSocket !== socket) return;
-            try {
-              const message = JSON.parse(event.data);
-              if (message.type === "frame_metadata") {
-                const stats = statsFor(message.source_id);
-                const now = performance.now();
-                stats.arrivals.push(now);
-                stats.total += 1;
-                stats.lastArrival = now;
-                stats.frameIndex = message.frame_index;
-                sessionReceivedFrames += 1;
+          try {
+            if (event.data instanceof ArrayBuffer) {
+              // Binary frame: 4-byte header length + JSON header + JPEG bytes
+              const view = new DataView(event.data);
+              if (view.byteLength < 5) return;
+              const headerLength = view.getUint32(0, false);
+              if (headerLength <= 0 || headerLength + 4 >= view.byteLength) return;
+              const headerBytes = new Uint8Array(event.data, 4, headerLength);
+              const header = JSON.parse(new TextDecoder().decode(headerBytes));
+              if (!header.source_id) return;
+
+              // Update frame stats
+              const stats = statsFor(header.source_id);
+              const now = performance.now();
+              stats.arrivals.push(now);
+              stats.total += 1;
+              stats.lastArrival = now;
+              stats.frameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+              sessionReceivedFrames += 1;
+
+              // Update resolution badge
+              const elements = metricElements.get(header.source_id);
+              if (elements && Number.isFinite(header.frame_width) && Number.isFinite(header.frame_height)) {
+                elements.resolution.textContent = `${header.render_profile || "Annotated"} · ${header.frame_width}×${header.frame_height}`;
               }
-              if (message.type === "camera_changed") synchronizeDashboard();
+
+              // Display JPEG on fallback img element
+              if (useJpegFallback) {
+                const jpegBytes = new Uint8Array(event.data, 4 + headerLength);
+                const blob = new Blob([jpegBytes], { type: "image/jpeg" });
+                const url = URL.createObjectURL(blob);
+                const img = document.querySelector(`img[data-jpeg-for="${header.source_id}"]`);
+                if (img) {
+                  const prev = jpegBlobUrls.get(header.source_id);
+                  if (prev) URL.revokeObjectURL(prev.url);
+                  jpegBlobUrls.set(header.source_id, { url });
+                  img.src = url;
+                  // Hide status overlay when first frame arrives
+                  const status = document.querySelector(`[data-status-for="${header.source_id}"]`);
+                  if (status) status.classList.add("hidden");
+                }
+              }
+              return;
+            }
+
+            // JSON message
+            const message = JSON.parse(event.data);
+            if (message.type === "frame_metadata") {
+              const stats = statsFor(message.source_id);
+              const now = performance.now();
+              stats.arrivals.push(now);
+              stats.total += 1;
+              stats.lastArrival = now;
+              stats.frameIndex = message.frame_index;
+              sessionReceivedFrames += 1;
+            }
+            if (message.type === "camera_changed") synchronizeDashboard();
           } catch (_) {
             // Ignore keepalives or extensions unknown to this dashboard version.
           }
@@ -751,18 +819,31 @@
         for (const video of document.querySelectorAll("video[data-source-id]")) {
           const sourceId = video.dataset.sourceId;
           const status = document.querySelector(`[data-status-for="${sourceId}"]`);
-          if (broadcasting && previewAvailable) {
-            status.textContent = "Connecting public preview…";
+          const img = document.querySelector(`img[data-jpeg-for="${sourceId}"]`);
+          if (!broadcasting) {
+            // Broadcast disabled
+            closePreview(sourceId);
+            video.style.display = "";
+            if (img) img.style.display = "none";
+            status.textContent = "Frontend broadcast disabled";
             status.classList.remove("hidden");
+            continue;
+          }
+          // JPEG fallback is the primary display - annotated frames from broadcast hub
+          if (img) img.style.display = "block";
+          status.textContent = "Waiting for annotated frames…";
+          status.classList.remove("hidden");
+          // WebRTC preview is an optional enhancement when available
+          if (previewAvailable) {
+            video.style.display = "";
             const source = sources.find((item) => item.source_id === sourceId);
             if (source) openPreview(source);
           } else {
             closePreview(sourceId);
-            status.textContent = "Frontend broadcast disabled";
-            status.classList.remove("hidden");
+            video.style.display = "none";
           }
         }
-        if (broadcasting && previewAvailable) {
+        if (broadcasting) {
           connectBroadcastSocket();
           connectResultSocket();
         } else {
@@ -805,6 +886,10 @@
           const previewConfig = await sourcesResponse.json();
           previewBaseUrl = previewConfig.whep_base_url;
           previewAvailable = previewConfig.enabled;
+          // JPEG fallback shows server-annotated frames directly from the broadcast hub.
+          // WebRTC (preview) is tried as a higher-quality overlay when available.
+          // The broadcast hub renders annotated frames for ALL enabled cameras.
+          useJpegFallback = true;
           const nextSources = previewConfig.sources;
           const state = await stateResponse.json();
           showState(state.enabled);
@@ -814,7 +899,7 @@
             sourcesSignature = nextSignature;
             renderSources();
           }
-          syncStatus.textContent = `API synchronized · ${new Date().toLocaleTimeString()}`;
+          syncStatus.textContent = `API synchronized · ${new Date().toLocaleTimeString()} · ${useJpegFallback ? "JPEG fallback" : "WebRTC"}`;
         } catch (error) {
           stateElement.querySelector("span:last-child").textContent = "API unavailable";
           syncStatus.textContent = `Synchronization failed: ${error.message}`;
@@ -863,6 +948,7 @@
 
       window.addEventListener("beforeunload", () => {
         for (const sourceId of previewStates.keys()) closePreview(sourceId);
+        clearJpegBlobs();
         disconnectBroadcastSocket();
         disconnectResultSocket();
       });

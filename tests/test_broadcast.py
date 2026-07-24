@@ -183,12 +183,16 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
         Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
     ).read_text(encoding="utf-8")
 
-    assert 'new URLSearchParams({ metadata_only: "true" })' in dashboard
+    # JPEG fallback (default) connects broadcast WS without metadata_only to receive full JPEG frames
+    assert 'new URLSearchParams()' in dashboard
+    assert 'if (!useJpegFallback) {' in dashboard
+    assert 'parameters.set("metadata_only", "true")' in dashboard
     assert 'parameters.set("fullscreen_source", fullscreenSourceId)' in dashboard
     assert 'fullscreenElement?.classList.contains("camera-card")' in dashboard
     assert "reconnectBroadcastSocket()" in dashboard
-    assert 'header.render_profile === "full"' in dashboard
+    assert 'header.render_profile || "Annotated"' in dashboard
     assert "if (broadcastSocket !== socket) return;" in dashboard
+    assert "event.data instanceof ArrayBuffer" in dashboard
 
 
 def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> None:
