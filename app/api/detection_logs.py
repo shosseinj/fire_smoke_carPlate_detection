@@ -490,7 +490,7 @@ def yearly_leave_summary(
 @router.get("/import-excel/template")
 def import_excel_template(
     _: dict = Depends(require_role("operator")),
-) -> Response:
+):
     import io
     wb = openpyxl.Workbook()
 

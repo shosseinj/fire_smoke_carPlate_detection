@@ -109,7 +109,7 @@ def get_preview_config(
         hostname = request.url.hostname or "127.0.0.1"
         if ":" in hostname and not hostname.startswith("["):
             hostname = f"[{hostname}]"
-        whep_base_url = f"{request.url.scheme}://{hostname}:8889"
+        whep_base_url = f"{request.url.scheme}://{hostname}:8789"
     return {
         "enabled": runtime.settings.media_preview_enabled,
         "whep_base_url": whep_base_url,

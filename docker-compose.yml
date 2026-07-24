@@ -36,7 +36,7 @@ services:
     volumes:
       - ./deploy/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "8889:8889"
+      - "8789:8889"
       - "8189:8189/udp"
 
   video-ai-router:
