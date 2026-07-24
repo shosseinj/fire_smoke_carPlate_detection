@@ -72,8 +72,10 @@ class AnnotatedBroadcastHub:
         pending_frames_per_source: int = 12,
         face_overlay_ttl_ms: float = 250.0,
         async_render: bool = True,
+        draw_zones: bool = True,
     ) -> None:
         self._enabled = enabled
+        self.draw_zones = draw_zones
         self.jpeg_quality = max(40, min(jpeg_quality, 100))
         self.wall_jpeg_quality = max(40, min(wall_jpeg_quality, 100))
         self.wall_max_width = max(16, wall_max_width)
@@ -96,6 +98,7 @@ class AnnotatedBroadcastHub:
         self._wall_encoded_bytes = 0
         self._face_overlay_cache_hits = 0
         self._latest_face_results: dict[str, tuple[float, TaskResult]] = {}
+        self._source_zones: dict[str, list[list[list[float]]]] = {}
         self._render_queue: queue.Queue[
             tuple[str, int, PendingAnnotatedFrame]
         ] = queue.Queue(maxsize=64)
@@ -191,6 +194,22 @@ class AnnotatedBroadcastHub:
                             pass
             self._condition.notify_all()
             return self._enabled
+
+    def set_draw_zones(self, draw_zones: bool) -> None:
+        self.draw_zones = bool(draw_zones)
+
+    def set_source_zones(
+        self, source_id: str, zones: list[list[list[float]]]
+    ) -> None:
+        """Set the zone polygons to draw for this source.
+
+        Each entry in zones is a list of [x, y] points defining a closed polygon.
+        Pass an empty list to clear zones for this source.
+        """
+        self._source_zones[source_id] = list(zones)
+
+    def clear_source_zones(self, source_id: str) -> None:
+        self._source_zones.pop(source_id, None)
 
     def close(self) -> None:
         """Stop the render thread and clean up resources."""
@@ -358,6 +377,35 @@ class AnnotatedBroadcastHub:
         )
         return f"HUMAN: {recognized}/{len(humans)} KNOWN | FACE: {len(faces)}"
 
+    def _draw_zones(self, frame: np.ndarray, source_id: str) -> None:
+        """Draw zone polygons on the frame if draw_zones is enabled and zones exist."""
+        if not self.draw_zones:
+            return
+        zones = self._source_zones.get(source_id)
+        if not zones:
+            return
+        height, width = frame.shape[:2]
+        for i, polygon in enumerate(zones):
+            pts = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+            # Set a distinct color per polygon
+            color_palette = [
+                (255, 100, 100),   # red
+                (100, 255, 100),   # green
+                (100, 100, 255),   # blue
+                (255, 255, 100),   # yellow
+                (255, 100, 255),   # magenta
+                (100, 255, 255),   # cyan
+            ]
+            color = color_palette[i % len(color_palette)]
+            # Semi-transparent fill via overlay
+            overlay = frame.copy()
+            cv2.polylines(overlay, [pts], isClosed=True, color=color, thickness=2)
+            cv2.fillPoly(overlay, [pts], color=color)
+            # Blend with 25% opacity
+            cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+            # Draw thicker border again on top for visibility
+            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=2)
+
     def _render(
         self,
         source_id: str,
@@ -392,6 +440,9 @@ class AnnotatedBroadcastHub:
                 statuses.append(self._draw_plates(frame, result))
             elif task == TaskName.FACE_RECOGNITION:
                 statuses.append(self._draw_faces(frame, result))
+
+        # Draw zone polygons (if enabled and zones exist for this source)
+        self._draw_zones(frame, source_id)
 
         # Draw header overlay in-place (no copy needed)
         header_height = min(76, max(64, height // 8))

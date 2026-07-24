@@ -13,6 +13,12 @@ from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
+# Default full-frame polygon used when no rooms in a section have custom polygons.
+# Covers the entire 640x640 frame: [[0,0], [0,640], [640,640], [640,0]].
+DEFAULT_POLYGON: list[list[float]] = [[0.0, 0.0], [0.0, 640.0], [640.0, 640.0], [640.0, 0.0]]
+# Sentinel room_id used for default-polygon transition tracking (not stored in DB).
+_DEFAULT_ROOM_ID: int = -1
+
 
 @dataclass(frozen=True, slots=True)
 class BuildingRecord:
@@ -750,6 +756,72 @@ class LocationStore:
                 for row in rows
             ]
             return records, int(total)
+
+    # ── Polygon zone helpers ──────────────────────────────────────────
+
+    def section_has_polygons(self, section_id: int) -> bool:
+        """Check if any rooms in this section have polygon zones defined."""
+        if section_id is None:
+            return False
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM rooms WHERE section_id = ? AND polygon_json IS NOT NULL",
+                (section_id,),
+            ).fetchone()
+            count = int(row[0]) if row else 0
+            # Also check if any polygon_json is valid (non-empty)
+            if count == 0:
+                return False
+            # Verify at least one polygon has valid data
+            rows = conn.execute(
+                "SELECT polygon_json FROM rooms WHERE section_id = ? AND polygon_json IS NOT NULL LIMIT 1",
+                (section_id,),
+            ).fetchall()
+            for r in rows:
+                points = parse_polygon(r["polygon_json"])
+                if len(points) >= 3:
+                    return True
+            return False
+
+    def get_polygons_for_section(self, section_id: int) -> list[list[list[float]]]:
+        """Return all valid polygon point lists for rooms in a section.
+
+        Each entry is a polygon represented as [[x, y], [x, y], ...] with at
+        least 3 points. Returns empty list if none exist or section_id is None.
+        """
+        if section_id is None:
+            return []
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT polygon_json FROM rooms WHERE section_id = ? AND polygon_json IS NOT NULL",
+                (section_id,),
+            ).fetchall()
+            result: list[list[list[float]]] = []
+            for r in rows:
+                points = parse_polygon(r["polygon_json"])
+                if len(points) >= 3:
+                    result.append(points)
+            return result
+
+    def get_default_polygon_entry_state(
+        self, camera_id: str, track_id: int, foot_x: float, foot_y: float
+    ) -> str | None:
+        """Check transition against the default full-frame polygon.
+
+        Returns 'entered', 'exited', or None if no transition.
+        This does NOT insert into the database - it only tracks state
+        in-memory for the default polygon case.
+        """
+        key = (camera_id, track_id, _DEFAULT_ROOM_ID)
+        was_inside = self._entry_state.get(key, False)
+        is_inside = point_in_polygon(foot_x, foot_y, DEFAULT_POLYGON)
+        if is_inside and not was_inside:
+            self._entry_state[key] = True
+            return "entered"
+        elif not is_inside and was_inside:
+            self._entry_state[key] = False
+            return "exited"
+        return None
 
     # ── Counts ────────────────────────────────────────────────────────
 

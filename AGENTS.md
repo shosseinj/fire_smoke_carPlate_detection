@@ -144,6 +144,30 @@ The polygon zone system detects when a tracked human enters or exits a defined p
 
 Cameras are assigned to a `section_id` (via camera metadata or the `section_id` column). Every room in that section with a `polygon_json` is checked for each detection.
 
+### Default polygon fallback
+
+When a camera's section has **no rooms with custom polygons**, a default full-frame polygon
+`[[0,0],[0,640],[640,640],[640,0]]` is used automatically. This ensures zone matching
+works for every camera without requiring polygon configuration. The default polygon is
+tracked in-memory only (`get_default_polygon_entry_state()` on `LocationStore`), with
+no database inserts.
+
+### Human log gating on polygon transitions
+
+For FACE_RECOGNITION results, the human log (`human_logs.observe_result`) is saved **only when
+a polygon zone transition occurs** (entered or exited). If no transition occurs (e.g., a person
+stays outside the zone), the human log is discarded. This is implemented by a combined
+`face_polygon_observer` in `runtime.py` (`_build_face_polygon_observer()`) that replaces
+the separate result_observer + location_observer for the face_recognition worker.
+
+| Condition | Human log saved? |
+|-----------|-----------------|
+| Person outside polygon (no custom zones, default applies) | No (no transition) |
+| Person enters polygon | Yes (`entered`) |
+| Person exits polygon | Yes (`exited`) |
+| Person stays inside polygon | No (heartbeat, no transition) |
+| No polygon zones exist for camera's section | Default full-frame polygon is used |
+
 ### Entry/exit detection
 
 - **Human foot point**: `((x1 + x2) / 2, y2)` computed from the human bounding box `[x1, y1, x2, y2]`. This is the center-bottom point, representing where the person's feet are.
@@ -154,9 +178,12 @@ Cameras are assigned to a `section_id` (via camera metadata or the `section_id` 
 ### Pipeline
 
 1. `FaceRecognitionProcessor.process_batch()` outputs humans with bbox and track_id.
-2. `TaskWorker` calls `location_observer(packet, result)` for each successful result.
-3. `_build_location_observer()` in `runtime.py` resolves the camera's `section_id`, computes the human foot point, and calls `LocationStore.match_detection_to_rooms()`.
-4. `LocationStore.match_detection_to_rooms()` checks polygon containment for all rooms in that section and inserts match records with transition tracking.
+2. `TaskWorker` calls the combined `face_polygon_observer(packet, result)` for each result.
+3. `_build_face_polygon_observer()` in `runtime.py` resolves the camera's `section_id`, checks if custom polygons exist.
+4. If custom polygons exist → calls `LocationStore.match_detection_to_rooms()` with human foot point.
+5. If no custom polygons → uses default full-frame polygon via `LocationStore.get_default_polygon_entry_state()`.
+6. If a transition (entered/exited) occurred → calls `HumanLogStore.observe_result()` to save the human log.
+7. No transition → human log is **not saved**.
 
 ### API
 
@@ -171,6 +198,18 @@ Cameras are assigned to a `section_id` (via camera metadata or the `section_id` 
 
 The `polygon_points` field in room create/update accepts `[[x,y], [x,y], ...]` with at least 3 points.
 
+### Polygon drawing on dashboard frames
+
+Zone polygons are drawn on the annotated broadcast JPEG frames when `draw_zones` is enabled:
+
+- **`draw_zones`** flag: stored in `general_settings.draw_zones` (default `True`). Controls whether zone polygons are visually overlaid on the dashboard broadcast.
+- **Polygon rendering**: `AnnotatedBroadcastHub._draw_zones()` in `app/core/broadcast.py` draws semi-transparent filled polygons (25% opacity) with thick borders on each zone.
+- **Color palette**: 6 rotating colors (red, green, blue, yellow, magenta, cyan) assigned in order per polygon.
+- **Zone data flow**: At startup and on every settings change, `Runtime._refresh_all_source_zones()` iterates all registered cameras, queries `LocationStore.get_polygons_for_section(section_id)`, and pushes the parsed polygon coordinates to the broadcast hub via `set_source_zones(source_id, zones)`.
+- **Only custom zones are drawn**: Default full-frame polygon (used for fallback entry/exit tracking) is NOT drawn — only rooms with explicit `polygon_json` on the `rooms` table appear visually.
+- **Runtime toggle**: The `draw_zones` flag can be changed at runtime via `PATCH /api/v1/settings/general` with `{"display": {"draw_zones": true/false}}`. The broadcast hub responds immediately.
+- **Snapshot**: The `GET /api/v1/settings/general` response includes a `"display"` section with `draw_zones` (and `draw_box`, `draw_face`, `draw_skeleton` for future use).
+
 ### Database schema
 
 - `rooms.polygon_json` — TEXT column storing JSON array of `[x, y]` points.
@@ -179,6 +218,7 @@ The `polygon_points` field in room create/update accepts `[[x,y], [x,y], ...]` w
   - `track_id` — Integer track ID for transition tracking
   - `detection_type` — 'face_recognition', 'plate_recognition', or 'fire_smoke'
   - `detection_event_id`, `room_id`, `personnel_id`, `camera_id`, `matched_at_utc`
+- `general_settings.draw_zones` — INTEGER column (default `1`), controls visual zone overlay on broadcast frames.
 
 ### Multi-agent workflow
 

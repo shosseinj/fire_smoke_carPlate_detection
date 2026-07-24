@@ -565,6 +565,75 @@ class TestZoneEntryExit:
         assert total_out >= 1
 
 
+# ── Default Polygon Fallback tests ──────────────────────────────────────
+
+
+class TestDefaultPolygon:
+    def test_section_has_polygons_true(self, store: LocationStore) -> None:
+        """section_has_polygons returns True when a room has polygon_json."""
+        sec = store.create_section("Floor 1")
+        store.create_room("Zone", section_id=sec.id, polygon_json="[[0,0],[100,0],[100,100],[0,100]]")
+        assert store.section_has_polygons(sec.id) is True
+
+    def test_section_has_polygons_false(self, store: LocationStore) -> None:
+        """section_has_polygons returns False when no rooms have polygon_json."""
+        sec = store.create_section("Empty Floor")
+        store.create_room("No Zone", section_id=sec.id)
+        assert store.section_has_polygons(sec.id) is False
+
+    def test_section_has_polygons_no_rooms(self, store: LocationStore) -> None:
+        """section_has_polygons returns False when section has no rooms at all."""
+        sec = store.create_section("Empty")
+        assert store.section_has_polygons(sec.id) is False
+
+    def test_section_has_polygons_none_section(self, store: LocationStore) -> None:
+        """section_has_polygons returns False for None section_id."""
+        assert store.section_has_polygons(None) is False  # type: ignore[arg-type]
+
+    def test_default_polygon_entry(self, store: LocationStore) -> None:
+        """Default polygon: first detection inside full frame produces 'entered'."""
+        # No rooms with polygons = uses default full-frame polygon
+        transition = store.get_default_polygon_entry_state(
+            camera_id="cam-def", track_id=1, foot_x=320.0, foot_y=320.0
+        )
+        assert transition == "entered"
+
+    def test_default_polygon_no_exit_without_entry(self, store: LocationStore) -> None:
+        """Default polygon: outside point without previous state produces no transition."""
+        # Point outside default 640x640 frame
+        transition = store.get_default_polygon_entry_state(
+            camera_id="cam-def-2", track_id=2, foot_x=999.0, foot_y=999.0
+        )
+        # No previous state, outside = no transition
+        assert transition is None
+
+    def test_default_polygon_entry_then_exit(self, store: LocationStore) -> None:
+        """Default polygon: enter then exit produces 'exited' on second call."""
+        # Enter
+        t1 = store.get_default_polygon_entry_state(
+            camera_id="cam-def-3", track_id=3, foot_x=320.0, foot_y=320.0
+        )
+        assert t1 == "entered"
+
+        # Exit (point outside 640x640)
+        t2 = store.get_default_polygon_entry_state(
+            camera_id="cam-def-3", track_id=3, foot_x=999.0, foot_y=999.0
+        )
+        assert t2 == "exited"
+
+    def test_default_polygon_stay_inside_no_transition(self, store: LocationStore) -> None:
+        """Default polygon: staying inside produces no new transition."""
+        t1 = store.get_default_polygon_entry_state(
+            camera_id="cam-def-4", track_id=4, foot_x=100.0, foot_y=100.0
+        )
+        assert t1 == "entered"
+
+        t2 = store.get_default_polygon_entry_state(
+            camera_id="cam-def-4", track_id=4, foot_x=200.0, foot_y=200.0
+        )
+        assert t2 is None  # Still inside, no transition
+
+
 # ── Section Camera Assignment tests ────────────────────────────────────
 
 

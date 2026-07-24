@@ -67,11 +67,18 @@ class OperationalSettingsPatch(BaseModel):
     face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
 
+class DisplaySettingsPatch(BaseModel):
+    draw_box: bool | None = None
+    draw_face: bool | None = None
+    draw_skeleton: bool | None = None
+    draw_zones: bool | None = None
+
 class GeneralSettingsPatch(BaseModel):
     models: ModelSettingsPatch | None = None
     plate_detection: PlateDetectionPatch | None = None
     fire_smoke_detection: FireSmokePolicyPatch | None = None
     operational: OperationalSettingsPatch | None = None
+    display: DisplaySettingsPatch | None = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -97,8 +104,9 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
     ):
         if application_values.get(secret_name):
             application_values[secret_name] = "***"
+    gs = runtime.general_settings.get()
     return {
-        "operational": runtime.general_settings.get().operational.to_dict(),
+        "operational": gs.operational.to_dict(),
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
         "fire_smoke_detection": runtime.fire_smoke_logs.settings(),
@@ -118,6 +126,12 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
                 "all": ["fire_smoke", "plate_recognition", "face_recognition"],
             },
             "note": "An enabled camera with tasks=[] is decoded and broadcast without AI inference.",
+        },
+        "display": {
+            "draw_box": gs.draw_box,
+            "draw_face": gs.draw_face,
+            "draw_skeleton": gs.draw_skeleton,
+            "draw_zones": gs.draw_zones,
         },
     }
 
@@ -158,6 +172,12 @@ def update_general_settings(
             runtime.plate_settings.update_general(
                 PlateDetectionPolicy(**{**asdict(current), **changes})
             )
+        if payload.display is not None:
+            display_changes = payload.display.model_dump(exclude_unset=True, exclude_none=True)
+            if display_changes:
+                runtime.general_settings.update(display_changes, updated_by=current_user.id)
+                if "draw_zones" in display_changes:
+                    runtime.broadcast.set_draw_zones(display_changes["draw_zones"])
         if payload.operational is not None:
             changes = payload.operational.model_dump(exclude_unset=True)
             if changes:

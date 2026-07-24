@@ -133,9 +133,27 @@ class Runtime:
                 if hasattr(self.video_ingestor, name):
                     setattr(self.video_ingestor, name, getattr(current, source))
         self.broadcast.set_enabled(current.broadcast_enabled)
+        # Push draw_zones and refresh zone polygons per source
+        gs = self.general_settings.get()
+        self.broadcast.set_draw_zones(gs.draw_zones)
+        self._refresh_all_source_zones()
         for camera in self.registry.list():
             if self.video_ingestor is not None and hasattr(self.video_ingestor, "restart_source"):
                 self.video_ingestor.restart_source(camera.source_id)
+
+    def _refresh_all_source_zones(self) -> None:
+        """Push zone polygon data for every registered source to the broadcast hub."""
+        for camera in self.registry.list():
+            # section_id is stored in metadata, not as a direct SourceRecord field
+            section_id = camera.metadata.get("section_id") if camera.metadata else None
+            if section_id is None:
+                self.broadcast.clear_source_zones(camera.source_id)
+                continue
+            polygons = self.location_store.get_polygons_for_section(section_id)
+            if polygons:
+                self.broadcast.set_source_zones(camera.source_id, polygons)
+            else:
+                self.broadcast.clear_source_zones(camera.source_id)
 
     def selected_model_records(self) -> list[dict[str, object]]:
         """Return the exact startup model choices in runtime load order."""
@@ -299,6 +317,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         Path(__file__).resolve().parents[1],
     )
     results = ResultStore(app_settings.recent_results_limit)
+    general_record = general_settings.get()
     broadcast = AnnotatedBroadcastHub(
         enabled=operational.broadcast_enabled,
         jpeg_quality=operational.broadcast_jpeg_quality,
@@ -306,6 +325,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         wall_max_width=operational.broadcast_wall_max_width,
         wall_max_height=operational.broadcast_wall_max_height,
         face_overlay_ttl_ms=app_settings.broadcast_face_overlay_ttl_ms,
+        draw_zones=general_record.draw_zones,
     )
     registry.add_listener(broadcast.publish_source_change)
     plate_settings = PlateSettingsStore(
@@ -505,20 +525,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         ls: LocationStore,
         reg: SourceRegistry,
     ) -> Callable[[FramePacket, TaskResult], None]:
-        """Return a location_observer that matches detected objects to room polygons.
+        """Return a location_observer that matches non-face detections to room polygons.
 
-        For FACE_RECOGNITION results, the human foot point is used
-        (center bottom of the human bounding box: ((x1+x2)/2, y2))
-        to determine polygon entry/exit, rather than the face center point.
-        This ensures that a human's foot position determines zone transitions.
-
-        Entry/exit transition tracking is enabled via track_id.
+        Used for PLATE_RECOGNITION and FIRE_SMOKE results.
+        For FACE_RECOGNITION, see _build_face_polygon_observer which combines
+        polygon matching with human log gating.
         """
         def location_observer(packet: FramePacket, result: TaskResult) -> None:
             if result.error:
                 return
             if result.task not in (
-                TaskName.FACE_RECOGNITION,
                 TaskName.PLATE_RECOGNITION,
                 TaskName.FIRE_SMOKE,
             ):
@@ -536,24 +552,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 return
             detections: list[dict[str, object]] = []
 
-            if result.task == TaskName.FACE_RECOGNITION:
-                # Use HUMAN foot point for polygon zone entry/exit detection,
-                # not face center. The foot point is computed from the human
-                # bounding box as ((x1+x2)/2, y2).
-                humans = result.data.get("humans", [])
-                for human in humans:
-                    bbox = human.get("bbox")
-                    if bbox and len(bbox) >= 4:
-                        foot_x, foot_y = LocationStore._human_foot_point(bbox)
-                        track_id = human.get("track_id")
-                        detections.append({
-                            "cx": foot_x,
-                            "cy": foot_y,
-                            "track_id": track_id,
-                            "personnel_id": human.get("personnel_id") or human.get("person"),
-                            "detection_event_id": frame_index,
-                        })
-            elif result.task == TaskName.PLATE_RECOGNITION:
+            if result.task == TaskName.PLATE_RECOGNITION:
                 plates = result.data.get("plates", [])
                 for plate in plates:
                     bbox = plate.get("bbox")
@@ -603,7 +602,82 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
         return location_observer
 
+    def _build_face_polygon_observer(
+        ls: LocationStore,
+        reg: SourceRegistry,
+        human_log_store: HumanLogStore,
+    ) -> Callable[[FramePacket, TaskResult], None]:
+        """Combined observer for FACE_RECOGNITION that gates human log saving on polygon transitions.
+
+        Flow:
+        1. Computes human foot point ((x1+x2)/2, y2)
+        2. If the camera's section has custom polygon rooms → calls match_detection_to_rooms
+        3. If no custom polygons → uses the default full-frame polygon
+        4. Records polygon zone matches in the database (if custom) or in-memory (if default)
+        5. Only calls human_log_store.observe_result() when a transition (entered/exited) occurs
+        6. No transition → human log is NOT saved (reduces noise and storage)
+        """
+        def face_observer(packet: FramePacket, result: TaskResult) -> None:
+            if result.error:
+                return
+            source_id = result.source_id
+            if not source_id:
+                return
+            cam = reg.get(source_id)
+            if cam is None:
+                return
+            section_id = cam.metadata.get("section_id") if cam.metadata else None
+            # Use default polygon fallback when no section_id or no custom polygons
+            has_polygons = ls.section_has_polygons(section_id) if section_id is not None else False
+            has_transition = False
+
+            for human in result.data.get("humans", []):
+                bbox = human.get("bbox")
+                if not bbox or len(bbox) < 4:
+                    continue
+                foot_x, foot_y = LocationStore._human_foot_point(bbox)
+                track_id = human.get("track_id")
+
+                if has_polygons:
+                    # Custom polygon zones exist — full matching with DB insert
+                    matches = ls.match_detection_to_rooms(
+                        section_id=section_id,
+                        detection_type=TaskName.FACE_RECOGNITION.value,
+                        detection_event_id=result.frame_index,
+                        bbox_center_x=foot_x,
+                        bbox_center_y=foot_y,
+                        personnel_id=human.get("personnel_id") or human.get("person"),
+                        camera_id=source_id,
+                        track_id=track_id,
+                    )
+                    if any(m.transition_type is not None for m in matches):
+                        has_transition = True
+                else:
+                    # No custom polygons — use default full-frame polygon
+                    transition = ls.get_default_polygon_entry_state(
+                        camera_id=source_id,
+                        track_id=track_id,
+                        foot_x=foot_x,
+                        foot_y=foot_y,
+                    )
+                    if transition is not None:
+                        has_transition = True
+
+            # Only save human log when a polygon zone transition occurred
+            if has_transition:
+                try:
+                    human_log_store.observe_result(packet, result)
+                except Exception:
+                    LOGGER.exception(
+                        "Human log observer failed: source=%s", source_id
+                    )
+
+        return face_observer
+
     location_obs = _build_location_observer(location_store, registry)
+    face_polygon_obs = _build_face_polygon_observer(
+        location_store, registry, human_logs
+    )
 
     workers = {
         TaskName.FIRE_SMOKE: TaskWorker(
@@ -642,8 +716,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             queue_capacity=app_settings.task_queue_capacity,
             queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
-            result_observer=human_logs.observe_result,
-            location_observer=location_obs,
+            # Combined observer: polygon matching + human log gating on transitions
+            result_observer=face_polygon_obs,
+            location_observer=None,
         ),
     }
     router = TaskRouter(
@@ -695,7 +770,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
         reconnect_seconds=operational.rtsp_reconnect_seconds,
     )
-    return Runtime(
+    runtime_obj = Runtime(
         settings=app_settings,
         database=database,
         registry=registry,
@@ -722,3 +797,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_ingestor=video_ingestor,
         media_preview=media_preview,
     )
+    # Push zone polygons to broadcast hub for all registered sources
+    runtime_obj._refresh_all_source_zones()
+    return runtime_obj

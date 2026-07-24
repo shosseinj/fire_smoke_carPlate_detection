@@ -359,3 +359,101 @@ def test_face_overlay_is_retained_briefly_for_intermediate_frames() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert hub.status()["face_overlay_cache_hits"] == 1
+
+
+# ── Polygon drawing tests ────────────────────────────────────────────
+
+
+def test_draw_zones_default_enabled() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    assert hub.draw_zones is True
+
+
+def test_set_draw_zones_toggles_flag() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    hub.set_draw_zones(False)
+    assert hub.draw_zones is False
+    hub.set_draw_zones(True)
+    assert hub.draw_zones is True
+
+
+def test_set_source_zones_stores_polygons() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    zones = [[[0, 0], [0, 100], [100, 100], [100, 0]]]
+    hub.set_source_zones("cam-01", zones)
+    assert hub._source_zones["cam-01"] == zones
+
+
+def test_clear_source_zones_removes_polygons() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    hub.set_source_zones("cam-01", [[[0, 0], [0, 100], [100, 100], [100, 0]]])
+    hub.clear_source_zones("cam-01")
+    assert "cam-01" not in hub._source_zones
+
+
+def test_draw_zones_renders_polygon_on_frame() -> None:
+    """Verify polygon drawing modifies pixels when draw_zones=True and zones exist."""
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    zones = [[[10, 10], [10, 100], [100, 100], [100, 10]]]
+    hub.set_source_zones("camera-07", zones)
+    hub.draw_zones = True
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(TaskName.FACE_RECOGNITION, {"humans": [], "faces": []}),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    # The polygon area should have non-zero pixel values from the drawn overlay
+    poly_region = image[10:100, 10:100]
+    assert float(poly_region.mean()) > 0.0
+
+
+def test_draw_zones_suppressed_when_flag_false() -> None:
+    """Verify no polygon drawn when draw_zones=False."""
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    zones = [[[10, 10], [10, 100], [100, 100], [100, 10]]]
+    hub.set_source_zones("camera-07", zones)
+    hub.draw_zones = False
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(TaskName.FACE_RECOGNITION, {"humans": [], "faces": []}),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    # Without draw_zones, no overlay should be drawn. The header overlay
+    # still exists, but the polygon region should have no additional color
+    # from the specific polygon fill colors (100, 100, 255 BGR=blue).
+    # We verify the area outside header has similar mean to a no-polygon render.
+    ref_hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    ref_hub.publish_result(
+        packet(["face_recognition"]),
+        result(TaskName.FACE_RECOGNITION, {"humans": [], "faces": []}),
+    )
+    ref_encoded = ref_hub.latest("camera-07")
+    assert ref_encoded is not None
+    ref_image = cv2.imdecode(np.frombuffer(ref_encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert ref_image is not None
+    # Compare header-excluded region (below pixel row 76)
+    region = image[80:, 10:100]
+    ref_region = ref_image[80:, 10:100]
+    assert abs(float(region.mean()) - float(ref_region.mean())) < 5.0
+
+
+def test_draw_zones_no_op_when_no_zones() -> None:
+    """Verify rendering works normally with no zones set."""
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.draw_zones = True
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(TaskName.FACE_RECOGNITION, {"humans": [], "faces": []}),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.tasks == ("face_recognition",)
