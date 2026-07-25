@@ -164,6 +164,34 @@ def test_fire_below_configured_score_is_not_a_detection(tmp_path: Path) -> None:
     assert result.data["severity"] == "none"
 
 
+def test_fire_uses_per_source_thresholds_and_respects_zero_confidence(
+    tmp_path: Path,
+) -> None:
+    thresholds = {
+        "camera-low": (1, 0.0, 0.0),
+        "camera-high": (1, 0.9, 0.9),
+    }
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            evidence_min_track_hits=1,
+        ),
+        model=FakeModel(confidence=0.05),
+        settings_provider=thresholds.__getitem__,
+    )
+
+    low_result, high_result = processor.process_batch(
+        [packet("camera-low", 1), packet("camera-high", 1)]
+    )
+
+    assert low_result.data["tracks"]
+    assert low_result.data["detections"]
+    assert high_result.data["tracks"] == []
+    assert high_result.data["detections"] == []
+
+
 def test_fire_result_exposes_raw_detections_for_immediate_overlay(
     tmp_path: Path,
 ) -> None:

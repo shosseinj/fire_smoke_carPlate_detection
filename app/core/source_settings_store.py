@@ -53,6 +53,7 @@ class SourceSettingsStore:
         self.database = ensure_database(database)
         self._lock = threading.RLock()
         self._env_defaults = (env_defaults or OperationalSettings()).to_dict()
+        self._revision = 0
         self._ensure_default()
 
     def _connect(self):
@@ -76,6 +77,12 @@ class SourceSettingsStore:
                     [_DEFAULT_KEY, *values, now],
                 )
                 conn.commit()
+                self._revision += 1
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
 
     def _row_to_dict(self, row: Any) -> dict[str, Any]:
         """Convert a sources row to a dict with source_uri + confidence fields."""
@@ -123,6 +130,7 @@ class SourceSettingsStore:
                 values,
             )
             conn.commit()
+            self._revision += 1
         return self.get_default()
 
     def reset_default(self) -> OperationalSettings:
@@ -137,6 +145,7 @@ class SourceSettingsStore:
                 values,
             )
             conn.commit()
+            self._revision += 1
         return self.get_default()
 
     # ── Per-source overrides ─────────────────────────────────────────
@@ -192,6 +201,7 @@ class SourceSettingsStore:
                 [source_uri, *values, now],
             )
             conn.commit()
+            self._revision += 1
 
     def delete(self, source_uri: str) -> bool:
         """Remove all overrides for *source_uri* (not the default row)."""
@@ -203,6 +213,8 @@ class SourceSettingsStore:
                 (source_uri,),
             )
             conn.commit()
+            if cursor.rowcount > 0:
+                self._revision += 1
         return cursor.rowcount > 0
 
     def rename(self, old_source_uri: str, new_source_uri: str) -> bool:
@@ -217,6 +229,8 @@ class SourceSettingsStore:
                 (new_source_uri, old_source_uri),
             )
             conn.commit()
+            if cursor.rowcount > 0:
+                self._revision += 1
         return cursor.rowcount > 0
 
     def resolve(

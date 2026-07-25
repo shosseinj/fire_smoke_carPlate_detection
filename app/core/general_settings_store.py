@@ -9,6 +9,18 @@ from app.core.operational_settings import OperationalSettings
 from app.database import Database, Row, ensure_database
 from app.time_utils import utc_now_text
 
+_SOURCE_ONLY_OPERATIONAL_FIELDS = {
+    "fire_confidence",
+    "smoke_confidence",
+    "plate_confidence",
+    "plate_iou",
+    "vehicle_confidence",
+    "vehicle_iou",
+    "face_human_confidence",
+    "face_detection_confidence",
+    "face_recognition_threshold",
+}
+
 _GENERAL_COLUMNS = (
     "id, enable_processing, process_fire, process_plate, counts_for_attendance, "
     "margin_level, draw_box, draw_face, draw_skeleton, draw_zones, face_rec_score, "
@@ -81,6 +93,8 @@ class GeneralSettingsStore:
             values = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
             values = {}
+        for field in _SOURCE_ONLY_OPERATIONAL_FIELDS:
+            values.pop(field, None)
         operational = self._default_operational.updated(values)
         return GeneralSettingsRecord(
             id=int(row["id"]), enable_processing=bool(row["enable_processing"]),
@@ -99,13 +113,23 @@ class GeneralSettingsStore:
             row = conn.execute("SELECT id, operational_json FROM general_settings WHERE id = 1").fetchone()
             if row is None:
                 now = utc_now_text()
+                operational = {
+                    key: value
+                    for key, value in self._default_operational.to_dict().items()
+                    if key not in _SOURCE_ONLY_OPERATIONAL_FIELDS
+                }
                 conn.execute(
                     "INSERT INTO general_settings (id, enable_processing, process_fire, process_plate, counts_for_attendance, margin_level, draw_box, draw_face, draw_skeleton, draw_zones, face_rec_score, face_det_score, human_det_score, confirmation_threshold, force, operational_json, created_at_utc, updated_at_utc) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (1, 0, 0, 1, 1.0, 1, 1, 0, 1, 0.4, 0.4, 0.4, 0.6, 0, json.dumps(self._default_operational.to_dict(), sort_keys=True), now, now),
+                    (1, 0, 0, 1, 1.0, 1, 1, 0, 1, 0.4, 0.4, 0.4, 0.6, 0, json.dumps(operational, sort_keys=True), now, now),
                 )
                 conn.commit()
             elif not row["operational_json"] or row["operational_json"] == "{}":
-                conn.execute("UPDATE general_settings SET operational_json = ?, updated_at_utc = ? WHERE id = 1", (json.dumps(self._default_operational.to_dict(), sort_keys=True), utc_now_text()))
+                operational = {
+                    key: value
+                    for key, value in self._default_operational.to_dict().items()
+                    if key not in _SOURCE_ONLY_OPERATIONAL_FIELDS
+                }
+                conn.execute("UPDATE general_settings SET operational_json = ?, updated_at_utc = ? WHERE id = 1", (json.dumps(operational, sort_keys=True), utc_now_text()))
                 conn.commit()
 
     def get(self) -> GeneralSettingsRecord:
@@ -127,6 +151,8 @@ class GeneralSettingsStore:
             bool_fields = {"enable_processing", "process_fire", "process_plate", "counts_for_attendance", "draw_box", "draw_face", "draw_skeleton", "draw_zones", "force"}
             float_fields = {"margin_level", "face_rec_score", "face_det_score", "human_det_score", "confirmation_threshold"}
             operational_changes = dict(changes.pop("operational", {}) or {})
+            for field in _SOURCE_ONLY_OPERATIONAL_FIELDS:
+                operational_changes.pop(field, None)
             face_rec_score = changes.get("face_rec_score", current.face_rec_score if "confirmation_threshold" in changes else None)
             confirmation_threshold = changes.get("confirmation_threshold", current.confirmation_threshold if "face_rec_score" in changes else None)
             self._validate_face_thresholds(face_rec_score, confirmation_threshold)
@@ -151,5 +177,9 @@ class GeneralSettingsStore:
 
     def reset(self, updated_by: int | None = None) -> GeneralSettingsRecord:
         values = dict(_DEFAULTS)
-        values["operational"] = self._default_operational.to_dict()
+        values["operational"] = {
+            key: value
+            for key, value in self._default_operational.to_dict().items()
+            if key not in _SOURCE_ONLY_OPERATIONAL_FIELDS
+        }
         return self.update(values, updated_by=updated_by)

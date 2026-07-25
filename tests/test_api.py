@@ -26,7 +26,7 @@ def _test_database_url() -> str:
     return os.environ["TEST_DATABASE_URL"]
 
 
-def test_fire_smoke_worker_uses_lossless_fifo_queue_policy() -> None:
+def test_fire_smoke_worker_uses_configured_queue_policy() -> None:
     runtime = build_runtime(
         replace(
             settings,
@@ -38,7 +38,7 @@ def test_fire_smoke_worker_uses_lossless_fifo_queue_policy() -> None:
     try:
         fire_worker = runtime.router.workers[TaskName.FIRE_SMOKE]
         plate_worker = runtime.router.workers[TaskName.PLATE_RECOGNITION]
-        assert fire_worker.buffer.stats().policy == "lossless_fifo"
+        assert fire_worker.buffer.stats().policy == settings.task_queue_policy
         assert plate_worker.buffer.stats().policy == settings.task_queue_policy
     finally:
         runtime.close()
@@ -682,6 +682,19 @@ def test_general_model_settings_and_play_only_camera_api(
             assert updated.json()["models"]["preferred_format"] == "pt"
             assert updated.json()["plate_detection"]["plate_confidence"] == 0.52
             assert updated.json()["camera_processing"]["modes"]["play_only"] == []
+
+            operational = client.patch(
+                "/api/v1/settings/general",
+                json={
+                    "operational": {
+                        "fire_confidence": 0.12,
+                        "smoke_confidence": 0.34,
+                    }
+                },
+            )
+            assert operational.status_code == 200
+            assert operational.json()["operational"]["fire_confidence"] == 0.12
+            assert operational.json()["operational"]["smoke_confidence"] == 0.34
 
             class UploadedEngineExporter:
                 def __init__(self, source: Path) -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.engine import make_url
 
 from app.api.models import ModelSettingsPatch
@@ -42,6 +42,8 @@ class FireSmokePolicyPatch(BaseModel):
     high_count: int | None = Field(default=None, ge=3, le=100000)
 
 class OperationalSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     video_ingest_fps: float | None = Field(default=None, gt=0, le=240)
     video_preview_fps: float | None = Field(default=None, gt=0, le=240)
     video_loop: bool | None = None
@@ -107,12 +109,19 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
             application_values[secret_name] = "***"
     gs = runtime.general_settings.get()
     operational_merged = gs.operational.to_dict()
-    # Override the 9 confidence fields from the sources __default__ row
+    # Override the source-owned confidence fields from the sources __default__ row
     source_default = runtime.source_settings.get_default().to_dict()
-    for field in ("fire_confidence", "smoke_confidence", "plate_confidence",
-                   "plate_iou", "vehicle_confidence", "vehicle_iou",
-                   "face_human_confidence", "face_detection_confidence",
-                   "face_recognition_threshold"):
+    for field in (
+        "fire_confidence",
+        "smoke_confidence",
+        "plate_confidence",
+        "plate_iou",
+        "vehicle_confidence",
+        "vehicle_iou",
+        "face_human_confidence",
+        "face_detection_confidence",
+        "face_recognition_threshold",
+    ):
         operational_merged[field] = source_default.get(field, operational_merged[field])
     return {
         "operational": operational_merged,
@@ -191,26 +200,28 @@ def update_general_settings(
         if payload.operational is not None:
             changes = payload.operational.model_dump(exclude_unset=True)
             if changes:
-                # Nine confidence fields → `sources` table (global __default__ row)
-                source_changes = {
-                    k: v for k, v in changes.items()
-                    if k in (
-                        "fire_confidence", "smoke_confidence", "plate_confidence",
-                        "plate_iou", "vehicle_confidence", "vehicle_iou",
-                        "face_human_confidence", "face_detection_confidence",
-                        "face_recognition_threshold",
-                    )
+                source_owned_fields = {
+                    "fire_confidence",
+                    "smoke_confidence",
+                    "plate_confidence",
+                    "plate_iou",
+                    "vehicle_confidence",
+                    "vehicle_iou",
+                    "face_human_confidence",
+                    "face_detection_confidence",
+                    "face_recognition_threshold",
                 }
-                # Other operational fields → `general_settings` JSON blob
-                rest_changes = {
-                    k: v for k, v in changes.items()
-                    if k not in source_changes
+                source_changes = {
+                    key: value for key, value in changes.items() if key in source_owned_fields
+                }
+                general_changes = {
+                    key: value for key, value in changes.items() if key not in source_owned_fields
                 }
                 if source_changes:
                     runtime.source_settings.set_default(source_changes)
-                if rest_changes:
+                if general_changes:
                     runtime.general_settings.update(
-                        {"operational": rest_changes},
+                        {"operational": general_changes},
                         updated_by=current_user.id,
                     )
                 runtime.apply_operational_settings()

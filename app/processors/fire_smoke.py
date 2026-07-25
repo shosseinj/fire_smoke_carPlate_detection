@@ -94,6 +94,9 @@ class PerSourceState:
     incident: IncidentState | None = None
     last_frame_index: int = -1
     policy_revision: int = -1
+    settings_revision: int = -1
+    fire_candidate_confidence: float = 0.30
+    smoke_candidate_confidence: float = 0.30
 
 
 class FireSmokeProcessor(BatchProcessor):
@@ -105,11 +108,13 @@ class FireSmokeProcessor(BatchProcessor):
         *,
         model: Any | None = None,
         policy_provider: Callable[[], tuple[int, FireSmokePolicyConfig]] | None = None,
+        settings_provider: Callable[[str], tuple[int, float, float]] | None = None,
         model_provider: Callable[[], tuple[int, list[Path]]] | None = None,
     ) -> None:
         self.settings = settings
         self._model = model
         self._policy_provider = policy_provider
+        self._settings_provider = settings_provider
         self._model_provider = model_provider
         self._load_lock = threading.Lock()
         self._load_error: Exception | None = None
@@ -162,11 +167,22 @@ class FireSmokeProcessor(BatchProcessor):
             demotion_hold_seconds=self.settings.demotion_hold_seconds,
         )
 
-    def _new_state(self) -> PerSourceState:
+    def _source_thresholds(self, source_id: str) -> tuple[int, float, float]:
+        if self._settings_provider is None:
+            return (
+                -1,
+                float(self.settings.fire_candidate_confidence),
+                float(self.settings.smoke_candidate_confidence),
+            )
+        revision, fire_confidence, smoke_confidence = self._settings_provider(source_id)
+        return revision, float(fire_confidence), float(smoke_confidence)
+
+    def _new_state(self, source_id: str) -> PerSourceState:
         revision = -1
         dynamic = None
         if self._policy_provider is not None:
             revision, dynamic = self._policy_provider()
+        settings_revision, fire_confidence, smoke_confidence = self._source_thresholds(source_id)
         return PerSourceState(
             tracker=StableObjectTracker(
                 TrackerSettings(
@@ -192,6 +208,9 @@ class FireSmokeProcessor(BatchProcessor):
                 smoke_policy=self._severity_policy("smoke", dynamic),
             ),
             policy_revision=revision,
+            settings_revision=settings_revision,
+            fire_candidate_confidence=fire_confidence,
+            smoke_candidate_confidence=smoke_confidence,
         )
 
     def _sync_policy(self, state: PerSourceState) -> None:
@@ -203,6 +222,16 @@ class FireSmokeProcessor(BatchProcessor):
         state.analyzer.fire_policy = self._severity_policy("fire", dynamic)
         state.analyzer.smoke_policy = self._severity_policy("smoke", dynamic)
         state.policy_revision = revision
+
+    def _sync_source_settings(self, state: PerSourceState, source_id: str) -> None:
+        if self._settings_provider is None:
+            return
+        revision, fire_confidence, smoke_confidence = self._source_thresholds(source_id)
+        if revision == state.settings_revision:
+            return
+        state.fire_candidate_confidence = fire_confidence
+        state.smoke_candidate_confidence = smoke_confidence
+        state.settings_revision = revision
 
     def _sync_model_selection(self) -> None:
         if self._model_provider is None:
@@ -260,7 +289,7 @@ class FireSmokeProcessor(BatchProcessor):
                 f"All fire/smoke model candidates failed: {self._load_error}"
             )
 
-    def _predict(self, frames: list[np.ndarray]) -> list[Any]:
+    def _predict(self, frames: list[np.ndarray], *, conf_threshold: float) -> list[Any]:
         self._sync_model_selection()
         while True:
             self._ensure_model()
@@ -279,10 +308,7 @@ class FireSmokeProcessor(BatchProcessor):
                 "source": source,
                 "batch": fixed_batch or self.settings.batch_size,
                 "imgsz": self.settings.imgsz,
-                "conf": min(
-                    self.settings.fire_candidate_confidence,
-                    self.settings.smoke_candidate_confidence,
-                ),
+                "conf": conf_threshold,
                 "iou": self.settings.iou,
                 "max_det": self.settings.max_detections,
                 "classes": [self.settings.fire_class_id, self.settings.smoke_class_id],
@@ -305,7 +331,13 @@ class FireSmokeProcessor(BatchProcessor):
                 if not self._advance_model_fallback(exc):
                     raise
 
-    def _extract_detections(self, result: Any) -> list[Detection]:
+    def _extract_detections(
+        self,
+        result: Any,
+        *,
+        fire_threshold: float,
+        smoke_threshold: float,
+    ) -> list[Detection]:
         boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
             return []
@@ -329,10 +361,10 @@ class FireSmokeProcessor(BatchProcessor):
             class_id = int(class_value)
             if class_id == self.settings.fire_class_id:
                 label = "fire"
-                threshold = self.settings.fire_candidate_confidence
+                threshold = fire_threshold
             elif class_id == self.settings.smoke_class_id:
                 label = "smoke"
-                threshold = self.settings.smoke_candidate_confidence
+                threshold = smoke_threshold
             else:
                 continue
             if float(confidence) < threshold:
@@ -403,14 +435,21 @@ class FireSmokeProcessor(BatchProcessor):
                 state.incident = None
         return events
 
-    def _process_one(self, packet: FramePacket, result: Any, batch_ms: float) -> TaskResult:
+    def _process_one(
+        self,
+        packet: FramePacket,
+        result: Any,
+        batch_ms: float,
+        state: PerSourceState,
+    ) -> TaskResult:
         started = time.perf_counter()
-        state = self._states.get(packet.source_id)
-        if state is None:
-            state = self._new_state()
-            self._states[packet.source_id] = state
+        self._sync_source_settings(state, packet.source_id)
         self._sync_policy(state)
-        detections = self._extract_detections(result)
+        detections = self._extract_detections(
+            result,
+            fire_threshold=state.fire_candidate_confidence,
+            smoke_threshold=state.smoke_candidate_confidence,
+        )
         tracks, transitions = state.tracker.update(
             detections,
             packet.frame_index,
@@ -437,8 +476,8 @@ class FireSmokeProcessor(BatchProcessor):
             smoke_area_ratio=smoke_area,
             fire_track_count=len(fire_tracks),
             smoke_track_count=len(smoke_tracks),
-            fire_positive_threshold=self.settings.fire_candidate_confidence,
-            smoke_positive_threshold=self.settings.smoke_candidate_confidence,
+            fire_positive_threshold=state.fire_candidate_confidence,
+            smoke_positive_threshold=state.smoke_candidate_confidence,
         )
         overall: HazardSeverity = risk["overall"]
         events = self._incident_events(state, overall, packet.captured_monotonic)
@@ -502,13 +541,32 @@ class FireSmokeProcessor(BatchProcessor):
     def process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
         if not packets:
             return []
-        results = self._predict([packet.frame for packet in packets])
+        states: list[PerSourceState] = []
+        batch_conf = min(
+            float(self.settings.fire_candidate_confidence),
+            float(self.settings.smoke_candidate_confidence),
+        )
+        for packet in packets:
+            state = self._states.get(packet.source_id)
+            if state is None:
+                state = self._new_state(packet.source_id)
+                self._states[packet.source_id] = state
+            else:
+                self._sync_source_settings(state, packet.source_id)
+            self._sync_policy(state)
+            states.append(state)
+            batch_conf = min(
+                batch_conf,
+                state.fire_candidate_confidence,
+                state.smoke_candidate_confidence,
+            )
+        results = self._predict([packet.frame for packet in packets], conf_threshold=batch_conf)
         batch_ms = self._last_inference_ms
         self._processed_batches += 1
         self._processed_frames += len(packets)
         return [
-            self._process_one(packet, result, batch_ms)
-            for packet, result in zip(packets, results)
+            self._process_one(packet, result, batch_ms, state)
+            for packet, result, state in zip(packets, results, states)
         ]
 
     def status(self) -> dict[str, Any]:

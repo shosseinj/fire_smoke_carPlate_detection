@@ -143,9 +143,6 @@ class Runtime:
         from dataclasses import replace
         current = self.operational_settings()
         workers = self.router.workers
-        fire = workers.get(TaskName.FIRE_SMOKE)
-        if fire is not None and hasattr(fire.processor, "settings"):
-            fire.processor.settings = replace(fire.processor.settings, fire_candidate_confidence=current.fire_confidence, smoke_candidate_confidence=current.smoke_confidence)
         plate = workers.get(TaskName.PLATE_RECOGNITION)
         if plate is not None and hasattr(plate.processor, "settings"):
             plate.processor.settings = replace(plate.processor.settings, detector_confidence=current.plate_confidence, detector_iou=current.plate_iou, vehicle_confidence=current.vehicle_confidence, vehicle_iou=current.vehicle_iou)
@@ -506,6 +503,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         plate_processor = MockProcessor(TaskName.PLATE_RECOGNITION)
         face_processor: BatchProcessor = MockProcessor(TaskName.FACE_RECOGNITION)
     elif app_settings.processor_mode == "real":
+        def fire_source_thresholds(source_id: str) -> tuple[int, float, float]:
+            resolved = source_settings.resolve(source_id)
+            fire_confidence = resolved.get("fire_confidence")
+            smoke_confidence = resolved.get("smoke_confidence")
+            return (
+                source_settings.revision,
+                float(app_settings.fire_confidence if fire_confidence is None else fire_confidence),
+                float(app_settings.smoke_confidence if smoke_confidence is None else smoke_confidence),
+            )
+
         fire_processor = FireSmokeProcessor(
             FireSmokeSettings(
                 model_path=app_settings.fire_model_path,
@@ -523,6 +530,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 smoke_high_confidence=app_settings.smoke_high_severity_confidence,
             ),
             policy_provider=fire_smoke_logs.policy_snapshot,
+            settings_provider=fire_source_thresholds,
             model_provider=models.provider("fire_smoke"),
         )
         plate_processor = PlateRecognitionProcessor(
@@ -758,9 +766,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             batch_size=app_settings.fire_batch_size,
             max_wait_ms=app_settings.fire_max_wait_ms,
             num_threads=app_settings.worker_threads,
-            queue_policy="lossless_fifo",
+            queue_policy=app_settings.task_queue_policy,
             queue_capacity=app_settings.task_queue_capacity,
-            queue_block_timeout_ms=0.0,
+            queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
             result_observer=fire_smoke_logs.observe_result,
             location_observer=location_obs,

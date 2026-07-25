@@ -77,9 +77,6 @@ the workload; `TASK_QUEUE_BLOCK_TIMEOUT_MS=0` waits instead of rejecting admissi
 It still cannot guarantee lossless RTSP delivery when decode, network, or GPU
 throughput is lower than the source rate.
 
-The fire/smoke worker is wired to `lossless_fifo` with blocking admission so routed
-fire/smoke frames are not replaced in the worker queue. This intentionally trades
-latency for all-frame worker-side admission and can increase lag under overload.
 
 ## Architecture
 
