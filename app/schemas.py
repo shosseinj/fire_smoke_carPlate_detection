@@ -18,6 +18,7 @@ class SourceCreate(BaseModel):
     source_type: str = RTSP
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    fps: float | None = Field(default=None, gt=0, le=240)
     loop: bool = True
     draw_human: bool = True
     draw_zone: bool = True
@@ -62,6 +63,7 @@ class SourceUpdate(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
+    fps: float | None = Field(default=None, gt=0, le=240)
     loop: bool | None = None
     draw_human: bool | None = None
     draw_zone: bool | None = None
@@ -101,6 +103,7 @@ class BulkSourceUpdateItem(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
+    fps: float | None = Field(default=None, gt=0, le=240)
     loop: bool | None = None
     draw_human: bool | None = None
     draw_zone: bool | None = None
@@ -150,6 +153,7 @@ class SourceResponse(BaseModel):
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any]
+    fps: float | None = None
     loop: bool = True
     draw_human: bool = True
     draw_zone: bool = True

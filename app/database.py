@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0021"
+ALEMBIC_HEAD_REVISION = "20260725_0022"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -341,6 +341,7 @@ sources = Table(
     Column("room_id", Integer, ForeignKey("rooms.id", ondelete="SET NULL")),
     Column("source_type", String(16), server_default="rtsp"),
     Column("metadata_json", Text, server_default="{}"),
+    Column("fps", Float),
     Column("created_at_utc", UTC_TS),
     Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("fire_confidence", Float),

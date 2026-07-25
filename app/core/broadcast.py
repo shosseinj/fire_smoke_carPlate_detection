@@ -249,6 +249,7 @@ class AnnotatedBroadcastHub:
                 "tasks": sorted(task.value for task in record.tasks),
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
+                "fps": record.fps,
                 "loop": record.loop,
                 "draw_human": record.draw_human,
                 "draw_zone": record.draw_zone,
@@ -368,8 +369,6 @@ class AnnotatedBroadcastHub:
             return "F/S: ERROR"
         tracks = result.data.get("tracks", [])
         for track in tracks:
-            if track.get("confirmed") is False and not track.get("alert_active", False):
-                continue
             box = self._bounded_box(track.get("bbox"), frame)
             if box is None:
                 continue

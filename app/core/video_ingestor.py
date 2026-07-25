@@ -26,10 +26,12 @@ class VideoState:
     is_live: bool
     capture: Any
     fps: float
+    effective_fps: float
     stride: int
     frame_width: int
     frame_height: int
     loop: bool = True
+    next_frame_due_monotonic: float = 0.0
     frame_index: int = -1
     submitted_frames: int = 0
     loop_count: int = 0
@@ -193,21 +195,31 @@ class VideoFileIngestor:
             LOGGER.error(self._last_error)
             return None
         self._retry_after.pop(record.source_uri, None)
-        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        if fps <= 0.0:
-            fps = self.target_fps
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        effective_fps = self._effective_fps(record, source_fps=source_fps, is_live=is_live)
+        stride = 1
+        if not is_live and source_fps > 0.0 and effective_fps > 0.0 and effective_fps < source_fps:
+            stride = max(1, round(source_fps / effective_fps))
         return VideoState(
             source_id=record.source_uri,
             source_uri=record.source_uri,
             display_uri=display_uri,
             is_live=is_live,
             capture=capture,
-            fps=fps,
-            stride=max(1, round(fps / self.target_fps)),
+            fps=source_fps,
+            effective_fps=effective_fps,
+            stride=stride,
             frame_width=record.frame_width,
             frame_height=record.frame_height,
             loop=record.loop,
         )
+
+    def _effective_fps(self, record: SourceRecord, *, source_fps: float, is_live: bool) -> float:
+        if record.fps is not None and record.fps > 0:
+            return float(record.fps)
+        if not is_live and source_fps > 0.0:
+            return float(source_fps)
+        return self.target_fps
 
     def _release(self, source_id: str) -> None:
         state = self._states.pop(source_id, None)
@@ -275,6 +287,7 @@ class VideoFileIngestor:
         metadata: list[dict[str, Any]] = []
 
         for record in records:
+            now_monotonic = time.monotonic()
             state = self._states.get(record.source_uri)
             if state is not None and (
                 state.source_uri != record.source_uri
@@ -291,6 +304,9 @@ class VideoFileIngestor:
                 if state is None:
                     continue
                 self._states[record.source_uri] = state
+
+            if state.next_frame_due_monotonic > now_monotonic:
+                continue
 
             ok, frame, source_time = self._read(state)
             if not ok:
@@ -330,6 +346,7 @@ class VideoFileIngestor:
                 }
             )
             state.submitted_frames += 1
+            state.next_frame_due_monotonic = now_monotonic + (1.0 / max(state.effective_fps, 0.1))
 
         if not frames:
             return {"received_frames": 0, "accepted_sources": 0, "task_submissions": 0}
@@ -350,7 +367,6 @@ class VideoFileIngestor:
 
     def _run(self) -> None:
         self._started.set()
-        interval = 1.0 / self.target_fps
         while not self._stop.is_set():
             started = time.monotonic()
             try:
@@ -358,7 +374,11 @@ class VideoFileIngestor:
             except Exception as exc:
                 self._last_error = str(exc)
                 LOGGER.exception("Video ingestion round failed")
-            remaining = interval - (time.monotonic() - started)
+            with self._state_lock:
+                active_fps = max(
+                    [self.target_fps, *(state.effective_fps for state in self._states.values())]
+                )
+            remaining = (1.0 / max(active_fps, 0.1)) - (time.monotonic() - started)
             if remaining > 0:
                 self._stop.wait(remaining)
 
@@ -401,6 +421,7 @@ class VideoFileIngestor:
                     "source_uri": state.display_uri,
                     "source_type": "rtsp" if state.is_live else "video_file",
                     "source_fps": state.fps,
+                    "effective_fps": state.effective_fps,
                     "stride": state.stride,
                     "frame_width": state.frame_width,
                     "frame_height": state.frame_height,

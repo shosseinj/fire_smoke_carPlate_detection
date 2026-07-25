@@ -36,6 +36,7 @@ class SourceRecord:
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    fps: float | None = None
     loop: bool = True
     draw_human: bool = True
     draw_zone: bool = True
@@ -70,6 +71,7 @@ class SourceRecord:
             source_type=source_type,
             room_id=int(value["room_id"]) if value.get("room_id") is not None else None,
             metadata=dict(value.get("metadata") or {}),
+            fps=float(value["fps"]) if value.get("fps") is not None else None,
             loop=bool(value.get("loop", True)),
             draw_human=bool(value.get("draw_human", True)),
             draw_zone=bool(value.get("draw_zone", True)),
@@ -117,7 +119,7 @@ class SourceRegistry:
                 """
                 SELECT id, source_uri, name, enabled, tasks_json,
                        frame_width, frame_height, room_id, source_type,
-                       metadata_json, loop, draw_human, draw_zone, draw_fire,
+                       metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                        draw_smoke, draw_vehicle, draw_plate,
                        created_at_utc, updated_at_utc
                 FROM sources
@@ -146,8 +148,11 @@ class SourceRegistry:
             raise ValueError("name cannot be blank")
         value.tasks = {TaskName(task) for task in value.tasks}
         value.metadata = dict(value.metadata)
+        value.fps = float(value.fps) if value.fps is not None else None
         value.frame_width = int(value.frame_width)
         value.frame_height = int(value.frame_height)
+        if value.fps is not None and not 0 < value.fps <= 240:
+            raise ValueError("fps must be between 0 and 240")
         if not 16 <= value.frame_width <= 4096:
             raise ValueError("frame_width must be between 16 and 4096")
         if not 16 <= value.frame_height <= 4096:
@@ -170,6 +175,7 @@ class SourceRegistry:
             source_type=str(row["source_type"]) if row["source_type"] else RTSP,
             room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
+            fps=float(row["fps"]) if row["fps"] is not None else None,
             loop=bool(row["loop"]) if row["loop"] is not None else True,
             draw_human=bool(row["draw_human"]) if row["draw_human"] is not None else True,
             draw_zone=bool(row["draw_zone"]) if row["draw_zone"] is not None else True,
@@ -197,6 +203,7 @@ class SourceRegistry:
             record.room_id,
             record.source_type,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+            record.fps,
             int(record.loop),
             int(record.draw_human),
             int(record.draw_zone),
@@ -267,10 +274,10 @@ class SourceRegistry:
                     INSERT INTO sources (
                         id, source_uri, name, enabled, tasks_json,
                         frame_width, frame_height, room_id, source_type,
-                        metadata_json, loop, draw_human, draw_zone, draw_fire,
+                        metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                         draw_smoke, draw_vehicle, draw_plate,
                         created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_uri) DO UPDATE SET
                         id = COALESCE(sources.id, excluded.id),
                         name = excluded.name,
@@ -281,6 +288,7 @@ class SourceRegistry:
                         room_id = excluded.room_id,
                         source_type = excluded.source_type,
                         metadata_json = excluded.metadata_json,
+                        fps = excluded.fps,
                         loop = excluded.loop,
                         draw_human = excluded.draw_human,
                         draw_zone = excluded.draw_zone,
@@ -347,10 +355,10 @@ class SourceRegistry:
                 INSERT INTO sources (
                     id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
-                    metadata_json, loop, draw_human, draw_zone, draw_fire,
+                    metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                     draw_smoke, draw_vehicle, draw_plate,
                     created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -361,6 +369,7 @@ class SourceRegistry:
                     room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
+                    fps = excluded.fps,
                     loop = excluded.loop,
                     draw_human = excluded.draw_human,
                     draw_zone = excluded.draw_zone,
@@ -430,6 +439,7 @@ class SourceRegistry:
         source_type: str | None = None,
         metadata: dict[str, Any] | None = None,
         room_id: int | None | object = ...,
+        fps: float | None | object = ...,
         loop: bool | None = None,
         draw_human: bool | None = None,
         draw_zone: bool | None = None,
@@ -474,6 +484,8 @@ class SourceRegistry:
                 record.source_type = source_type
             if metadata is not None:
                 record.metadata = dict(metadata)
+            if fps is not ...:
+                record.fps = float(fps) if fps is not None else None
             if loop is not None:
                 record.loop = loop
             if draw_human is not None:
@@ -499,7 +511,7 @@ class SourceRegistry:
                 SET name = ?, enabled = ?, tasks_json = ?,
                     frame_width = ?, frame_height = ?,
                     room_id = ?, source_type = ?,
-                    metadata_json = ?, loop = ?, draw_human = ?, draw_zone = ?,
+                    metadata_json = ?, fps = ?, loop = ?, draw_human = ?, draw_zone = ?,
                     draw_fire = ?, draw_smoke = ?, draw_vehicle = ?, draw_plate = ?,
                     updated_at_utc = ?
                 WHERE source_uri = ?
@@ -513,6 +525,7 @@ class SourceRegistry:
                     room_id_val,
                     record.source_type,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+                    record.fps,
                     int(record.loop),
                     int(record.draw_human),
                     int(record.draw_zone),

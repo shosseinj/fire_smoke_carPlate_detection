@@ -551,6 +551,26 @@ def test_source_draw_fire_and_smoke_independently_filter_hazard_boxes() -> None:
     assert float(image[80:140, 120:180].mean()) > 0.0
 
 
+def test_fire_overlay_draws_even_before_confirmation() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.publish_result(
+        packet(["fire_smoke"]),
+        result(
+            TaskName.FIRE_SMOKE,
+            {
+                "tracks": [
+                    {"label": "fire", "confidence": 0.9, "bbox": [20, 80, 80, 140], "confirmed": False, "alert_active": False},
+                ],
+            },
+        ),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[80:140, 20:80].mean()) > 0.0
+
+
 def test_source_draw_vehicle_and_plate_can_disable_each_box_type() -> None:
     payload = {
         "plates": [

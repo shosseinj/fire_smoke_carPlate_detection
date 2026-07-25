@@ -146,7 +146,41 @@ def test_video_files_are_sampled_as_one_camera_round(
     )
     assert router.calls[0]["metadata"][0]["source_frame_width"] == 6
     assert router.calls[0]["metadata"][0]["source_frame_height"] == 4
-    assert ingestor.status()["sources"]["data/fire.mp4"]["stride"] == 2
+    assert ingestor.status()["sources"]["data/fire.mp4"]["source_fps"] == 10.0
+    assert ingestor.status()["sources"]["data/fire.mp4"]["effective_fps"] == 10.0
+    assert ingestor.status()["sources"]["data/fire.mp4"]["stride"] == 1
+    ingestor.close()
+
+
+def test_video_file_uses_explicit_source_fps_override_for_slowdown(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
+    registry.create(
+        SourceRecord(
+            name="Slow fire camera",
+            tasks={TaskName.FIRE_SMOKE},
+            source_uri="data/fire.mp4",
+            metadata={"kind": "video_file"},
+            fps=5.0,
+        )
+    )
+    router = RecordingRouter(registry)
+    ingestor = VideoFileIngestor(
+        registry=registry,
+        router=router,  # type: ignore[arg-type]
+        project_root=tmp_path,
+        target_fps=30.0,
+        capture_factory=FakeCapture,
+    )
+
+    summary = ingestor.process_once()
+
+    assert summary["received_frames"] == 1
+    status = ingestor.status()["sources"]["data/fire.mp4"]
+    assert status["source_fps"] == 10.0
+    assert status["effective_fps"] == 5.0
+    assert status["stride"] == 2
     ingestor.close()
 
 

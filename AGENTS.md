@@ -228,6 +228,7 @@ The `sources` table (defined in `app/database.py`) stores 9 per‑source confide
 | Column | Type | Description |
 |--------|------|-------------|
 | `source_uri` | TEXT PK | Per‑source key; the well‑known row `'__default__'` holds global defaults |
+| `fps` | FLOAT nullable | Per-source playback/delivery FPS override; NULL means use source-native FPS for file/static-video sources when available |
 | `fire_confidence` | FLOAT nullable | Fire‑detection confidence threshold |
 | `smoke_confidence` | FLOAT nullable | Smoke‑detection confidence threshold |
 | `plate_confidence` | FLOAT nullable | Plate‑detection confidence threshold |
@@ -250,6 +251,7 @@ The `sources` table (defined in `app/database.py`) stores 9 per‑source confide
 
 - The 9 confidence fields above are stored **only** in the `sources` table as typed SQL columns. Per‑source rows override the global `'__default__'` row.
 - The per-source `loop` and `draw_*` overlay flags are stored on normal source rows and flow through `SourceRegistry` / `/api/v1/sources` into ingest or broadcast behavior. They do not belong on the `'__default__'` confidence row.
+- The per-source nullable `fps` field is stored on normal source rows and flows through `SourceRegistry` / `/api/v1/sources` into file/static-video ingest pacing. `NULL` preserves source-native FPS when available instead of forcing a global playback rate.
 - All other `OperationalSettings` fields (`video_ingest_fps`, `rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob.
 - At read time, `Runtime.operational_settings()` and the `GET /api/v1/settings/general` snapshot merge: JSON‑blob fields first, then override the 9 fields from `source_settings.get_default()`. This keeps the JSON blob as a backward‑compatible fallback.
 - `PATCH /api/v1/settings/general operational` splits the payload: 9 confidence fields → `source_settings.set_default(…)`, everything else → `general_settings.update({"operational": …})`.

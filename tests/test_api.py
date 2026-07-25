@@ -105,6 +105,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "name": "Live source",
                         "source_uri": "data/live.mp4",
                         "source_type": "static_video",
+                        "fps": 12.5,
                         "loop": False,
                         "draw_human": False,
                         "draw_zone": False,
@@ -113,6 +114,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 )
                 assert created.status_code == 201
                 assert created.json()["source_uri"] == "data/live.mp4"
+                assert created.json()["fps"] == 12.5
                 assert created.json()["loop"] is False
                 assert created.json()["draw_human"] is False
                 assert created.json()["draw_zone"] is False
@@ -131,6 +133,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "tasks": [],
                         "frame_width": 640,
                         "frame_height": 640,
+                        "fps": 12.5,
                         "loop": False,
                         "draw_human": False,
                         "draw_zone": False,
@@ -148,6 +151,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 assert source_alias.json()["frame_width"] == 640
                 assert source_alias.json()["frame_height"] == 640
                 assert source_alias.json()["source_uri"] == "data/live.mp4"
+                assert source_alias.json()["fps"] == 12.5
                 assert source_alias.json()["loop"] is False
                 assert source_alias.json()["draw_human"] is False
                 assert source_alias.json()["draw_zone"] is False
@@ -159,6 +163,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "source_uri": "data/renamed.mp4",
                         "frame_width": 960,
                         "frame_height": 544,
+                        "fps": 6.0,
                         "draw_fire": False,
                     },
                 )
@@ -166,6 +171,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 assert updated.json()["name"] == "Updated source"
                 assert updated.json()["frame_width"] == 960
                 assert updated.json()["frame_height"] == 544
+                assert updated.json()["fps"] == 6.0
                 assert updated.json()["draw_fire"] is False
                 assert websocket.receive_json()["action"] == "updated"
                 assert client.get("/api/v1/sources/data/live.mp4").status_code == 404
@@ -326,6 +332,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
                         "id": id_a,
                         "name": "Bulk A",
                         "tasks": ["plate_recognition"],
+                        "fps": 7.5,
                         "draw_smoke": False,
                         "fire_confidence": 0.8,
                     },
@@ -346,6 +353,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
             by_id = {item["id"]: item for item in items}
             assert by_id[id_a]["name"] == "Bulk A"
             assert by_id[id_a]["tasks"] == ["plate_recognition"]
+            assert by_id[id_a]["fps"] == 7.5
             assert by_id[id_a]["draw_smoke"] is False
             assert by_id[id_b]["name"] == "Bulk B"
             assert by_id[id_b]["enabled"] is False
@@ -356,6 +364,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
             get_a = client.get(f"/api/v1/sources/{id_a}")
             assert get_a.status_code == 200
             assert get_a.json()["name"] == "Bulk A"
+            assert get_a.json()["fps"] == 7.5
             assert get_a.json()["draw_smoke"] is False
 
             # Missing id returns 404
