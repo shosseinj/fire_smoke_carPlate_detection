@@ -335,9 +335,161 @@
       .camera-card:fullscreen .card-info {
         background: #090d15;
       }
+      .dashboard-layout {
+        display: flex;
+        gap: 16px;
+        align-items: flex-start;
+      }
+      .dashboard-layout .camera-grid {
+        flex: 1;
+        min-width: 0;
+      }
+      .recent-panel {
+        width: 340px;
+        flex-shrink: 0;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(21, 29, 43, 0.96), rgba(11, 15, 24, 0.98));
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+        max-height: calc(100vh - 140px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .recent-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .recent-header h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .recent-header .count {
+        border-radius: 999px;
+        padding: 2px 8px;
+        background: var(--panel-2);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .recent-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--line) transparent;
+      }
+      .recent-item {
+        display: flex;
+        gap: 10px;
+        padding: 8px;
+        border-radius: 10px;
+        transition: background 0.15s;
+        cursor: default;
+      }
+      .recent-item:hover {
+        background: rgba(39, 211, 255, 0.05);
+      }
+      .recent-item + .recent-item {
+        margin-top: 4px;
+      }
+      .recent-item.new {
+        animation: recentFadeIn 0.35s ease;
+      }
+      @keyframes recentFadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .recent-face {
+        width: 48px;
+        height: 48px;
+        border-radius: 8px;
+        object-fit: cover;
+        flex-shrink: 0;
+        background: var(--panel-2);
+      }
+
+      .recent-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .recent-info .name {
+        font-weight: 700;
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .recent-info .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .recent-info .meta span {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .recent-info .meta .granted {
+        color: var(--green);
+      }
+      .recent-info .meta .denied {
+        color: var(--red);
+      }
+      .recent-info .classification {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .classification.known {
+        background: rgba(56, 220, 134, 0.15);
+        color: var(--green);
+      }
+      .classification.unsure {
+        background: rgba(255, 173, 66, 0.15);
+        color: var(--orange);
+      }
+      .classification.unknown {
+        background: rgba(255, 82, 99, 0.15);
+        color: var(--red);
+      }
+      .recent-empty {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+        padding: 32px 16px;
+      }
       @media (max-width: 1250px) {
         .camera-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .dashboard-layout {
+          flex-direction: column;
+        }
+        .recent-panel {
+          width: 100%;
+          max-height: 320px;
         }
       }
       @media (max-width: 700px) {
@@ -357,6 +509,13 @@
         }
         .camera-grid {
           grid-template-columns: 1fr;
+        }
+        .dashboard-layout {
+          flex-direction: column;
+        }
+        .recent-panel {
+          width: 100%;
+          max-height: 260px;
         }
       }
     </style>
@@ -384,7 +543,18 @@
         <span id="receiverStats">Browser RX: 0.0 FPS · 0 frames</span>
         <span id="syncStatus">Synchronizing with API…</span>
       </div>
-      <section class="camera-grid" id="cameraGrid" aria-live="polite"></section>
+      <div class="dashboard-layout">
+        <section class="camera-grid" id="cameraGrid" aria-live="polite"></section>
+        <aside class="recent-panel" id="recentPanel">
+          <div class="recent-header">
+            <h2>Recent Detections</h2>
+            <span class="count" id="recentCount">0</span>
+          </div>
+          <div class="recent-list" id="recentList">
+            <div class="recent-empty">Waiting for detections…</div>
+          </div>
+        </aside>
+      </div>
     </main>
     <script>
       const stateElement = document.getElementById("broadcastState");
@@ -518,6 +688,83 @@
         cameraCount.textContent = `${sources.filter((source) => source.enabled).length} active cameras · ${sources.length} configured`;
         applyStreams();
         updateFrameMetrics();
+      }
+
+      function renderRecentDetections(message) {
+        const list = document.getElementById("recentList");
+        const countEl = document.getElementById("recentCount");
+        if (!list) return;
+        const detections = message.detections || [];
+        countEl.textContent = detections.length;
+
+        if (!detections.length) {
+          list.innerHTML = '<div class="recent-empty">No detections</div>';
+          return;
+        }
+
+        // Mark existing items so we can detect new ones
+        for (const child of list.children) {
+          if (child.dataset && child.dataset.logId) {
+            child.dataset.seen = "true";
+          }
+        }
+
+        for (const d of detections) {
+          const existing = list.querySelector(`[data-log-id="${d.id}"]`);
+          if (existing) {
+            existing.dataset.seen = "true";
+            existing.dataset.seen = "false";
+            continue;
+          }
+          const UNKNOWN_FACE = "data:image/png;base64,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";
+          const faceSrc = d.face_image_base64
+            ? `data:image/jpeg;base64,${d.face_image_base64}`
+            : UNKNOWN_FACE;
+          const classification = d.classification || "unknown";
+          const accessIcon = d.access_granted ? "\u2713" : "\u2717";
+          const accessClass = d.access_granted ? "granted" : "denied";
+          const item = document.createElement("div");
+          item.className = `recent-item new`;
+          item.dataset.logId = d.id;
+          const timeStr = d.detection_time || "";
+          const confidenceStr = d.confidence != null ? `${(d.confidence * 100).toFixed(0)}%` : "";
+          const faceHtml = `<img class="recent-face" src="${faceSrc}" alt="" loading="lazy" />`;
+          item.innerHTML = `
+            ${faceHtml}
+            <div class="recent-info">
+              <div class="name">${escHtml(d.full_name || d.person || "Unknown")}</div>
+              <div class="meta">
+                <span>${escHtml(timeStr)}</span>
+                <span>${escHtml(confidenceStr)}</span>
+                <span>${escHtml(d.area || "")}</span>
+                <span class="${accessClass}">${accessIcon}</span>
+              </div>
+              <div>
+                <span class="classification ${classification}">${classification}</span>
+              </div>
+            </div>`;
+          // Replace empty state, or prepend
+          const emptyState = list.querySelector(".recent-empty");
+          if (emptyState) {
+            emptyState.remove();
+          }
+          list.prepend(item);
+        }
+
+        // Remove items that are no longer in the message
+        for (let i = list.children.length - 1; i >= 0; i--) {
+          const child = list.children[i];
+          if (child.dataset && child.dataset.logId && child.dataset.seen === "true") {
+            child.remove();
+          }
+        }
+      }
+
+      function escHtml(str) {
+        if (!str) return "";
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
       }
 
       function updateFrame(payload) {
@@ -785,6 +1032,9 @@
               sessionReceivedFrames += 1;
             }
             if (message.type === "camera_changed") synchronizeDashboard();
+            if (message.type === "recent_detections") {
+              renderRecentDetections(message);
+            }
           } catch (_) {
             // Ignore keepalives or extensions unknown to this dashboard version.
           }

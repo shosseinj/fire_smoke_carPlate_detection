@@ -141,21 +141,23 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     confidence = float(row.get("confidence") or 0.0)
     face_rec, confirmation = _thresholds(runtime, row.get("camera_id"))
     classification, concatenate = _classification(confidence, face_rec, confirmation)
-    image = _read_image(_media_path(runtime, row.get("face_image")))
-    if image is None:
-        return None
-    if concatenate:
-        image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
-    success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    if not success:
-        return None
     person = row.get("person") or "Unknown"
-    if person == "Unknown" or "Unknown" in str(person):
-        full_name = "Unknown"
-    elif row.get("fname") is not None:
-        full_name = f"{row.get('fname') or ''} {row.get('lname') or ''}".strip()
+    fname = row.get("fname")
+    lname = row.get("lname")
+    if fname or lname:
+        full_name = f"{fname or ''} {lname or ''}".strip()
     else:
         full_name = person
+
+    face_image_b64: str | None = None
+    image = _read_image(_media_path(runtime, row.get("face_image")))
+    if image is not None:
+        if concatenate:
+            image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
+        success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if success:
+            face_image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
+
     return {
         "id": row["id"],
         "area": row.get("room_name") or ("بدون ناحیه" if not row.get("room_id") else "ناحیه نامشخص"),
@@ -163,7 +165,7 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "full_name": full_name,
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
-        "face_image_base64": base64.b64encode(encoded.tobytes()).decode("utf-8"),
+        "face_image_base64": face_image_b64,
         "access_granted": bool(row.get("access_granted")),
         "counts_for_attendance": bool(row.get("counts_for_attendance")),
         "classification": classification,
