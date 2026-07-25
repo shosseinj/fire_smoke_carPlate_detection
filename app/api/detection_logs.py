@@ -670,6 +670,151 @@ def delete_all_logs(
     return {"deleted_count": count}
 
 
+# ── Generate fake detections (admin only) ────────────────────────────
+
+
+@router.post("/generate-fake", status_code=201)
+def generate_fake_detections(
+    count: int = Query(10, ge=1, le=200, description="تعداد لاگ آزمایشی برای ایجاد"),
+    month: int | None = Query(None, ge=1, le=12, description="ماه (jalali) برای متمرکز کردن لاگ‌ها در یک ماه خاص"),
+    year: int | None = Query(None, ge=1300, le=1500, description="سال (jalali) همراه با month"),
+    from_date: str | None = Query(None, description="تاریخ شروع jalali (جایگزین month/year)"),
+    to_date: str | None = Query(None, description="تاریخ پایان jalali (همراه from_date)"),
+    personnel_id: int | None = Query(None, description="محدود کردن به پرسنل مشخص"),
+    room_id: int | None = Query(None, description="محدود کردن به اتاق مشخص"),
+    camera_id: str | None = Query(None, description="محدود کردن به دوربین مشخص"),
+    pair_logs: bool = Query(False, description="ایجاد لاگ‌های جفتی (ورود+خروج) با فاصله چند دقیقه"),
+    admin_user: Any = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Generate fake detection logs for testing/demo purposes.
+
+    Supports date range filtering (by jalali month/year or from_date/to_date),
+    filtering by personnel/room/camera, and paired entry/exit log generation.
+    """
+    import random as _random
+
+    store = get_detection_log_store()
+    ps = get_personnel_store()
+    ls = get_location_store()
+
+    # ── Resolve date range ──────────────────────────────────────────
+    base_time = datetime.now(timezone.utc)
+    range_start: date | None = None
+    range_end: date | None = None
+
+    if from_date and to_date:
+        try:
+            from_g = parse_jalali_date(from_date)
+            to_g = parse_jalali_date(to_date)
+            range_start = from_g
+            range_end = to_g
+        except Exception:
+            raise HTTPException(400, "فرمت تاریخ نامعتبر است (jalali: YYYY-MM-DD)")
+    elif month is not None:
+        y = year or jdatetime.date.today().year
+        try:
+            from_g = parse_jalali_date(f"{y}-{month:02d}-01")
+        except Exception:
+            raise HTTPException(400, "ماه یا سال نامعتبر است")
+        to_g = from_g + timedelta(days=30)
+        range_start = from_g
+        range_end = to_g
+
+    # ── Resolve personnel ───────────────────────────────────────────
+    if personnel_id is not None:
+        person = ps.get(personnel_id)
+        if person is None:
+            raise HTTPException(404, "پرسنل یافت نشد")
+        selected_personnel = [person]
+    else:
+        all_p, _ = ps.list(limit=1000)
+        if not all_p:
+            raise HTTPException(404, "هیچ پرسنلی یافت نشد")
+        selected_personnel = all_p
+
+    # ── Resolve rooms ────────────────────────────────────────────────
+    if room_id is not None:
+        room = ls.get_room(room_id)
+        if room is None:
+            raise HTTPException(404, "اتاق یافت نشد")
+        selected_room_ids = [room.id]
+    else:
+        all_rooms, _ = ls.list_rooms(limit=500)
+        selected_room_ids = [r.id for r in all_rooms] if all_rooms else [None]
+
+    # ── Resolve cameras ───────────────────────────────────────────────
+    if camera_id is not None:
+        cam = get_runtime().registry.get(camera_id)
+        if cam is None:
+            raise HTTPException(404, "دوربین یافت نشد")
+        selected_camera_ids = [cam.source_id]
+    else:
+        all_cams = get_runtime().registry.list()
+        selected_camera_ids = [c.source_id for c in all_cams] if all_cams else [None]
+
+    created = 0
+
+    for _ in range(count):
+        person = _random.choice(selected_personnel)
+        rid = _random.choice(selected_room_ids)
+        cid = _random.choice(selected_camera_ids) if selected_camera_ids else None
+
+        # ── Pick detection time ──────────────────────────────────────
+        if range_start is not None and range_end is not None:
+            delta_days = (range_end - range_start).days or 1
+            det_date = range_start + timedelta(days=_random.randint(0, delta_days))
+            det_time = datetime(
+                det_date.year, det_date.month, det_date.day,
+                hour=_random.randint(0, 23),
+                minute=_random.randint(0, 59),
+                second=_random.randint(0, 59),
+                tzinfo=timezone.utc,
+            )
+        else:
+            det_time = base_time - timedelta(
+                days=_random.randint(0, 180),
+                hours=_random.randint(0, 23),
+                minutes=_random.randint(0, 59),
+            )
+
+        confidence = round(_random.uniform(0.5, 1.0), 4)
+
+        if person.id is not None and rid is not None:
+            access = calculate_access(person.id, rid, ls)
+        else:
+            access = _random.random() > 0.2
+
+        def _create_one(dt: datetime, acc: bool) -> bool:
+            try:
+                store.create(
+                    source_system="generate_fake",
+                    personnel_id=person.id,
+                    person=f"{person.fname} {person.lname}",
+                    confidence=confidence,
+                    detection_time=dt.isoformat(),
+                    room_id=rid,
+                    camera_id=cid,
+                    access_granted=acc,
+                    counts_for_attendance=_random.random() > 0.3,
+                    log_type=_random.choice(["camera_rtsp", "tehran_door", "excel_import"]),
+                )
+                return True
+            except (ValueError, Exception):
+                return False
+
+        if _create_one(det_time, access):
+            created += 1
+
+        # ── Paired (exit) log if requested ──────────────────────────
+        if pair_logs:
+            exit_time = det_time + timedelta(minutes=_random.randint(30, 480))
+            exit_access = _random.random() > 0.2
+            if _create_one(exit_time, exit_access):
+                created += 1
+
+    return {"message": f"{created} لاگ آزمایشی ایجاد شد", "count": created}
+
+
 # ── Parameterized routes ──────────────────────────────────────────────
 
 
