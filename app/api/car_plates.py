@@ -154,7 +154,6 @@ def _get_plate_or_404(plate_id: int, runtime: Runtime) -> dict[str, Any]:
     return value
 
 
-@router.get("", response_model=list[CarPlateResponse])
 @router.get("/", response_model=list[CarPlateResponse])
 def list_car_plates(
     active_only: bool = True,
@@ -187,7 +186,7 @@ def get_car_plate(
     return _get_plate_or_404(plate_id, runtime)
 
 
-@router.post("", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
+# @router.post("", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
 def create_car_plate(
     payload: CarPlateCreate,
