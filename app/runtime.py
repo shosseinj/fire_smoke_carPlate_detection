@@ -36,7 +36,7 @@ from app.core.import_progress_store import ImportProgressStore
 from app.core.static_video_store import StaticVideoStore
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
-from app.core.source_registry import SourceRegistry
+from app.core.source_registry import SourceChange, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
@@ -172,8 +172,17 @@ class Runtime:
         for camera in self.registry.list():
             self._restart_ingestor_source(camera.source_uri)
 
-    def _restart_ingestor_source(self, camera_id: str) -> None:
+    def _release_ingestor_source(self, source_uri: str) -> None:
+        """Drop any cached ingestor state for a source URI immediately."""
+        if self.static_video_ingestor is not None and hasattr(self.static_video_ingestor, "_release"):
+            self.static_video_ingestor._release(source_uri)
+        if self.video_ingestor is not None and hasattr(self.video_ingestor, "_close_source"):
+            self.video_ingestor._close_source(source_uri)
+
+    def _restart_ingestor_source(self, camera_id: str, *, previous_source_uri: str | None = None) -> None:
         """Restart the source in whichever ingestor owns it."""
+        if previous_source_uri and previous_source_uri != camera_id:
+            self._release_ingestor_source(previous_source_uri)
         cam = self.registry.get(camera_id)
         if cam is None:
             return
@@ -749,9 +758,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             batch_size=app_settings.fire_batch_size,
             max_wait_ms=app_settings.fire_max_wait_ms,
             num_threads=app_settings.worker_threads,
-            queue_policy=app_settings.task_queue_policy,
+            queue_policy="lossless_fifo",
             queue_capacity=app_settings.task_queue_capacity,
-            queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
+            queue_block_timeout_ms=0.0,
             result_callback=broadcast.publish_result,
             result_observer=fire_smoke_logs.observe_result,
             location_observer=location_obs,
@@ -880,6 +889,16 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     registry.add_listener(lambda _change: runtime_obj._refresh_all_source_zones())
     registry.add_listener(lambda _change: runtime_obj._refresh_all_source_draw_settings())
+    def _on_source_change(change: SourceChange) -> None:
+        if change.action == "deleted":
+            runtime_obj._release_ingestor_source(change.source_uri)
+            return
+        runtime_obj._restart_ingestor_source(
+            change.source_uri,
+            previous_source_uri=change.previous_source_uri,
+        )
+
+    registry.add_listener(_on_source_change)
     # Push zone polygons to broadcast hub for all registered sources
     runtime_obj._refresh_all_source_zones()
     runtime_obj._refresh_all_source_draw_settings()

@@ -259,22 +259,28 @@ class AnnotatedBroadcastHub:
                 "draw_plate": record.draw_plate,
                 "updated_at_utc": record.updated_at_utc,
             }
+        previous_source_uri = change.previous_source_uri
         event = BroadcastControlEvent(
             payload={
                 "type": "camera_changed",
                 "action": change.action,
                 "source_uri": change.source_uri,
+                "previous_source_uri": previous_source_uri,
                 "revision": change.revision,
                 "camera": camera,
             }
         )
         with self._condition:
-            self._pending.pop(change.source_uri, None)
-            self._latest.pop(change.source_uri, None)
-            self._latest_face_results.pop(change.source_uri, None)
-            if change.record is None:
-                self._source_zones.pop(change.source_uri, None)
-                self._source_draw_settings.pop(change.source_uri, None)
+            source_ids = {change.source_uri}
+            if previous_source_uri and previous_source_uri != change.source_uri:
+                source_ids.add(previous_source_uri)
+            for source_id in source_ids:
+                self._pending.pop(source_id, None)
+                self._latest.pop(source_id, None)
+                self._latest_face_results.pop(source_id, None)
+                if change.record is None or source_id == previous_source_uri:
+                    self._source_zones.pop(source_id, None)
+                    self._source_draw_settings.pop(source_id, None)
             if self._enabled:
                 for target in self._subscribers.values():
                     try:
@@ -367,8 +373,8 @@ class AnnotatedBroadcastHub:
     ) -> str:
         if result.error:
             return "F/S: ERROR"
-        tracks = result.data.get("tracks", [])
-        for track in tracks:
+        items = result.data.get("tracks", []) or result.data.get("detections", [])
+        for track in items:
             box = self._bounded_box(track.get("bbox"), frame)
             if box is None:
                 continue
@@ -383,7 +389,7 @@ class AnnotatedBroadcastHub:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
             self._text(frame, f"{label.upper()} {confidence:.0%}", (x1, y1), color)
         severity = str(result.data.get("severity", "none")).upper()
-        return f"F/S: {len(tracks)} BOXES | {severity}"
+        return f"F/S: {len(items)} BOXES | {severity}"
 
     def _draw_plates(
         self,

@@ -164,6 +164,26 @@ def test_fire_below_configured_score_is_not_a_detection(tmp_path: Path) -> None:
     assert result.data["severity"] == "none"
 
 
+def test_fire_result_exposes_raw_detections_for_immediate_overlay(
+    tmp_path: Path,
+) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            evidence_min_track_hits=99,
+        ),
+        model=FakeModel(confidence=0.95),
+    )
+    result = processor.process_batch([packet("camera-detection", 1)])[0]
+
+    assert result.error is None
+    assert result.data["detections"]
+    assert result.data["detections"][0]["label"] == "fire"
+    assert result.data["detections"][0]["bbox"] == [1.0, 1.0, 12.0, 12.0]
+
+
 def test_fire_engine_runtime_failure_uses_onnx_fallback(
     tmp_path: Path,
     monkeypatch,

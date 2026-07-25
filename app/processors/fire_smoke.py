@@ -458,6 +458,14 @@ class FireSmokeProcessor(BatchProcessor):
             for track in tracks
             if track.missed_updates == 0
         ]
+        detection_payload = [
+            {
+                "label": detection.label,
+                "confidence": round(float(detection.confidence), 6),
+                "bbox": [round(float(value), 2) for value in detection.bbox.tolist()],
+            }
+            for detection in detections
+        ]
         transition_payload = [
             {
                 "status": item.status,
@@ -478,6 +486,7 @@ class FireSmokeProcessor(BatchProcessor):
             "fire": state.analyzer.snapshot_dict(risk["fire"]),
             "smoke": state.analyzer.snapshot_dict(risk["smoke"]),
             "tracks": track_payload,
+            "detections": detection_payload,
             "track_transitions": transition_payload,
             "events": events,
             "batch_inference_ms": round(batch_ms, 3),

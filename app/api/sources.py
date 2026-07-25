@@ -199,7 +199,6 @@ def bulk_update_sources(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         _save_source_overrides(item, record, runtime)
-        runtime._restart_ingestor_source(record.source_uri)
         results.append(_response(record, runtime))
     return results
 
@@ -240,8 +239,6 @@ def update_source(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Save per-source confidence overrides if any were provided
     _save_source_overrides(payload, record, runtime)
-    # Restart the ingestor so the change takes effect immediately
-    runtime._restart_ingestor_source(record.source_uri)
     return _response(record, runtime)
 
 

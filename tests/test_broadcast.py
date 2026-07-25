@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.api.broadcast import get_runtime, router as broadcast_router
 from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
+from app.core.source_registry import SourceChange, SourceRecord
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 
@@ -301,6 +302,33 @@ def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
     assert (header["frame_width"], header["frame_height"]) == (320, 180)
 
 
+def test_source_change_with_previous_uri_clears_old_broadcast_state() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.publish_passthrough(packet([], "video-old.mp4"))
+    hub.publish_passthrough(packet([], "video-new.mp4"))
+    hub._latest_face_results["video-old.mp4"] = (0.0, result(TaskName.FIRE_SMOKE, {}))  # type: ignore[index]
+    hub._source_zones["video-old.mp4"] = [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]]
+    hub._source_draw_settings["video-old.mp4"] = SourceDrawSettings()
+
+    hub.publish_source_change(
+        SourceChange(
+            action="updated",
+            source_uri="video-new.mp4",
+            previous_source_uri="video-old.mp4",
+            revision=2,
+            record=SourceRecord(source_uri="video-new.mp4", name="New"),
+        )
+    )
+
+    assert "video-old.mp4" not in hub._pending
+    assert "video-old.mp4" not in hub._latest
+    assert "video-old.mp4" not in hub._latest_face_results
+    assert "video-old.mp4" not in hub._source_zones
+    assert "video-old.mp4" not in hub._source_draw_settings
+    assert "video-new.mp4" not in hub._pending
+    assert "video-new.mp4" not in hub._latest
+
+
 def test_face_result_draws_recognized_identity() -> None:
     hub = AnnotatedBroadcastHub(enabled=True)
     source_packet = packet(["face_recognition"])
@@ -561,6 +589,27 @@ def test_fire_overlay_draws_even_before_confirmation() -> None:
                 "tracks": [
                     {"label": "fire", "confidence": 0.9, "bbox": [20, 80, 80, 140], "confirmed": False, "alert_active": False},
                 ],
+            },
+        ),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[80:140, 20:80].mean()) > 0.0
+
+
+def test_fire_overlay_draws_raw_detections_when_tracks_are_not_ready() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.publish_result(
+        packet(["fire_smoke"]),
+        result(
+            TaskName.FIRE_SMOKE,
+            {
+                "detections": [
+                    {"label": "fire", "confidence": 0.9, "bbox": [20, 80, 80, 140]},
+                ],
+                "tracks": [],
             },
         ),
     )

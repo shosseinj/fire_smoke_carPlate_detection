@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.core.deepstream_ingestor import DeepStreamIngestor
+from app.core.types import TaskName
 from app.database import get_database, metadata
 from app.runtime import build_runtime
 
@@ -23,6 +24,24 @@ pytestmark = pytest.mark.usefixtures("postgres_database")
 
 def _test_database_url() -> str:
     return os.environ["TEST_DATABASE_URL"]
+
+
+def test_fire_smoke_worker_uses_lossless_fifo_queue_policy() -> None:
+    runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            database_url=_test_database_url(),
+            video_ingestion_enabled=False,
+        )
+    )
+    try:
+        fire_worker = runtime.router.workers[TaskName.FIRE_SMOKE]
+        plate_worker = runtime.router.workers[TaskName.PLATE_RECOGNITION]
+        assert fire_worker.buffer.stats().policy == "lossless_fifo"
+        assert plate_worker.buffer.stats().policy == settings.task_queue_policy
+    finally:
+        runtime.close()
 
 
 def test_source_table_imports_json_once_and_becomes_authoritative(tmp_path: Path) -> None:
@@ -96,6 +115,14 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
     )
     old_runtime = main_module.runtime
     main_module.runtime = test_runtime
+    restart_calls: list[tuple[str, str | None]] = []
+    original_restart = test_runtime._restart_ingestor_source
+
+    def restart_spy(source_uri: str, *, previous_source_uri: str | None = None) -> None:
+        restart_calls.append((source_uri, previous_source_uri))
+        original_restart(source_uri, previous_source_uri=previous_source_uri)
+
+    test_runtime._restart_ingestor_source = restart_spy  # type: ignore[method-assign]
     try:
         with TestClient(main_module.app) as client:
             with client.websocket_connect("/api/v1/broadcast/ws") as websocket:
@@ -125,6 +152,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                     "type": "camera_changed",
                     "action": "created",
                     "source_uri": "data/live.mp4",
+                    "previous_source_uri": None,
                     "revision": event["revision"],
                     "camera": {
                         "source_uri": "data/live.mp4",
@@ -173,9 +201,18 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 assert updated.json()["frame_height"] == 544
                 assert updated.json()["fps"] == 6.0
                 assert updated.json()["draw_fire"] is False
-                assert websocket.receive_json()["action"] == "updated"
+                updated_event = websocket.receive_json()
+                if updated_event.get("type") != "camera_changed":
+                    updated_event = websocket.receive_json()
+                assert updated_event["action"] == "updated"
+                assert updated_event["source_uri"] == "data/renamed.mp4"
+                assert updated_event["previous_source_uri"] == "data/live.mp4"
                 assert client.get("/api/v1/sources/data/live.mp4").status_code == 404
                 assert client.get("/api/v1/sources/data/renamed.mp4").status_code == 200
+                assert any(
+                    source_uri == "data/renamed.mp4" and previous == "data/live.mp4"
+                    for source_uri, previous in restart_calls
+                )
 
                 replaced = client.put(
                     "/api/v1/sources/data/renamed.mp4",

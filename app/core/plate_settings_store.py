@@ -219,4 +219,4 @@ class PlateSettingsStore:
 
     def on_source_change(self, change: SourceChange) -> None:
         if change.action == "deleted":
-            self.delete_camera(change.source_id)
+            self.delete_camera(change.source_uri)

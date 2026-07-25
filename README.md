@@ -743,14 +743,15 @@ docker run --rm -it `
   --env-file .\app\.env `
   -p 8000:9999 `
   -p 9999:9999 `
-  -p 6333:6333 `
-  -p 6334:6334 `
   -e NVIDIA_VISIBLE_DEVICES=all `
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
   -e VIDEO_INGESTION_ENABLED=true `
   -e PROCESSOR_MODE=real `
+  -e FACE_QDRANT_URL=http://host.docker.internal:6333 `
   --mount "type=bind,source=$($PWD.Path),target=/workspace" `
   merged-video-ai-router:v9
+
+  docker compose up -d qdrant
 ```
 
 ```

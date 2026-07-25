@@ -90,6 +90,7 @@ class SourceChange:
     source_uri: str
     revision: int
     record: SourceRecord | None
+    previous_source_uri: str | None = None
 
 
 SourceChangeListener = Callable[[SourceChange], None]
@@ -220,6 +221,8 @@ class SourceRegistry:
         action: str,
         source_uri: str,
         record: SourceRecord | None,
+        *,
+        previous_source_uri: str | None = None,
     ) -> tuple[SourceChange, tuple[SourceChangeListener, ...]]:
         self._revision += 1
         change = SourceChange(
@@ -227,6 +230,7 @@ class SourceRegistry:
             source_uri=source_uri,
             revision=self._revision,
             record=deepcopy(record),
+            previous_source_uri=previous_source_uri,
         )
         return change, tuple(self._listeners)
 
@@ -546,7 +550,12 @@ class SourceRegistry:
             if source_uri_new is not None and source_uri_new != old_source_uri:
                 self._records.pop(old_source_uri, None)
                 self._records[source_uri_new] = deepcopy(record)
-                change, listeners = self._next_change("updated", source_uri_new, record)
+                change, listeners = self._next_change(
+                    "updated",
+                    source_uri_new,
+                    record,
+                    previous_source_uri=old_source_uri,
+                )
             else:
                 self._records[source_uri] = deepcopy(record)
                 change, listeners = self._next_change("updated", source_uri, record)
