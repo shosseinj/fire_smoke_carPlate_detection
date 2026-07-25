@@ -74,6 +74,37 @@ class SourceUpdate(BaseModel):
         return value
 
 
+class BulkSourceUpdateItem(BaseModel):
+    """Single item in a bulk source update request, identified by database id."""
+
+    id: int
+    source_uri: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    enabled: bool | None = None
+    tasks: set[TaskName] | None = None
+    frame_width: int | None = Field(default=None, ge=16, le=4096)
+    frame_height: int | None = Field(default=None, ge=16, le=4096)
+    source_type: str | None = None
+    room_id: int | None = Field(default=None, ge=1)
+    metadata: dict[str, Any] | None = None
+    fire_confidence: float | None = Field(default=None, ge=0, le=1)
+    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_iou: float | None = Field(default=None, ge=0, le=1)
+    vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
+    vehicle_iou: float | None = Field(default=None, ge=0, le=1)
+    face_human_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+        return value
+
+
 class TaskAssignment(BaseModel):
     source_ids: list[str] = Field(min_length=1)
     tasks: set[TaskName]

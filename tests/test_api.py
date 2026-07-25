@@ -279,6 +279,82 @@ def test_single_and_bulk_source_updates(tmp_path: Path) -> None:
         test_runtime.close()
 
 
+def test_bulk_update_sources(tmp_path: Path) -> None:
+    """PUT /api/v1/sources/bulk accepts a list of {id, ...fields} and updates all."""
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            database_url=_test_database_url(),
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        with TestClient(main_module.app) as client:
+            records = test_runtime.registry.list()
+            assert len(records) >= 2, "Need at least 2 sources for bulk test"
+            id_a = records[0].id
+            id_b = records[1].id
+
+            # Bulk update two sources: change name and confidence overrides
+            resp = client.put(
+                "/api/v1/sources/bulk",
+                json=[
+                    {
+                        "id": id_a,
+                        "name": "Bulk A",
+                        "tasks": ["plate_recognition"],
+                        "fire_confidence": 0.8,
+                    },
+                    {
+                        "id": id_b,
+                        "name": "Bulk B",
+                        "enabled": False,
+                        "smoke_confidence": 0.9,
+                        "frame_width": 320,
+                        "frame_height": 320,
+                    },
+                ],
+            )
+            assert resp.status_code == 200, resp.text
+            items = resp.json()
+            assert len(items) == 2
+            by_id = {item["id"]: item for item in items}
+            assert by_id[id_a]["name"] == "Bulk A"
+            assert by_id[id_a]["tasks"] == ["plate_recognition"]
+            assert by_id[id_b]["name"] == "Bulk B"
+            assert by_id[id_b]["enabled"] is False
+            assert by_id[id_b]["frame_width"] == 320
+            assert by_id[id_b]["frame_height"] == 320
+            # Verify persisted via GET
+            get_a = client.get(f"/api/v1/sources/{id_a}")
+            assert get_a.status_code == 200
+            assert get_a.json()["name"] == "Bulk A"
+
+            # Missing id returns 404
+            resp_missing = client.put(
+                "/api/v1/sources/bulk",
+                json=[{"id": 999999, "name": "Nope"}],
+            )
+            assert resp_missing.status_code == 404
+
+            # Empty list returns 400
+            resp_empty = client.put("/api/v1/sources/bulk", json=[])
+            assert resp_empty.status_code == 400
+
+            # Schema registration
+            schema = client.get("/openapi.json")
+            assert schema.status_code == 200
+            assert "/api/v1/sources/bulk" in schema.json()["paths"]
+    finally:
+        main_module.runtime = old_runtime
+        test_runtime.close()
+
+
 def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
     import app.main as main_module
 

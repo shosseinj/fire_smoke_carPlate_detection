@@ -8,7 +8,7 @@ from app.core.media_preview import preview_stream_path
 from app.core.source_registry import SourceRecord
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
-from app.schemas import SourceCreate, SourceResponse, SourceUpdate, TaskAssignment
+from app.schemas import BulkSourceUpdateItem, SourceCreate, SourceResponse, SourceUpdate, TaskAssignment
 
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
 
@@ -37,7 +37,7 @@ _SOURCE_OVERRIDE_FIELDS = frozenset({
 
 
 def _save_source_overrides(
-    payload: SourceCreate | SourceUpdate,
+    payload: SourceCreate | SourceUpdate | BulkSourceUpdateItem,
     record: SourceRecord,
     runtime: Runtime,
 ) -> None:
@@ -147,6 +147,45 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
 @router.get("/enabled/ids")
 def enabled_source_ids(runtime: Runtime = Depends(get_runtime)) -> dict[str, list[str]]:
     return {"source_ids": runtime.registry.enabled_source_ids()}
+
+
+@router.put("/bulk", response_model=list[SourceResponse])
+def bulk_update_sources(
+    payload: list[BulkSourceUpdateItem],
+    runtime: Runtime = Depends(get_runtime),
+) -> list[SourceResponse]:
+    """Update multiple sources in one request, each identified by database id."""
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty update list")
+    # Validate room_ids before any writes
+    for item in payload:
+        if item.room_id is not None and runtime.location_store.get_room(item.room_id) is None:
+            raise HTTPException(status_code=404, detail=f"Room not found: {item.room_id}")
+    results: list[SourceResponse] = []
+    for item in payload:
+        record = runtime.registry.get_by_id(item.id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Source not found: id={item.id}")
+        values = item.model_dump(exclude_unset=True)
+        values.pop("id", None)
+        new_source_uri = values.pop("source_uri", None)
+        registry_values = {
+            key: value
+            for key, value in values.items()
+            if key not in _SOURCE_OVERRIDE_FIELDS
+        }
+        try:
+            if new_source_uri is not None and new_source_uri != record.source_uri:
+                record = runtime.registry.rename(record.source_uri, new_source_uri)
+            record = runtime.registry.update(record.source_uri, **registry_values)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Source not found: id={item.id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _save_source_overrides(item, record, runtime)
+        runtime._restart_ingestor_source(record.source_uri)
+        results.append(_response(record, runtime))
+    return results
 
 
 @router.get("/{id:path}", response_model=SourceResponse)
