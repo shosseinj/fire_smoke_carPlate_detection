@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 import cv2
 
 from app.core.router import TaskRouter
-from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.source_registry import RTSP, STATIC_VIDEO, SOURCE_TYPES, SourceRecord, SourceRegistry
 
 LOGGER = logging.getLogger(__name__)
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".webm"}
@@ -49,12 +49,18 @@ class VideoFileIngestor:
         project_root: Path,
         target_fps: float = 5.0,
         loop: bool = True,
+        source_type_filter: str = RTSP,
+        max_sources: int = 256,
         rtsp_transport: str = "tcp",
         rtsp_open_timeout_ms: int = 20000,
         rtsp_read_timeout_ms: int = 10000,
         rtsp_reconnect_seconds: float = 3.0,
         capture_factory: Callable[..., Any] = cv2.VideoCapture,
     ) -> None:
+        if source_type_filter not in SOURCE_TYPES:
+            raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
+        self.source_type_filter = source_type_filter
+        self.max_sources = max(1, int(max_sources))
         self.registry = registry
         self.router = router
         self.project_root = project_root
@@ -109,6 +115,9 @@ class VideoFileIngestor:
     def is_video_source(record: SourceRecord) -> bool:
         if not record.source_uri:
             return False
+        # Source_type field takes priority when explicitly set
+        if record.source_type in SOURCE_TYPES:
+            return True
         if VideoFileIngestor.is_rtsp_uri(record.source_uri):
             return True
         if record.metadata.get("kind") == "video_file":
@@ -238,8 +247,19 @@ class VideoFileIngestor:
         records = [
             record
             for record in self.registry.list()
-            if record.enabled and self.is_video_source(record)
+            if record.enabled
+            and self.is_video_source(record)
+            and record.source_type == self.source_type_filter
         ]
+        # Enforce max_sources cap: only open the first max_sources
+        if len(records) > self.max_sources:
+            LOGGER.warning(
+                "source_type=%s sources=%d exceeds max_sources=%d; capping",
+                self.source_type_filter,
+                len(records),
+                self.max_sources,
+            )
+            records = records[: self.max_sources]
         active_ids = {record.source_id for record in records}
         for source_id in set(self._states) - active_ids:
             self._release(source_id)
@@ -355,6 +375,8 @@ class VideoFileIngestor:
         return {
             "enabled": True,
             "backend": "opencv",
+            "source_type_filter": self.source_type_filter,
+            "max_sources": self.max_sources,
             "running": self._thread is not None and self._thread.is_alive(),
             "target_fps": self.target_fps,
             "loop": self.loop,
@@ -382,3 +404,34 @@ class VideoFileIngestor:
                 for source_id, state in self._states.items()
             },
         }
+
+
+class StaticVideoFileIngestor(VideoFileIngestor):
+    """Ingestor for static (pre-recorded) video files.
+
+    Defaults to source_type_filter=static_video, loop=False, and a
+    higher target_fps for faster playback.
+    """
+
+    def __init__(
+        self,
+        *,
+        registry: SourceRegistry,
+        router: TaskRouter,
+        project_root: Path,
+        target_fps: float = 30.0,
+        loop: bool = False,
+        max_sources: int = 16,
+        source_type_filter: str = STATIC_VIDEO,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            registry=registry,
+            router=router,
+            project_root=project_root,
+            target_fps=target_fps,
+            loop=loop,
+            max_sources=max_sources,
+            source_type_filter=source_type_filter,
+            **kwargs,
+        )

@@ -21,6 +21,11 @@ def _utc_now() -> str:
     return utc_now_text()
 
 
+RTSP = "rtsp"
+STATIC_VIDEO = "static_video"
+SOURCE_TYPES = frozenset({RTSP, STATIC_VIDEO})
+
+
 @dataclass(slots=True)
 class SourceRecord:
     source_id: str
@@ -30,6 +35,7 @@ class SourceRecord:
     source_uri: str | None = None
     frame_width: int = 640
     frame_height: int = 640
+    source_type: str = RTSP
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
@@ -44,6 +50,9 @@ class SourceRecord:
         source_id = value.get("source_id", value.get("camera_id"))
         if source_id is None:
             raise ValueError("Camera record requires source_id or camera_id")
+        source_type = value.get("source_type", RTSP)
+        if source_type not in SOURCE_TYPES:
+            source_type = RTSP
         return cls(
             source_id=str(source_id),
             name=str(value.get("name") or source_id),
@@ -52,6 +61,7 @@ class SourceRecord:
             source_uri=value.get("source_uri"),
             frame_width=int(value.get("frame_width", 640)),
             frame_height=int(value.get("frame_height", 640)),
+            source_type=source_type,
             metadata=dict(value.get("metadata") or {}),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
@@ -92,7 +102,7 @@ class SourceRegistry:
             rows = self._connection.execute(
                 """
                 SELECT camera_id, name, enabled, tasks_json, source_uri,
-                       frame_width, frame_height, section_id,
+                       frame_width, frame_height, section_id, source_type,
                        metadata_json, created_at_utc, updated_at_utc
                 FROM cameras
                 ORDER BY created_at_utc, camera_id
@@ -119,6 +129,8 @@ class SourceRegistry:
             raise ValueError("frame_width must be between 16 and 4096")
         if not 16 <= value.frame_height <= 4096:
             raise ValueError("frame_height must be between 16 and 4096")
+        if value.source_type not in SOURCE_TYPES:
+            value.source_type = RTSP
         return value
 
     @staticmethod
@@ -136,6 +148,7 @@ class SourceRegistry:
             source_uri=row["source_uri"],
             frame_width=int(row["frame_width"]),
             frame_height=int(row["frame_height"]),
+            source_type=str(row["source_type"]) if row["source_type"] else RTSP,
             metadata=metadata,
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
@@ -155,6 +168,7 @@ class SourceRegistry:
             record.frame_width,
             record.frame_height,
             section_id,
+            record.source_type,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
             record.created_at_utc,
             record.updated_at_utc,
@@ -214,9 +228,9 @@ class SourceRegistry:
                 """
                 INSERT INTO cameras (
                     camera_id, name, enabled, tasks_json, source_uri,
-                    frame_width, frame_height, section_id,
+                    frame_width, frame_height, section_id, source_type,
                     metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._parameters(record) for record in prepared],
             )
@@ -230,6 +244,21 @@ class SourceRegistry:
     def list(self) -> list[SourceRecord]:
         with self._lock:
             return deepcopy(list(self._records.values()))
+
+    def list_by_type(self, source_type: str) -> list[SourceRecord]:
+        if source_type not in SOURCE_TYPES:
+            raise ValueError(f"Unknown source_type: {source_type}")
+        with self._lock:
+            return deepcopy([
+                r for r in self._records.values() if r.source_type == source_type
+            ])
+
+    def active_sources(self) -> list[SourceRecord]:
+        """Return all enabled sources, regardless of type."""
+        with self._lock:
+            return deepcopy([
+                r for r in self._records.values() if r.enabled
+            ])
 
     def get(self, source_id: str) -> SourceRecord | None:
         with self._lock:
@@ -250,9 +279,9 @@ class SourceRegistry:
                     """
                     INSERT INTO cameras (
                         camera_id, name, enabled, tasks_json, source_uri,
-                        frame_width, frame_height, section_id,
+                        frame_width, frame_height, section_id, source_type,
                         metadata_json, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._parameters(record),
                 )
@@ -277,9 +306,9 @@ class SourceRegistry:
                 """
                 INSERT INTO cameras (
                     camera_id, name, enabled, tasks_json, source_uri,
-                    frame_width, frame_height, section_id,
+                    frame_width, frame_height, section_id, source_type,
                     metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(camera_id) DO UPDATE SET
                     name = excluded.name,
                     enabled = excluded.enabled,
@@ -288,6 +317,7 @@ class SourceRegistry:
                     frame_width = excluded.frame_width,
                     frame_height = excluded.frame_height,
                     section_id = excluded.section_id,
+                    source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
                     updated_at_utc = excluded.updated_at_utc
                 """,
@@ -309,6 +339,7 @@ class SourceRegistry:
         source_uri: str | None | object = ...,
         frame_width: int | None = None,
         frame_height: int | None = None,
+        source_type: str | None = None,
         metadata: dict[str, Any] | None = None,
         section_id: int | None | object = ...,
     ) -> SourceRecord:
@@ -329,6 +360,10 @@ class SourceRegistry:
                 record.frame_width = frame_width
             if frame_height is not None:
                 record.frame_height = frame_height
+            if source_type is not None:
+                if source_type not in SOURCE_TYPES:
+                    raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+                record.source_type = source_type
             if metadata is not None:
                 record.metadata = dict(metadata)
             if section_id is not ...:
@@ -349,7 +384,8 @@ class SourceRegistry:
                 UPDATE cameras
                 SET name = ?, enabled = ?, tasks_json = ?, source_uri = ?,
                     frame_width = ?, frame_height = ?,
-                    section_id = ?, metadata_json = ?, updated_at_utc = ?
+                    section_id = ?, source_type = ?,
+                    metadata_json = ?, updated_at_utc = ?
                 WHERE camera_id = ?
                 """,
                 (
@@ -360,6 +396,7 @@ class SourceRegistry:
                     record.frame_width,
                     record.frame_height,
                     section_id_val,
+                    record.source_type,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
                     record.updated_at_utc,
                     source_id,

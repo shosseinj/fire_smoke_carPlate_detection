@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_URL = (
-    "postgresql+psycopg2://postgres:Asd1234@host.docker.internal:5432/ai_database"
+    "postgresql+psycopg2://postgres:Asd12345@host.docker.internal:5432/ai_database"
 )
 
 
@@ -93,6 +93,8 @@ class Settings:
     video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 10.0)
     video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 10.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
+    rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 128)
+    static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 16)
     gpu_resize_enabled: bool = _env_bool("GPU_RESIZE_ENABLED", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)

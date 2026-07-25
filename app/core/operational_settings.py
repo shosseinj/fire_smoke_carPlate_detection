@@ -31,6 +31,8 @@ class OperationalSettings:
     face_human_confidence: float = 0.40
     face_detection_confidence: float = 0.50
     face_recognition_threshold: float = 0.45
+    rtsp_source_count: int = 100
+    static_video_source_count: int = 10
 
     @classmethod
     def from_app_settings(cls, settings: Settings) -> "OperationalSettings":
@@ -59,6 +61,9 @@ class OperationalSettings:
         for name in ("rtsp_open_timeout_ms", "rtsp_read_timeout_ms", "deepstream_rtsp_latency_ms", "deepstream_rtsp_stall_timeout_seconds", "broadcast_wall_max_width", "broadcast_wall_max_height"):
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be greater than zero")
+        for name in ("rtsp_source_count", "static_video_source_count"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be >= 0")
         if self.rtsp_reconnect_seconds < 0.5:
             raise ValueError("rtsp_reconnect_seconds must be at least 0.5")
         for name in ("broadcast_jpeg_quality", "broadcast_wall_jpeg_quality"):

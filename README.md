@@ -679,6 +679,7 @@ docker run --rm -it `
   --gpus all `
   --entrypoint /bin/bash `
   -p 8000:8000 `
+  -p 9999:9999 `
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
   -e VIDEO_INGESTION_ENABLED=true `
   -e PROCESSOR_MODE=real `

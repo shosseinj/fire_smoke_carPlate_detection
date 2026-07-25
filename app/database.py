@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0010"
+ALEMBIC_HEAD_REVISION = "20260725_0011"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -70,9 +70,12 @@ cameras = Table(
     Column("tasks_json", Text, nullable=False, server_default="[]"), Column("source_uri", Text),
     Column("frame_width", Integer, nullable=False, server_default="640"),
     Column("frame_height", Integer, nullable=False, server_default="640"),
-    Column("section_id", Integer), Column("metadata_json", Text, nullable=False, server_default="{}"),
+    Column("section_id", Integer),
+    Column("source_type", String(16), nullable=False, server_default="rtsp"),
+    Column("metadata_json", Text, nullable=False, server_default="{}"),
     Column("created_at_utc", UTC_TS, nullable=False), Column("updated_at_utc", UTC_TS, nullable=False),
     CheckConstraint("enabled IN (0, 1)", name="ck_cameras_enabled"),
+    CheckConstraint("source_type IN ('rtsp', 'static_video')", name="ck_cameras_source_type"),
 )
 Index("idx_cameras_enabled", cameras.c.enabled)
 

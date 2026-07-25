@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from app.core.router import TaskRouter
-from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.source_registry import RTSP, SOURCE_TYPES, SourceRecord, SourceRegistry
 from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
@@ -92,6 +92,8 @@ class DeepStreamIngestor:
         preview_fps: float = 25.0,
         gpu_resize_enabled: bool = True,
         loop: bool = True,
+        source_type_filter: str = RTSP,
+        max_sources: int = 256,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
         rtsp_latency_ms: int = 500,
@@ -100,6 +102,10 @@ class DeepStreamIngestor:
         skip_taskless_sources: bool = True,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
     ) -> None:
+        if source_type_filter not in SOURCE_TYPES:
+            raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
+        self.source_type_filter = source_type_filter
+        self.max_sources = max(1, int(max_sources))
         self.registry = registry
         self.router = router
         self.project_root = project_root
@@ -172,6 +178,12 @@ class DeepStreamIngestor:
     @staticmethod
     def is_supported_source(record: SourceRecord) -> bool:
         return VideoFileIngestor.is_video_source(record)
+
+    def _filter_by_type(self, records: list[SourceRecord]) -> list[SourceRecord]:
+        return [
+            r for r in records
+            if r.source_type == self.source_type_filter
+        ]
 
     def _resolve_uri(self, source_uri: str) -> str:
         if VideoFileIngestor.is_rtsp_uri(source_uri):
@@ -571,15 +583,26 @@ class DeepStreamIngestor:
         self._dispose_state(state)
 
     def _active_records(self) -> list[SourceRecord]:
-        return [
+        records = [
             record
             for record in self.registry.list()
             if record.enabled and self.is_supported_source(record)
+            and record.source_type == self.source_type_filter
             and (
                 self.rtsp_enabled
                 or not VideoFileIngestor.is_rtsp_uri(record.source_uri or "")
             )
         ]
+        # Enforce max_sources cap
+        if len(records) > self.max_sources:
+            LOGGER.warning(
+                "source_type=%s sources=%d exceeds max_sources=%d; capping",
+                self.source_type_filter,
+                len(records),
+                self.max_sources,
+            )
+            records = records[: self.max_sources]
+        return records
 
     def _sync_sources(self) -> None:
         records = self._active_records()
@@ -778,6 +801,8 @@ class DeepStreamIngestor:
             return {
                 "enabled": True,
                 "backend": "deepstream",
+                "source_type_filter": self.source_type_filter,
+                "max_sources": self.max_sources,
                 "running": self._thread is not None and self._thread.is_alive(),
                 "target_fps": self.target_fps,
                 "preview_fps": self.preview_fps,

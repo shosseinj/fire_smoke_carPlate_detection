@@ -46,6 +46,7 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
         source_uri=source_uri,
         frame_width=record.frame_width,
         frame_height=record.frame_height,
+        source_type=record.source_type,
         metadata={k: v for k, v in record.metadata.items() if k != CAMERA_SETTINGS_METADATA_KEY},
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
@@ -237,6 +238,7 @@ def create_camera(
                 source_uri=payload.source_uri,
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
+                source_type=payload.source_type,
                 metadata=dict(payload.metadata),
             )
         )
@@ -431,6 +433,7 @@ def replace_camera(
             source_uri=payload.source_uri,
             frame_width=payload.frame_width,
             frame_height=payload.frame_height,
+            source_type=payload.source_type,
             metadata=payload.metadata,
         )
         return _response(record, runtime)

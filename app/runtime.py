@@ -38,7 +38,7 @@ from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
-from app.core.video_ingestor import VideoFileIngestor
+from app.core.video_ingestor import StaticVideoFileIngestor, VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
 from app.processors.base import BatchProcessor
 from app.processors.face_recognition import (
@@ -80,6 +80,7 @@ class Runtime:
     import_progress: ImportProgressStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
+    static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
 
     def operational_settings(self):
@@ -111,8 +112,7 @@ class Runtime:
         else:
             metadata.pop(CAMERA_SETTINGS_METADATA_KEY, None)
         self.registry.update(camera_id, metadata=metadata)
-        if self.video_ingestor is not None and hasattr(self.video_ingestor, "restart_source"):
-            self.video_ingestor.restart_source(camera_id)
+        self._restart_ingestor_source(camera_id)
         return self.resolve_camera_settings(camera_id)
 
     def apply_operational_settings(self) -> None:
@@ -133,14 +133,32 @@ class Runtime:
                 source = {"target_fps": "video_ingest_fps", "preview_fps": "video_preview_fps", "rtsp_reconnect_seconds": "rtsp_reconnect_seconds"}[name]
                 if hasattr(self.video_ingestor, name):
                     setattr(self.video_ingestor, name, getattr(current, source))
+            if hasattr(self.video_ingestor, "max_sources"):
+                setattr(self.video_ingestor, "max_sources", current.rtsp_source_count)
+        if self.static_video_ingestor is not None:
+            if hasattr(self.static_video_ingestor, "max_sources"):
+                setattr(self.static_video_ingestor, "max_sources", current.static_video_source_count)
+            if hasattr(self.static_video_ingestor, "target_fps"):
+                setattr(self.static_video_ingestor, "target_fps", current.video_ingest_fps)
         self.broadcast.set_enabled(current.broadcast_enabled)
         # Push draw_zones and refresh zone polygons per source
         gs = self.general_settings.get()
         self.broadcast.set_draw_zones(gs.draw_zones)
         self._refresh_all_source_zones()
         for camera in self.registry.list():
+            self._restart_ingestor_source(camera.source_id)
+
+    def _restart_ingestor_source(self, camera_id: str) -> None:
+        """Restart the source in whichever ingestor owns it."""
+        cam = self.registry.get(camera_id)
+        if cam is None:
+            return
+        if cam.source_type == "static_video":
+            if self.static_video_ingestor is not None and hasattr(self.static_video_ingestor, "restart_source"):
+                self.static_video_ingestor.restart_source(camera_id)
+        else:
             if self.video_ingestor is not None and hasattr(self.video_ingestor, "restart_source"):
-                self.video_ingestor.restart_source(camera.source_id)
+                self.video_ingestor.restart_source(camera_id)
 
     def _refresh_all_source_zones(self) -> None:
         """Push zone polygon data for every registered source to the broadcast hub."""
@@ -226,9 +244,15 @@ class Runtime:
                     LOGGER.warning("MEDIA_PREVIEW_NOT_READY %s", exc)
             if self.video_ingestor is not None:
                 self.video_ingestor.start()
+            if self.static_video_ingestor is not None:
+                self.static_video_ingestor.start()
         except Exception:
             if self.media_preview is not None:
                 self.media_preview.close()
+            if self.static_video_ingestor is not None:
+                self.static_video_ingestor.close()
+            if self.video_ingestor is not None:
+                self.video_ingestor.close()
             self.router.close()
             raise
 
@@ -239,6 +263,8 @@ class Runtime:
         self.model_conversions.close()
         if self.media_preview is not None:
             self.media_preview.close()
+        if self.static_video_ingestor is not None:
+            self.static_video_ingestor.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
         self.router.close()
@@ -253,6 +279,11 @@ class Runtime:
         value["video_ingestor"] = (
             self.video_ingestor.status()
             if self.video_ingestor is not None
+            else {"enabled": False, "running": False}
+        )
+        value["static_video_ingestor"] = (
+            self.static_video_ingestor.status()
+            if self.static_video_ingestor is not None
             else {"enabled": False, "running": False}
         )
         value["broadcast"] = self.broadcast.status()
@@ -741,6 +772,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
+    static_video_ingestor = None
     if app_settings.video_ingestion_enabled:
         common_ingestor_settings = {
             "registry": registry,
@@ -756,6 +788,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             print('\n\n\n\ningest video with deepstream\n\n')
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
+                source_type_filter="rtsp",
+                max_sources=operational.rtsp_source_count,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
                 preview_fps=operational.video_preview_fps,
@@ -767,11 +801,22 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         elif app_settings.video_ingest_backend == "opencv":
             video_ingestor = VideoFileIngestor(
                 **common_ingestor_settings,
+                source_type_filter="rtsp",
+                max_sources=operational.rtsp_source_count,
                 rtsp_open_timeout_ms=operational.rtsp_open_timeout_ms,
                 rtsp_read_timeout_ms=operational.rtsp_read_timeout_ms,
             )
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
+        # Always create a static-video ingestor (OpenCV-based, no DeepStream needed)
+        static_video_ingestor = StaticVideoFileIngestor(
+            registry=registry,
+            router=router,
+            project_root=project_root,
+            target_fps=30.0,
+            loop=False,
+            max_sources=operational.static_video_source_count,
+        )
     media_preview = MediaPreviewPublisher(
         registry=registry,
         project_root=project_root,
@@ -807,6 +852,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         import_progress=import_progress,
         general_settings=general_settings,
         video_ingestor=video_ingestor,
+        static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
     )
     # Push zone polygons to broadcast hub for all registered sources

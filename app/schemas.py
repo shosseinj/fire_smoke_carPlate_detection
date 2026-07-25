@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.source_registry import RTSP, SOURCE_TYPES
 from app.core.types import TaskName
 
 
@@ -15,6 +16,7 @@ class SourceCreate(BaseModel):
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
+    source_type: str = RTSP
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("source_id")
@@ -25,6 +27,13 @@ class SourceCreate(BaseModel):
             raise ValueError("source_id cannot be blank")
         return value
 
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str) -> str:
+        if value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+        return value
+
 
 class SourceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=300)
@@ -33,7 +42,15 @@ class SourceUpdate(BaseModel):
     source_uri: str | None = None
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
+    source_type: str | None = None
     metadata: dict[str, Any] | None = None
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+        return value
 
 
 class TaskAssignment(BaseModel):
@@ -75,6 +92,7 @@ class CameraCreate(BaseModel):
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
+    source_type: str = RTSP
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("camera_id")
@@ -83,6 +101,13 @@ class CameraCreate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("camera_id cannot be blank")
+        return value
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str) -> str:
+        if value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
         return value
 
 
@@ -96,7 +121,15 @@ class CameraUpdate(BaseModel):
     source_uri: str | None = None
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
+    source_type: str | None = None
     metadata: dict[str, Any] | None = None
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+        return value
 
 
 class CameraBulkUpdate(CameraUpdate):
@@ -121,7 +154,15 @@ class CameraReplace(BaseModel):
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
+    source_type: str = RTSP
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, value: str) -> str:
+        if value not in SOURCE_TYPES:
+            raise ValueError(f"source_type must be one of {sorted(SOURCE_TYPES)}")
+        return value
 
 
 class CameraResponse(BaseModel):
@@ -132,11 +173,18 @@ class CameraResponse(BaseModel):
     source_uri: str | None
     frame_width: int
     frame_height: int
+    source_type: str = RTSP
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
     settings_overrides: dict[str, Any] = Field(default_factory=dict)
     effective_settings: dict[str, Any] = Field(default_factory=dict)
+
+
+    @field_validator("source_type")
+    @classmethod
+    def ensure_source_type(cls, value: str) -> str:
+        return value if value in SOURCE_TYPES else RTSP
 
 
 class CameraSettingsPatch(BaseModel):

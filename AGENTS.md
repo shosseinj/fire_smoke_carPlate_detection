@@ -772,6 +772,32 @@ Update `AGENTS.md` or `.agentic` knowledge files only with reusable, important, 
 
 Do not store guesses, temporary debugging notes, credentials, machine-specific secrets, or unverified assumptions as project facts. Task-specific assumptions belong in migration state and reports.
 
+## Source type and allocation
+
+Cameras have a `source_type` column (`rtsp` or `static_video`, default `rtsp`) with a CHECK constraint (`ck_cameras_source_type`).
+
+- `SourceRecord.source_type` — stored as a field on the record, default `RTSP`
+- `SourceRegistry.list_by_type(source_type)` — list sources of one type
+- `SourceRegistry.active_sources()` — list all enabled sources
+- API schemas (`CameraCreate`, `CameraUpdate`, `CameraReplace`, `CameraResponse`) all include `source_type` with validation
+
+Each ingestor filters by `source_type_filter` parameter (default `RTSP`):
+- `VideoFileIngestor._process_once_unlocked()` only processes records matching `self.source_type_filter`
+- `DeepStreamIngestor._active_records()` only returns records matching `self.source_type_filter`
+
+Allocation caps:
+- `OperationalSettings.rtsp_source_count` (default 128) — max concurrent RTSP sources
+- `OperationalSettings.static_video_source_count` (default 16) — max concurrent static video sources
+- Each ingestor enforces `max_sources` before opening new sources
+- `apply_operational_settings()` pushes caps to both ingestors at runtime
+
+Two ingestor instances in `Runtime`:
+- `video_ingestor` — RTSP sources (DeepStream or OpenCV)
+- `static_video_ingestor` — always `StaticVideoFileIngestor` (OpenCV-based, loop=False, 30 FPS default)
+- `_restart_ingestor_source(camera_id)` routes to the correct ingestor based on `source_type`
+
+`StaticVideoFileIngestor` is a `VideoFileIngestor` subclass defaulting to `source_type_filter=static_video`, `loop=False`, `max_sources=16`.
+
 ## Context efficiency
 
 Use specialized subagents and on-demand skills. Keep the main context focused on decisions, interfaces, evidence, and unresolved risks. Do not send the entire repository to every subagent. Work one coherent feature or option group at a time.

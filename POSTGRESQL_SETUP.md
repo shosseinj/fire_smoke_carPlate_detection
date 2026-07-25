@@ -15,7 +15,7 @@ pip install -r requirements-postgres.txt
 The current development default is:
 
 ```text
-postgresql+psycopg2://postgres:Asd1234@host.docker.internal:5432/ai_database
+postgresql+psycopg2://postgres:Asd12345@host.docker.internal:5432/ai_database
 ```
 
 Override it through `DATABASE_URL` when needed:
