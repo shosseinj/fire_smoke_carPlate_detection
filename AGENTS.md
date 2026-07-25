@@ -81,6 +81,7 @@ throughput is lower than the source rate.
 
 - `app/main.py`: FastAPI application and lifespan.
 - `app/runtime.py`: component construction, startup, shutdown, and model selection logs.
+- `app/core/init_db.py`: idempotent database seeding on startup — creates seed building/section/room, default shift, default personnel from `DEFAULT_PERSONNEL_SEED_DATA`, and sample detection logs. Called from `build_runtime()`.
 - `app/core/router.py`: routes frames to task-specific workers.
 - `app/core/worker.py`: micro-batched task execution.
 - `app/core/latest_buffer.py`: task queue policy and queue telemetry.

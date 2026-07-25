@@ -32,6 +32,7 @@ from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.import_progress_store import ImportProgressStore
+from app.core.init_db import init_database
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
@@ -426,6 +427,17 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
     import_progress = ImportProgressStore(database)
+
+    # Seed database with foundational records and sample data (idempotent)
+    try:
+        init_database(
+            personnel_store=personnel_store,
+            detection_log_store=detection_log_store,
+            location_store=location_store,
+            shift_store=shift_store,
+        )
+    except Exception as exc:
+        LOGGER.warning("INIT_DB seeding failed: %s", exc)
 
     if app_settings.processor_mode == "mock":
         fire_processor = MockProcessor(TaskName.FIRE_SMOKE)
