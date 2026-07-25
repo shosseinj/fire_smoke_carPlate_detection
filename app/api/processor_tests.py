@@ -664,10 +664,9 @@ async def locations_smoke_test(
         else:
             steps["polygon_outside"] = {"status": "PASS"}
 
-        # 18. Test match_detection_to_rooms
-        # Uses section_id directly (caller resolves section_id from camera)
-        matches = store.match_detection_to_rooms(
-            section_id=section_id,
+        # 18. Test the camera-assigned room matching path
+        matches = store.match_detection_to_room(
+            room_id=room_id,
             detection_type="face_recognition",
             detection_event_id=0,
             bbox_center_x=50.0,

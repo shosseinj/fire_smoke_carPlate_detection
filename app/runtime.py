@@ -176,14 +176,12 @@ class Runtime:
     def _refresh_all_source_zones(self) -> None:
         """Push zone polygon data for every registered source to the broadcast hub."""
         for camera in self.registry.list():
-            # section_id is stored in metadata, not as a direct SourceRecord field
-            section_id = camera.metadata.get("section_id") if camera.metadata else None
-            if section_id is None:
+            if camera.room_id is None:
                 self.broadcast.clear_source_zones(camera.source_uri)
                 continue
-            polygons = self.location_store.get_polygons_for_section(section_id)
-            if polygons:
-                self.broadcast.set_source_zones(camera.source_uri, polygons)
+            polygon = self.location_store.get_polygon_for_room(camera.room_id)
+            if polygon:
+                self.broadcast.set_source_zones(camera.source_uri, [polygon])
             else:
                 self.broadcast.clear_source_zones(camera.source_uri)
 
@@ -605,12 +603,11 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             frame_index = result.frame_index
             if not source_id:
                 return
-            # Resolve section_id from camera
             cam = reg.get(source_id)
             if cam is None:
                 return
-            section_id = cam.metadata.get("section_id") if cam.metadata else None
-            if section_id is None:
+            room_id = cam.room_id
+            if room_id is None:
                 return
             detections: list[dict[str, object]] = []
 
@@ -645,8 +642,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
             for det in detections:
                 try:
-                    ls.match_detection_to_rooms(
-                        section_id=section_id,
+                    ls.match_detection_to_room(
+                        room_id=room_id,
                         detection_type=result.task.value,
                         detection_event_id=det["detection_event_id"],
                         bbox_center_x=det["cx"],
@@ -688,9 +685,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             cam = reg.get(source_id)
             if cam is None:
                 return
-            section_id = cam.metadata.get("section_id") if cam.metadata else None
-            # Use default polygon fallback when no section_id or no custom polygons
-            has_polygons = ls.section_has_polygons(section_id) if section_id is not None else False
+            room_id = cam.room_id
+            has_polygons = ls.room_has_polygon(room_id)
             has_transition = False
 
             for human in result.data.get("humans", []):
@@ -702,8 +698,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
                 if has_polygons:
                     # Custom polygon zones exist — full matching with DB insert
-                    matches = ls.match_detection_to_rooms(
-                        section_id=section_id,
+                    matches = ls.match_detection_to_room(
+                        room_id=room_id,
                         detection_type=TaskName.FACE_RECOGNITION.value,
                         detection_event_id=result.frame_index,
                         bbox_center_x=foot_x,
@@ -876,6 +872,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
     )
+    registry.add_listener(lambda _change: runtime_obj._refresh_all_source_zones())
     # Push zone polygons to broadcast hub for all registered sources
     runtime_obj._refresh_all_source_zones()
     return runtime_obj

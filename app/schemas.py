@@ -16,6 +16,7 @@ class SourceCreate(BaseModel):
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
+    room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -52,6 +53,7 @@ class SourceUpdate(BaseModel):
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
     source_type: str | None = None
+    room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -94,6 +96,7 @@ class SourceResponse(BaseModel):
     frame_width: int
     frame_height: int
     source_type: str = RTSP
+    room_id: int | None = None
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
@@ -115,6 +118,7 @@ class CameraCreate(BaseModel):
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
+    room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("source_uri")
@@ -139,6 +143,7 @@ class CameraUpdate(BaseModel):
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
     source_type: str | None = None
+    room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
 
     @field_validator("source_type")
@@ -167,6 +172,7 @@ class CameraReplace(BaseModel):
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
+    room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("source_type")
@@ -184,6 +190,7 @@ class CameraResponse(BaseModel):
     frame_width: int
     frame_height: int
     source_type: str = RTSP
+    room_id: int | None = None
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str

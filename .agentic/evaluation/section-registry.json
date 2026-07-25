@@ -96,16 +96,16 @@
       "enabled": true,
       "critical": true,
       "runtime_required": false,
-      "owner_paths": ["app/core/source_registry.py"],
+      "owner_paths": ["app/core/source_registry.py", "app/database.py", "alembic/versions/20260725_0017_camera_room_fk.py"],
       "dependencies": ["configuration"],
       "consumers": ["video-ingestion", "frame-pipeline", "plate-settings", "broadcast", "api-cameras", "api-sources"],
       "commands": [
-        "python -m pytest tests/test_router.py -q",
+        "python -m pytest tests/test_router.py tests/test_camera_room_contract.py -q",
         "python -m py_compile app/core/source_registry.py"
       ],
       "metrics": ["total_sources", "enabled_sources", "revision"],
       "acceptance": {},
-      "notes": "SQLite-backed. Listeners notified on changes."
+      "notes": "PostgreSQL-backed. Cameras use nullable room_id with an ON DELETE SET NULL foreign key; listeners propagate assignment changes."
     },
     {
       "id": "fire-smoke-processing",

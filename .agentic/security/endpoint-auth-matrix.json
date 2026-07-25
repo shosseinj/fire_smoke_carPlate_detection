@@ -612,10 +612,10 @@
       "resolution": null
     },
     {
-      "method": "POST",
-      "path": "/api/v1/sections/{section_id}/assign-camera/{camera_id}",
+      "method": "PATCH",
+      "path": "/api/v1/rooms/{room_id}/assign-camera",
       "router": "locations.py",
-      "handler": "assign_camera_to_section",
+      "handler": "assign_camera_to_room",
       "classification": "ADMIN_ONLY",
       "authentication_dependency": "Depends(require_role('admin'))",
       "required_roles": ["admin"],

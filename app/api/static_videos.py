@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
 from app.core.source_registry import SourceRecord
@@ -211,3 +211,40 @@ async def update_static_video(
                 pass
 
     return _api_response(record)
+
+
+@router.delete("/{source_uri:path}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_static_video(
+    source_uri: str,
+    runtime: Runtime = Depends(get_runtime),
+) -> Response:
+    """Delete a static video record, deregister its camera source, and remove the file.
+
+    The ingestor will automatically stop processing this source on its next
+    loop iteration.
+    """
+    record = runtime.static_video_store.get(source_uri)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Static video not found",
+        )
+
+    # Deregister the camera source from the ingestor
+    try:
+        runtime.registry.delete(source_uri)
+    except KeyError:
+        pass
+
+    # Delete the static_videos DB record
+    runtime.static_video_store.delete(source_uri)
+
+    # Try to delete the file from disk
+    try:
+        fpath = Path(source_uri)
+        if fpath.is_file():
+            fpath.unlink(missing_ok=True)
+    except OSError:
+        pass  # non-critical — file may be in use or already removed
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

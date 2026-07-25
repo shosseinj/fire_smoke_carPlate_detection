@@ -44,6 +44,7 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
         frame_width=record.frame_width,
         frame_height=record.frame_height,
         source_type=record.source_type,
+        room_id=record.room_id,
         metadata={k: v for k, v in record.metadata.items() if k != CAMERA_SETTINGS_METADATA_KEY},
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
@@ -171,6 +172,8 @@ def create_camera(
     payload: CameraCreate,
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
+    if payload.room_id is not None and runtime.location_store.get_room(payload.room_id) is None:
+        raise HTTPException(status_code=404, detail="Room not found")
     try:
         record = runtime.registry.create(
             SourceRecord(
@@ -179,6 +182,7 @@ def create_camera(
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
                 source_type=payload.source_type,
+                room_id=payload.room_id,
                 metadata=dict(payload.metadata),
             )
         )
@@ -282,6 +286,8 @@ def update_cameras_bulk(
             exclude_unset=True,
             exclude={"source_uri"},
         )
+        if values.get("room_id") is not None and runtime.location_store.get_room(values["room_id"]) is None:
+            raise HTTPException(status_code=404, detail=f"Room not found: {values['room_id']}")
 
         if not values:
             raise HTTPException(
@@ -317,6 +323,8 @@ def update_camera(
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
     values = payload.model_dump(exclude_unset=True)
+    if values.get("room_id") is not None and runtime.location_store.get_room(values["room_id"]) is None:
+        raise HTTPException(status_code=404, detail="Room not found")
 
     try:
         record = runtime.registry.update(
@@ -337,6 +345,8 @@ def replace_camera(
     payload: CameraReplace,
     runtime: Runtime = Depends(get_runtime),
 ) -> CameraResponse:
+    if payload.room_id is not None and runtime.location_store.get_room(payload.room_id) is None:
+        raise HTTPException(status_code=404, detail="Room not found")
     try:
         record = runtime.registry.update(
             camera_id,
@@ -345,6 +355,7 @@ def replace_camera(
             frame_width=payload.frame_width,
             frame_height=payload.frame_height,
             source_type=payload.source_type,
+            room_id=payload.room_id,
             metadata=payload.metadata,
         )
         return _response(record, runtime)

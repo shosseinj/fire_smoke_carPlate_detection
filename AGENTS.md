@@ -143,7 +143,7 @@ The polygon zone system detects when a tracked human enters or exits a defined p
 
     Building → Section → Room (with polygon_json)
 
-Cameras are assigned to a `section_id` (via camera metadata or the `section_id` column). Every room in that section with a `polygon_json` is checked for each detection.
+Cameras are assigned directly to a room through nullable `cameras.room_id`, a foreign key to `rooms.id` with `ON DELETE SET NULL`. A camera's section is derived through its assigned room.
 
 ### Default polygon fallback
 
@@ -180,8 +180,8 @@ the separate result_observer + location_observer for the face_recognition worker
 
 1. `FaceRecognitionProcessor.process_batch()` outputs humans with bbox and track_id.
 2. `TaskWorker` calls the combined `face_polygon_observer(packet, result)` for each result.
-3. `_build_face_polygon_observer()` in `runtime.py` resolves the camera's `section_id`, checks if custom polygons exist.
-4. If custom polygons exist → calls `LocationStore.match_detection_to_rooms()` with human foot point.
+3. `_build_face_polygon_observer()` in `runtime.py` resolves the camera's `room_id` and checks that room's polygon.
+4. If the assigned room has a custom polygon → calls `LocationStore.match_detection_to_room()` with the human foot point.
 5. If no custom polygons → uses default full-frame polygon via `LocationStore.get_default_polygon_entry_state()`.
 6. If a transition (entered/exited) occurred → calls `HumanLogStore.observe_result()` to save the human log.
 7. No transition → human log is **not saved**.
@@ -206,7 +206,7 @@ Zone polygons are drawn on the annotated broadcast JPEG frames when `draw_zones`
 - **`draw_zones`** flag: stored in `general_settings.draw_zones` (default `True`). Controls whether zone polygons are visually overlaid on the dashboard broadcast.
 - **Polygon rendering**: `AnnotatedBroadcastHub._draw_zones()` in `app/core/broadcast.py` draws semi-transparent filled polygons (25% opacity) with thick borders on each zone.
 - **Color palette**: 6 rotating colors (red, green, blue, yellow, magenta, cyan) assigned in order per polygon.
-- **Zone data flow**: At startup and on every settings change, `Runtime._refresh_all_source_zones()` iterates all registered cameras, queries `LocationStore.get_polygons_for_section(section_id)`, and pushes the parsed polygon coordinates to the broadcast hub via `set_source_zones(source_id, zones)`.
+- **Zone data flow**: At startup and on source/settings changes, `Runtime._refresh_all_source_zones()` resolves each camera's assigned room and pushes only that room's parsed polygon to the broadcast hub.
 - **Only custom zones are drawn**: Default full-frame polygon (used for fallback entry/exit tracking) is NOT drawn — only rooms with explicit `polygon_json` on the `rooms` table appear visually.
 - **Runtime toggle**: The `draw_zones` flag can be changed at runtime via `PATCH /api/v1/settings/general` with `{"display": {"draw_zones": true/false}}`. The broadcast hub responds immediately.
 - **Snapshot**: The `GET /api/v1/settings/general` response includes a `"display"` section with `draw_zones` (and `draw_box`, `draw_face`, `draw_skeleton` for future use).

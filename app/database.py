@@ -72,7 +72,7 @@ cameras = Table(
     Column("tasks_json", Text, nullable=False, server_default="[]"),
     Column("frame_width", Integer, nullable=False, server_default="640"),
     Column("frame_height", Integer, nullable=False, server_default="640"),
-    Column("section_id", Integer),
+    Column("room_id", Integer, ForeignKey("rooms.id", ondelete="SET NULL")),
     Column("source_type", String(16), nullable=False, server_default="rtsp"),
     Column("metadata_json", Text, nullable=False, server_default="{}"),
     Column("created_at_utc", UTC_TS, nullable=False), Column("updated_at_utc", UTC_TS, nullable=False),
@@ -80,6 +80,7 @@ cameras = Table(
     CheckConstraint("source_type IN ('rtsp', 'static_video')", name="ck_cameras_source_type"),
 )
 Index("idx_cameras_enabled", cameras.c.enabled)
+Index("idx_cameras_room", cameras.c.room_id)
 
 face_quality_settings = Table(
     "face_quality_settings", metadata,

@@ -175,7 +175,6 @@ _DEFAULT_SEED_TASKS: set[TaskName] = {
 
 def create_default_cameras(
     registry: SourceRegistry,
-    section_id: int | None = None,
 ) -> list[SourceRecord]:
     """Create seed cameras from :data:`_SEED_CAMERA_URLS` if the cameras
     table is empty. Returns the list of records (existing or created)."""
@@ -185,9 +184,6 @@ def create_default_cameras(
 
     created: list[SourceRecord] = []
     for idx, url in enumerate(_SEED_CAMERA_URLS, 1):
-        metadata: dict[str, Any] = {}
-        if section_id is not None:
-            metadata["section_id"] = section_id
         try:
             record = registry.create(
                 SourceRecord(
@@ -196,7 +192,6 @@ def create_default_cameras(
                     enabled=True,
                     tasks=_DEFAULT_SEED_TASKS,
                     source_type="rtsp",
-                    metadata=metadata,
                 )
             )
             created.append(record)
@@ -217,7 +212,7 @@ def create_rooms_for_cameras(
     Skips any camera whose name already matches an existing room name
     in that section. Returns the number of rooms created.
     """
-    existing_rooms, _ = location_store.list_rooms(limit=1000)
+    existing_rooms, _ = location_store.list_rooms(section_id=section_id, limit=1000)
     existing_names: set[str] = {r.name for r in existing_rooms if r.name}
     count = 0
     for cam in cameras:
@@ -538,7 +533,7 @@ def init_database(
 
     # ── Seed default cameras and per-camera rooms ────────────────────
     if registry is not None and section is not None:
-        seed_cameras = create_default_cameras(registry, section_id=section.id)
+        seed_cameras = create_default_cameras(registry)
         if seed_cameras:
             seeded = True
         if location_store is not None and seed_cameras:
@@ -549,6 +544,12 @@ def init_database(
             )
             if rooms_created > 0:
                 LOGGER.info("INIT_DB created %d room(s) for seed cameras", rooms_created)
+            rooms, _ = location_store.list_rooms(section_id=section.id, limit=1000)
+            rooms_by_name = {item.name: item.id for item in rooms}
+            for camera in seed_cameras:
+                room_id = rooms_by_name.get(camera.name)
+                if room_id is not None and camera.room_id != room_id:
+                    registry.update(camera.source_uri, room_id=room_id)
 
     # ── Seed all default shifts ─────────────────────────────────────
     shifts = _create_all_default_shifts(shift_store) if shift_store is not None else []

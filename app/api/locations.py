@@ -371,12 +371,10 @@ def get_section_cameras(
     cams = registry.list()
     if active_only:
         cams = [c for c in cams if c.enabled]
-    section_cams = store.filter_cameras_by_section(
-        [{"camera_id": c.source_id, "name": c.name, "enabled": c.enabled, "source_uri": c.source_uri, "metadata": c.metadata} for c in cams],
-        section_id,
-    )
+    room_ids = {room.id for room in store.list_rooms(section_id=section_id, limit=1000)[0]}
+    section_cams = [c for c in cams if c.room_id in room_ids]
     return [
-        {"id": idx, "camera_name": cam.get("name"), "camera_url": cam.get("source_uri"), "is_active": cam.get("enabled", True), "section_id": section_id}
+        {"id": idx, "camera_name": cam.name, "camera_url": cam.source_uri, "is_active": cam.enabled, "section_id": section_id, "room_id": cam.room_id}
         for idx, cam in enumerate(section_cams, start=1)
     ]
 
@@ -439,25 +437,24 @@ def update_section(
     return _section_response(store, s)
 
 
-@sections_router.patch("/{section_id}/assign-camera/{camera_id}")
-def assign_camera_to_section(
-    section_id: int,
-    camera_id: int,
+@rooms_router.patch("/{room_id}/assign-camera")
+def assign_camera_to_room(
+    room_id: int,
+    source_uri: str = Query(...),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
 ):
     store = _store(runtime)
-    s = store.get_section(section_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="بخش یافت نشد")
+    room = store.get_room(room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     registry = runtime.registry
-    cam = registry.get(str(camera_id))
+    cam = registry.get(source_uri)
     if cam is None:
         raise HTTPException(status_code=404, detail="دوربین یافت نشد")
-    metadata = dict(cam.metadata) if cam.metadata else {}
-    metadata["section_id"] = section_id
-    registry.update(str(camera_id), metadata=metadata, section_id=section_id)
-    return {"message": f"دوربین {camera_id} به بخش {section_id} اختصاص داده شد"}
+    registry.update(source_uri, room_id=room_id)
+    runtime._refresh_all_source_zones()
+    return {"message": f"دوربین به اتاق {room_id} اختصاص داده شد", "source_uri": source_uri, "room_id": room_id}
 
 
 @sections_router.delete("/{section_id}")
@@ -471,7 +468,8 @@ def delete_section(
     if not s:
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
     registry = runtime.registry
-    assigned = [c for c in registry.list() if c.metadata.get("section_id") == section_id]
+    room_ids = {room.id for room in store.list_rooms(section_id=section_id, limit=1000)[0]}
+    assigned = [c for c in registry.list() if c.room_id in room_ids]
     if assigned:
         raise HTTPException(
             status_code=400,
@@ -598,6 +596,7 @@ def update_room_info(
         raise HTTPException(status_code=422, detail=str(exc))
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    runtime._refresh_all_source_zones()
     return _room_response(r)
 
 
@@ -649,7 +648,11 @@ def remove_room(
     r = _store(runtime).get_room(room_id)
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    assigned_sources = [item.source_uri for item in runtime.registry.list() if item.room_id == room_id]
     _store(runtime).delete_room(room_id)
+    for source_uri in assigned_sources:
+        runtime.registry.update(source_uri, room_id=None)
+    runtime._refresh_all_source_zones()
     return {"message": "اتاق با موفقیت حذف شد"}
 
 

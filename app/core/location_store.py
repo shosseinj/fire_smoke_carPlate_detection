@@ -698,6 +698,59 @@ class LocationStore:
                     ))
             return matched
 
+    def room_has_polygon(self, room_id: int | None) -> bool:
+        return bool(self.get_polygon_for_room(room_id))
+
+    def get_polygon_for_room(self, room_id: int | None) -> list[list[float]]:
+        if room_id is None:
+            return []
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT polygon_json FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+        points = parse_polygon(row["polygon_json"]) if row and row["polygon_json"] else []
+        return points if len(points) >= 3 else []
+
+    def match_detection_to_room(
+        self,
+        room_id: int,
+        detection_type: str,
+        detection_event_id: int,
+        bbox_center_x: float,
+        bbox_center_y: float,
+        personnel_id: int | None = None,
+        camera_id: str | None = None,
+        *,
+        track_id: int | None = None,
+    ) -> list[DetectionRoomMatchRecord]:
+        polygon = self.get_polygon_for_room(room_id)
+        if not polygon:
+            return []
+        is_inside = point_in_polygon(bbox_center_x, bbox_center_y, polygon)
+        transition = self._resolve_transition(camera_id, track_id, room_id, is_inside)
+        if not is_inside and transition is None:
+            return []
+        with self._lock, self._connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO detection_room_matches "
+                "(detection_type, detection_event_id, room_id, personnel_id, camera_id, track_id, transition_type, matched_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (detection_type, detection_event_id, room_id, personnel_id, camera_id,
+                 track_id, transition, self._now()),
+            )
+            row = conn.execute(
+                "SELECT * FROM detection_room_matches WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        if row is None:
+            return []
+        return [DetectionRoomMatchRecord(
+            id=row["id"], detection_type=row["detection_type"],
+            detection_event_id=row["detection_event_id"], room_id=row["room_id"],
+            personnel_id=row["personnel_id"], camera_id=row["camera_id"],
+            track_id=row["track_id"], transition_type=row["transition_type"],
+            matched_at_utc=row["matched_at_utc"],
+        )]
+
     def get_matches_for_detection(
         self, detection_type: str, detection_event_id: int
     ) -> list[DetectionRoomMatchRecord]:

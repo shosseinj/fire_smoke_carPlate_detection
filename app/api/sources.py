@@ -112,6 +112,8 @@ def get_preview_config(
 
 @router.post("", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)
 def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
+    if payload.room_id is not None and runtime.location_store.get_room(payload.room_id) is None:
+        raise HTTPException(status_code=404, detail="Room not found")
     try:
         record = runtime.registry.create(
             SourceRecord(
@@ -121,6 +123,8 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
                 tasks=set(payload.tasks),
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
+                source_type=payload.source_type,
+                room_id=payload.room_id,
                 metadata=dict(payload.metadata),
             )
         )
@@ -151,8 +155,11 @@ def update_source(
     runtime: Runtime = Depends(get_runtime),
 ) -> SourceResponse:
     values = payload.model_dump(exclude_unset=True)
+    if values.get("room_id") is not None and runtime.location_store.get_room(values["room_id"]) is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    registry_values = {key: value for key, value in values.items() if key not in _SOURCE_OVERRIDE_FIELDS}
     try:
-        record = runtime.registry.update(source_id, **values)
+        record = runtime.registry.update(source_id, **registry_values)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source not found") from exc
     # Save per-source confidence overrides if any were provided

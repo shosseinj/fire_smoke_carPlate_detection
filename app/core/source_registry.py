@@ -36,6 +36,7 @@ class SourceRecord:
     frame_width: int = 640
     frame_height: int = 640
     source_type: str = RTSP
+    room_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
@@ -62,6 +63,7 @@ class SourceRecord:
             frame_width=int(value.get("frame_width", 640)),
             frame_height=int(value.get("frame_height", 640)),
             source_type=source_type,
+            room_id=int(value["room_id"]) if value.get("room_id") is not None else None,
             metadata=dict(value.get("metadata") or {}),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
@@ -102,7 +104,7 @@ class SourceRegistry:
             rows = self._connection.execute(
                 """
                 SELECT id, source_uri, name, enabled, tasks_json,
-                       frame_width, frame_height, section_id, source_type,
+                       frame_width, frame_height, room_id, source_type,
                        metadata_json, created_at_utc, updated_at_utc
                 FROM cameras
                 ORDER BY created_at_utc, source_uri
@@ -136,10 +138,6 @@ class SourceRegistry:
     @staticmethod
     def _row_to_record(row: Row) -> SourceRecord:
         metadata = dict(json.loads(row["metadata_json"]))
-        # If section_id is stored as a dedicated column, merge it into metadata for backward compat
-        section_id = row["section_id"]
-        if section_id is not None and "section_id" not in metadata:
-            metadata["section_id"] = int(section_id)
         raw_id = row["id"]
         return SourceRecord(
             id=int(raw_id) if raw_id is not None else None,
@@ -150,6 +148,7 @@ class SourceRegistry:
             frame_width=int(row["frame_width"]),
             frame_height=int(row["frame_height"]),
             source_type=str(row["source_type"]) if row["source_type"] else RTSP,
+            room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
@@ -157,9 +156,9 @@ class SourceRegistry:
 
     @staticmethod
     def _parameters(record: SourceRecord) -> tuple[Any, ...]:
-        # Extract section_id from metadata if present, for the dedicated column
         metadata = dict(record.metadata)
-        section_id = metadata.pop("section_id", None)
+        metadata.pop("section_id", None)
+        metadata.pop("room_id", None)
         return (
             record.source_uri,
             record.name,
@@ -167,7 +166,7 @@ class SourceRegistry:
             json.dumps(sorted(task.value for task in record.tasks)),
             record.frame_width,
             record.frame_height,
-            section_id,
+            record.room_id,
             record.source_type,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
             record.created_at_utc,
@@ -230,7 +229,7 @@ class SourceRegistry:
                     """
                     INSERT INTO cameras (
                         source_uri, name, enabled, tasks_json,
-                        frame_width, frame_height, section_id, source_type,
+                        frame_width, frame_height, room_id, source_type,
                         metadata_json, created_at_utc, updated_at_utc
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -282,7 +281,7 @@ class SourceRegistry:
                     """
                     INSERT INTO cameras (
                         source_uri, name, enabled, tasks_json,
-                        frame_width, frame_height, section_id, source_type,
+                        frame_width, frame_height, room_id, source_type,
                         metadata_json, created_at_utc, updated_at_utc
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -312,7 +311,7 @@ class SourceRegistry:
                 """
                 INSERT INTO cameras (
                     source_uri, name, enabled, tasks_json,
-                    frame_width, frame_height, section_id, source_type,
+                    frame_width, frame_height, room_id, source_type,
                     metadata_json, created_at_utc, updated_at_utc
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
@@ -321,7 +320,7 @@ class SourceRegistry:
                     tasks_json = excluded.tasks_json,
                     frame_width = excluded.frame_width,
                     frame_height = excluded.frame_height,
-                    section_id = excluded.section_id,
+                    room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
                     updated_at_utc = excluded.updated_at_utc
@@ -347,7 +346,7 @@ class SourceRegistry:
         frame_height: int | None = None,
         source_type: str | None = None,
         metadata: dict[str, Any] | None = None,
-        section_id: int | None | object = ...,
+        room_id: int | None | object = ...,
     ) -> SourceRecord:
         with self._lock:
             existing = self._records.get(source_uri)
@@ -370,24 +369,18 @@ class SourceRegistry:
                 record.source_type = source_type
             if metadata is not None:
                 record.metadata = dict(metadata)
-            if section_id is not ...:
-                # Handle section_id: store in metadata as well for backward compat
-                record.metadata = dict(record.metadata)
-                if section_id is not None:
-                    record.metadata["section_id"] = section_id
-                else:
-                    record.metadata.pop("section_id", None)
+            if room_id is not ...:
+                record.room_id = int(room_id) if room_id is not None else None
             record.updated_at_utc = _utc_now()
             record = self._normalized(record)
-            # Build parameters with section_id extracted from metadata
             params = list(self._parameters(record))
-            section_id_val = params[6]  # section_id is at index 6
+            room_id_val = params[6]
             self._connection.execute(
                 """
                 UPDATE cameras
                 SET name = ?, enabled = ?, tasks_json = ?,
                     frame_width = ?, frame_height = ?,
-                    section_id = ?, source_type = ?,
+                    room_id = ?, source_type = ?,
                     metadata_json = ?, updated_at_utc = ?
                 WHERE source_uri = ?
                 """,
@@ -397,7 +390,7 @@ class SourceRegistry:
                     json.dumps(sorted(task.value for task in record.tasks)),
                     record.frame_width,
                     record.frame_height,
-                    section_id_val,
+                    room_id_val,
                     record.source_type,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
                     record.updated_at_utc,
