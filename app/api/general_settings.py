@@ -72,6 +72,7 @@ class DisplaySettingsPatch(BaseModel):
     draw_face: bool | None = None
     draw_skeleton: bool | None = None
     draw_zones: bool | None = None
+    confirmation_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 class GeneralSettingsPatch(BaseModel):
     models: ModelSettingsPatch | None = None
@@ -140,6 +141,7 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
             "draw_face": gs.draw_face,
             "draw_skeleton": gs.draw_skeleton,
             "draw_zones": gs.draw_zones,
+            "confirmation_threshold": gs.confirmation_threshold,
         },
     }
 
