@@ -237,11 +237,19 @@ The `sources` table (defined in `app/database.py`) stores 9 per‑source confide
 | `face_human_confidence` | FLOAT nullable | Human‑detection confidence threshold |
 | `face_detection_confidence` | FLOAT nullable | Face‑detection confidence threshold |
 | `face_recognition_threshold` | FLOAT nullable | Face‑recognition similarity threshold |
+| `loop` | INTEGER default 1 | Per-source file looping toggle for OpenCV/static-video ingest |
+| `draw_human` | INTEGER default 1 | Per-source human overlay toggle on broadcast JPEG output |
+| `draw_zone` | INTEGER default 1 | Per-source zone polygon overlay toggle on broadcast JPEG output |
+| `draw_fire` | INTEGER default 1 | Per-source fire overlay toggle on broadcast JPEG output |
+| `draw_smoke` | INTEGER default 1 | Per-source smoke overlay toggle on broadcast JPEG output |
+| `draw_vehicle` | INTEGER default 1 | Per-source vehicle overlay toggle on broadcast JPEG output |
+| `draw_plate` | INTEGER default 1 | Per-source plate overlay toggle on broadcast JPEG output |
 | `updated_at_utc` | TIMESTAMP | Row update timestamp |
 
 **Split ownership with `general_settings.operational_json`:**
 
 - The 9 confidence fields above are stored **only** in the `sources` table as typed SQL columns. Per‑source rows override the global `'__default__'` row.
+- The per-source `loop` and `draw_*` overlay flags are stored on normal source rows and flow through `SourceRegistry` / `/api/v1/sources` into ingest or broadcast behavior. They do not belong on the `'__default__'` confidence row.
 - All other `OperationalSettings` fields (`video_ingest_fps`, `rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob.
 - At read time, `Runtime.operational_settings()` and the `GET /api/v1/settings/general` snapshot merge: JSON‑blob fields first, then override the 9 fields from `source_settings.get_default()`. This keeps the JSON blob as a backward‑compatible fallback.
 - `PATCH /api/v1/settings/general operational` splits the payload: 9 confidence fields → `source_settings.set_default(…)`, everything else → `general_settings.update({"operational": …})`.

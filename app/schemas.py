@@ -19,6 +19,12 @@ class SourceCreate(BaseModel):
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
     loop: bool = True
+    draw_human: bool = True
+    draw_zone: bool = True
+    draw_fire: bool = True
+    draw_smoke: bool = True
+    draw_vehicle: bool = True
+    draw_plate: bool = True
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -57,6 +63,12 @@ class SourceUpdate(BaseModel):
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
     loop: bool | None = None
+    draw_human: bool | None = None
+    draw_zone: bool | None = None
+    draw_fire: bool | None = None
+    draw_smoke: bool | None = None
+    draw_vehicle: bool | None = None
+    draw_plate: bool | None = None
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -90,6 +102,12 @@ class BulkSourceUpdateItem(BaseModel):
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
     loop: bool | None = None
+    draw_human: bool | None = None
+    draw_zone: bool | None = None
+    draw_fire: bool | None = None
+    draw_smoke: bool | None = None
+    draw_vehicle: bool | None = None
+    draw_plate: bool | None = None
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
     plate_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -133,6 +151,12 @@ class SourceResponse(BaseModel):
     room_id: int | None = None
     metadata: dict[str, Any]
     loop: bool = True
+    draw_human: bool = True
+    draw_zone: bool = True
+    draw_fire: bool = True
+    draw_smoke: bool = True
+    draw_vehicle: bool = True
+    draw_plate: bool = True
     created_at_utc: str
     updated_at_utc: str
     # Resolved per-source confidence thresholds (from the `sources` table)

@@ -37,6 +37,12 @@ class SourceRecord:
     room_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     loop: bool = True
+    draw_human: bool = True
+    draw_zone: bool = True
+    draw_fire: bool = True
+    draw_smoke: bool = True
+    draw_vehicle: bool = True
+    draw_plate: bool = True
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
 
@@ -65,6 +71,12 @@ class SourceRecord:
             room_id=int(value["room_id"]) if value.get("room_id") is not None else None,
             metadata=dict(value.get("metadata") or {}),
             loop=bool(value.get("loop", True)),
+            draw_human=bool(value.get("draw_human", True)),
+            draw_zone=bool(value.get("draw_zone", True)),
+            draw_fire=bool(value.get("draw_fire", True)),
+            draw_smoke=bool(value.get("draw_smoke", True)),
+            draw_vehicle=bool(value.get("draw_vehicle", True)),
+            draw_plate=bool(value.get("draw_plate", True)),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
         )
@@ -105,7 +117,9 @@ class SourceRegistry:
                 """
                 SELECT id, source_uri, name, enabled, tasks_json,
                        frame_width, frame_height, room_id, source_type,
-                       metadata_json, loop, created_at_utc, updated_at_utc
+                       metadata_json, loop, draw_human, draw_zone, draw_fire,
+                       draw_smoke, draw_vehicle, draw_plate,
+                       created_at_utc, updated_at_utc
                 FROM sources
                 WHERE name IS NOT NULL
                 ORDER BY COALESCE(created_at_utc, updated_at_utc), source_uri
@@ -157,6 +171,12 @@ class SourceRegistry:
             room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
             loop=bool(row["loop"]) if row["loop"] is not None else True,
+            draw_human=bool(row["draw_human"]) if row["draw_human"] is not None else True,
+            draw_zone=bool(row["draw_zone"]) if row["draw_zone"] is not None else True,
+            draw_fire=bool(row["draw_fire"]) if row["draw_fire"] is not None else True,
+            draw_smoke=bool(row["draw_smoke"]) if row["draw_smoke"] is not None else True,
+            draw_vehicle=bool(row["draw_vehicle"]) if row["draw_vehicle"] is not None else True,
+            draw_plate=bool(row["draw_plate"]) if row["draw_plate"] is not None else True,
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
         )
@@ -178,6 +198,12 @@ class SourceRegistry:
             record.source_type,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
             int(record.loop),
+            int(record.draw_human),
+            int(record.draw_zone),
+            int(record.draw_fire),
+            int(record.draw_smoke),
+            int(record.draw_vehicle),
+            int(record.draw_plate),
             record.created_at_utc,
             record.updated_at_utc,
         )
@@ -241,8 +267,10 @@ class SourceRegistry:
                     INSERT INTO sources (
                         id, source_uri, name, enabled, tasks_json,
                         frame_width, frame_height, room_id, source_type,
-                        metadata_json, loop, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, loop, draw_human, draw_zone, draw_fire,
+                        draw_smoke, draw_vehicle, draw_plate,
+                        created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_uri) DO UPDATE SET
                         id = COALESCE(sources.id, excluded.id),
                         name = excluded.name,
@@ -254,6 +282,12 @@ class SourceRegistry:
                         source_type = excluded.source_type,
                         metadata_json = excluded.metadata_json,
                         loop = excluded.loop,
+                        draw_human = excluded.draw_human,
+                        draw_zone = excluded.draw_zone,
+                        draw_fire = excluded.draw_fire,
+                        draw_smoke = excluded.draw_smoke,
+                        draw_vehicle = excluded.draw_vehicle,
+                        draw_plate = excluded.draw_plate,
                         updated_at_utc = excluded.updated_at_utc
                     """,
                     self._parameters(record),
@@ -313,8 +347,10 @@ class SourceRegistry:
                 INSERT INTO sources (
                     id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
-                    metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, loop, draw_human, draw_zone, draw_fire,
+                    draw_smoke, draw_vehicle, draw_plate,
+                    created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -325,6 +361,13 @@ class SourceRegistry:
                     room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
+                    loop = excluded.loop,
+                    draw_human = excluded.draw_human,
+                    draw_zone = excluded.draw_zone,
+                    draw_fire = excluded.draw_fire,
+                    draw_smoke = excluded.draw_smoke,
+                    draw_vehicle = excluded.draw_vehicle,
+                    draw_plate = excluded.draw_plate,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),
@@ -388,6 +431,12 @@ class SourceRegistry:
         metadata: dict[str, Any] | None = None,
         room_id: int | None | object = ...,
         loop: bool | None = None,
+        draw_human: bool | None = None,
+        draw_zone: bool | None = None,
+        draw_fire: bool | None = None,
+        draw_smoke: bool | None = None,
+        draw_vehicle: bool | None = None,
+        draw_plate: bool | None = None,
     ) -> SourceRecord:
         with self._lock:
             existing = self._records.get(source_uri)
@@ -427,6 +476,18 @@ class SourceRegistry:
                 record.metadata = dict(metadata)
             if loop is not None:
                 record.loop = loop
+            if draw_human is not None:
+                record.draw_human = draw_human
+            if draw_zone is not None:
+                record.draw_zone = draw_zone
+            if draw_fire is not None:
+                record.draw_fire = draw_fire
+            if draw_smoke is not None:
+                record.draw_smoke = draw_smoke
+            if draw_vehicle is not None:
+                record.draw_vehicle = draw_vehicle
+            if draw_plate is not None:
+                record.draw_plate = draw_plate
             if room_id is not ...:
                 record.room_id = int(room_id) if room_id is not None else None
             record.updated_at_utc = _utc_now()
@@ -438,7 +499,9 @@ class SourceRegistry:
                 SET name = ?, enabled = ?, tasks_json = ?,
                     frame_width = ?, frame_height = ?,
                     room_id = ?, source_type = ?,
-                    metadata_json = ?, loop = ?, updated_at_utc = ?
+                    metadata_json = ?, loop = ?, draw_human = ?, draw_zone = ?,
+                    draw_fire = ?, draw_smoke = ?, draw_vehicle = ?, draw_plate = ?,
+                    updated_at_utc = ?
                 WHERE source_uri = ?
                 """,
                 (
@@ -451,6 +514,12 @@ class SourceRegistry:
                     record.source_type,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
                     int(record.loop),
+                    int(record.draw_human),
+                    int(record.draw_zone),
+                    int(record.draw_fire),
+                    int(record.draw_smoke),
+                    int(record.draw_vehicle),
+                    int(record.draw_plate),
                     record.updated_at_utc,
                     source_uri,
                 ),

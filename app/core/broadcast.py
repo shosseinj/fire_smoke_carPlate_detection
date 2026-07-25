@@ -58,6 +58,16 @@ class BroadcastControlEvent:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class SourceDrawSettings:
+    draw_human: bool = True
+    draw_zone: bool = True
+    draw_fire: bool = True
+    draw_smoke: bool = True
+    draw_vehicle: bool = True
+    draw_plate: bool = True
+
+
 class AnnotatedBroadcastHub:
     """Composes exact-frame AI results and exposes latest annotated JPEGs."""
 
@@ -99,6 +109,7 @@ class AnnotatedBroadcastHub:
         self._face_overlay_cache_hits = 0
         self._latest_face_results: dict[str, tuple[float, TaskResult]] = {}
         self._source_zones: dict[str, list[list[list[float]]]] = {}
+        self._source_draw_settings: dict[str, SourceDrawSettings] = {}
         self._render_queue: queue.Queue[
             tuple[str, int, PendingAnnotatedFrame]
         ] = queue.Queue(maxsize=64)
@@ -211,6 +222,15 @@ class AnnotatedBroadcastHub:
     def clear_source_zones(self, source_id: str) -> None:
         self._source_zones.pop(source_id, None)
 
+    def set_source_draw_settings(self, source_id: str, settings: SourceDrawSettings) -> None:
+        self._source_draw_settings[source_id] = settings
+
+    def clear_source_draw_settings(self, source_id: str) -> None:
+        self._source_draw_settings.pop(source_id, None)
+
+    def _draw_settings(self, source_id: str) -> SourceDrawSettings:
+        return self._source_draw_settings.get(source_id, SourceDrawSettings())
+
     def close(self) -> None:
         """Stop the render thread and clean up resources."""
         self._stop_render.set()
@@ -229,6 +249,13 @@ class AnnotatedBroadcastHub:
                 "tasks": sorted(task.value for task in record.tasks),
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
+                "loop": record.loop,
+                "draw_human": record.draw_human,
+                "draw_zone": record.draw_zone,
+                "draw_fire": record.draw_fire,
+                "draw_smoke": record.draw_smoke,
+                "draw_vehicle": record.draw_vehicle,
+                "draw_plate": record.draw_plate,
                 "updated_at_utc": record.updated_at_utc,
             }
         event = BroadcastControlEvent(
@@ -244,6 +271,9 @@ class AnnotatedBroadcastHub:
             self._pending.pop(change.source_uri, None)
             self._latest.pop(change.source_uri, None)
             self._latest_face_results.pop(change.source_uri, None)
+            if change.record is None:
+                self._source_zones.pop(change.source_uri, None)
+                self._source_draw_settings.pop(change.source_uri, None)
             if self._enabled:
                 for target in self._subscribers.values():
                     try:
@@ -323,7 +353,12 @@ class AnnotatedBroadcastHub:
         )
         cv2.putText(frame, text, (x + 2, y), font, scale, color, thickness, cv2.LINE_AA)
 
-    def _draw_fire_smoke(self, frame: np.ndarray, result: TaskResult) -> str:
+    def _draw_fire_smoke(
+        self,
+        frame: np.ndarray,
+        result: TaskResult,
+        draw_settings: SourceDrawSettings,
+    ) -> str:
         if result.error:
             return "F/S: ERROR"
         tracks = result.data.get("tracks", [])
@@ -334,6 +369,10 @@ class AnnotatedBroadcastHub:
             if box is None:
                 continue
             label = str(track.get("label", "hazard")).lower()
+            if label == "fire" and not draw_settings.draw_fire:
+                continue
+            if label == "smoke" and not draw_settings.draw_smoke:
+                continue
             confidence = float(track.get("confidence", 0.0) or 0.0)
             color = (40, 70, 255) if label == "fire" else (0, 185, 255)
             x1, y1, x2, y2 = box
@@ -342,44 +381,59 @@ class AnnotatedBroadcastHub:
         severity = str(result.data.get("severity", "none")).upper()
         return f"F/S: {len(tracks)} BOXES | {severity}"
 
-    def _draw_plates(self, frame: np.ndarray, result: TaskResult) -> str:
+    def _draw_plates(
+        self,
+        frame: np.ndarray,
+        result: TaskResult,
+        draw_settings: SourceDrawSettings,
+    ) -> str:
         if result.error:
             return "PLATE: ERROR"
         plates = result.data.get("plates", [])
         for plate in plates:
+            vehicle_box = self._bounded_box(plate.get("vehicle_bbox"), frame)
+            if draw_settings.draw_vehicle and vehicle_box is not None:
+                vx1, vy1, vx2, vy2 = vehicle_box
+                cv2.rectangle(frame, (vx1, vy1), (vx2, vy2), (220, 180, 60), 2)
+                self._text(frame, "VEHICLE", (vx1, vy1), (220, 180, 60))
             box = self._bounded_box(plate.get("bbox"), frame)
-            if box is None:
-                continue
-            value = str(plate.get("plate") or "UNREADABLE")
-            confidence = float(plate.get("detector_confidence", 0.0) or 0.0)
-            color = (55, 220, 95)
-            x1, y1, x2, y2 = box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-            self._text(frame, f"PLATE {value} {confidence:.0%}", (x1, y1), color)
+            if draw_settings.draw_plate and box is not None:
+                value = str(plate.get("plate") or "UNREADABLE")
+                confidence = float(plate.get("detector_confidence", 0.0) or 0.0)
+                color = (55, 220, 95)
+                x1, y1, x2, y2 = box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                self._text(frame, f"PLATE {value} {confidence:.0%}", (x1, y1), color)
         return f"PLATE: {len(plates)} BOXES"
 
-    def _draw_faces(self, frame: np.ndarray, result: TaskResult) -> str:
+    def _draw_faces(
+        self,
+        frame: np.ndarray,
+        result: TaskResult,
+        draw_settings: SourceDrawSettings,
+    ) -> str:
         if result.error:
             return "HUMAN/FACE: ERROR"
         humans = result.data.get("humans", [])
-        for human in humans:
-            box = self._bounded_box(human.get("bbox"), frame)
-            if box is None:
-                continue
-            person = str(human.get("person") or "Unknown")
-            track_id = human.get("track_id")
-            score = float(human.get("recognition_score", 0.0) or 0.0)
-            known = person != "Unknown"
-            color = (70, 230, 100) if known else (0, 190, 255)
-            x1, y1, x2, y2 = box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-            suffix = f" {score:.0%}" if known else ""
-            self._text(
-                frame,
-                f"HUMAN {person} #{track_id}{suffix}",
-                (x1, y1),
-                color,
-            )
+        if draw_settings.draw_human:
+            for human in humans:
+                box = self._bounded_box(human.get("bbox"), frame)
+                if box is None:
+                    continue
+                person = str(human.get("person") or "Unknown")
+                track_id = human.get("track_id")
+                score = float(human.get("recognition_score", 0.0) or 0.0)
+                known = person != "Unknown"
+                color = (70, 230, 100) if known else (0, 190, 255)
+                x1, y1, x2, y2 = box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                suffix = f" {score:.0%}" if known else ""
+                self._text(
+                    frame,
+                    f"HUMAN {person} #{track_id}{suffix}",
+                    (x1, y1),
+                    color,
+                )
         faces = result.data.get("faces", [])
         for face in faces:
             box = self._bounded_box(face.get("bbox"), frame)
@@ -393,9 +447,14 @@ class AnnotatedBroadcastHub:
         )
         return f"HUMAN: {recognized}/{len(humans)} KNOWN | FACE: {len(faces)}"
 
-    def _draw_zones(self, frame: np.ndarray, source_id: str) -> None:
+    def _draw_zones(
+        self,
+        frame: np.ndarray,
+        source_id: str,
+        draw_settings: SourceDrawSettings,
+    ) -> None:
         """Draw zone polygons on the frame if draw_zones is enabled and zones exist."""
-        if not self.draw_zones:
+        if not self.draw_zones or not draw_settings.draw_zone:
             return
         zones = self._source_zones.get(source_id)
         if not zones:
@@ -432,6 +491,7 @@ class AnnotatedBroadcastHub:
         frame = pending.frame
         height, width = frame.shape[:2]
         statuses: list[str] = []
+        draw_settings = self._draw_settings(source_id)
         results = dict(pending.results)
         if (
             TaskName.FACE_RECOGNITION in pending.expected_tasks
@@ -451,14 +511,14 @@ class AnnotatedBroadcastHub:
                         self._face_overlay_cache_hits += 1
         for task, result in sorted(results.items(), key=lambda item: item[0].value):
             if task == TaskName.FIRE_SMOKE:
-                statuses.append(self._draw_fire_smoke(frame, result))
+                statuses.append(self._draw_fire_smoke(frame, result, draw_settings))
             elif task == TaskName.PLATE_RECOGNITION:
-                statuses.append(self._draw_plates(frame, result))
+                statuses.append(self._draw_plates(frame, result, draw_settings))
             elif task == TaskName.FACE_RECOGNITION:
-                statuses.append(self._draw_faces(frame, result))
+                statuses.append(self._draw_faces(frame, result, draw_settings))
 
         # Draw zone polygons (if enabled and zones exist for this source)
-        self._draw_zones(frame, source_id)
+        self._draw_zones(frame, source_id, draw_settings)
 
         # Draw header overlay in-place (no copy needed)
         header_height = min(76, max(64, height // 8))

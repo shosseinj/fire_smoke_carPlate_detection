@@ -112,6 +112,13 @@ def get_preview_config(
                 "tasks": sorted(task.value for task in record.tasks),
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
+                "loop": record.loop,
+                "draw_human": record.draw_human,
+                "draw_zone": record.draw_zone,
+                "draw_fire": record.draw_fire,
+                "draw_smoke": record.draw_smoke,
+                "draw_vehicle": record.draw_vehicle,
+                "draw_plate": record.draw_plate,
                 "preview_path": preview_stream_path(record.source_uri),
             }
             for record in runtime.registry.list()
@@ -136,6 +143,12 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
                 room_id=payload.room_id,
                 metadata=dict(payload.metadata),
                 loop=payload.loop,
+                draw_human=payload.draw_human,
+                draw_zone=payload.draw_zone,
+                draw_fire=payload.draw_fire,
+                draw_smoke=payload.draw_smoke,
+                draw_vehicle=payload.draw_vehicle,
+                draw_plate=payload.draw_plate,
             )
         )
     except ValueError as exc:

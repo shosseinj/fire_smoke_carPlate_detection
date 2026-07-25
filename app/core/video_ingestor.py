@@ -301,6 +301,7 @@ class VideoFileIngestor:
                     )
                     self._release(record.source_uri)
                 elif not state.loop:
+                    self._retry_after[record.source_uri] = float("inf")
                     self._release(record.source_uri)
                 continue
             state.source_frame_width = int(frame.shape[1])

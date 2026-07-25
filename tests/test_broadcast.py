@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.broadcast import get_runtime, router as broadcast_router
-from app.core.broadcast import AnnotatedBroadcastHub
+from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 
@@ -479,3 +479,101 @@ def test_draw_zones_no_op_when_no_zones() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert encoded.tasks == ("face_recognition",)
+
+
+def test_source_draw_human_false_suppresses_human_boxes() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.set_source_draw_settings("camera-07", SourceDrawSettings(draw_human=False))
+    source_packet = packet(["face_recognition"])
+    hub.publish_result(
+        source_packet,
+        result(
+            TaskName.FACE_RECOGNITION,
+            {
+                "humans": [{"bbox": [60, 45, 130, 135], "person": "Unknown", "track_id": 4}],
+                "faces": [],
+            },
+        ),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[80:135, 60:130].mean()) == 0.0
+
+
+def test_source_draw_zone_false_suppresses_zone_overlay() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.set_source_zones("camera-07", [[[10, 10], [10, 100], [100, 100], [100, 10]]])
+    hub.set_source_draw_settings("camera-07", SourceDrawSettings(draw_zone=False))
+    hub.publish_result(packet(["face_recognition"]), result(TaskName.FACE_RECOGNITION, {"humans": [], "faces": []}))
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[80:, 10:100].mean()) == 0.0
+
+
+def test_source_draw_fire_and_smoke_independently_filter_hazard_boxes() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    hub.set_source_draw_settings(
+        "camera-07",
+        SourceDrawSettings(draw_fire=False, draw_smoke=True),
+    )
+    hub.publish_result(
+        packet(["fire_smoke"]),
+        result(
+            TaskName.FIRE_SMOKE,
+            {
+                "tracks": [
+                    {"label": "fire", "confidence": 0.9, "bbox": [20, 80, 80, 140], "confirmed": True},
+                    {"label": "smoke", "confidence": 0.8, "bbox": [120, 80, 180, 140], "confirmed": True},
+                ],
+            },
+        ),
+    )
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    image = cv2.imdecode(np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert float(image[80:140, 20:80].mean()) == 0.0
+    assert float(image[80:140, 120:180].mean()) > 0.0
+
+
+def test_source_draw_vehicle_and_plate_can_disable_each_box_type() -> None:
+    payload = {
+        "plates": [
+            {
+                "plate": "12B34567",
+                "detector_confidence": 0.88,
+                "bbox": [170, 90, 230, 130],
+                "vehicle_bbox": [140, 70, 260, 160],
+            }
+        ]
+    }
+    enabled_hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    enabled_hub.set_source_draw_settings(
+        "camera-07",
+        SourceDrawSettings(draw_vehicle=True, draw_plate=True),
+    )
+    enabled_hub.publish_result(packet(["plate_recognition"]), result(TaskName.PLATE_RECOGNITION, payload))
+    enabled_encoded = enabled_hub.latest("camera-07")
+    assert enabled_encoded is not None
+    enabled_image = cv2.imdecode(np.frombuffer(enabled_encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert enabled_image is not None
+
+    disabled_hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    disabled_hub.set_source_draw_settings(
+        "camera-07",
+        SourceDrawSettings(draw_vehicle=False, draw_plate=True),
+    )
+    disabled_hub.publish_result(packet(["plate_recognition"]), result(TaskName.PLATE_RECOGNITION, payload))
+    disabled_encoded = disabled_hub.latest("camera-07")
+    assert disabled_encoded is not None
+    disabled_image = cv2.imdecode(np.frombuffer(disabled_encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert disabled_image is not None
+
+    assert float(disabled_image[90:130, 170:230].mean()) > 0.0
+    enabled_vehicle_region = float(enabled_image[70:160, 140:160].mean())
+    disabled_vehicle_region = float(disabled_image[70:160, 140:160].mean())
+    assert enabled_vehicle_region > disabled_vehicle_region + 2.0

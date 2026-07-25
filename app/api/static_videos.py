@@ -141,6 +141,7 @@ async def create_static_video(
                 name=video_name,
                 source_type="static_video",
                 metadata={"original_filename": upload["filename"]},
+                loop=False,
             )
         )
     except ValueError:
@@ -197,6 +198,7 @@ async def update_static_video(
                     source_uri=changes["source_uri"],
                     name=record.name,
                     source_type="static_video",
+                    loop=False,
                 )
             )
         except ValueError:

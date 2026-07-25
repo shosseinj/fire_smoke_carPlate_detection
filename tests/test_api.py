@@ -105,11 +105,17 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "name": "Live source",
                         "source_uri": "data/live.mp4",
                         "source_type": "static_video",
+                        "loop": False,
+                        "draw_human": False,
+                        "draw_zone": False,
                         "metadata": {"area": "gate"},
                     },
                 )
                 assert created.status_code == 201
                 assert created.json()["source_uri"] == "data/live.mp4"
+                assert created.json()["loop"] is False
+                assert created.json()["draw_human"] is False
+                assert created.json()["draw_zone"] is False
                 event = websocket.receive_json()
                 if event.get("type") != "camera_changed":
                     event = websocket.receive_json()
@@ -125,6 +131,13 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "tasks": [],
                         "frame_width": 640,
                         "frame_height": 640,
+                        "loop": False,
+                        "draw_human": False,
+                        "draw_zone": False,
+                        "draw_fire": True,
+                        "draw_smoke": True,
+                        "draw_vehicle": True,
+                        "draw_plate": True,
                         "updated_at_utc": event["camera"]["updated_at_utc"],
                     },
                 }
@@ -135,6 +148,9 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 assert source_alias.json()["frame_width"] == 640
                 assert source_alias.json()["frame_height"] == 640
                 assert source_alias.json()["source_uri"] == "data/live.mp4"
+                assert source_alias.json()["loop"] is False
+                assert source_alias.json()["draw_human"] is False
+                assert source_alias.json()["draw_zone"] is False
 
                 updated = client.patch(
                     "/api/v1/sources/data/live.mp4",
@@ -143,12 +159,14 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "source_uri": "data/renamed.mp4",
                         "frame_width": 960,
                         "frame_height": 544,
+                        "draw_fire": False,
                     },
                 )
                 assert updated.status_code == 200
                 assert updated.json()["name"] == "Updated source"
                 assert updated.json()["frame_width"] == 960
                 assert updated.json()["frame_height"] == 544
+                assert updated.json()["draw_fire"] is False
                 assert websocket.receive_json()["action"] == "updated"
                 assert client.get("/api/v1/sources/data/live.mp4").status_code == 404
                 assert client.get("/api/v1/sources/data/renamed.mp4").status_code == 200
@@ -308,6 +326,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
                         "id": id_a,
                         "name": "Bulk A",
                         "tasks": ["plate_recognition"],
+                        "draw_smoke": False,
                         "fire_confidence": 0.8,
                     },
                     {
@@ -317,6 +336,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
                         "smoke_confidence": 0.9,
                         "frame_width": 320,
                         "frame_height": 320,
+                        "draw_plate": False,
                     },
                 ],
             )
@@ -326,14 +346,17 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
             by_id = {item["id"]: item for item in items}
             assert by_id[id_a]["name"] == "Bulk A"
             assert by_id[id_a]["tasks"] == ["plate_recognition"]
+            assert by_id[id_a]["draw_smoke"] is False
             assert by_id[id_b]["name"] == "Bulk B"
             assert by_id[id_b]["enabled"] is False
             assert by_id[id_b]["frame_width"] == 320
             assert by_id[id_b]["frame_height"] == 320
+            assert by_id[id_b]["draw_plate"] is False
             # Verify persisted via GET
             get_a = client.get(f"/api/v1/sources/{id_a}")
             assert get_a.status_code == 200
             assert get_a.json()["name"] == "Bulk A"
+            assert get_a.json()["draw_smoke"] is False
 
             # Missing id returns 404
             resp_missing = client.put(

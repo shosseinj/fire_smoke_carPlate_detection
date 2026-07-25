@@ -12,7 +12,7 @@ from app.core.general_settings_store import GeneralSettingsStore
 from app.core.source_settings_store import SourceSettingsStore
 from app.core.operational_settings import OperationalSettings, CAMERA_SETTINGS_METADATA_KEY
 from app.core.result_store import ResultStore
-from app.core.broadcast import AnnotatedBroadcastHub
+from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
 from app.core.plate_log_store import PlateLogStore
 from app.core.car_plate_store import CarPlateStore
 from app.core.plate_settings_store import PlateDetectionPolicy, PlateSettingsStore
@@ -193,6 +193,24 @@ class Runtime:
                 self.broadcast.set_source_zones(source.source_uri, [polygon])
             else:
                 self.broadcast.clear_source_zones(source.source_uri)
+
+    def _refresh_all_source_draw_settings(self) -> None:
+        for source in self.registry.list():
+            self.broadcast.set_source_draw_settings(
+                source.source_uri,
+                self.broadcast_source_draw_settings(source.source_uri),
+            )
+
+    def broadcast_source_draw_settings(self, source_uri: str) -> SourceDrawSettings:
+        source = self.registry.require(source_uri)
+        return SourceDrawSettings(
+            draw_human=source.draw_human,
+            draw_zone=source.draw_zone,
+            draw_fire=source.draw_fire,
+            draw_smoke=source.draw_smoke,
+            draw_vehicle=source.draw_vehicle,
+            draw_plate=source.draw_plate,
+        )
 
     def selected_model_records(self) -> list[dict[str, object]]:
         """Return the exact startup model choices in runtime load order."""
@@ -857,6 +875,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         media_preview=media_preview,
     )
     registry.add_listener(lambda _change: runtime_obj._refresh_all_source_zones())
+    registry.add_listener(lambda _change: runtime_obj._refresh_all_source_draw_settings())
     # Push zone polygons to broadcast hub for all registered sources
     runtime_obj._refresh_all_source_zones()
+    runtime_obj._refresh_all_source_draw_settings()
     return runtime_obj
