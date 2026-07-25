@@ -683,7 +683,7 @@ def test_general_model_settings_and_play_only_camera_api(
             assert updated.json()["plate_detection"]["plate_confidence"] == 0.52
             assert updated.json()["camera_processing"]["modes"]["play_only"] == []
 
-            operational = client.patch(
+            forbidden = client.patch(
                 "/api/v1/settings/general",
                 json={
                     "operational": {
@@ -692,9 +692,7 @@ def test_general_model_settings_and_play_only_camera_api(
                     }
                 },
             )
-            assert operational.status_code == 200
-            assert operational.json()["operational"]["fire_confidence"] == 0.12
-            assert operational.json()["operational"]["smoke_confidence"] == 0.34
+            assert forbidden.status_code == 422
 
             class UploadedEngineExporter:
                 def __init__(self, source: Path) -> None:
@@ -728,6 +726,10 @@ def test_general_model_settings_and_play_only_camera_api(
             assert export_job["artifacts"] == ["fire_smoke/swagger_fire.engine"]
 
             general = client.get("/api/v1/settings/general").json()
+            assert "fire_confidence" not in general["operational"]
+            assert "smoke_confidence" not in general["operational"]
+            assert "fire_confidence" not in general["application_config"]["values"]
+            assert "smoke_confidence" not in general["application_config"]["values"]
             fire_selection = general["models"]["resolved_models"]["fire_smoke"]
             assert fire_selection["selected"] == "fire_smoke/swagger_fire.engine"
             assert fire_selection["selected_url"] == export_job["artifact_urls"][0]

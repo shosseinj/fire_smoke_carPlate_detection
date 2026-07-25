@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -29,6 +30,9 @@ from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
 
 
+LOGGER = logging.getLogger("uvicorn.error")
+
+
 @dataclass(frozen=True, slots=True)
 class FireSmokeSettings:
     model_path: Path
@@ -55,7 +59,7 @@ class FireSmokeSettings:
     track_center_distance: float = 0.75
     bbox_smoothing_alpha: float = 0.65
     confidence_ema_alpha: float = 0.35
-    evidence_min_track_hits: int = 2
+    evidence_min_track_hits: int = 1
 
     severity_timeline_seconds: float = 3.0
     low_severity_min_count: int = 5
@@ -335,6 +339,8 @@ class FireSmokeProcessor(BatchProcessor):
         self,
         result: Any,
         *,
+        source_id: str,
+        frame_index: int,
         fire_threshold: float,
         smoke_threshold: float,
     ) -> list[Detection]:
@@ -354,6 +360,7 @@ class FireSmokeProcessor(BatchProcessor):
             rows = np.asarray(rows)
 
         detections: list[Detection] = []
+        skipped_below_threshold: list[dict[str, float | str]] = []
         for row in rows:
             if len(row) < 6:
                 continue
@@ -368,6 +375,13 @@ class FireSmokeProcessor(BatchProcessor):
             else:
                 continue
             if float(confidence) < threshold:
+                skipped_below_threshold.append(
+                    {
+                        "label": label,
+                        "confidence": round(float(confidence), 6),
+                        "threshold": round(float(threshold), 6),
+                    }
+                )
                 continue
             detections.append(
                 Detection(
@@ -376,6 +390,15 @@ class FireSmokeProcessor(BatchProcessor):
                     confidence=float(confidence),
                     bbox=np.asarray([x1, y1, x2, y2], dtype=np.float32),
                 )
+            )
+        if skipped_below_threshold:
+            LOGGER.warning(
+                "FIRE_DETECTION_FILTERED source=%s frame=%s kept=%s filtered=%s details=%s",
+                source_id,
+                frame_index,
+                len(detections),
+                len(skipped_below_threshold),
+                skipped_below_threshold,
             )
         return detections
 
@@ -447,6 +470,8 @@ class FireSmokeProcessor(BatchProcessor):
         self._sync_policy(state)
         detections = self._extract_detections(
             result,
+            source_id=packet.source_id,
+            frame_index=packet.frame_index,
             fire_threshold=state.fire_candidate_confidence,
             smoke_threshold=state.smoke_candidate_confidence,
         )
@@ -461,6 +486,26 @@ class FireSmokeProcessor(BatchProcessor):
             if track.missed_updates == 0
             and track.total_hits >= self.settings.evidence_min_track_hits
         ]
+        if detections and not credible:
+            LOGGER.warning(
+                "FIRE_TRACK_NOT_YET_CREDIBLE source=%s frame=%s detections=%s tracks=%s evidence_min_track_hits=%s track_state=%s",
+                packet.source_id,
+                packet.frame_index,
+                len(detections),
+                len(tracks),
+                self.settings.evidence_min_track_hits,
+                [
+                    {
+                        "track_id": track.track_id,
+                        "label": track.label,
+                        "total_hits": track.total_hits,
+                        "missed_updates": track.missed_updates,
+                        "confirmed": bool(track.confirmed),
+                        "alert_active": bool(track.alert_active),
+                    }
+                    for track in tracks
+                ],
+            )
         fire_tracks = [track for track in credible if track.label == "fire"]
         smoke_tracks = [track for track in credible if track.label == "smoke"]
         fire_conf = max((track.confidence_ema for track in fire_tracks), default=0.0)
@@ -505,6 +550,18 @@ class FireSmokeProcessor(BatchProcessor):
             }
             for detection in detections
         ]
+        if detections and not fire_tracks and not smoke_tracks:
+            LOGGER.warning(
+                "FIRE_DETECTION_NOT_ESCALATED source=%s frame=%s detections=%s fire_threshold=%.3f smoke_threshold=%.3f severity=%s fire_snapshot=%s smoke_snapshot=%s",
+                packet.source_id,
+                packet.frame_index,
+                detection_payload,
+                state.fire_candidate_confidence,
+                state.smoke_candidate_confidence,
+                overall.label,
+                state.analyzer.snapshot_dict(risk["fire"]),
+                state.analyzer.snapshot_dict(risk["smoke"]),
+            )
         transition_payload = [
             {
                 "status": item.status,

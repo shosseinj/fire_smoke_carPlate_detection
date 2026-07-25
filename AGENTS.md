@@ -255,7 +255,7 @@ The `sources` table (defined in `app/database.py`) stores 9 per‑source confide
 - The per-source nullable `fps` field is stored on normal source rows and flows through `SourceRegistry` / `/api/v1/sources` into file/static-video ingest pacing. `NULL` preserves source-native FPS when available instead of forcing a global playback rate.
 - All other `OperationalSettings` fields (`video_ingest_fps`, `rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob.
 - At read time, `Runtime.operational_settings()` and the `GET /api/v1/settings/general` snapshot merge: JSON‑blob fields first, then override the 9 fields from `source_settings.get_default()`. This keeps the JSON blob as a backward‑compatible fallback.
-- `PATCH /api/v1/settings/general operational` splits the payload: 9 confidence fields → `source_settings.set_default(…)`, everything else → `general_settings.update({"operational": …})`.
+- The 9 source-owned confidence fields are not part of the public `/api/v1/settings/general operational` contract; use `/api/v1/sources` to read or change them. Runtime snapshots may still resolve them internally through `SourceSettingsStore`.
 - `SourceSettingsStore` (in `app/core/source_settings_store.py`) provides `get_default()` → returns `OperationalSettings`, `set_default(changes)` → upserts the `__default__` row, `get(source_uri)` / `set(source_uri, …)` / `delete(source_uri)` for per‑source overrides, and `resolve(source_uri)` → merges default + per‑source.
 
 There is no `camera_id` in the `sources` table. Per‑source settings are keyed by `source_uri` only.

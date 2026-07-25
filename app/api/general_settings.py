@@ -58,8 +58,6 @@ class OperationalSettingsPatch(BaseModel):
     broadcast_wall_jpeg_quality: int | None = Field(default=None, ge=1, le=100)
     broadcast_wall_max_width: int | None = Field(default=None, gt=0, le=4096)
     broadcast_wall_max_height: int | None = Field(default=None, gt=0, le=4096)
-    fire_confidence: float | None = Field(default=None, ge=0, le=1)
-    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
     plate_confidence: float | None = Field(default=None, ge=0, le=1)
     plate_iou: float | None = Field(default=None, ge=0, le=1)
     vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -95,6 +93,17 @@ def _json_safe(value: Any) -> Any:
 
 
 def _snapshot(runtime: Runtime) -> dict[str, Any]:
+    source_owned_fields = {
+        "fire_confidence",
+        "smoke_confidence",
+        "plate_confidence",
+        "plate_iou",
+        "vehicle_confidence",
+        "vehicle_iou",
+        "face_human_confidence",
+        "face_detection_confidence",
+        "face_recognition_threshold",
+    }
     application_values = asdict(runtime.settings)
     if application_values.get("database_url"):
         application_values["database_url"] = make_url(
@@ -109,20 +118,9 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
             application_values[secret_name] = "***"
     gs = runtime.general_settings.get()
     operational_merged = gs.operational.to_dict()
-    # Override the source-owned confidence fields from the sources __default__ row
-    source_default = runtime.source_settings.get_default().to_dict()
-    for field in (
-        "fire_confidence",
-        "smoke_confidence",
-        "plate_confidence",
-        "plate_iou",
-        "vehicle_confidence",
-        "vehicle_iou",
-        "face_human_confidence",
-        "face_detection_confidence",
-        "face_recognition_threshold",
-    ):
-        operational_merged[field] = source_default.get(field, operational_merged[field])
+    for field in source_owned_fields:
+        operational_merged.pop(field, None)
+        application_values.pop(field, None)
     return {
         "operational": operational_merged,
         "models": runtime.models.snapshot(),
@@ -200,30 +198,10 @@ def update_general_settings(
         if payload.operational is not None:
             changes = payload.operational.model_dump(exclude_unset=True)
             if changes:
-                source_owned_fields = {
-                    "fire_confidence",
-                    "smoke_confidence",
-                    "plate_confidence",
-                    "plate_iou",
-                    "vehicle_confidence",
-                    "vehicle_iou",
-                    "face_human_confidence",
-                    "face_detection_confidence",
-                    "face_recognition_threshold",
-                }
-                source_changes = {
-                    key: value for key, value in changes.items() if key in source_owned_fields
-                }
-                general_changes = {
-                    key: value for key, value in changes.items() if key not in source_owned_fields
-                }
-                if source_changes:
-                    runtime.source_settings.set_default(source_changes)
-                if general_changes:
-                    runtime.general_settings.update(
-                        {"operational": general_changes},
-                        updated_by=current_user.id,
-                    )
+                runtime.general_settings.update(
+                    {"operational": changes},
+                    updated_by=current_user.id,
+                )
                 runtime.apply_operational_settings()
         if payload.fire_smoke_detection is not None:
             _, current = runtime.fire_smoke_logs.policy_snapshot()

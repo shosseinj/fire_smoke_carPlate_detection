@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -192,6 +193,27 @@ def test_fire_uses_per_source_thresholds_and_respects_zero_confidence(
     assert high_result.data["detections"] == []
 
 
+def test_fire_processor_logs_threshold_filtered_candidates(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+            fire_candidate_confidence=0.30,
+            evidence_min_track_hits=1,
+        ),
+        model=FakeModel(confidence=0.29),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        processor.process_batch([packet("camera-low-score", 1)])
+
+    assert any("FIRE_DETECTION_FILTERED" in message for message in caplog.messages)
+
+
 def test_fire_result_exposes_raw_detections_for_immediate_overlay(
     tmp_path: Path,
 ) -> None:
@@ -210,6 +232,22 @@ def test_fire_result_exposes_raw_detections_for_immediate_overlay(
     assert result.data["detections"]
     assert result.data["detections"][0]["label"] == "fire"
     assert result.data["detections"][0]["bbox"] == [1.0, 1.0, 12.0, 12.0]
+
+
+def test_fire_first_hit_is_credible_with_default_evidence_gate(tmp_path: Path) -> None:
+    processor = FireSmokeProcessor(
+        FireSmokeSettings(
+            model_path=tmp_path / "fake.pt",
+            device="cpu",
+            engine_fixed_batch=None,
+        ),
+        model=FakeModel(confidence=0.95),
+    )
+    result = processor.process_batch([packet("camera-first-hit", 1)])[0]
+
+    assert result.error is None
+    assert result.data["tracks"]
+    assert result.data["tracks"][0]["label"] == "fire"
 
 
 def test_fire_engine_runtime_failure_uses_onnx_fallback(
