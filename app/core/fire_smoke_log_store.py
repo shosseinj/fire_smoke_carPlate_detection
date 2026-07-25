@@ -190,7 +190,8 @@ class FireSmokeLogStore:
                 cv2.LINE_AA,
             )
         timestamp = result.processed_at_utc.replace(":", "-").replace("+", "_")
-        filename = f"{result.source_id}_{timestamp}_{uuid4().hex[:8]}.jpg"
+        camera_stem = result.source_id.replace("/", "_").replace("\\", "_")
+        filename = f"{camera_stem}_{timestamp}_{uuid4().hex[:8]}.jpg"
         snapshot_path = self.snapshot_dir / filename
         if not cv2.imwrite(str(snapshot_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 88]):
             raise RuntimeError(f"Could not save fire/smoke snapshot: {snapshot_path}")
