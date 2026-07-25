@@ -26,6 +26,10 @@ from app.core.legacy_detection_service import (
     calculate_access,
     legacy_detection_response,
 )
+from app.core.recent_detection_service import (
+    build_recent_detection_refresh_message,
+    get_single_detection_payload_by_id,
+)
 
 router = APIRouter(prefix="/api/v1/logs", tags=["Detection Logs"])
 
@@ -46,6 +50,17 @@ def get_detection_log_store() -> DetectionLogStore:
 
 def get_location_store() -> Any:
     return get_runtime().location_store
+
+
+def _push_refresh_for_log(runtime: Any, log_id: int) -> None:
+    broadcast = getattr(runtime, "broadcast", None)
+    if broadcast is None:
+        return
+    payload = get_single_detection_payload_by_id(runtime, log_id)
+    if payload is not None:
+        broadcast.publish_control_event(
+            build_recent_detection_refresh_message(payload, log_id)
+        )
 
 
 def get_personnel_store() -> Any:
@@ -693,6 +708,7 @@ def patch_log_person(
     updated = store.update(log_id, **kwargs)
     if updated is None:
         raise HTTPException(404, "لاگ یافت نشد")
+    _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 
 
@@ -715,6 +731,7 @@ def patch_log_attendance(
     )
     if updated is None:
         raise HTTPException(404, "لاگ یافت نشد")
+    _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 
 

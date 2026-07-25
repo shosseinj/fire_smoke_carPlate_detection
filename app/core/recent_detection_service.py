@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from datetime import datetime
@@ -136,6 +137,39 @@ def _thresholds(runtime: Runtime, camera_id: str | None) -> tuple[float, float]:
     return face_rec, confirmation
 
 
+def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> dict[str, Any] | None:
+    confidence = float(row.get("confidence") or 0.0)
+    face_rec, confirmation = _thresholds(runtime, row.get("camera_id"))
+    classification, concatenate = _classification(confidence, face_rec, confirmation)
+    image = _read_image(_media_path(runtime, row.get("face_image")))
+    if image is None:
+        return None
+    if concatenate:
+        image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
+    success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    if not success:
+        return None
+    person = row.get("person") or "Unknown"
+    if person == "Unknown" or "Unknown" in str(person):
+        full_name = "Unknown"
+    elif row.get("fname") is not None:
+        full_name = f"{row.get('fname') or ''} {row.get('lname') or ''}".strip()
+    else:
+        full_name = person
+    return {
+        "id": row["id"],
+        "area": row.get("room_name") or ("بدون ناحیه" if not row.get("room_id") else "ناحیه نامشخص"),
+        "person": person,
+        "full_name": full_name,
+        "confidence": confidence,
+        "detection_time": _to_jalali_str(row.get("detection_time")),
+        "face_image_base64": base64.b64encode(encoded.tobytes()).decode("utf-8"),
+        "access_granted": bool(row.get("access_granted")),
+        "counts_for_attendance": bool(row.get("counts_for_attendance")),
+        "classification": classification,
+    }
+
+
 def get_recent_detection_payloads(runtime: Runtime, limit: int = RECENT_DETECTIONS_LIMIT) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
@@ -151,38 +185,44 @@ def get_recent_detection_payloads(runtime: Runtime, limit: int = RECENT_DETECTIO
 
     payloads: list[dict[str, Any]] = []
     for raw_row in rows:
-        row = dict(raw_row)
-        confidence = float(row.get("confidence") or 0.0)
-        face_rec, confirmation = _thresholds(runtime, row.get("camera_id"))
-        classification, concatenate = _classification(confidence, face_rec, confirmation)
-        image = _read_image(_media_path(runtime, row.get("face_image")))
-        if image is None:
-            continue
-        if concatenate:
-            image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
-        success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        if not success:
-            continue
-        person = row.get("person") or "Unknown"
-        if person == "Unknown" or "Unknown" in str(person):
-            full_name = "Unknown"
-        elif row.get("fname") is not None:
-            full_name = f"{row.get('fname') or ''} {row.get('lname') or ''}".strip()
-        else:
-            full_name = person
-        payloads.append({
-            "id": row["id"],
-            "area": row.get("room_name") or ("بدون ناحیه" if not row.get("room_id") else "ناحیه نامشخص"),
-            "person": person,
-            "full_name": full_name,
-            "confidence": confidence,
-            "detection_time": _to_jalali_str(row.get("detection_time")),
-            "face_image_base64": base64.b64encode(encoded.tobytes()).decode("utf-8"),
-            "access_granted": bool(row.get("access_granted")),
-            "counts_for_attendance": bool(row.get("counts_for_attendance")),
-            "classification": classification,
-        })
+        payload = _build_payload_from_enriched_row(runtime, dict(raw_row))
+        if payload is not None:
+            payloads.append(payload)
     return payloads
+
+
+def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[str, Any] | None:
+    record = runtime.detection_log_store.get(log_id)
+    if record is None:
+        return None
+    fname = lname = None
+    if record.personnel_id is not None:
+        personnel = runtime.personnel_store.get(record.personnel_id)
+        if personnel is not None:
+            fname = personnel.fname
+            lname = personnel.lname
+    room_name = None
+    if record.room_id is not None:
+        room = runtime.location_store.get_room(record.room_id)
+        if room is not None:
+            room_name = room.name
+    row = {
+        "id": record.id,
+        "confidence": record.confidence,
+        "camera_id": record.camera_id,
+        "face_image": record.face_image,
+        "ref_img_id": record.ref_img_id,
+        "personnel_id": record.personnel_id,
+        "person": record.person,
+        "fname": fname,
+        "lname": lname,
+        "room_name": room_name,
+        "room_id": record.room_id,
+        "detection_time": record.detection_time,
+        "access_granted": record.access_granted,
+        "counts_for_attendance": record.counts_for_attendance,
+    }
+    return _build_payload_from_enriched_row(runtime, row)
 
 
 def build_recent_detections_message(runtime: Runtime, limit: int = RECENT_DETECTIONS_LIMIT) -> dict[str, Any] | None:
@@ -190,3 +230,20 @@ def build_recent_detections_message(runtime: Runtime, limit: int = RECENT_DETECT
     if not detections:
         return None
     return {"type": "recent_detections", "detections": detections, "count": len(detections)}
+
+
+def build_recent_detection_refresh_message(payload: dict[str, Any], log_id: int) -> dict[str, Any]:
+    return {
+        "type": "recent_detections",
+        "detections": [payload],
+        "count": 1,
+        "reason": "log_updated",
+        "updated_log_id": log_id,
+    }
+
+
+async def get_and_build_refresh_message(runtime: Runtime, log_id: int) -> dict[str, Any] | None:
+    payload = await asyncio.to_thread(get_single_detection_payload_by_id, runtime, log_id)
+    if payload is None:
+        return None
+    return build_recent_detection_refresh_message(payload, log_id)

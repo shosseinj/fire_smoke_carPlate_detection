@@ -257,6 +257,22 @@ class AnnotatedBroadcastHub:
                             pass
             self._condition.notify_all()
 
+    def publish_control_event(self, payload: dict[str, Any]) -> None:
+        event = BroadcastControlEvent(payload=payload)
+        with self._condition:
+            if self._enabled:
+                for target in self._subscribers.values():
+                    try:
+                        target.put_nowait(event)
+                    except queue.Full:
+                        try:
+                            target.get_nowait()
+                            target.task_done()
+                            target.put_nowait(event)
+                        except (queue.Empty, queue.Full):
+                            pass
+            self._condition.notify_all()
+
     @staticmethod
     def _expected_tasks(packet: FramePacket, result: TaskResult) -> set[TaskName]:
         configured = packet.metadata.get("assigned_tasks", [])

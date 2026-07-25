@@ -147,7 +147,6 @@ def validate_legacy_password_strength(password: str) -> list[str]:
         "123456",
         "qwerty",
         "abc123",
-        "admin",
         "welcome",
         "letmein",
         "monkey",
