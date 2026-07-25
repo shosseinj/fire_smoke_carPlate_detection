@@ -26,6 +26,7 @@ from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
 from app.core.location_store import LocationStore
+from app.core.cam_store import CamStore
 from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
@@ -84,6 +85,7 @@ class Runtime:
     face_processor: BatchProcessor
     personnel_store: PersonnelStore
     location_store: LocationStore
+    cam_store: CamStore
     shift_store: ShiftStore
     holiday_store: HolidayStore
     request_store: RequestStore
@@ -470,6 +472,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     location_store = LocationStore(
         database,
     )
+    cam_store = CamStore(database)
     shift_store = ShiftStore(database)
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
@@ -862,6 +865,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         face_processor=face_processor,
         personnel_store=personnel_store,
         location_store=location_store,
+        cam_store=cam_store,
         shift_store=shift_store,
         holiday_store=holiday_store,
         request_store=request_store,

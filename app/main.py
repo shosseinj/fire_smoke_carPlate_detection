@@ -21,6 +21,7 @@ from app.api.fire_logs import router as fire_logs_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.processor_tests import router as processor_tests_router
 from app.api.sources import router as sources_router
+from app.api.cams import router as cams_router
 from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
@@ -52,6 +53,7 @@ OPENAPI_TAGS = [
     {"name": "general-settings"},
     {"name": "model-management"},
     {"name": "sources"},
+    {"name": "Cameras"},
     {"name": "frame-routing"},
     {"name": "results"},
     {"name": "annotated-broadcast"},
@@ -101,6 +103,7 @@ app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
 app.include_router(models_router)
 app.include_router(sources_router)
+app.include_router(cams_router)
 app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)

@@ -82,10 +82,13 @@ class SectionUpdate(BaseModel):
 
 class CameraMinimal(BaseModel):
     id: int
-    camera_name: str | None = None
-    camera_url: str | None = None
-    is_active: bool = True
-    section_id: int | None = None
+    camera_name: str
+    camera_number: int
+    width: int
+    high: int
+    source_type: str
+    section_id: int
+    url: str
 
 
 class SectionResponse(BaseModel):
@@ -110,8 +113,7 @@ class RoomCreate(BaseModel):
     room_name: str = Field(..., min_length=1, max_length=500)
     room_type: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
-    camera_id: int | None = None
-    section_id: int | None = None
+    camera_id: int = Field(ge=1)
     polygon_points: list[list[float]] | None = None
 
 
@@ -120,8 +122,7 @@ class RoomUpdate(BaseModel):
     room_name: str | None = Field(default=None, min_length=1, max_length=500)
     room_type: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
-    camera_id: int | None = None
-    section_id: int | None = None
+    camera_id: int | None = Field(default=None, ge=1)
     polygon_points: list[list[float]] | None = None
 
 
@@ -133,6 +134,7 @@ class RoomResponse(BaseModel):
     description: str | None = None
     is_active: bool = True
     camera_id: int | None = None
+    section_id: int | None = None
     polygon_points: list[list[float]] | None = None
     created_at: str
     updated_at: str | None = None
@@ -215,7 +217,8 @@ def _room_response(r) -> RoomResponse:
         room_type=None,
         description=r.description,
         is_active=True,
-        camera_id=None,
+        camera_id=r.cam_id,
+        section_id=r.section_id,
         polygon_points=_polygon_to_list(r.polygon_json),
         created_at=r.created_at_utc,
         updated_at=r.updated_at_utc,
@@ -356,26 +359,28 @@ def get_section(
     return _section_response(store, s)
 
 
-@sections_router.get("/{section_id}/cameras")
+@sections_router.get("/{section_id}/cameras", response_model=list[CameraMinimal])
 def get_section_cameras(
     section_id: int,
-    active_only: bool = True,
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
 ):
     store = _store(runtime)
-    s = store.get_section(section_id)
-    if not s:
+    if not store.get_section(section_id):
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
-    registry = runtime.registry
-    cams = registry.list()
-    if active_only:
-        cams = [c for c in cams if c.enabled]
-    room_ids = {room.id for room in store.list_rooms(section_id=section_id, limit=1000)[0]}
-    section_cams = [c for c in cams if c.room_id in room_ids]
+    cams, _ = runtime.cam_store.list(section_id=section_id, limit=1000)
     return [
-        {"id": idx, "camera_name": cam.name, "camera_url": cam.source_uri, "is_active": cam.enabled, "section_id": section_id, "room_id": cam.room_id}
-        for idx, cam in enumerate(section_cams, start=1)
+        CameraMinimal(
+            id=cam.id,
+            camera_name=cam.camera_name,
+            camera_number=cam.camera_number,
+            width=cam.width,
+            high=cam.high,
+            source_type=cam.source_type,
+            section_id=cam.section_id,
+            url=cam.url,
+        )
+        for cam in cams
     ]
 
 
@@ -437,8 +442,8 @@ def update_section(
     return _section_response(store, s)
 
 
-@rooms_router.patch("/{room_id}/assign-camera")
-def assign_camera_to_room(
+@rooms_router.patch("/{room_id}/assign-camera", include_in_schema=False)
+def assign_source_to_room(
     room_id: int,
     source_uri: str = Query(...),
     runtime: Runtime = Depends(get_runtime),
@@ -448,13 +453,37 @@ def assign_camera_to_room(
     room = store.get_room(room_id)
     if not room:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
-    registry = runtime.registry
-    cam = registry.get(source_uri)
-    if cam is None:
+    source = runtime.registry.get(source_uri)
+    if source is None:
         raise HTTPException(status_code=404, detail="دوربین یافت نشد")
-    registry.update(source_uri, room_id=room_id)
+    runtime.registry.update(source_uri, room_id=room_id)
     runtime._refresh_all_source_zones()
-    return {"message": f"دوربین به اتاق {room_id} اختصاص داده شد", "source_uri": source_uri, "room_id": room_id}
+    return {
+        "message": f"دوربین به اتاق {room_id} اختصاص داده شد",
+        "source_uri": source_uri,
+        "room_id": room_id,
+    }
+
+
+@rooms_router.patch("/{room_id}/assign-camera/{cam_id}", response_model=RoomResponse)
+def assign_camera_to_room(
+    room_id: int,
+    cam_id: int,
+    runtime: Runtime = Depends(get_runtime),
+    _: UserRecord = Depends(require_role("admin")),
+):
+    store = _store(runtime)
+    if not store.get_room(room_id):
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    try:
+        room = store.update_room(room_id=room_id, cam_id=cam_id)
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc).lower() else 422
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    if room is None:
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    runtime._refresh_all_source_zones()
+    return _room_response(room)
 
 
 @sections_router.delete("/{section_id}")
@@ -470,10 +499,12 @@ def delete_section(
     registry = runtime.registry
     room_ids = {room.id for room in store.list_rooms(section_id=section_id, limit=1000)[0]}
     assigned = [c for c in registry.list() if c.room_id in room_ids]
-    if assigned:
+    cam_count = runtime.cam_store.count(section_id=section_id)
+    if assigned or cam_count:
+        camera_count = len(assigned) + cam_count
         raise HTTPException(
             status_code=400,
-            detail=f"امکان حذف بخش وجود ندارد. این بخش دارای {len(assigned)} دوربین است. "
+            detail=f"امکان حذف بخش وجود ندارد. این بخش دارای {camera_count} دوربین است. "
                    "Reassign or delete them first.",
         )
     store.delete_section(section_id)
@@ -490,10 +521,13 @@ def list_rooms(
     active_only: bool = True,
     skip: int = 0,
     limit: int = 100,
+    camera_id: int | None = Query(default=None, ge=1),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
 ):
-    records, _ = _store(runtime).list_rooms(offset=skip, limit=limit)
+    records, _ = _store(runtime).list_rooms(
+        offset=skip, limit=limit, cam_id=camera_id
+    )
     return [_room_response(r) for r in records]
 
 
@@ -557,7 +591,7 @@ def create_new_room(
     try:
         r = _store(runtime).create_room(
             name=payload.room_name,
-            section_id=payload.section_id,
+            cam_id=payload.camera_id,
             description=payload.description,
             polygon_json=polygon_json,
         )
@@ -582,8 +616,10 @@ def update_room_info(
     changes: dict[str, Any] = {}
     if payload.room_name is not None:
         changes["name"] = payload.room_name
-    if payload.section_id is not None:
-        changes["section_id"] = payload.section_id
+    if "camera_id" in payload.model_fields_set:
+        if payload.camera_id is None:
+            raise HTTPException(status_code=422, detail="camera_id cannot be null")
+        changes["cam_id"] = payload.camera_id
     if payload.description is not None:
         changes["description"] = payload.description
     if payload.polygon_points is not None:

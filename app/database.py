@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0022"
+ALEMBIC_HEAD_REVISION = "20260725_0023"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -198,10 +198,32 @@ Index("idx_sections_building", sections.c.building_id); Index("idx_sections_name
 rooms = Table(
     "rooms", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    # Kept as a compatibility/cache column for existing zone and reporting code.
+    # New room writes derive it from cam.section_id.
     Column("section_id", Integer, ForeignKey("sections.id", ondelete="SET NULL")),
+    Column("cam_id", Integer, ForeignKey("cam.id", ondelete="RESTRICT")),
     Column("name", Text, nullable=False), Column("description", Text), Column("polygon_json", Text), *_audit_columns(),
 )
-Index("idx_rooms_section", rooms.c.section_id); Index("idx_rooms_name", rooms.c.name)
+Index("idx_rooms_section", rooms.c.section_id); Index("idx_rooms_cam", rooms.c.cam_id); Index("idx_rooms_name", rooms.c.name)
+cam = Table(
+    "cam", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("camera_name", Text, nullable=False),
+    Column("camera_number", Integer, nullable=False),
+    Column("width", Integer, nullable=False),
+    Column("high", Integer, nullable=False),
+    Column("source_type", String(16), nullable=False),
+    Column("section_id", Integer, ForeignKey("sections.id", ondelete="RESTRICT"), nullable=False),
+    Column("url", Text, nullable=False),
+    *_audit_columns(),
+    CheckConstraint("camera_number > 0", name="ck_cam_camera_number_positive"),
+    CheckConstraint("width > 0", name="ck_cam_width_positive"),
+    CheckConstraint("high > 0", name="ck_cam_high_positive"),
+    CheckConstraint("source_type IN ('usb', 'rtsp', 'other')", name="ck_cam_source_type"),
+    UniqueConstraint("section_id", "camera_number", name="uq_cam_section_camera_number"),
+)
+Index("idx_cam_section", cam.c.section_id)
+Index("idx_cam_source_type", cam.c.source_type)
 personnel_room_access = Table(
     "personnel_room_access", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),

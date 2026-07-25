@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_POLYGON: list[list[float]] = [[0.0, 0.0], [0.0, 640.0], [640.0, 640.0], [640.0, 0.0]]
 # Sentinel room_id used for default-polygon transition tracking (not stored in DB).
 _DEFAULT_ROOM_ID: int = -1
+_UNSET = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,7 @@ class SectionRecord:
 class RoomRecord:
     id: int
     section_id: int | None
+    cam_id: int | None
     name: str
     description: str | None
     polygon_json: str | None
@@ -370,6 +372,7 @@ class LocationStore:
         return RoomRecord(
             id=row["id"],
             section_id=row["section_id"],
+            cam_id=row["cam_id"],
             name=row["name"],
             description=row["description"],
             polygon_json=row["polygon_json"],
@@ -381,29 +384,44 @@ class LocationStore:
         self,
         name: str,
         section_id: int | None = None,
+        cam_id: int | None = None,
         description: str | None = None,
         polygon_json: str | None = None,
     ) -> RoomRecord:
         name = name.strip()
         if not name:
             raise ValueError("Room name is required")
-        # Validate polygon if provided
         if polygon_json:
             points = parse_polygon(polygon_json)
             if len(points) < 3:
                 raise ValueError("Polygon must have at least 3 vertices")
         now = self._now()
         with self._lock, self._connection() as conn:
-            if section_id is not None:
+            effective_section_id = section_id
+            if cam_id is not None:
+                cam = conn.execute(
+                    "SELECT id, section_id FROM cam WHERE id = ?", (cam_id,)
+                ).fetchone()
+                if cam is None:
+                    raise ValueError(f"Cam not found: {cam_id}")
+                cam_section_id = int(cam["section_id"])
+                if section_id is not None and section_id != cam_section_id:
+                    raise ValueError(
+                        f"Cam {cam_id} does not belong to section {section_id}"
+                    )
+                effective_section_id = cam_section_id
+            elif section_id is not None:
+                # Legacy/internal callers may still create unassigned rooms by section.
                 sec = conn.execute(
                     "SELECT id FROM sections WHERE id = ?", (section_id,)
                 ).fetchone()
                 if sec is None:
                     raise ValueError(f"Section not found: {section_id}")
+
             cursor = conn.execute(
-                "INSERT INTO rooms (section_id, name, description, polygon_json, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (section_id, name, description, polygon_json, now, now),
+                "INSERT INTO rooms (section_id, cam_id, name, description, polygon_json, created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (effective_section_id, cam_id, name, description, polygon_json, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (cursor.lastrowid,)
@@ -424,6 +442,7 @@ class LocationStore:
         room_id: int,
         name: str | None = None,
         section_id: int | None = None,
+        cam_id: int | None | object = _UNSET,
         description: str | None = None,
         polygon_json: str | None = None,
     ) -> RoomRecord | None:
@@ -436,15 +455,36 @@ class LocationStore:
             new_name = name.strip() if name else existing["name"]
             if name is not None and not new_name:
                 raise ValueError("Room name cannot be blank")
-            new_section_id = (
-                section_id if section_id is not None else existing["section_id"]
-            )
-            if section_id is not None:
+
+            new_cam_id = existing["cam_id"] if cam_id is _UNSET else cam_id
+            new_section_id = existing["section_id"]
+            if cam_id is not _UNSET:
+                if cam_id is None:
+                    new_section_id = None
+                else:
+                    cam = conn.execute(
+                        "SELECT id, section_id FROM cam WHERE id = ?", (cam_id,)
+                    ).fetchone()
+                    if cam is None:
+                        raise ValueError(f"Cam not found: {cam_id}")
+                    new_section_id = int(cam["section_id"])
+            elif section_id is not None:
+                # Legacy/internal update path for unassigned rooms.
                 sec = conn.execute(
                     "SELECT id FROM sections WHERE id = ?", (section_id,)
                 ).fetchone()
                 if sec is None:
                     raise ValueError(f"Section not found: {section_id}")
+                if new_cam_id is not None:
+                    cam = conn.execute(
+                        "SELECT section_id FROM cam WHERE id = ?", (new_cam_id,)
+                    ).fetchone()
+                    if cam is None or int(cam["section_id"]) != section_id:
+                        raise ValueError(
+                            "Room section must match its assigned cam section"
+                        )
+                new_section_id = section_id
+
             new_description = description if description is not None else existing["description"]
             new_polygon = polygon_json if polygon_json is not None else existing["polygon_json"]
             if polygon_json is not None:
@@ -453,9 +493,9 @@ class LocationStore:
                     raise ValueError("Polygon must have at least 3 vertices")
             now = self._now()
             conn.execute(
-                "UPDATE rooms SET name=?, section_id=?, description=?, polygon_json=?, "
+                "UPDATE rooms SET name=?, section_id=?, cam_id=?, description=?, polygon_json=?, "
                 "updated_at_utc=? WHERE id=?",
-                (new_name, new_section_id, new_description, new_polygon, now, room_id),
+                (new_name, new_section_id, new_cam_id, new_description, new_polygon, now, room_id),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (room_id,)
@@ -474,6 +514,7 @@ class LocationStore:
         offset: int = 0,
         limit: int = 50,
         section_id: int | None = None,
+        cam_id: int | None = None,
         search: str | None = None,
     ) -> tuple[list[RoomRecord], int]:
         where_clauses: list[str] = []
@@ -481,6 +522,9 @@ class LocationStore:
         if section_id is not None:
             where_clauses.append("section_id = ?")
             params.append(section_id)
+        if cam_id is not None:
+            where_clauses.append("cam_id = ?")
+            params.append(cam_id)
         if search is not None:
             where_clauses.append("(name LIKE ? OR description LIKE ?)")
             pattern = f"%{search}%"
