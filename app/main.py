@@ -36,6 +36,7 @@ from app.api.detection_logs import router as detection_logs_router
 from app.api.developer import router as developer_router
 from app.api.project_info import router as project_info_router
 from app.api.import_progress import router as import_progress_router
+from app.api.static_videos import router as static_videos_router
 
 from app.config import settings
 from app.runtime import build_runtime
@@ -124,6 +125,7 @@ app.include_router(plate_settings_router)
 app.include_router(developer_router)
 app.include_router(project_info_router)
 app.include_router(import_progress_router)
+app.include_router(static_videos_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(

@@ -798,6 +798,16 @@ Two ingestor instances in `Runtime`:
 
 `StaticVideoFileIngestor` is a `VideoFileIngestor` subclass defaulting to `source_type_filter=static_video`, `loop=False`, `max_sources=16`.
 
+### Static video upload API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/static-videos/upload` | POST | Upload video file, return `source_uri` path |
+| `/api/v1/static-videos` | POST | Upload + create camera in one call |
+| `/api/v1/static-videos` | GET | List all static video camera sources |
+
+Uploaded files are saved under `STATIC_VIDEO_UPLOAD_PATH` (default `saved_media/static_videos/`) with a UUID prefix to prevent name collisions. The returned `source_uri` is an absolute filesystem path that becomes the camera's `source_uri`. The `StaticVideoFileIngestor` automatically picks up new cameras on its next processing loop.
+
 ## Context efficiency
 
 Use specialized subagents and on-demand skills. Keep the main context focused on decisions, interfaces, evidence, and unresolved risks. Do not send the entire repository to every subagent. Work one coherent feature or option group at a time.

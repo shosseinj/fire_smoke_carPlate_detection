@@ -121,6 +121,7 @@ class Settings:
         "MEDIA_PREVIEW_WHEP_BASE_URL", ""
     ).rstrip("/")
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
+    static_video_upload_path: Path = _path("STATIC_VIDEO_UPLOAD_PATH", "saved_media/static_videos")
     fire_severity_window_seconds: float = _env_float(
         "FIRE_SEVERITY_WINDOW_SECONDS", 3.0
     )
