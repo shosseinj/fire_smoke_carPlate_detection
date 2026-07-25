@@ -466,6 +466,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             detection_log_store=detection_log_store,
             location_store=location_store,
             shift_store=shift_store,
+            registry=registry,
         )
     except Exception as exc:
         LOGGER.warning("INIT_DB seeding failed: %s", exc)
