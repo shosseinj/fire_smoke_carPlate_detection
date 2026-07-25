@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Response, status
 
 from app.api.auth_schemas import (
+    ChangePasswordRequest,
     CreateUserRequest,
     CreateUserResponse,
     LegacyPasswordChangeRequest,
@@ -400,18 +401,35 @@ def _change_password(
         )
 
 
-@router.put(
+# @router.put(
+#     "/me/password",
+#     response_model=PasswordChangeResponse,
+#     summary="Legacy-compatible password change",
+# )
+# def change_password_legacy(
+#     payload: LegacyPasswordChangeRequest,
+#     current_user: UserRecord = Depends(get_current_user),
+# ) -> PasswordChangeResponse:
+#     _change_password(
+#         current_user,
+#         payload.old_password,
+#         payload.new_password,
+#     )
+#     return PasswordChangeResponse(message="رمز عبور با موفقیت تغییر کرد")
+
+
+@router.post(
     "/me/password",
     response_model=PasswordChangeResponse,
-    summary="Legacy-compatible password change",
+    summary="Change current user password",
 )
-def change_password_legacy(
-    payload: LegacyPasswordChangeRequest,
+def change_password(
+    payload: ChangePasswordRequest,
     current_user: UserRecord = Depends(get_current_user),
 ) -> PasswordChangeResponse:
     _change_password(
         current_user,
-        payload.old_password,
+        payload.current_password,
         payload.new_password,
     )
     return PasswordChangeResponse(message="رمز عبور با موفقیت تغییر کرد")

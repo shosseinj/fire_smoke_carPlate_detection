@@ -101,6 +101,27 @@ class LegacyPasswordChangeRequest(BaseModel):
         return value
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=500)
+    new_password: str = Field(min_length=8, max_length=72)
+    confirm_password: str = Field(min_length=1, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        errors = validate_legacy_password_strength(value)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return value
+
+    @field_validator("confirm_password")
+    @classmethod
+    def passwords_match(cls, value: str, info) -> str:
+        if info.data.get("new_password") is not None and value != info.data["new_password"]:
+            raise ValueError("رمز عبور جدید و تایید آن یکسان نیست")
+        return value
+
+
 class PasswordChangeResponse(BaseModel):
     message: str
 
