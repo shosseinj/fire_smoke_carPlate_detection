@@ -40,7 +40,7 @@ class LogoutResponse(BaseModel):
 class UserResponse(BaseModel):
     id: int
     username: str
-    email: str
+    email: Optional[str] = None
     full_name: Optional[str] = None
     role: str
     is_active: bool
