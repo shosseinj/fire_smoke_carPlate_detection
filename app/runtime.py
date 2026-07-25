@@ -10,6 +10,7 @@ from app.config import Settings, settings
 from app.database import Database, get_database
 from app.core.auth import initialize_auth_store
 from app.core.general_settings_store import GeneralSettingsStore
+from app.core.source_settings_store import SourceSettingsStore
 from app.core.operational_settings import OperationalSettings, CAMERA_SETTINGS_METADATA_KEY
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub
@@ -81,12 +82,22 @@ class Runtime:
     import_progress: ImportProgressStore
     static_video_store: StaticVideoStore
     general_settings: GeneralSettingsStore
+    source_settings: SourceSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
 
     def operational_settings(self):
-        return self.general_settings.get().operational
+        gs = self.general_settings.get()
+        merged = gs.operational.to_dict()
+        # Override the 9 confidence fields from the sources __default__ row
+        source_default = self.source_settings.get_default().to_dict()
+        for field in ("fire_confidence", "smoke_confidence", "plate_confidence",
+                       "plate_iou", "vehicle_confidence", "vehicle_iou",
+                       "face_human_confidence", "face_detection_confidence",
+                       "face_recognition_threshold"):
+            merged[field] = source_default.get(field, merged[field])
+        return OperationalSettings(**merged)
 
     def resolve_camera_settings(self, camera_id: str) -> dict[str, object]:
         general = self.operational_settings().to_dict()
@@ -339,6 +350,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     )
     database.verify_schema()
     general_settings = GeneralSettingsStore(
+        database,
+        OperationalSettings.from_app_settings(app_settings),
+    )
+    source_settings = SourceSettingsStore(
         database,
         OperationalSettings.from_app_settings(app_settings),
     )
@@ -856,6 +871,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         import_progress=import_progress,
         static_video_store=static_video_store,
         general_settings=general_settings,
+        source_settings=source_settings,
         video_ingestor=video_ingestor,
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,

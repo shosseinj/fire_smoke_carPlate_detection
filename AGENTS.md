@@ -221,6 +221,36 @@ Zone polygons are drawn on the annotated broadcast JPEG frames when `draw_zones`
   - `detection_event_id`, `room_id`, `personnel_id`, `camera_id`, `matched_at_utc`
 - `general_settings.draw_zones` — INTEGER column (default `1`), controls visual zone overlay on broadcast frames.
 
+### Sources table and confidence-field ownership
+
+The `sources` table (defined in `app/database.py`) stores 9 per‑source confidence‑field overrides:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `source_uri` | TEXT PK | Per‑source key; the well‑known row `'__default__'` holds global defaults |
+| `fire_confidence` | FLOAT nullable | Fire‑detection confidence threshold |
+| `smoke_confidence` | FLOAT nullable | Smoke‑detection confidence threshold |
+| `plate_confidence` | FLOAT nullable | Plate‑detection confidence threshold |
+| `plate_iou` | FLOAT nullable | Plate‑detection IoU threshold |
+| `vehicle_confidence` | FLOAT nullable | Vehicle‑detection confidence threshold |
+| `vehicle_iou` | FLOAT nullable | Vehicle‑detection IoU threshold |
+| `face_human_confidence` | FLOAT nullable | Human‑detection confidence threshold |
+| `face_detection_confidence` | FLOAT nullable | Face‑detection confidence threshold |
+| `face_recognition_threshold` | FLOAT nullable | Face‑recognition similarity threshold |
+| `updated_at_utc` | TIMESTAMP | Row update timestamp |
+
+**Split ownership with `general_settings.operational_json`:**
+
+- The 9 confidence fields above are stored **only** in the `sources` table as typed SQL columns. Per‑source rows override the global `'__default__'` row.
+- All other `OperationalSettings` fields (`video_ingest_fps`, `rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob.
+- At read time, `Runtime.operational_settings()` and the `GET /api/v1/settings/general` snapshot merge: JSON‑blob fields first, then override the 9 fields from `source_settings.get_default()`. This keeps the JSON blob as a backward‑compatible fallback.
+- `PATCH /api/v1/settings/general operational` splits the payload: 9 confidence fields → `source_settings.set_default(…)`, everything else → `general_settings.update({"operational": …})`.
+- `SourceSettingsStore` (in `app/core/source_settings_store.py`) provides `get_default()` → returns `OperationalSettings`, `set_default(changes)` → upserts the `__default__` row, `get(source_uri)` / `set(source_uri, …)` / `delete(source_uri)` for per‑source overrides, and `resolve(source_uri)` → merges default + per‑source.
+
+There is no `camera_id` in the `sources` table. Per‑source settings are keyed by `source_uri` only.
+
+`GET /api/v1/sources`, `POST /api/v1/sources`, `PATCH /api/v1/sources/{id}`, and related endpoints return the resolved 9 confidence thresholds on every `SourceResponse`. Creating or updating a source with confidence fields (`fire_confidence`, `plate_confidence`, …) persists per‑source overrides to the `sources` table via `SourceSettingsStore.set()`. When `source_uri` is missing or no override exists the `__default__` global values are returned.
+
 ### Multi-agent workflow
 
 Use multiple agents when the task contains independent investigation, implementation, testing, or review work. One primary agent must act as coordinator.

@@ -105,8 +105,16 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
         if application_values.get(secret_name):
             application_values[secret_name] = "***"
     gs = runtime.general_settings.get()
+    operational_merged = gs.operational.to_dict()
+    # Override the 9 confidence fields from the sources __default__ row
+    source_default = runtime.source_settings.get_default().to_dict()
+    for field in ("fire_confidence", "smoke_confidence", "plate_confidence",
+                   "plate_iou", "vehicle_confidence", "vehicle_iou",
+                   "face_human_confidence", "face_detection_confidence",
+                   "face_recognition_threshold"):
+        operational_merged[field] = source_default.get(field, operational_merged[field])
     return {
-        "operational": gs.operational.to_dict(),
+        "operational": operational_merged,
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
         "fire_smoke_detection": runtime.fire_smoke_logs.settings(),
@@ -181,7 +189,28 @@ def update_general_settings(
         if payload.operational is not None:
             changes = payload.operational.model_dump(exclude_unset=True)
             if changes:
-                runtime.general_settings.update(changes, updated_by=current_user.id)
+                # Nine confidence fields → `sources` table (global __default__ row)
+                source_changes = {
+                    k: v for k, v in changes.items()
+                    if k in (
+                        "fire_confidence", "smoke_confidence", "plate_confidence",
+                        "plate_iou", "vehicle_confidence", "vehicle_iou",
+                        "face_human_confidence", "face_detection_confidence",
+                        "face_recognition_threshold",
+                    )
+                }
+                # Other operational fields → `general_settings` JSON blob
+                rest_changes = {
+                    k: v for k, v in changes.items()
+                    if k not in source_changes
+                }
+                if source_changes:
+                    runtime.source_settings.set_default(source_changes)
+                if rest_changes:
+                    runtime.general_settings.update(
+                        {"operational": rest_changes},
+                        updated_by=current_user.id,
+                    )
                 runtime.apply_operational_settings()
         if payload.fire_smoke_detection is not None:
             _, current = runtime.fire_smoke_logs.policy_snapshot()
@@ -205,5 +234,6 @@ def reset_general_settings(
     current_user: UserRecord = Depends(require_role("admin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
+    runtime.source_settings.reset_default()
     runtime.general_settings.reset(updated_by=current_user.id)
     return _snapshot(runtime)

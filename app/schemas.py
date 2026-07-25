@@ -18,6 +18,16 @@ class SourceCreate(BaseModel):
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Per-source confidence overrides (stored in the `sources` table)
+    fire_confidence: float | None = Field(default=None, ge=0, le=1)
+    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_iou: float | None = Field(default=None, ge=0, le=1)
+    vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
+    vehicle_iou: float | None = Field(default=None, ge=0, le=1)
+    face_human_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("source_id")
     @classmethod
@@ -44,6 +54,16 @@ class SourceUpdate(BaseModel):
     frame_height: int | None = Field(default=None, ge=16, le=4096)
     source_type: str | None = None
     metadata: dict[str, Any] | None = None
+    # Per-source confidence overrides (stored in the `sources` table)
+    fire_confidence: float | None = Field(default=None, ge=0, le=1)
+    smoke_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_confidence: float | None = Field(default=None, ge=0, le=1)
+    plate_iou: float | None = Field(default=None, ge=0, le=1)
+    vehicle_confidence: float | None = Field(default=None, ge=0, le=1)
+    vehicle_iou: float | None = Field(default=None, ge=0, le=1)
+    face_human_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
+    face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("source_type")
     @classmethod
@@ -77,6 +97,16 @@ class SourceResponse(BaseModel):
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
+    # Resolved per-source confidence thresholds (from the `sources` table)
+    fire_confidence: float | None = None
+    smoke_confidence: float | None = None
+    plate_confidence: float | None = None
+    plate_iou: float | None = None
+    vehicle_confidence: float | None = None
+    vehicle_iou: float | None = None
+    face_human_confidence: float | None = None
+    face_detection_confidence: float | None = None
+    face_recognition_threshold: float | None = None
 
 
 class CameraCreate(BaseModel):
@@ -159,7 +189,7 @@ class CameraResponse(BaseModel):
     created_at_utc: str
     updated_at_utc: str
     settings_overrides: dict[str, Any] = Field(default_factory=dict)
-    effective_settings: dict[str, Any] = Field(default_factory=dict)
+    # effective_settings: dict[str, Any] = Field(default_factory=dict)
 
 
     @field_validator("source_type")

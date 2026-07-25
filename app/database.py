@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0013"
+ALEMBIC_HEAD_REVISION = "20260725_0015"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -344,6 +344,20 @@ model_general_settings = Table(
     Column("export_half", Integer, nullable=False), Column("export_dynamic", Integer, nullable=False),
     Column("export_timeout_seconds", Integer, nullable=False, server_default="300"), Column("updated_at_utc", UTC_TS, nullable=False),
     CheckConstraint("id = 1", name="ck_model_general_singleton"),
+)
+sources = Table(
+    "sources", metadata,
+    Column("source_uri", Text, primary_key=True),
+    Column("fire_confidence", Float),
+    Column("smoke_confidence", Float),
+    Column("plate_confidence", Float),
+    Column("plate_iou", Float),
+    Column("vehicle_confidence", Float),
+    Column("vehicle_iou", Float),
+    Column("face_human_confidence", Float),
+    Column("face_detection_confidence", Float),
+    Column("face_recognition_threshold", Float),
+    Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
 )
 general_settings = Table(
     "general_settings", metadata,
