@@ -1,12 +1,8 @@
-"""Replace camera section association with a room foreign key.
-
-Revision ID: 20260725_0017
-Revises: 20260725_0016
-"""
 from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "20260725_0017"
 down_revision = "20260725_0016"
@@ -15,6 +11,22 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.drop_constraint("cameras_pkey", "cameras", type_="primary")
+
+    op.add_column(
+        "cameras",
+        sa.Column("id", sa.Integer(), nullable=True),
+    )
+
+    op.execute("CREATE SEQUENCE IF NOT EXISTS cameras_id_seq START WITH 1 OWNED BY cameras.id")
+    op.execute("UPDATE cameras SET id = nextval('cameras_id_seq')")
+    op.execute("ALTER TABLE cameras ALTER COLUMN id SET DEFAULT nextval('cameras_id_seq')")
+
+    op.alter_column("cameras", "id", nullable=False)
+    op.create_primary_key("cameras_pkey", "cameras", ["id"])
+
+    op.create_unique_constraint("uq_cameras_source_uri", "cameras", ["source_uri"])
+
     op.add_column("cameras", sa.Column("room_id", sa.Integer(), nullable=True))
     op.execute(
         """
@@ -44,3 +56,9 @@ def downgrade() -> None:
     op.drop_index("idx_cameras_room", table_name="cameras")
     op.drop_constraint("fk_cameras_room_id", "cameras", type_="foreignkey")
     op.drop_column("cameras", "room_id")
+
+    op.drop_constraint("uq_cameras_source_uri", "cameras", type_="unique")
+    op.drop_constraint("cameras_pkey", "cameras", type_="primary")
+    op.drop_column("cameras", "id")
+    op.execute("DROP SEQUENCE IF EXISTS cameras_id_seq")
+    op.create_primary_key("cameras_pkey", "cameras", ["source_uri"])

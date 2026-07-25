@@ -138,9 +138,8 @@ class SourceRegistry:
     @staticmethod
     def _row_to_record(row: Row) -> SourceRecord:
         metadata = dict(json.loads(row["metadata_json"]))
-        raw_id = row["id"]
         return SourceRecord(
-            id=int(raw_id) if raw_id is not None else None,
+            id=int(row["id"]),
             source_uri=str(row["source_uri"]),
             name=str(row["name"]),
             enabled=bool(row["enabled"]),

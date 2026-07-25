@@ -303,6 +303,61 @@ Combine roles when the change is small. If the platform cannot create sub-agents
 - The coordinator must verify delegated claims in the actual repository or runtime.
 - Use read-only explorers in parallel where possible; serialize overlapping implementation work.
 
+## Alembic migrations
+
+Alembic manages all database schema migrations. The migration chain is a single linear branch with no forks.
+
+### Migration files
+
+- Location: `alembic/versions/`
+- Naming: `YYYYMMDD_NNN_short_description.py`
+- Each migration file contains exactly one `revision` string and one `down_revision` pointing to its immediate predecessor.
+
+### Linear branch rule
+
+- Every revision ID must be unique across all files in `alembic/versions/`.
+- Every `down_revision` must reference exactly one preceding migration (or `None` for the base).
+- Never create two migration files with the same `revision` value — this creates a divergent branch and breaks `alembic upgrade head`.
+- If two migrations are created for the same schema change target, merge them into a single file before committing.
+
+### Adding a new migration
+
+```bash
+alembic revision -m "short description of the change"
+```
+
+This generates the next sequential file in `alembic/versions/`. Edit the file to add `upgrade()` and `downgrade()` operations. The migration is applied only after running the command below.
+
+### Applying migrations
+
+Before starting the API after a new migration is added:
+
+```bash
+alembic upgrade head
+```
+
+To verify the current head matches `ALEMBIC_HEAD_REVISION` in `app/database.py`:
+
+```bash
+alembic current
+```
+
+### Checking the migration chain
+
+```bash
+alembic history --verbose
+```
+
+The output must show a single linear chain with no branch labels or fork points. If branching is detected, merge the divergent files into one before proceeding.
+
+### Verifying schema at startup
+
+`DatabaseVerifier.verify_schema()` in `app/database.py` checks:
+1. All tables in `app/database.py` `metadata` exist in PostgreSQL.
+2. The `alembic_version` row matches `ALEMBIC_HEAD_REVISION`.
+
+If the check fails the API refuses to start and instructs the operator to run `alembic upgrade head`.
+
 ## Development workflow
 
 For every requested change:
