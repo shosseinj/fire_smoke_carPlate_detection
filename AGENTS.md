@@ -808,6 +808,20 @@ Two ingestor instances in `Runtime`:
 
 Uploaded files are saved under `STATIC_VIDEO_UPLOAD_PATH` (default `saved_media/static_videos/`) with a UUID prefix to prevent name collisions. The returned `source_uri` is an absolute filesystem path that becomes the camera's `source_uri`. The `StaticVideoFileIngestor` automatically picks up new cameras on its next processing loop.
 
+### Camera vs Source API separation
+
+Cameras and sources share the same underlying `SourceRecord`/`SourceRegistry`/DB, but have different API surfaces:
+
+| Concern | Camera API (`/api/v1/cameras`) | Source API (`/api/v1/sources`) |
+|---------|-------------------------------|-------------------------------|
+| `enabled`/`tasks` | **NOT exposed** — camera is about device identity | **Exposed** — operational state belongs here |
+| `POST /{id}/enable`, `/disable` | Not available | Available |
+| `PUT /bulk/task-assignment` | Not available | Available |
+| `GET /preview-config` | Not available (removed) | **Available** — returns `enabled`/`tasks` per source |
+| `enable`/`disable` in create/update schemas | Not in `CameraCreate`/`CameraUpdate`/`CameraReplace`/`CameraResponse` | In `SourceCreate`/`SourceUpdate`/`SourceResponse` |
+
+The dashboard fetches `/api/v1/sources/preview-config` to get source operational state (enabled + tasks) for card rendering.
+
 ## Context efficiency
 
 Use specialized subagents and on-demand skills. Keep the main context focused on decisions, interfaces, evidence, and unresolved risks. Do not send the entire repository to every subagent. Work one coherent feature or option group at a time.

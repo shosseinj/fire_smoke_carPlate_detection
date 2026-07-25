@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
 
 from app.core.source_registry import SourceRecord
+from app.core.static_video_store import StaticVideoRecord
 from app.core.video_ingestor import VIDEO_SUFFIXES
 from app.runtime import Runtime
 
@@ -19,13 +21,14 @@ def get_runtime() -> Runtime:
     return runtime
 
 
+class StaticVideoUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+
+
 def _safe_filename(filename: str) -> str:
     """Sanitize a filename, stripping path separators and dangerous characters."""
-    # Remove path separators
     cleaned = filename.replace("/", "_").replace("\\", "_")
-    # Strip any leading dots, spaces, or dashes
     cleaned = cleaned.strip(". -")
-    # Keep only the last 200 chars to avoid absurdly long names
     if len(cleaned) > 200:
         stem, ext = Path(cleaned).stem, Path(cleaned).suffix
         cleaned = stem[: 200 - len(ext) - 1] + ext
@@ -43,17 +46,11 @@ def _validate_video(filename: str, content_type: str | None) -> str | None:
     return suffix
 
 
-@router.post("/upload", status_code=status.HTTP_201_CREATED)
-async def upload_static_video(
-    file: UploadFile = File(..., description="Video file (.mp4, .avi, .mov, .mkv, .m4v, .webm)"),
-    runtime: Runtime = Depends(get_runtime),
+async def _save_upload(
+    file: UploadFile,
+    runtime: Runtime,
 ) -> dict[str, Any]:
-    """Upload a static video file and save it to the media store.
-
-    Returns the file metadata including the server-side path (``source_uri``)
-    that can be passed to ``POST /api/v1/cameras`` with ``source_type=static_video``.
-    """
-    # Validate extension
+    """Validate, write, and return the file metadata."""
     suffix = _validate_video(file.filename or "", file.content_type)
     if suffix is None:
         raise HTTPException(
@@ -68,7 +65,6 @@ async def upload_static_video(
             detail="Uploaded file is empty",
         )
 
-    # Size check (2 GB limit for video files)
     max_bytes = runtime.settings.max_upload_bytes_per_image * 200  # ~2 GB
     if len(raw) > max_bytes:
         raise HTTPException(
@@ -76,7 +72,6 @@ async def upload_static_video(
             detail=f"File too large. Maximum {max_bytes // (1024*1024)} MB",
         )
 
-    # Build safe path
     upload_dir: Path = runtime.settings.static_video_upload_path.resolve()
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -97,72 +92,124 @@ async def upload_static_video(
         "filename": safe_name,
         "source_uri": str(dest),
         "size_bytes": len(raw),
-        "content_type": file.content_type or "application/octet-stream",
     }
 
 
+def _api_response(record: StaticVideoRecord) -> dict[str, Any]:
+    return {
+        "source_uri": record.source_uri,
+        "name": record.name,
+        "source_type": record.source_type,
+    }
+
+
+@router.get("")
+def list_static_videos(
+    runtime: Runtime = Depends(get_runtime),
+) -> list[dict[str, Any]]:
+    """List all uploaded static video files."""
+    return [_api_response(r) for r in runtime.static_video_store.list()]
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_static_video_source(
-    file: UploadFile = File(..., description="Video file (.mp4, .avi, .mov, .mkv)"),
-    camera_id: str | None = None,
+async def create_static_video(
+    file: UploadFile = File(..., description="Video file (.mp4, .avi, .mov, .mkv, .m4v, .webm)"),
     name: str | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    """Upload a static video and immediately create a camera source for it.
+    """Upload a static video file and register it for processing.
 
-    This is a convenience endpoint that combines upload + camera creation.
-    The camera is created with ``source_type=static_video`` and the uploaded
-    file path as ``source_uri``. The ``StaticVideoFileIngestor`` will
-    automatically pick it up for processing.
+    The file is saved to the media store, a ``static_videos`` record is
+    created, and a corresponding camera source is registered so the
+    ``StaticVideoFileIngestor`` can pick it up.
     """
-    upload = await upload_static_video(file=file, runtime=runtime)
+    upload = await _save_upload(file, runtime)
     source_uri = upload["source_uri"]
+    video_name = name or upload["filename"]
 
-    source_id = camera_id or f"static_{uuid.uuid4().hex[:12]}"
-    source_name = name or upload["filename"]
+    # Create the API-facing static_videos record
+    record = runtime.static_video_store.create(
+        name=video_name,
+        source_uri=source_uri,
+    )
 
+    # Create the processing-facing camera source (for the ingestor)
     try:
-        record = runtime.registry.create(
+        runtime.registry.create(
             SourceRecord(
-                source_id=source_id,
-                name=source_name,
-                enabled=True,
-                tasks=set(),  # play-only by default; user can add tasks via PATCH
+                source_id=source_uri,
+                name=video_name,
                 source_uri=source_uri,
                 source_type="static_video",
                 metadata={"original_filename": upload["filename"]},
             )
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
-        ) from exc
+    except ValueError:
+        pass  # already exists — fine for idempotent re-creation
 
     return {
-        "camera_id": record.source_id,
-        "name": record.name,
-        "source_uri": source_uri,
-        "file_id": upload["file_id"],
-        "size_bytes": upload["size_bytes"],
+        **_api_response(record),
+        "file_size_bytes": upload["size_bytes"],
     }
 
 
-@router.get("")
-def list_static_video_sources(
+@router.patch("/{source_uri:path}")
+async def update_static_video(
+    source_uri: str,
+    payload: StaticVideoUpdate,
+    file: UploadFile | None = None,
     runtime: Runtime = Depends(get_runtime),
-) -> list[dict[str, Any]]:
-    """List all static video camera sources."""
-    sources = runtime.registry.list_by_type("static_video")
-    return [
-        {
-            "camera_id": s.source_id,
-            "name": s.name,
-            "enabled": s.enabled,
-            "source_uri": s.source_uri,
-            "tasks": sorted(t.value for t in s.tasks),
-            "frame_width": s.frame_width,
-            "frame_height": s.frame_height,
-        }
-        for s in sources
-    ]
+) -> dict[str, Any]:
+    """Update a static video's metadata or replace its file."""
+    current = runtime.static_video_store.get(source_uri)
+    if current is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Static video not found",
+        )
+
+    changes: dict[str, Any] = {}
+    if payload.name is not None:
+        changes["name"] = payload.name
+
+    old_source_uri = source_uri
+    if file is not None:
+        upload = await _save_upload(file, runtime)
+        changes["source_uri"] = upload["source_uri"]
+
+    if not changes:
+        return _api_response(current)
+
+    if "source_uri" in changes:
+        # Primary-key change: delete old row, insert new
+        record = runtime.static_video_store.create(
+            name=changes.get("name", current.name),
+            source_uri=changes["source_uri"],
+        )
+        runtime.static_video_store.delete(old_source_uri)
+        # Re-register the camera source under the new path
+        try:
+            runtime.registry.delete(old_source_uri)
+        except KeyError:
+            pass
+        try:
+            runtime.registry.create(
+                SourceRecord(
+                    source_id=changes["source_uri"],
+                    name=record.name,
+                    source_uri=changes["source_uri"],
+                    source_type="static_video",
+                )
+            )
+        except ValueError:
+            pass
+    else:
+        # Name-only update — source_uri unchanged
+        record = runtime.static_video_store.update(old_source_uri, **changes)
+        if "name" in changes:
+            try:
+                runtime.registry.update(old_source_uri, name=changes["name"])
+            except KeyError:
+                pass
+
+    return _api_response(record)

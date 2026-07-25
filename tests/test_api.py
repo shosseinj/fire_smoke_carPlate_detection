@@ -104,8 +104,6 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                     json={
                         "camera_id": "camera-live",
                         "name": "Live camera",
-                        "enabled": True,
-                        "tasks": ["fire_smoke"],
                         "source_uri": "rtsp://operator:secret@example.test/live",
                         "metadata": {"area": "gate"},
                     },
@@ -125,7 +123,7 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                         "camera_id": "camera-live",
                         "name": "Live camera",
                         "enabled": True,
-                        "tasks": ["fire_smoke"],
+                        "tasks": [],
                         "frame_width": 640,
                         "frame_height": 640,
                         "updated_at_utc": event["camera"]["updated_at_utc"],
@@ -143,7 +141,6 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                     "/api/v1/cameras/camera-live",
                     json={
                         "name": "Updated camera",
-                        "tasks": ["fire_smoke", "plate_recognition"],
                         "frame_width": 960,
                         "frame_height": 544,
                     },
@@ -152,25 +149,17 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                 assert updated.json()["name"] == "Updated camera"
                 assert updated.json()["frame_width"] == 960
                 assert updated.json()["frame_height"] == 544
-                assert set(updated.json()["tasks"]) == {
-                    "fire_smoke",
-                    "plate_recognition",
-                }
                 assert websocket.receive_json()["action"] == "updated"
 
                 replaced = client.put(
                     "/api/v1/cameras/camera-live",
                     json={
                         "name": "Replacement camera",
-                        "enabled": False,
-                        "tasks": ["plate_recognition"],
                         "source_uri": "data/replacement.mp4",
                         "metadata": {},
                     },
                 )
                 assert replaced.status_code == 200
-                assert replaced.json()["enabled"] is False
-                assert websocket.receive_json()["camera"]["enabled"] is False
 
                 deleted = client.delete("/api/v1/cameras/camera-live")
                 assert deleted.status_code == 204
@@ -202,11 +191,10 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
 
             single = client.patch(
                 f"/api/v1/cameras/{camera_ids[0]}",
-                json={"name": "Single update", "enabled": False},
+                json={"name": "Single update"},
             )
             assert single.status_code == 200
             assert single.json()["name"] == "Single update"
-            assert single.json()["enabled"] is False
             assert "metadata" in single.json()
             assert "updated_at_utc" in single.json()
 
@@ -215,8 +203,6 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
                 json=[
                     {
                         "camera_id": f"  {camera_ids[0]}  ",
-                        "enabled": True,
-                        "tasks": [],
                     },
                     {
                         "camera_id": camera_ids[1],
@@ -228,8 +214,6 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
             )
             assert bulk.status_code == 200
             assert [item["camera_id"] for item in bulk.json()] == camera_ids
-            assert bulk.json()[0]["enabled"] is True
-            assert bulk.json()[0]["tasks"] == []
             assert bulk.json()[1]["name"] == "Bulk update"
             assert bulk.json()[1]["frame_width"] == 960
             assert bulk.json()[1]["frame_height"] == 544
@@ -238,7 +222,7 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
                 "/api/v1/cameras/bulk",
                 json=[
                     {"camera_id": camera_ids[0], "name": "Must not apply"},
-                    {"camera_id": "missing-camera", "enabled": False},
+                    {"camera_id": "missing-camera", "name": "Should fail"},
                 ],
             )
             assert rejected.status_code == 404
@@ -249,8 +233,8 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
             duplicate = client.patch(
                 "/api/v1/cameras/bulk",
                 json=[
-                    {"camera_id": camera_ids[0], "enabled": False},
-                    {"camera_id": camera_ids[0], "enabled": True},
+                    {"camera_id": camera_ids[0]},
+                    {"camera_id": camera_ids[0]},
                 ],
             )
             assert duplicate.status_code == 422
@@ -293,7 +277,7 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert "Video AI Operations Wall" in response.text
             assert "synchronizeDashboard" in response.text
-            assert "/api/v1/cameras" in response.text
+            assert "/api/v1/sources/preview-config" in response.text
             assert "/api/v1/broadcast/ws" in response.text
             assert "Fullscreen wall" in response.text
             assert "data-fullscreen-source" in response.text
@@ -437,7 +421,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
                 "requestBody"
             ]["content"]
             assert "multipart/form-data" in export_body
-            assert "/api/v1/cameras/{camera_id}/tasks" in schema["paths"]
+            assert "/api/v1/sources/preview-config" in schema["paths"]
             assert any(tag["name"] == "plate-settings" for tag in schema["tags"])
             assert any(tag["name"] == "face-recognition" for tag in schema["tags"])
             assert any(tag["name"] == "human-tracking" for tag in schema["tags"])
@@ -567,8 +551,8 @@ def test_general_model_settings_and_play_only_camera_api(
             assert downloaded.content == b"engine"
 
             camera_id = test_runtime.registry.list()[0].source_id
-            play_only = client.put(
-                f"/api/v1/cameras/{camera_id}/tasks",
+            play_only = client.patch(
+                f"/api/v1/sources/{camera_id}",
                 json={"tasks": []},
             )
             assert play_only.status_code == 200

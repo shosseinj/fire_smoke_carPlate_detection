@@ -103,7 +103,7 @@ class TestCamerasCrud:
     MODULE = "cameras"
 
     def test_create_camera(self, crud):
-        resp = crud.client.post("/api/v1/cameras", json={"camera_id": "crud-cam-1", "name": "CRUD Cam", "enabled": True, "source_uri": "rtsp://test/crud"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/api/v1/cameras", json={"camera_id": "crud-cam-1", "name": "CRUD Cam", "source_uri": "rtsp://test/crud"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
 
     def test_list_cameras(self, crud):
@@ -113,17 +113,13 @@ class TestCamerasCrud:
 
     def test_get_update_delete_camera(self, crud):
         cam_id = "crud-cam-cycle"
-        crud.client.post("/api/v1/cameras", json={"camera_id": cam_id, "name": "Cycle", "enabled": True, "source_uri": "rtsp://test/cycle"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        crud.client.post("/api/v1/cameras", json={"camera_id": cam_id, "name": "Cycle", "source_uri": "rtsp://test/cycle"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         resp = crud.client.get(f"/api/v1/cameras/{cam_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
         assert resp.json()["camera_id"] == cam_id
         resp = crud.client.patch(f"/api/v1/cameras/{cam_id}", json={"name": "Updated"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
         assert resp.json()["name"] == "Updated"
-        resp = crud.client.post(f"/api/v1/cameras/{cam_id}/disable", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
-        resp = crud.client.post(f"/api/v1/cameras/{cam_id}/enable", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
         resp = crud.client.delete(f"/api/v1/cameras/{cam_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code in (200, 204), resp.text
 
@@ -457,7 +453,7 @@ class TestPlateSettingsApi:
         _ok(resp)
 
     def test_camera_settings(self, crud):
-        crud.client.post("/api/v1/cameras", json={"camera_id": "ps-cam-1", "name": "PS Cam", "enabled": True, "source_uri": "rtsp://test/ps"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        crud.client.post("/api/v1/cameras", json={"camera_id": "ps-cam-1", "name": "PS Cam", "source_uri": "rtsp://test/ps"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         resp = crud.client.get("/api/v1/plate-settings/cameras/ps-cam-1", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
 

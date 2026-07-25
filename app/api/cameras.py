@@ -17,7 +17,6 @@ from app.schemas import (
     CameraBulkUpdate,
     CameraReplace,
     CameraResponse,
-    CameraTaskUpdate,
     CameraSettingsPatch,
     CameraUpdate,
 )
@@ -41,8 +40,6 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
     return CameraResponse(
         camera_id=record.source_id,
         name=record.name,
-        enabled=record.enabled,
-        tasks=sorted(record.tasks, key=lambda task: task.value),
         source_uri=source_uri,
         frame_width=record.frame_width,
         frame_height=record.frame_height,
@@ -65,15 +62,9 @@ def _legacy_response(record: SourceRecord, runtime: Runtime) -> dict[str, object
         "camera_type": "rtsp" if (record.source_uri or "").lower().startswith("rtsp") else "file",
         "resolution": f"{record.frame_width}x{record.frame_height}",
         "fps": runtime.resolve_camera_settings(record.source_id).get("video_ingest_fps"),
-        "is_active": record.enabled,
         "created_at": record.created_at_utc,
         "updated_at": record.updated_at_utc,
     }
-
-
-class LegacyCameraBatchActiveUpdate(BaseModel):
-    ids: list[str] = Field(min_length=1)
-    active_status: list[bool] = Field(min_length=1)
 
 
 class LegacyCameraHealthCheckRequest(BaseModel):
@@ -118,8 +109,6 @@ def get_preview_config(
             {
                 "source_id": record.source_id,
                 "name": record.name,
-                "enabled": record.enabled,
-                "tasks": sorted(task.value for task in record.tasks),
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
                 "preview_path": preview_stream_path(record.source_id),
@@ -127,23 +116,6 @@ def get_preview_config(
             for record in runtime.registry.list()
         ],
     }
-
-
-@router.get("/active")
-def list_active_cameras_legacy(runtime: Runtime = Depends(get_runtime)) -> list[dict[str, object]]:
-    return [_legacy_response(item, runtime) for item in runtime.registry.list() if item.enabled]
-
-
-@router.get("/active/effective")
-def list_active_effective_cameras_legacy(runtime: Runtime = Depends(get_runtime)) -> list[dict[str, object]]:
-    return [
-        {
-            **_legacy_response(item, runtime),
-            "effective_settings": runtime.resolve_camera_settings(item.source_id),
-        }
-        for item in runtime.registry.list()
-        if item.enabled
-    ]
 
 
 @router.get("/{camera_id}/effective-settings")
@@ -155,24 +127,6 @@ def get_effective_camera_settings_legacy(
     if record is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     return {**_legacy_response(record, runtime), "effective_settings": runtime.resolve_camera_settings(camera_id)}
-
-
-@router.patch("/batch-active")
-def update_camera_active_legacy(
-    payload: LegacyCameraBatchActiveUpdate,
-    runtime: Runtime = Depends(get_runtime),
-) -> dict[str, object]:
-    if len(payload.ids) != len(payload.active_status):
-        raise HTTPException(status_code=400, detail="ids and active_status must have equal lengths")
-    missing: list[str] = []
-    updated = 0
-    for camera_id, enabled in zip(payload.ids, payload.active_status):
-        if runtime.registry.get(camera_id) is None:
-            missing.append(camera_id)
-            continue
-        runtime.registry.update(camera_id, enabled=enabled)
-        updated += 1
-    return {"updated_count": updated, "failed_ids": missing}
 
 
 @router.post("/health-check")
@@ -194,17 +148,6 @@ def check_camera_health_legacy(payload: LegacyCameraHealthCheckRequest) -> dict[
         }
     finally:
         capture.release()
-
-
-@router.post("/create-cameras")
-def legacy_create_cameras(runtime: Runtime = Depends(get_runtime)) -> dict[str, object]:
-    """Keep the legacy setup route reachable without copying its private seed URLs."""
-    cameras = [_legacy_response(item, runtime) for item in runtime.registry.list()]
-    return {
-        "message": "Use the current camera create endpoint to add sources",
-        "delete_previous": False,
-        "cameras": cameras,
-    }
 
 
 @router.delete("/delete-all-cameras")
@@ -233,8 +176,6 @@ def create_camera(
             SourceRecord(
                 source_id=payload.camera_id,
                 name=payload.name,
-                enabled=payload.enabled,
-                tasks=set(payload.tasks),
                 source_uri=payload.source_uri,
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
@@ -290,33 +231,6 @@ def get_camera(
         )
 
     return _response(record, runtime)
-
-
-@router.put(
-    "/{camera_id}/tasks",
-    response_model=CameraResponse,
-    summary="Select AI tasks or play-only mode",
-    description=(
-        "Send an empty tasks array for video playback with zero inference. "
-        "The camera remains enabled and continues through DeepStream."
-    ),
-)
-def update_camera_tasks(
-    camera_id: str,
-    payload: CameraTaskUpdate,
-    runtime: Runtime = Depends(get_runtime),
-) -> CameraResponse:
-    try:
-        record = runtime.registry.update(
-            camera_id,
-            tasks=payload.tasks,
-        )
-        return _response(record, runtime)
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Camera not found",
-        ) from exc
 
 
 @router.patch(
@@ -428,49 +342,11 @@ def replace_camera(
         record = runtime.registry.update(
             camera_id,
             name=payload.name,
-            enabled=payload.enabled,
-            tasks=payload.tasks,
             source_uri=payload.source_uri,
             frame_width=payload.frame_width,
             frame_height=payload.frame_height,
             source_type=payload.source_type,
             metadata=payload.metadata,
-        )
-        return _response(record, runtime)
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Camera not found",
-        ) from exc
-
-
-@router.post("/{camera_id}/enable", response_model=CameraResponse)
-def enable_camera(
-    camera_id: str,
-    runtime: Runtime = Depends(get_runtime),
-) -> CameraResponse:
-    try:
-        record = runtime.registry.update(
-            camera_id,
-            enabled=True,
-        )
-        return _response(record, runtime)
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Camera not found",
-        ) from exc
-
-
-@router.post("/{camera_id}/disable", response_model=CameraResponse)
-def disable_camera(
-    camera_id: str,
-    runtime: Runtime = Depends(get_runtime),
-) -> CameraResponse:
-    try:
-        record = runtime.registry.update(
-            camera_id,
-            enabled=False,
         )
         return _response(record, runtime)
     except KeyError as exc:

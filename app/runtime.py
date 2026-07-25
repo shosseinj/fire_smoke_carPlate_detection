@@ -32,6 +32,7 @@ from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.import_progress_store import ImportProgressStore
+from app.core.static_video_store import StaticVideoStore
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceRecord, SourceRegistry
@@ -78,6 +79,7 @@ class Runtime:
     request_store: RequestStore
     detection_log_store: DetectionLogStore
     import_progress: ImportProgressStore
+    static_video_store: StaticVideoStore
     general_settings: GeneralSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     static_video_ingestor: VideoFileIngestor | None = None
@@ -458,6 +460,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     request_store = RequestStore(database)
     detection_log_store = DetectionLogStore(database)
     import_progress = ImportProgressStore(database)
+    static_video_store = StaticVideoStore(database)
 
     # Seed database with foundational records and sample data (idempotent)
     try:
@@ -851,6 +854,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         request_store=request_store,
         detection_log_store=detection_log_store,
         import_progress=import_progress,
+        static_video_store=static_video_store,
         general_settings=general_settings,
         video_ingestor=video_ingestor,
         static_video_ingestor=static_video_ingestor,

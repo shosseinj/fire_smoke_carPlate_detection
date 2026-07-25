@@ -38,7 +38,7 @@ def test_dashboard_uses_public_preview_and_bounded_multi_task_overlays() -> None
         Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
     ).read_text(encoding="utf-8")
 
-    assert 'fetch("/api/v1/cameras/preview-config"' in dashboard
+    assert 'fetch("/api/v1/sources/preview-config"' in dashboard
     assert "source.preview_path" in dashboard
     assert "requestVideoFrameCallback" in dashboard
     assert "OVERLAY_STALE_MS = 4000" in dashboard

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from urllib.parse import urlsplit
 
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+
+from app.core.media_preview import preview_stream_path
 from app.core.source_registry import SourceRecord
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
@@ -26,6 +29,47 @@ def _response(record: SourceRecord) -> SourceResponse:
 @router.get("", response_model=list[SourceResponse])
 def list_sources(runtime: Runtime = Depends(get_runtime)) -> list[SourceResponse]:
     return [_response(item) for item in runtime.registry.list()]
+
+
+@router.get("/preview-config")
+def get_preview_config(
+    request: Request,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict:
+    configured_base = runtime.settings.media_preview_whep_base_url
+    if configured_base:
+        parsed = urlsplit(configured_base)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise HTTPException(status_code=500, detail="Invalid public preview URL")
+        whep_base_url = configured_base
+    else:
+        hostname = request.url.hostname or "127.0.0.1"
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        whep_base_url = f"{request.url.scheme}://{hostname}:8789"
+    return {
+        "enabled": runtime.settings.media_preview_enabled,
+        "whep_base_url": whep_base_url,
+        "sources": [
+            {
+                "source_id": record.source_id,
+                "name": record.name,
+                "enabled": record.enabled,
+                "tasks": sorted(task.value for task in record.tasks),
+                "frame_width": record.frame_width,
+                "frame_height": record.frame_height,
+                "preview_path": preview_stream_path(record.source_id),
+            }
+            for record in runtime.registry.list()
+        ],
+    }
 
 
 @router.post("", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)

@@ -881,7 +881,7 @@
         if (synchronizationRunning) return;
         synchronizationRunning = true;
         try {
-          const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/cameras/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
+          const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/sources/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
           if (!sourcesResponse.ok || !stateResponse.ok) throw new Error("API unavailable");
           const previewConfig = await sourcesResponse.json();
           previewBaseUrl = previewConfig.whep_base_url;

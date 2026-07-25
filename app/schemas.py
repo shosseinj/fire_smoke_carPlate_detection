@@ -82,13 +82,6 @@ class SourceResponse(BaseModel):
 class CameraCreate(BaseModel):
     camera_id: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=300)
-    enabled: bool = True
-    tasks: set[TaskName] = Field(
-        default_factory=set,
-        description=(
-            "AI tasks. Use [] for play-only or select any combination of tasks."
-        ),
-    )
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
@@ -113,11 +106,6 @@ class CameraCreate(BaseModel):
 
 class CameraUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=300)
-    enabled: bool | None = None
-    tasks: set[TaskName] | None = Field(
-        default=None,
-        description="Use [] to keep streaming this camera without AI inference.",
-    )
     source_uri: str | None = None
     frame_width: int | None = Field(default=None, ge=16, le=4096)
     frame_height: int | None = Field(default=None, ge=16, le=4096)
@@ -146,11 +134,6 @@ class CameraBulkUpdate(CameraUpdate):
 
 class CameraReplace(BaseModel):
     name: str = Field(min_length=1, max_length=300)
-    enabled: bool = True
-    tasks: set[TaskName] = Field(
-        default_factory=set,
-        description="Use [] for play-only mode.",
-    )
     source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
@@ -168,8 +151,6 @@ class CameraReplace(BaseModel):
 class CameraResponse(BaseModel):
     camera_id: str
     name: str
-    enabled: bool
-    tasks: list[TaskName]
     source_uri: str | None
     frame_width: int
     frame_height: int
@@ -207,12 +188,3 @@ class CameraSettingsPatch(BaseModel):
     face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
     face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
-
-class CameraTaskUpdate(BaseModel):
-    tasks: set[TaskName] = Field(
-        default_factory=set,
-        description=(
-            "Choose [], [fire_smoke], [plate_recognition], [face_recognition], or any combination. "
-            "An empty list keeps video playback active and disables AI work."
-        ),
-    )

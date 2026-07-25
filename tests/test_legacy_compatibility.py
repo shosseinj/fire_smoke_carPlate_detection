@@ -18,10 +18,7 @@ def test_legacy_http_routes_are_registered() -> None:
     )
     paths = {getattr(route, "path", "") for item in routers for route in item.routes}
     expected = {
-        "/api/v1/cameras/active",
-        "/api/v1/cameras/active/effective",
         "/api/v1/cameras/{camera_id}/effective-settings",
-        "/api/v1/cameras/batch-active",
         "/api/v1/cameras/health-check",
         "/api/v1/car-plates",
         "/api/v1/fire-logs",

@@ -87,8 +87,6 @@ def test_core_backend_routes_are_registered() -> None:
         "/api/v1/personnel-images/personnel/{personnel_id}",
         "/api/v1/logs/filter",
         "/api/v1/logs/{log_id}",
-        "/api/v1/cameras/active",
-        "/api/v1/cameras/active/effective",
         "/api/v1/cameras/{camera_id}/effective-settings",
         "/rooms/",
         "/buildings/",
