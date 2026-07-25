@@ -38,9 +38,8 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
         source_uri = VideoFileIngestor.redact_uri(source_uri)
 
     return CameraResponse(
-        camera_id=record.source_id,
-        name=record.name,
         source_uri=source_uri,
+        name=record.name,
         frame_width=record.frame_width,
         frame_height=record.frame_height,
         source_type=record.source_type,
@@ -48,20 +47,20 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
         settings_overrides=dict(record.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {}),
-        effective_settings=(runtime.resolve_camera_settings(record.source_id) if runtime is not None else {}),
+        effective_settings=(runtime.resolve_camera_settings(record.source_uri) if runtime is not None else {}),
     )
 
 
 def _legacy_response(record: SourceRecord, runtime: Runtime) -> dict[str, object]:
     """Expose the old camera field names without changing the native contract."""
     return {
-        "id": record.source_id,
-        "camera_id": record.source_id,
+        "id": record.source_uri,
+        "camera_id": record.source_uri,
         "camera_name": record.name,
         "camera_url": VideoFileIngestor.redact_uri(record.source_uri) if record.source_uri else None,
         "camera_type": "rtsp" if (record.source_uri or "").lower().startswith("rtsp") else "file",
         "resolution": f"{record.frame_width}x{record.frame_height}",
-        "fps": runtime.resolve_camera_settings(record.source_id).get("video_ingest_fps"),
+        "fps": runtime.resolve_camera_settings(record.source_uri).get("video_ingest_fps"),
         "created_at": record.created_at_utc,
         "updated_at": record.updated_at_utc,
     }
@@ -107,11 +106,11 @@ def get_preview_config(
         "whep_base_url": whep_base_url,
         "sources": [
             {
-                "source_id": record.source_id,
+                "source_uri": record.source_uri,
                 "name": record.name,
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
-                "preview_path": preview_stream_path(record.source_id),
+                "preview_path": preview_stream_path(record.source_uri),
             }
             for record in runtime.registry.list()
         ],
@@ -152,7 +151,7 @@ def check_camera_health_legacy(payload: LegacyCameraHealthCheckRequest) -> dict[
 
 @router.delete("/delete-all-cameras")
 def legacy_delete_all_cameras(runtime: Runtime = Depends(get_runtime)) -> dict[str, int]:
-    deleted_count = sum(1 for item in runtime.registry.list() if runtime.registry.delete(item.source_id))
+    deleted_count = sum(1 for item in runtime.registry.list() if runtime.registry.delete(item.source_uri))
     return {"deleted_count": deleted_count}
 
 
@@ -174,9 +173,8 @@ def create_camera(
     try:
         record = runtime.registry.create(
             SourceRecord(
-                source_id=payload.camera_id,
-                name=payload.name,
                 source_uri=payload.source_uri,
+                name=payload.name,
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
                 source_type=payload.source_type,
@@ -253,26 +251,26 @@ def update_cameras_bulk(
             detail="At least one camera must be provided",
         )
 
-    camera_ids = [item.camera_id for item in payload]
+    camera_uris = [item.source_uri for item in payload]
 
-    if len(camera_ids) != len(set(camera_ids)):
+    if len(camera_uris) != len(set(camera_uris)):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Duplicate camera IDs are not allowed",
+            detail="Duplicate source URIs are not allowed",
         )
 
-    missing_camera_ids = [
-        camera_id
-        for camera_id in camera_ids
-        if runtime.registry.get(camera_id) is None
+    missing_uris = [
+        camera_uri
+        for camera_uri in camera_uris
+        if runtime.registry.get(camera_uri) is None
     ]
 
-    if missing_camera_ids:
+    if missing_uris:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "message": "Some cameras were not found",
-                "camera_ids": missing_camera_ids,
+                "source_uris": missing_uris,
             },
         )
 
@@ -281,16 +279,16 @@ def update_cameras_bulk(
     for item in payload:
         values = item.model_dump(
             exclude_unset=True,
-            exclude={"camera_id"},
+            exclude={"source_uri"},
         )
 
         if not values:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"No update fields provided for camera: {item.camera_id}",
+                detail=f"No update fields provided for camera: {item.source_uri}",
             )
 
-        prepared_updates.append((item.camera_id, values))
+        prepared_updates.append((item.source_uri, values))
 
     updated_cameras: list[CameraResponse] = []
 

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-
+import os
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
 
@@ -127,6 +127,15 @@ app.include_router(project_info_router)
 app.include_router(import_progress_router)
 app.include_router(static_videos_router)
 app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
+os.makedirs("media/fire_smoke_snapshots", exist_ok=True)
+os.makedirs("media/human_face_videos", exist_ok=True)
+os.makedirs("media/human_snapshots", exist_ok=True)
+os.makedirs("media/human_videos", exist_ok=True)
+os.makedirs("media/personnel_cropped_faces", exist_ok=True)
+os.makedirs("media/personnel_snapshots", exist_ok=True)
+os.makedirs("media/personnel_zip_errors", exist_ok=True)
+os.makedirs("media/plate_snapshots", exist_ok=True)
+os.makedirs("media/static_videos", exist_ok=True)
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,allow_origins=["*"],

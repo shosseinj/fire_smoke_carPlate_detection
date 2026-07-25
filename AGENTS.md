@@ -251,6 +251,19 @@ There is no `camera_id` in the `sources` table. Per‑source settings are keyed 
 
 `GET /api/v1/sources`, `POST /api/v1/sources`, `PATCH /api/v1/sources/{id}`, and related endpoints return the resolved 9 confidence thresholds on every `SourceResponse`. Creating or updating a source with confidence fields (`fire_confidence`, `plate_confidence`, …) persists per‑source overrides to the `sources` table via `SourceSettingsStore.set()`. When `source_uri` is missing or no override exists the `__default__` global values are returned.
 
+### `cameras` table (source identity)
+
+The `cameras` table (defined in `app/database.py`) now uses **`source_uri` as its primary key** (TEXT, NOT NULL). The `camera_id` column and `SourceRecord.source_id` field have been removed. Every source/camera is identified by its `source_uri`:
+
+- `SourceRecord.source_uri` is now the sole identity field (was `source_id`)
+- `CameraResponse` no longer has `camera_id` — use `source_uri` instead
+- `SourceResponse` no longer has `source_id` — use `source_uri` instead  
+- `CameraCreate` and `SourceCreate` take `source_uri` as the required identifier
+- `SourceRegistry` methods (`get`, `require`, `update`, `delete`) key by `source_uri`
+- The `sources` table and `cameras` table share the same `source_uri` key, enabling unified per-source settings
+
+Migration `20260725_0016` handles the schema change: NULL `source_uri` values are backfilled from the old `camera_id`, then `camera_id` is dropped and `source_uri` becomes the primary key.
+
 ### Multi-agent workflow
 
 Use multiple agents when the task contains independent investigation, implementation, testing, or review work. One primary agent must act as coordinator.

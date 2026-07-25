@@ -159,7 +159,7 @@ class Runtime:
         self.broadcast.set_draw_zones(gs.draw_zones)
         self._refresh_all_source_zones()
         for camera in self.registry.list():
-            self._restart_ingestor_source(camera.source_id)
+            self._restart_ingestor_source(camera.source_uri)
 
     def _restart_ingestor_source(self, camera_id: str) -> None:
         """Restart the source in whichever ingestor owns it."""
@@ -179,7 +179,7 @@ class Runtime:
             # section_id is stored in metadata, not as a direct SourceRecord field
             section_id = camera.metadata.get("section_id") if camera.metadata else None
             if section_id is None:
-                self.broadcast.clear_source_zones(camera.source_id)
+                self.broadcast.clear_source_zones(camera.source_uri)
                 continue
             polygons = self.location_store.get_polygons_for_section(section_id)
             if polygons:

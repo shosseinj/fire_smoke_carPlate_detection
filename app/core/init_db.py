@@ -185,26 +185,24 @@ def create_default_cameras(
 
     created: list[SourceRecord] = []
     for idx, url in enumerate(_SEED_CAMERA_URLS, 1):
-        source_id = _seed_camera_id(url, idx)
         metadata: dict[str, Any] = {}
         if section_id is not None:
             metadata["section_id"] = section_id
         try:
             record = registry.create(
                 SourceRecord(
-                    source_id=source_id,
+                    source_uri=url,
                     name=_camera_name_from_url(url, idx),
                     enabled=True,
                     tasks=_DEFAULT_SEED_TASKS,
-                    source_uri=url,
                     source_type="rtsp",
                     metadata=metadata,
                 )
             )
             created.append(record)
-            LOGGER.info("INIT_DB created camera '%s' id=%s", record.name, record.source_id)
+            LOGGER.info("INIT_DB created camera '%s' uri=%s", record.name, record.source_uri)
         except (ValueError, Exception) as exc:
-            LOGGER.warning("INIT_DB skip camera %s: %s", source_id, exc)
+            LOGGER.warning("INIT_DB skip camera %s: %s", url, exc)
     return created
 
 

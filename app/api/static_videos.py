@@ -137,9 +137,8 @@ async def create_static_video(
     try:
         runtime.registry.create(
             SourceRecord(
-                source_id=source_uri,
-                name=video_name,
                 source_uri=source_uri,
+                name=video_name,
                 source_type="static_video",
                 metadata={"original_filename": upload["filename"]},
             )
@@ -195,9 +194,8 @@ async def update_static_video(
         try:
             runtime.registry.create(
                 SourceRecord(
-                    source_id=changes["source_uri"],
-                    name=record.name,
                     source_uri=changes["source_uri"],
+                    name=record.name,
                     source_type="static_video",
                 )
             )

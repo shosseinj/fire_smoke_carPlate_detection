@@ -223,7 +223,7 @@ class AnnotatedBroadcastHub:
         camera = None
         if record is not None:
             camera = {
-                "camera_id": record.source_id,
+                "source_uri": record.source_uri,
                 "name": record.name,
                 "enabled": record.enabled,
                 "tasks": sorted(task.value for task in record.tasks),
@@ -235,15 +235,15 @@ class AnnotatedBroadcastHub:
             payload={
                 "type": "camera_changed",
                 "action": change.action,
-                "camera_id": change.source_id,
+                "source_uri": change.source_uri,
                 "revision": change.revision,
                 "camera": camera,
             }
         )
         with self._condition:
-            self._pending.pop(change.source_id, None)
-            self._latest.pop(change.source_id, None)
-            self._latest_face_results.pop(change.source_id, None)
+            self._pending.pop(change.source_uri, None)
+            self._latest.pop(change.source_uri, None)
+            self._latest_face_results.pop(change.source_uri, None)
             if self._enabled:
                 for target in self._subscribers.values():
                     try:

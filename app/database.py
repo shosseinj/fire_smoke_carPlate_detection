@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0015"
+ALEMBIC_HEAD_REVISION = "20260725_0016"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -65,9 +65,10 @@ Index("idx_revoked_expires", revoked_tokens.c.expires_at_utc)
 
 cameras = Table(
     "cameras", metadata,
-    Column("camera_id", Text, primary_key=True), Column("name", Text, nullable=False),
+    Column("source_uri", Text, primary_key=True),
+    Column("name", Text, nullable=False),
     Column("enabled", Integer, nullable=False, server_default="1"),
-    Column("tasks_json", Text, nullable=False, server_default="[]"), Column("source_uri", Text),
+    Column("tasks_json", Text, nullable=False, server_default="[]"),
     Column("frame_width", Integer, nullable=False, server_default="640"),
     Column("frame_height", Integer, nullable=False, server_default="640"),
     Column("section_id", Integer),

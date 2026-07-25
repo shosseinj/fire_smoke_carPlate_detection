@@ -9,11 +9,10 @@ from app.core.types import TaskName
 
 
 class SourceCreate(BaseModel):
-    source_id: str = Field(min_length=1, max_length=200)
+    source_uri: str = Field(min_length=1, max_length=500)
     name: str = Field(min_length=1, max_length=300)
     enabled: bool = True
     tasks: set[TaskName] = Field(default_factory=set)
-    source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
@@ -29,12 +28,12 @@ class SourceCreate(BaseModel):
     face_detection_confidence: float | None = Field(default=None, ge=0, le=1)
     face_recognition_threshold: float | None = Field(default=None, ge=0, le=1)
 
-    @field_validator("source_id")
+    @field_validator("source_uri")
     @classmethod
-    def clean_source_id(cls, value: str) -> str:
+    def clean_source_uri(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("source_id cannot be blank")
+            raise ValueError("source_uri cannot be blank")
         return value
 
     @field_validator("source_type")
@@ -87,13 +86,13 @@ class FrameRoundResponse(BaseModel):
 
 
 class SourceResponse(BaseModel):
-    source_id: str
+    source_uri: str
     name: str
     enabled: bool
     tasks: list[TaskName]
-    source_uri: str | None
     frame_width: int
     frame_height: int
+    source_type: str = RTSP
     metadata: dict[str, Any]
     created_at_utc: str
     updated_at_utc: str
@@ -110,20 +109,19 @@ class SourceResponse(BaseModel):
 
 
 class CameraCreate(BaseModel):
-    camera_id: str = Field(min_length=1, max_length=200)
+    source_uri: str = Field(min_length=1, max_length=500)
     name: str = Field(min_length=1, max_length=300)
-    source_uri: str | None = None
     frame_width: int = Field(default=640, ge=16, le=4096)
     frame_height: int = Field(default=640, ge=16, le=4096)
     source_type: str = RTSP
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("camera_id")
+    @field_validator("source_uri")
     @classmethod
-    def clean_camera_id(cls, value: str) -> str:
+    def clean_source_uri(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("camera_id cannot be blank")
+            raise ValueError("source_uri cannot be blank")
         return value
 
     @field_validator("source_type")
@@ -151,14 +149,14 @@ class CameraUpdate(BaseModel):
 
 
 class CameraBulkUpdate(CameraUpdate):
-    camera_id: str = Field(min_length=1, max_length=200)
+    source_uri: str = Field(min_length=1, max_length=500)
 
-    @field_validator("camera_id")
+    @field_validator("source_uri")
     @classmethod
-    def clean_camera_id(cls, value: str) -> str:
+    def clean_source_uri(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("camera_id cannot be blank")
+            raise ValueError("source_uri cannot be blank")
         return value
 
 
@@ -179,9 +177,8 @@ class CameraReplace(BaseModel):
 
 
 class CameraResponse(BaseModel):
-    camera_id: str
+    source_uri: str
     name: str
-    source_uri: str | None
     frame_width: int
     frame_height: int
     source_type: str = RTSP
@@ -189,8 +186,6 @@ class CameraResponse(BaseModel):
     created_at_utc: str
     updated_at_utc: str
     settings_overrides: dict[str, Any] = Field(default_factory=dict)
-    # effective_settings: dict[str, Any] = Field(default_factory=dict)
-
 
     @field_validator("source_type")
     @classmethod

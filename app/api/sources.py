@@ -95,13 +95,13 @@ def get_preview_config(
         "whep_base_url": whep_base_url,
         "sources": [
             {
-                "source_id": record.source_id,
+                "source_uri": record.source_uri,
                 "name": record.name,
                 "enabled": record.enabled,
                 "tasks": sorted(task.value for task in record.tasks),
                 "frame_width": record.frame_width,
                 "frame_height": record.frame_height,
-                "preview_path": preview_stream_path(record.source_id),
+                "preview_path": preview_stream_path(record.source_uri),
             }
             for record in runtime.registry.list()
         ],
@@ -113,11 +113,10 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
     try:
         record = runtime.registry.create(
             SourceRecord(
-                source_id=payload.source_id,
+                source_uri=payload.source_uri,
                 name=payload.name,
                 enabled=payload.enabled,
                 tasks=set(payload.tasks),
-                source_uri=payload.source_uri,
                 frame_width=payload.frame_width,
                 frame_height=payload.frame_height,
                 metadata=dict(payload.metadata),

@@ -171,11 +171,11 @@ class VideoFileIngestor:
                 capture = self.capture_factory(resolved_uri)
         except Exception as exc:
             self._open_failures += 1
-            self._retry_after[record.source_id] = (
+            self._retry_after[record.source_uri] = (
                 time.monotonic() + self.rtsp_reconnect_seconds
             )
             self._last_error = (
-                f"Could not create reader for {record.source_id} ({display_uri}): "
+                f"Could not create reader for {record.source_uri} ({display_uri}): "
                 f"{type(exc).__name__}"
             )
             LOGGER.error(self._last_error)
@@ -183,20 +183,20 @@ class VideoFileIngestor:
         if not capture.isOpened():
             capture.release()
             self._open_failures += 1
-            self._retry_after[record.source_id] = (
+            self._retry_after[record.source_uri] = (
                 time.monotonic() + self.rtsp_reconnect_seconds
             )
             self._last_error = (
-                f"Could not open video source {record.source_id}: {display_uri}"
+                f"Could not open video source {record.source_uri}: {display_uri}"
             )
             LOGGER.error(self._last_error)
             return None
-        self._retry_after.pop(record.source_id, None)
+        self._retry_after.pop(record.source_uri, None)
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
         if fps <= 0.0:
             fps = self.target_fps
         return VideoState(
-            source_id=record.source_id,
+            source_id=record.source_uri,
             source_uri=record.source_uri,
             display_uri=display_uri,
             is_live=is_live,
@@ -260,7 +260,7 @@ class VideoFileIngestor:
                 self.max_sources,
             )
             records = records[: self.max_sources]
-        active_ids = {record.source_id for record in records}
+        active_ids = {record.source_uri for record in records}
         for source_id in set(self._states) - active_ids:
             self._release(source_id)
         for source_id in set(self._retry_after) - active_ids:
@@ -273,33 +273,33 @@ class VideoFileIngestor:
         metadata: list[dict[str, Any]] = []
 
         for record in records:
-            state = self._states.get(record.source_id)
+            state = self._states.get(record.source_uri)
             if state is not None and (
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
                 or state.frame_height != record.frame_height
             ):
-                self._release(record.source_id)
-                self._retry_after.pop(record.source_id, None)
+                self._release(record.source_uri)
+                self._retry_after.pop(record.source_uri, None)
                 state = None
             if state is None:
-                if self._retry_after.get(record.source_id, 0.0) > time.monotonic():
+                if self._retry_after.get(record.source_uri, 0.0) > time.monotonic():
                     continue
                 state = self._open(record)
                 if state is None:
                     continue
-                self._states[record.source_id] = state
+                self._states[record.source_uri] = state
 
             ok, frame, source_time = self._read(state)
             if not ok:
                 if state.is_live:
                     self._reconnects += 1
-                    self._retry_after[record.source_id] = (
+                    self._retry_after[record.source_uri] = (
                         time.monotonic() + self.rtsp_reconnect_seconds
                     )
-                    self._release(record.source_id)
+                    self._release(record.source_uri)
                 elif not self.loop:
-                    self._release(record.source_id)
+                    self._release(record.source_uri)
                 continue
             state.source_frame_width = int(frame.shape[1])
             state.source_frame_height = int(frame.shape[0])
@@ -311,7 +311,7 @@ class VideoFileIngestor:
                     interpolation=cv2.INTER_AREA,
                 )
             frames.append(frame)
-            source_ids.append(record.source_id)
+            source_ids.append(record.source_uri)
             frame_indexes.append(state.frame_index)
             source_times.append(source_time)
             metadata.append(

@@ -224,7 +224,7 @@ class MediaPreviewPublisher:
         Gst, _ = self._require_runtime()
         assert record.source_uri is not None
         is_rtsp = VideoFileIngestor.is_rtsp_uri(record.source_uri)
-        safe_id = self._safe_name(record.source_id)
+        safe_id = self._safe_name(record.source_uri)
         pipeline = Gst.Pipeline.new(f"preview_pipeline_{safe_id}")
         if pipeline is None:
             raise RuntimeError("Could not create preview pipeline")
@@ -268,7 +268,7 @@ class MediaPreviewPublisher:
             )
             pacer.set_property("sync", not is_rtsp)
             sink.set_property(
-                "location", preview_publish_uri(self.publish_base, record.source_id)
+                "location", preview_publish_uri(self.publish_base, record.source_uri)
             )
             self._set_if_supported(sink, "protocols", 4)
             self._set_if_supported(sink, "latency", 0)
@@ -295,39 +295,39 @@ class MediaPreviewPublisher:
             ):
                 raise RuntimeError("Could not link bounded H264 preview publisher")
             source_pad_handler_id = (
-                source.connect("pad-added", self._on_pad_added, demux_or_depay, record.source_id)
+                source.connect("pad-added", self._on_pad_added, demux_or_depay, record.source_uri)
                 if is_rtsp
-                else demux_or_depay.connect("pad-added", self._on_pad_added, queue, record.source_id)
+                else demux_or_depay.connect("pad-added", self._on_pad_added, queue, record.source_uri)
             )
             bus = pipeline.get_bus()
             bus.add_signal_watch()
-            bus_handler_id = bus.connect("message", self._on_bus_message, record.source_id)
+            bus_handler_id = bus.connect("message", self._on_bus_message, record.source_uri)
             state = PreviewPublisherState(
-                source_id=record.source_id,
+                source_id=record.source_uri,
                 source_uri=record.source_uri,
                 source_type="rtsp_h264" if is_rtsp else "mp4_h264",
-                path=preview_stream_path(record.source_id),
+                path=preview_stream_path(record.source_uri),
                 pipeline=pipeline,
                 source=source if is_rtsp else demux_or_depay,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
                 source_pad_handler_id=source_pad_handler_id,
-                reconnects=self._reconnect_counts.get(record.source_id, 0),
-                errors=self._error_counts.get(record.source_id, 0),
-                warnings=self._warning_counts.get(record.source_id, 0),
-                eos_count=self._eos_counts.get(record.source_id, 0),
-                last_error=self._last_errors.get(record.source_id),
+                reconnects=self._reconnect_counts.get(record.source_uri, 0),
+                errors=self._error_counts.get(record.source_uri, 0),
+                warnings=self._warning_counts.get(record.source_uri, 0),
+                eos_count=self._eos_counts.get(record.source_uri, 0),
+                last_error=self._last_errors.get(record.source_uri),
                 started_monotonic=time.monotonic(),
             )
             with self._lock:
-                self._states[record.source_id] = state
+                self._states[record.source_uri] = state
             if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("Preview pipeline refused PLAYING state")
             with self._lock:
-                self._retry_after.pop(record.source_id, None)
+                self._retry_after.pop(record.source_uri, None)
         except Exception:
             with self._lock:
-                state = self._states.pop(record.source_id, None)
+                state = self._states.pop(record.source_uri, None)
             if state is not None:
                 self._dispose(state)
             else:
@@ -358,7 +358,7 @@ class MediaPreviewPublisher:
             self._dispose(state)
 
     def _sync(self) -> None:
-        records = {record.source_id: record for record in self._active_records()}
+        records = {record.source_uri: record for record in self._active_records()}
         with self._lock:
             failed = set(self._failed)
             self._failed.clear()
@@ -434,7 +434,7 @@ class MediaPreviewPublisher:
             self._thread.join(timeout=10.0)
 
     def status(self) -> dict[str, Any]:
-        configured = {record.source_id: record for record in self._active_records()}
+        configured = {record.source_uri: record for record in self._active_records()}
         with self._lock:
             now = time.monotonic()
             return {

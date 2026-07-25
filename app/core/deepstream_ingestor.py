@@ -416,7 +416,7 @@ class DeepStreamIngestor:
                 raise FileNotFoundError(f"Video file was not found: {record.source_uri}")
         gst_uri = self._resolve_uri(record.source_uri)
         display_uri = VideoFileIngestor.redact_uri(record.source_uri)
-        safe_id = self._safe_element_name(record.source_id)
+        safe_id = self._safe_element_name(record.source_uri)
         pipeline = Gst.Pipeline.new(f"pipeline_{safe_id}")
         if pipeline is None:
             raise RuntimeError("Could not create a GStreamer pipeline")
@@ -439,7 +439,7 @@ class DeepStreamIngestor:
 
             source.set_property("uri", gst_uri)
             self._set_if_supported(
-                source, "source-id", self._gst_source_id(record.source_id)
+                source, "source-id", self._gst_source_id(record.source_uri)
             )
             self._set_if_supported(source, "disable-audio", True)
             if is_rtsp:
@@ -504,14 +504,14 @@ class DeepStreamIngestor:
                 "pad-added", self._on_pad_added, pacer
             )
             sink_handler_id = sink.connect(
-                "new-sample", self._on_new_sample, record.source_id
+                "new-sample", self._on_new_sample, record.source_uri
             )
 
             bus = pipeline.get_bus()
             bus.add_signal_watch()
-            bus_handler_id = bus.connect("message", self._on_bus_message, record.source_id)
+            bus_handler_id = bus.connect("message", self._on_bus_message, record.source_uri)
             state = DeepStreamSourceState(
-                source_id=record.source_id,
+                source_id=record.source_uri,
                 source_uri=record.source_uri,
                 display_uri=display_uri,
                 source_type="rtsp" if is_rtsp else "video_file",
@@ -529,18 +529,18 @@ class DeepStreamIngestor:
                 delivery_target_fps=(
                     self.target_fps if record.tasks else self.preview_fps
                 ),
-                loop_count=self._loop_counts.get(record.source_id, 0),
+                loop_count=self._loop_counts.get(record.source_uri, 0),
             )
             with self._lock:
-                self._states[record.source_id] = state
+                self._states[record.source_uri] = state
             result = pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("GStreamer pipeline refused the PLAYING state")
             with self._lock:
-                self._retry_after.pop(record.source_id, None)
+                self._retry_after.pop(record.source_uri, None)
         except Exception:
             with self._lock:
-                state = self._states.pop(record.source_id, None)
+                state = self._states.pop(record.source_uri, None)
             if state is not None:
                 self._dispose_state(state)
             else:
@@ -606,7 +606,7 @@ class DeepStreamIngestor:
 
     def _sync_sources(self) -> None:
         records = self._active_records()
-        by_id = {record.source_id: record for record in records}
+        by_id = {record.source_uri: record for record in records}
         with self._lock:
             failed = set(self._failed_sources)
             self._failed_sources.clear()
@@ -634,8 +634,8 @@ class DeepStreamIngestor:
 
         for record in records:
             with self._lock:
-                state = self._states.get(record.source_id)
-                retry_after = self._retry_after.get(record.source_id, 0.0)
+                state = self._states.get(record.source_uri)
+                retry_after = self._retry_after.get(record.source_uri, 0.0)
                 if state is not None:
                     state.delivery_target_fps = (
                         self.target_fps if record.tasks else self.preview_fps
@@ -647,7 +647,7 @@ class DeepStreamIngestor:
                 or getattr(state, "preserve_source_resolution", False)
                 != (TaskName.FACE_RECOGNITION in record.tasks)
             ):
-                self._close_source(record.source_id)
+                self._close_source(record.source_uri)
                 state = None
             if state is not None or retry_after > time.monotonic():
                 continue
@@ -657,10 +657,10 @@ class DeepStreamIngestor:
                 self._open_failures += 1
                 safe_uri = VideoFileIngestor.redact_uri(record.source_uri or "")
                 self._last_error = (
-                    f"Could not open {record.source_id} ({safe_uri}): "
+                    f"Could not open {record.source_uri} ({safe_uri}): "
                     f"{type(exc).__name__}: {exc}"
                 )
-                self._retry_after[record.source_id] = (
+                self._retry_after[record.source_uri] = (
                     time.monotonic() + self.rtsp_reconnect_seconds
                 )
                 LOGGER.exception("%s", self._last_error)
