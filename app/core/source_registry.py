@@ -36,6 +36,7 @@ class SourceRecord:
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    loop: bool = True
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
 
@@ -63,6 +64,7 @@ class SourceRecord:
             source_type=source_type,
             room_id=int(value["room_id"]) if value.get("room_id") is not None else None,
             metadata=dict(value.get("metadata") or {}),
+            loop=bool(value.get("loop", True)),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
         )
@@ -103,7 +105,7 @@ class SourceRegistry:
                 """
                 SELECT id, source_uri, name, enabled, tasks_json,
                        frame_width, frame_height, room_id, source_type,
-                       metadata_json, created_at_utc, updated_at_utc
+                       metadata_json, loop, created_at_utc, updated_at_utc
                 FROM sources
                 WHERE name IS NOT NULL
                 ORDER BY COALESCE(created_at_utc, updated_at_utc), source_uri
@@ -154,6 +156,7 @@ class SourceRegistry:
             source_type=str(row["source_type"]) if row["source_type"] else RTSP,
             room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
+            loop=bool(row["loop"]) if row["loop"] is not None else True,
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
         )
@@ -174,6 +177,7 @@ class SourceRegistry:
             record.room_id,
             record.source_type,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+            int(record.loop),
             record.created_at_utc,
             record.updated_at_utc,
         )
@@ -237,8 +241,8 @@ class SourceRegistry:
                     INSERT INTO sources (
                         id, source_uri, name, enabled, tasks_json,
                         frame_width, frame_height, room_id, source_type,
-                        metadata_json, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, loop, created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_uri) DO UPDATE SET
                         id = COALESCE(sources.id, excluded.id),
                         name = excluded.name,
@@ -249,6 +253,7 @@ class SourceRegistry:
                         room_id = excluded.room_id,
                         source_type = excluded.source_type,
                         metadata_json = excluded.metadata_json,
+                        loop = excluded.loop,
                         updated_at_utc = excluded.updated_at_utc
                     """,
                     self._parameters(record),
@@ -346,8 +351,8 @@ class SourceRegistry:
                 INSERT INTO sources (
                     id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
-                    metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, loop, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -358,6 +363,7 @@ class SourceRegistry:
                     room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
+                    loop = excluded.loop,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),
@@ -381,6 +387,7 @@ class SourceRegistry:
         source_type: str | None = None,
         metadata: dict[str, Any] | None = None,
         room_id: int | None | object = ...,
+        loop: bool | None = None,
     ) -> SourceRecord:
         with self._lock:
             existing = self._records.get(source_uri)
@@ -418,6 +425,8 @@ class SourceRegistry:
                 record.source_type = source_type
             if metadata is not None:
                 record.metadata = dict(metadata)
+            if loop is not None:
+                record.loop = loop
             if room_id is not ...:
                 record.room_id = int(room_id) if room_id is not None else None
             record.updated_at_utc = _utc_now()
@@ -429,7 +438,7 @@ class SourceRegistry:
                 SET name = ?, enabled = ?, tasks_json = ?,
                     frame_width = ?, frame_height = ?,
                     room_id = ?, source_type = ?,
-                    metadata_json = ?, updated_at_utc = ?
+                    metadata_json = ?, loop = ?, updated_at_utc = ?
                 WHERE source_uri = ?
                 """,
                 (
@@ -441,6 +450,7 @@ class SourceRegistry:
                     room_id_val,
                     record.source_type,
                     json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
+                    int(record.loop),
                     record.updated_at_utc,
                     source_uri,
                 ),

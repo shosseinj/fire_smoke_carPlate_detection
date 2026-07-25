@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0019"
+ALEMBIC_HEAD_REVISION = "20260725_0020"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -352,6 +352,7 @@ sources = Table(
     Column("face_human_confidence", Float),
     Column("face_detection_confidence", Float),
     Column("face_recognition_threshold", Float),
+    Column("loop", Integer, server_default="1"),
 )
 UniqueConstraint("id", name="uq_sources_id")
 Index("idx_sources_enabled", sources.c.enabled)

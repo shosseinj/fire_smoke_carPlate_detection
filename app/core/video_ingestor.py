@@ -29,6 +29,7 @@ class VideoState:
     stride: int
     frame_width: int
     frame_height: int
+    loop: bool = True
     frame_index: int = -1
     submitted_frames: int = 0
     loop_count: int = 0
@@ -205,6 +206,7 @@ class VideoFileIngestor:
             stride=max(1, round(fps / self.target_fps)),
             frame_width=record.frame_width,
             frame_height=record.frame_height,
+            loop=record.loop,
         )
 
     def _release(self, source_id: str) -> None:
@@ -214,7 +216,7 @@ class VideoFileIngestor:
 
     def _read(self, state: VideoState) -> tuple[bool, Any, float | None]:
         ok, frame = state.capture.read()
-        if not ok and self.loop and not state.is_live:
+        if not ok and state.loop and not state.is_live:
             state.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             state.loop_count += 1
             ok, frame = state.capture.read()
@@ -224,7 +226,7 @@ class VideoFileIngestor:
                 state.last_error = "RTSP frame read failed; reconnect scheduled"
             else:
                 state.last_error = (
-                    "End of stream" if not self.loop else "Frame read failed after rewind"
+                    "End of stream" if not state.loop else "Frame read failed after rewind"
                 )
             return False, None, None
 
@@ -298,7 +300,7 @@ class VideoFileIngestor:
                         time.monotonic() + self.rtsp_reconnect_seconds
                     )
                     self._release(record.source_uri)
-                elif not self.loop:
+                elif not state.loop:
                     self._release(record.source_uri)
                 continue
             state.source_frame_width = int(frame.shape[1])

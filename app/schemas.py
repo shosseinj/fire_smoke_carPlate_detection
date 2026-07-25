@@ -18,6 +18,7 @@ class SourceCreate(BaseModel):
     source_type: str = RTSP
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    loop: bool = True
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -55,6 +56,7 @@ class SourceUpdate(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
+    loop: bool | None = None
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -87,6 +89,7 @@ class BulkSourceUpdateItem(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
+    loop: bool | None = None
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
     plate_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -129,6 +132,7 @@ class SourceResponse(BaseModel):
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any]
+    loop: bool = True
     created_at_utc: str
     updated_at_utc: str
     # Resolved per-source confidence thresholds (from the `sources` table)

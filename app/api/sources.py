@@ -135,6 +135,7 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
                 source_type=payload.source_type,
                 room_id=payload.room_id,
                 metadata=dict(payload.metadata),
+                loop=payload.loop,
             )
         )
     except ValueError as exc:
