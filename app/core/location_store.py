@@ -646,6 +646,11 @@ class LocationStore:
         """
         if section_id is None:
             return []
+        if personnel_id is not None:
+            try:
+                personnel_id = int(personnel_id)
+            except (TypeError, ValueError):
+                personnel_id = None
         with self._lock, self._connection() as conn:
             rooms = conn.execute(
                 "SELECT id, polygon_json FROM rooms WHERE section_id = ? AND polygon_json IS NOT NULL",
@@ -726,6 +731,11 @@ class LocationStore:
         polygon = self.get_polygon_for_room(room_id)
         if not polygon:
             return []
+        if personnel_id is not None:
+            try:
+                personnel_id = int(personnel_id)
+            except (TypeError, ValueError):
+                personnel_id = None
         is_inside = point_in_polygon(bbox_center_x, bbox_center_y, polygon)
         transition = self._resolve_transition(camera_id, track_id, room_id, is_inside)
         if not is_inside and transition is None:

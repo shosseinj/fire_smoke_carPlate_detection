@@ -55,6 +55,16 @@ from app.processors.ultralytics_loader import preload_model_dependencies
 LOGGER = logging.getLogger("uvicorn.error")
 
 
+def _safe_int(value: object) -> int | None:
+    """Coerce a value to int, returning None for non-numeric or None inputs."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(slots=True)
 class Runtime:
     settings: Settings
@@ -678,7 +688,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         detection_event_id=result.frame_index,
                         bbox_center_x=foot_x,
                         bbox_center_y=foot_y,
-                        personnel_id=human.get("personnel_id") or human.get("person"),
+                        personnel_id=_safe_int(human.get("personnel_id")),
                         camera_id=source_id,
                         track_id=track_id,
                     )
