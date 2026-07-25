@@ -47,6 +47,8 @@ def _save_source_overrides(
 
 def _response(record: SourceRecord, runtime: Runtime | None = None) -> SourceResponse:
     value = record.to_dict()
+    # Ensure id is always an int
+    value["id"] = value.get("id") or 0
     if value.get("source_uri"):
         value["source_uri"] = VideoFileIngestor.redact_uri(value["source_uri"])
     # Resolve per-source confidence thresholds from the `sources` table

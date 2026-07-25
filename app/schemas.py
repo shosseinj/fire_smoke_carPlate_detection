@@ -86,6 +86,7 @@ class FrameRoundResponse(BaseModel):
 
 
 class SourceResponse(BaseModel):
+    id: int = 0
     source_uri: str
     name: str
     enabled: bool
@@ -177,6 +178,7 @@ class CameraReplace(BaseModel):
 
 
 class CameraResponse(BaseModel):
+    id: int
     source_uri: str
     name: str
     frame_width: int

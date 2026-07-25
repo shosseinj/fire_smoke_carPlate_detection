@@ -28,8 +28,9 @@ SOURCE_TYPES = frozenset({RTSP, STATIC_VIDEO})
 
 @dataclass(slots=True)
 class SourceRecord:
-    source_uri: str
-    name: str
+    id: int | None = None
+    source_uri: str = ""
+    name: str = ""
     enabled: bool = True
     tasks: set[TaskName] = field(default_factory=set)
     frame_width: int = 640
@@ -53,6 +54,7 @@ class SourceRecord:
         if source_type not in SOURCE_TYPES:
             source_type = RTSP
         return cls(
+            id=value.get("id"),
             source_uri=str(source_uri),
             name=str(value.get("name") or source_uri),
             enabled=bool(value.get("enabled", True)),
@@ -99,7 +101,7 @@ class SourceRegistry:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT source_uri, name, enabled, tasks_json,
+                SELECT id, source_uri, name, enabled, tasks_json,
                        frame_width, frame_height, section_id, source_type,
                        metadata_json, created_at_utc, updated_at_utc
                 FROM cameras
@@ -138,7 +140,9 @@ class SourceRegistry:
         section_id = row["section_id"]
         if section_id is not None and "section_id" not in metadata:
             metadata["section_id"] = int(section_id)
+        raw_id = row["id"]
         return SourceRecord(
+            id=int(raw_id) if raw_id is not None else None,
             source_uri=str(row["source_uri"]),
             name=str(row["name"]),
             enabled=bool(row["enabled"]),
@@ -220,20 +224,23 @@ class SourceRegistry:
         with self._lock:
             if self._records:
                 return 0
-            self._connection.executemany(
-                """
-                INSERT INTO cameras (
-                    source_uri, name, enabled, tasks_json,
-                    frame_width, frame_height, section_id, source_type,
-                    metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [self._parameters(record) for record in prepared],
-            )
+            imported_records: dict[str, SourceRecord] = {}
+            for record in prepared:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO cameras (
+                        source_uri, name, enabled, tasks_json,
+                        frame_width, frame_height, section_id, source_type,
+                        metadata_json, created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    self._parameters(record),
+                )
+                if cursor.lastrowid is not None:
+                    record.id = int(cursor.lastrowid)
+                imported_records[record.source_uri] = deepcopy(record)
             self._connection.commit()
-            self._records = {
-                record.source_uri: deepcopy(record) for record in prepared
-            }
+            self._records = imported_records
             self._revision += 1
             return len(prepared)
 
@@ -271,7 +278,7 @@ class SourceRegistry:
         record = self._normalized(record)
         with self._lock:
             try:
-                self._connection.execute(
+                cursor = self._connection.execute(
                     """
                     INSERT INTO cameras (
                         source_uri, name, enabled, tasks_json,
@@ -282,6 +289,8 @@ class SourceRegistry:
                     self._parameters(record),
                 )
                 self._connection.commit()
+                if cursor.lastrowid is not None:
+                    record.id = int(cursor.lastrowid)
             except IntegrityError as exc:
                 self._connection.rollback()
                 raise ValueError(f"Source already exists: {record.source_uri}") from exc
@@ -297,8 +306,9 @@ class SourceRegistry:
             action = "created" if existing is None else "updated"
             if existing is not None:
                 record.created_at_utc = existing.created_at_utc
+                record.id = existing.id
             record.updated_at_utc = _utc_now()
-            self._connection.execute(
+            cursor = self._connection.execute(
                 """
                 INSERT INTO cameras (
                     source_uri, name, enabled, tasks_json,
@@ -319,6 +329,8 @@ class SourceRegistry:
                 self._parameters(record),
             )
             self._connection.commit()
+            if cursor.lastrowid is not None and record.id is None:
+                record.id = int(cursor.lastrowid)
             self._records[record.source_uri] = deepcopy(record)
             change, listeners = self._next_change(action, record.source_uri, record)
         self._notify(change, listeners)

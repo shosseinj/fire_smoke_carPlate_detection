@@ -38,6 +38,7 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> CameraRes
         source_uri = VideoFileIngestor.redact_uri(source_uri)
 
     return CameraResponse(
+        id=record.id or 0,
         source_uri=source_uri,
         name=record.name,
         frame_width=record.frame_width,
