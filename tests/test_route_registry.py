@@ -21,7 +21,6 @@ def _build_test_app() -> FastAPI:
     from app.api.general_settings import router as general_settings_router
     from app.api.models import router as models_router
     from app.api.sources import router as sources_router
-    from app.api.cameras import router as cameras_router
     from app.api.frames import router as frames_router
     from app.api.results import router as results_router
     from app.api.broadcast import router as broadcast_router
@@ -52,7 +51,6 @@ def _build_test_app() -> FastAPI:
     app.include_router(general_settings_router)
     app.include_router(models_router)
     app.include_router(sources_router)
-    app.include_router(cameras_router)
     app.include_router(frames_router)
     app.include_router(results_router)
     app.include_router(broadcast_router)
@@ -87,7 +85,11 @@ def test_core_backend_routes_are_registered() -> None:
         "/api/v1/personnel-images/personnel/{personnel_id}",
         "/api/v1/logs/filter",
         "/api/v1/logs/{log_id}",
-        "/api/v1/cameras/{camera_id}/effective-settings",
+        "/api/v1/sources",
+        "/api/v1/sources/{id:path}",
+        "/api/v1/sources/{id:path}/enable",
+        "/api/v1/sources/{id:path}/disable",
+        "/api/v1/sources/bulk/task-assignment",
         "/rooms/",
         "/buildings/",
         "/sections/",
@@ -103,3 +105,4 @@ def test_core_backend_routes_are_registered() -> None:
 
     missing = expected_paths - paths
     assert missing == set(), f"Missing routes: {missing}"
+    assert "/api/v1/cameras" not in paths

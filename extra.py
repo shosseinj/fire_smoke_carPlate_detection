@@ -8,7 +8,7 @@
       "fire_smoke",
       "plate_recognition"
     ],
-    "source_uri": "data/smoke1.mp4",
+    "source_uri": "data/45454.mp4",
     "frame_width": 640,
     "frame_height": 640,
     "metadata": {},

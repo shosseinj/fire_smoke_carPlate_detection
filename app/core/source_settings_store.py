@@ -205,6 +205,20 @@ class SourceSettingsStore:
             conn.commit()
         return cursor.rowcount > 0
 
+    def rename(self, old_source_uri: str, new_source_uri: str) -> bool:
+        """Move overrides from *old_source_uri* to *new_source_uri*."""
+        if old_source_uri == _DEFAULT_KEY or new_source_uri == _DEFAULT_KEY:
+            raise ValueError("Cannot rename the global-default row")
+        if old_source_uri == new_source_uri:
+            return True
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE sources SET source_uri = ? WHERE source_uri = ?",
+                (new_source_uri, old_source_uri),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
     def resolve(
         self,
         source_uri: str,

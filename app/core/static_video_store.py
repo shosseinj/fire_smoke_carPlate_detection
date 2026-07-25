@@ -18,7 +18,7 @@ class StaticVideoStore:
 
     Each record tracks a video file uploaded to the media store. The
     actual video processing is driven by a corresponding ``SourceRecord``
-    in the cameras table (created separately), so the ingestor continues
+    in the sources table (created separately), so the ingestor continues
     to work unchanged. This store is the API-facing management layer.
     """
 

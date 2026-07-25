@@ -359,6 +359,14 @@ class VideoFileIngestor:
             if remaining > 0:
                 self._stop.wait(remaining)
 
+    def restart_source(self, source_id: str) -> bool:
+        """Schedule one source for teardown and reopen on the next polling cycle."""
+        with self._state_lock:
+            if source_id in self._states:
+                self._release(source_id)
+            self._retry_after.pop(source_id, None)
+        return True
+
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:

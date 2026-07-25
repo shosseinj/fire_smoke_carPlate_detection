@@ -23,7 +23,6 @@ def main() -> None:
                 settings,
                 processor_mode="mock",
                 camera_db_path=Path(directory) / "cameras.sqlite3",
-                source_registry_path=Path(directory) / "sources.json",
                 video_ingestion_enabled=False,
             )
         )

@@ -4,7 +4,7 @@
     "name": "Fire and plate Camera",
     "enabled": true,
     "tasks": [],
-    "source_uri": "data/smoke1.mp4",
+    "source_uri": "data/434.mp4",
     "frame_width": 640,
     "frame_height": 640,
     "metadata": {},

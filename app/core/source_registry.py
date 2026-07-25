@@ -5,12 +5,10 @@ import logging
 import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.core.types import TaskName
-from app.database import Database, IntegrityError, Row, ensure_database
+from app.database import Database, Row, ensure_database
 from app.time_utils import utc_now_text
 
 
@@ -82,7 +80,7 @@ SourceChangeListener = Callable[[SourceChange], None]
 
 
 class SourceRegistry:
-    """Thread-safe camera registry backed by PostgreSQL."""
+    """Thread-safe source registry backed by PostgreSQL."""
 
     def __init__(self, database: Database | str) -> None:
         self._lock = threading.RLock()
@@ -106,13 +104,20 @@ class SourceRegistry:
                 SELECT id, source_uri, name, enabled, tasks_json,
                        frame_width, frame_height, room_id, source_type,
                        metadata_json, created_at_utc, updated_at_utc
-                FROM cameras
-                ORDER BY created_at_utc, source_uri
+                FROM sources
+                WHERE name IS NOT NULL
+                ORDER BY COALESCE(created_at_utc, updated_at_utc), source_uri
                 """
             ).fetchall()
             self._records = {
                 str(row["source_uri"]): self._row_to_record(row) for row in rows
             }
+
+    def _next_id(self) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM sources WHERE id IS NOT NULL"
+        ).fetchone()
+        return int(row["next_id"]) if row is not None else 1
 
     @staticmethod
     def _normalized(record: SourceRecord) -> SourceRecord:
@@ -159,6 +164,7 @@ class SourceRegistry:
         metadata.pop("section_id", None)
         metadata.pop("room_id", None)
         return (
+            record.id,
             record.source_uri,
             record.name,
             int(record.enabled),
@@ -197,7 +203,7 @@ class SourceRegistry:
                 listener(change)
             except Exception:
                 LOGGER.exception(
-                    "Camera registry listener failed: action=%s source_uri=%s",
+                    "Source registry listener failed: action=%s source_uri=%s",
                     change.action,
                     change.source_uri,
                 )
@@ -224,18 +230,29 @@ class SourceRegistry:
                 return 0
             imported_records: dict[str, SourceRecord] = {}
             for record in prepared:
-                cursor = self._connection.execute(
+                if record.id is None:
+                    record.id = self._next_id()
+                self._connection.execute(
                     """
-                    INSERT INTO cameras (
-                        source_uri, name, enabled, tasks_json,
+                    INSERT INTO sources (
+                        id, source_uri, name, enabled, tasks_json,
                         frame_width, frame_height, room_id, source_type,
                         metadata_json, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_uri) DO UPDATE SET
+                        id = COALESCE(sources.id, excluded.id),
+                        name = excluded.name,
+                        enabled = excluded.enabled,
+                        tasks_json = excluded.tasks_json,
+                        frame_width = excluded.frame_width,
+                        frame_height = excluded.frame_height,
+                        room_id = excluded.room_id,
+                        source_type = excluded.source_type,
+                        metadata_json = excluded.metadata_json,
+                        updated_at_utc = excluded.updated_at_utc
                     """,
                     self._parameters(record),
                 )
-                if cursor.lastrowid is not None:
-                    record.id = int(cursor.lastrowid)
                 imported_records[record.source_uri] = deepcopy(record)
             self._connection.commit()
             self._records = imported_records
@@ -266,6 +283,13 @@ class SourceRegistry:
             value = self._records.get(source_uri)
             return deepcopy(value) if value is not None else None
 
+    def get_by_id(self, source_id: int) -> SourceRecord | None:
+        with self._lock:
+            for record in self._records.values():
+                if record.id == source_id:
+                    return deepcopy(record)
+            return None
+
     def require(self, source_uri: str) -> SourceRecord:
         value = self.get(source_uri)
         if value is None:
@@ -275,45 +299,19 @@ class SourceRegistry:
     def create(self, record: SourceRecord) -> SourceRecord:
         record = self._normalized(record)
         with self._lock:
-            try:
-                cursor = self._connection.execute(
-                    """
-                    INSERT INTO cameras (
-                        source_uri, name, enabled, tasks_json,
-                        frame_width, frame_height, room_id, source_type,
-                        metadata_json, created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    self._parameters(record),
-                )
-                self._connection.commit()
-                if cursor.lastrowid is not None:
-                    record.id = int(cursor.lastrowid)
-            except IntegrityError as exc:
-                self._connection.rollback()
-                raise ValueError(f"Source already exists: {record.source_uri}") from exc
-            self._records[record.source_uri] = deepcopy(record)
-            change, listeners = self._next_change("created", record.source_uri, record)
-        self._notify(change, listeners)
-        return deepcopy(record)
-
-    def upsert(self, record: SourceRecord) -> SourceRecord:
-        record = self._normalized(record)
-        with self._lock:
-            existing = self._records.get(record.source_uri)
-            action = "created" if existing is None else "updated"
-            if existing is not None:
-                record.created_at_utc = existing.created_at_utc
-                record.id = existing.id
-            record.updated_at_utc = _utc_now()
-            cursor = self._connection.execute(
+            if self._records.get(record.source_uri) is not None:
+                raise ValueError(f"Source already exists: {record.source_uri}")
+            if record.id is None:
+                record.id = self._next_id()
+            self._connection.execute(
                 """
-                INSERT INTO cameras (
-                    source_uri, name, enabled, tasks_json,
+                INSERT INTO sources (
+                    id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
                     metadata_json, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
+                    id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
                     enabled = excluded.enabled,
                     tasks_json = excluded.tasks_json,
@@ -327,8 +325,44 @@ class SourceRegistry:
                 self._parameters(record),
             )
             self._connection.commit()
-            if cursor.lastrowid is not None and record.id is None:
-                record.id = int(cursor.lastrowid)
+            self._records[record.source_uri] = deepcopy(record)
+            change, listeners = self._next_change("created", record.source_uri, record)
+        self._notify(change, listeners)
+        return deepcopy(record)
+
+    def upsert(self, record: SourceRecord) -> SourceRecord:
+        record = self._normalized(record)
+        with self._lock:
+            existing = self._records.get(record.source_uri)
+            action = "created" if existing is None else "updated"
+            if existing is not None:
+                record.created_at_utc = existing.created_at_utc
+                record.id = existing.id
+            elif record.id is None:
+                record.id = self._next_id()
+            record.updated_at_utc = _utc_now()
+            self._connection.execute(
+                """
+                INSERT INTO sources (
+                    id, source_uri, name, enabled, tasks_json,
+                    frame_width, frame_height, room_id, source_type,
+                    metadata_json, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_uri) DO UPDATE SET
+                    id = COALESCE(sources.id, excluded.id),
+                    name = excluded.name,
+                    enabled = excluded.enabled,
+                    tasks_json = excluded.tasks_json,
+                    frame_width = excluded.frame_width,
+                    frame_height = excluded.frame_height,
+                    room_id = excluded.room_id,
+                    source_type = excluded.source_type,
+                    metadata_json = excluded.metadata_json,
+                    updated_at_utc = excluded.updated_at_utc
+                """,
+                self._parameters(record),
+            )
+            self._connection.commit()
             self._records[record.source_uri] = deepcopy(record)
             change, listeners = self._next_change(action, record.source_uri, record)
         self._notify(change, listeners)
@@ -338,6 +372,7 @@ class SourceRegistry:
         self,
         source_uri: str,
         *,
+        source_uri_new: str | None = None,
         name: str | None = None,
         enabled: bool | None = None,
         tasks: Iterable[TaskName] | None = None,
@@ -352,6 +387,21 @@ class SourceRegistry:
             record = deepcopy(existing) if existing is not None else None
             if record is None:
                 raise KeyError(source_uri)
+            old_source_uri = record.source_uri
+            if source_uri_new is not None:
+                source_uri_new = source_uri_new.strip()
+                if not source_uri_new:
+                    raise ValueError("source_uri cannot be blank")
+                if source_uri_new != old_source_uri and (
+                    source_uri_new in self._records
+                    or self._connection.execute(
+                        "SELECT 1 FROM sources WHERE source_uri = ?",
+                        (source_uri_new,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError(f"Source already exists: {source_uri_new}")
+                record.source_uri = source_uri_new
             if name is not None:
                 record.name = name
             if enabled is not None:
@@ -372,11 +422,10 @@ class SourceRegistry:
                 record.room_id = int(room_id) if room_id is not None else None
             record.updated_at_utc = _utc_now()
             record = self._normalized(record)
-            params = list(self._parameters(record))
-            room_id_val = params[6]
+            room_id_val = record.room_id
             self._connection.execute(
                 """
-                UPDATE cameras
+                UPDATE sources
                 SET name = ?, enabled = ?, tasks_json = ?,
                     frame_width = ?, frame_height = ?,
                     room_id = ?, source_type = ?,
@@ -396,16 +445,29 @@ class SourceRegistry:
                     source_uri,
                 ),
             )
+            if source_uri_new is not None and source_uri_new != old_source_uri:
+                self._connection.execute(
+                    "UPDATE sources SET source_uri = ? WHERE source_uri = ?",
+                    (source_uri_new, old_source_uri),
+                )
             self._connection.commit()
-            self._records[source_uri] = deepcopy(record)
-            change, listeners = self._next_change("updated", source_uri, record)
+            if source_uri_new is not None and source_uri_new != old_source_uri:
+                self._records.pop(old_source_uri, None)
+                self._records[source_uri_new] = deepcopy(record)
+                change, listeners = self._next_change("updated", source_uri_new, record)
+            else:
+                self._records[source_uri] = deepcopy(record)
+                change, listeners = self._next_change("updated", source_uri, record)
         self._notify(change, listeners)
         return deepcopy(record)
+
+    def rename(self, source_uri: str, new_source_uri: str) -> SourceRecord:
+        return self.update(source_uri, source_uri_new=new_source_uri)
 
     def delete(self, source_uri: str) -> bool:
         with self._lock:
             cursor = self._connection.execute(
-                "DELETE FROM cameras WHERE source_uri = ?",
+                "DELETE FROM sources WHERE source_uri = ?",
                 (source_uri,),
             )
             existed = cursor.rowcount > 0

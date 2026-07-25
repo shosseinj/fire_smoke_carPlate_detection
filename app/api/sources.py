@@ -19,6 +19,15 @@ def get_runtime() -> Runtime:
     return runtime
 
 
+def _resolve_source_record(runtime: Runtime, source_id: str) -> SourceRecord | None:
+    record = runtime.registry.get(source_id)
+    if record is not None:
+        return record
+    if source_id.isdigit():
+        return runtime.registry.get_by_id(int(source_id))
+    return None
+
+
 _SOURCE_OVERRIDE_FIELDS = frozenset({
     "fire_confidence", "smoke_confidence", "plate_confidence",
     "plate_iou", "vehicle_confidence", "vehicle_iou",
@@ -140,45 +149,65 @@ def enabled_source_ids(runtime: Runtime = Depends(get_runtime)) -> dict[str, lis
     return {"source_ids": runtime.registry.enabled_source_ids()}
 
 
-@router.get("/{source_id}", response_model=SourceResponse)
-def get_source(source_id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
-    record = runtime.registry.get(source_id)
+@router.get("/{id:path}", response_model=SourceResponse)
+def get_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
+    record = _resolve_source_record(runtime, id)
     if record is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return _response(record, runtime)
 
 
-@router.patch("/{source_id}", response_model=SourceResponse)
+@router.patch("/{id:path}", response_model=SourceResponse)
 def update_source(
-    source_id: str,
+    id: str,
     payload: SourceUpdate,
     runtime: Runtime = Depends(get_runtime),
 ) -> SourceResponse:
     values = payload.model_dump(exclude_unset=True)
     if values.get("room_id") is not None and runtime.location_store.get_room(values["room_id"]) is None:
         raise HTTPException(status_code=404, detail="Room not found")
-    registry_values = {key: value for key, value in values.items() if key not in _SOURCE_OVERRIDE_FIELDS}
+    record = _resolve_source_record(runtime, id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    new_source_uri = values.pop("source_uri", None)
+    registry_values = {
+        key: value
+        for key, value in values.items()
+        if key not in _SOURCE_OVERRIDE_FIELDS
+    }
     try:
-        record = runtime.registry.update(source_id, **registry_values)
+        if new_source_uri is not None and new_source_uri != record.source_uri:
+            record = runtime.registry.rename(record.source_uri, new_source_uri)
+        record = runtime.registry.update(record.source_uri, **registry_values)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Save per-source confidence overrides if any were provided
     _save_source_overrides(payload, record, runtime)
+    # Restart the ingestor so the change takes effect immediately
+    runtime._restart_ingestor_source(record.source_uri)
     return _response(record, runtime)
 
 
-@router.post("/{source_id}/enable", response_model=SourceResponse)
-def enable_source(source_id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
+@router.post("/{id:path}/enable", response_model=SourceResponse)
+def enable_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
     try:
-        return _response(runtime.registry.update(source_id, enabled=True), runtime)
+        record = _resolve_source_record(runtime, id)
+        if record is None:
+            raise KeyError(id)
+        return _response(runtime.registry.update(record.source_uri, enabled=True), runtime)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source not found") from exc
 
 
-@router.post("/{source_id}/disable", response_model=SourceResponse)
-def disable_source(source_id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
+@router.post("/{id:path}/disable", response_model=SourceResponse)
+def disable_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
     try:
-        return _response(runtime.registry.update(source_id, enabled=False), runtime)
+        record = _resolve_source_record(runtime, id)
+        if record is None:
+            raise KeyError(id)
+        return _response(runtime.registry.update(record.source_uri, enabled=False), runtime)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source not found") from exc
 
@@ -188,12 +217,16 @@ def bulk_task_assignment(
     payload: TaskAssignment,
     runtime: Runtime = Depends(get_runtime),
 ) -> list[SourceResponse]:
-    missing = [source_id for source_id in payload.source_ids if runtime.registry.get(source_id) is None]
+    missing = [
+        source_id
+        for source_id in payload.source_ids
+        if _resolve_source_record(runtime, source_id) is None
+    ]
     if missing:
         raise HTTPException(status_code=404, detail={"missing_source_ids": missing})
     updated = [
         runtime.registry.update(
-            source_id,
+            _resolve_source_record(runtime, source_id).source_uri,
             tasks=payload.tasks,
             enabled=payload.enabled,
         )
@@ -202,8 +235,9 @@ def bulk_task_assignment(
     return [_response(item, runtime) for item in updated]
 
 
-@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_source(source_id: str, runtime: Runtime = Depends(get_runtime)) -> Response:
-    if not runtime.registry.delete(source_id):
+@router.delete("/{id:path}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_source(id: str, runtime: Runtime = Depends(get_runtime)) -> Response:
+    record = _resolve_source_record(runtime, id)
+    if record is None or not runtime.registry.delete(record.source_uri):
         raise HTTPException(status_code=404, detail="Source not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

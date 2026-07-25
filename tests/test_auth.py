@@ -39,7 +39,7 @@ def _make_test_runtime(tmp_path: Path):
         settings,
         processor_mode="mock",
         database_url=_test_database_url(),
-        source_registry_path=tmp_path / "sources.json",
+
         video_ingestion_enabled=False,
         auth_default_admin_username="admin",
         auth_default_admin_password="admin123",

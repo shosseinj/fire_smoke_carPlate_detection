@@ -9,7 +9,6 @@ import os
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
 
-from app.api.cameras import router as cameras_router
 from app.api.results import router as results_router
 from app.api.plate_logs import router as plate_logs_router
 from app.api.car_plates import router as car_plates_router
@@ -53,7 +52,6 @@ OPENAPI_TAGS = [
     {"name": "general-settings"},
     {"name": "model-management"},
     {"name": "sources"},
-    {"name": "cameras"},
     {"name": "frame-routing"},
     {"name": "results"},
     {"name": "annotated-broadcast"},
@@ -89,7 +87,7 @@ app = FastAPI(
     version="2.0.0",
     description=(
         "Dynamic source/task routing for batched fire/smoke, face recognition, and Iranian plate "
-        "recognition. Open [/dashboard](/dashboard) for the synchronized annotated camera wall."
+        "recognition. Open [/dashboard](/dashboard) for the synchronized annotated source wall."
     ),
     lifespan=lifespan,
     openapi_tags=OPENAPI_TAGS,
@@ -103,7 +101,6 @@ app.include_router(processor_tests_router)
 app.include_router(general_settings_router)
 app.include_router(models_router)
 app.include_router(sources_router)
-app.include_router(cameras_router)
 app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)

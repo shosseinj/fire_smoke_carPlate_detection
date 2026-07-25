@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +35,7 @@ from app.core.import_progress_store import ImportProgressStore
 from app.core.static_video_store import StaticVideoStore
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
-from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.source_registry import SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
@@ -175,15 +174,15 @@ class Runtime:
 
     def _refresh_all_source_zones(self) -> None:
         """Push zone polygon data for every registered source to the broadcast hub."""
-        for camera in self.registry.list():
-            if camera.room_id is None:
-                self.broadcast.clear_source_zones(camera.source_uri)
+        for source in self.registry.list():
+            if source.room_id is None:
+                self.broadcast.clear_source_zones(source.source_uri)
                 continue
-            polygon = self.location_store.get_polygon_for_room(camera.room_id)
+            polygon = self.location_store.get_polygon_for_room(source.room_id)
             if polygon:
-                self.broadcast.set_source_zones(camera.source_uri, [polygon])
+                self.broadcast.set_source_zones(source.source_uri, [polygon])
             else:
-                self.broadcast.clear_source_zones(camera.source_uri)
+                self.broadcast.clear_source_zones(source.source_uri)
 
     def selected_model_records(self) -> list[dict[str, object]]:
         """Return the exact startup model choices in runtime load order."""
@@ -319,26 +318,6 @@ class Runtime:
         value["detection_log_count"] = self.detection_log_store.count_by_status()
         return value
 
-
-def _seed_registry(
-    registry: SourceRegistry,
-    source_registry_path: Path,
-    project_root: Path,
-) -> None:
-    if registry.list():
-        return
-    seed_paths = (
-        source_registry_path,
-        project_root / "examples" / "initial_sources.json",
-    )
-    for seed_path in seed_paths:
-        if not seed_path.is_file():
-            continue
-        payload = json.loads(seed_path.read_text(encoding="utf-8"))
-        registry.import_if_empty(SourceRecord.from_dict(item) for item in payload)
-        return
-
-
 def build_runtime(app_settings: Settings = settings) -> Runtime:
     database = get_database(
         app_settings.database_url,
@@ -358,11 +337,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     operational = general_settings.get().operational
     initialize_auth_store(database, app_settings)
     registry = SourceRegistry(database)
-    _seed_registry(
-        registry,
-        app_settings.source_registry_path,
-        Path(__file__).resolve().parents[1],
-    )
     results = ResultStore(app_settings.recent_results_limit)
     general_record = general_settings.get()
     broadcast = AnnotatedBroadcastHub(

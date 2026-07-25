@@ -99,31 +99,6 @@ class TestAuthCrud:
 # CAMERAS
 # ═══════════════════════════════════════════════════════════════════════
 
-class TestCamerasCrud:
-    MODULE = "cameras"
-
-    def test_create_camera(self, crud):
-        resp = crud.client.post("/api/v1/cameras", json={"camera_id": "crud-cam-1", "name": "CRUD Cam", "source_uri": "rtsp://test/crud"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
-        assert resp.status_code == 201, resp.text
-
-    def test_list_cameras(self, crud):
-        resp = crud.client.get("/api/v1/cameras", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
-        assert isinstance(resp.json(), list)
-
-    def test_get_update_delete_camera(self, crud):
-        cam_id = "crud-cam-cycle"
-        crud.client.post("/api/v1/cameras", json={"camera_id": cam_id, "name": "Cycle", "source_uri": "rtsp://test/cycle"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
-        resp = crud.client.get(f"/api/v1/cameras/{cam_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
-        assert resp.json()["camera_id"] == cam_id
-        resp = crud.client.patch(f"/api/v1/cameras/{cam_id}", json={"name": "Updated"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
-        _ok(resp)
-        assert resp.json()["name"] == "Updated"
-        resp = crud.client.delete(f"/api/v1/cameras/{cam_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
-        assert resp.status_code in (200, 204), resp.text
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # SOURCES
 # ═══════════════════════════════════════════════════════════════════════
@@ -132,8 +107,14 @@ class TestSourcesCrud:
     MODULE = "sources"
 
     def test_create_source(self, crud):
-        resp = crud.client.post("/api/v1/sources", json={"source_id": "crud-src-1", "name": "CRUD Src", "enabled": True, "source_uri": "rtsp://test/crud"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post(
+            "/api/v1/sources",
+            json={"source_uri": "crud-src-1", "name": "CRUD Src", "enabled": True},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
         assert resp.status_code == 201, resp.text
+        assert resp.json()["source_uri"] == "crud-src-1"
+        assert resp.json()["name"] == "CRUD Src"
 
     def test_list_sources(self, crud):
         resp = crud.client.get("/api/v1/sources", headers={"Authorization": f"Bearer {crud.admin_token}"})
@@ -142,12 +123,17 @@ class TestSourcesCrud:
 
     def test_get_update_delete_source(self, crud):
         src_id = "crud-src-cycle"
-        crud.client.post("/api/v1/sources", json={"source_id": src_id, "name": "Cycle", "enabled": True, "source_uri": "rtsp://test/cycle"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        crud.client.post(
+            "/api/v1/sources",
+            json={"source_uri": src_id, "name": "Cycle", "enabled": True},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
         resp = crud.client.get(f"/api/v1/sources/{src_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        assert resp.json()["source_id"] == src_id
+        assert resp.json()["source_uri"] == src_id
         resp = crud.client.patch(f"/api/v1/sources/{src_id}", json={"name": "Updated Src"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
+        assert resp.json()["name"] == "Updated Src"
         crud.client.post(f"/api/v1/sources/{src_id}/disable", headers={"Authorization": f"Bearer {crud.admin_token}"})
         crud.client.post(f"/api/v1/sources/{src_id}/enable", headers={"Authorization": f"Bearer {crud.admin_token}"})
         resp = crud.client.delete(f"/api/v1/sources/{src_id}", headers={"Authorization": f"Bearer {crud.admin_token}"})
@@ -453,7 +439,11 @@ class TestPlateSettingsApi:
         _ok(resp)
 
     def test_camera_settings(self, crud):
-        crud.client.post("/api/v1/cameras", json={"camera_id": "ps-cam-1", "name": "PS Cam", "source_uri": "rtsp://test/ps"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        crud.client.post(
+            "/api/v1/sources",
+            json={"source_uri": "ps-cam-1", "name": "PS Cam", "enabled": True},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
         resp = crud.client.get("/api/v1/plate-settings/cameras/ps-cam-1", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
 
@@ -761,7 +751,6 @@ class TestHealthEndpoint:
 
 CRUD_TEST_CLASSES: dict[str, type] = {
     "auth": TestAuthCrud,
-    "cameras": TestCamerasCrud,
     "sources": TestSourcesCrud,
     "personnel": TestPersonnelCrud,
     "locations": TestLocationsCrud,

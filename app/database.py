@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0017"
+ALEMBIC_HEAD_REVISION = "20260725_0018"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -62,25 +62,6 @@ revoked_tokens = Table(
     Column("expires_at_utc", UTC_TS, nullable=False),
 )
 Index("idx_revoked_expires", revoked_tokens.c.expires_at_utc)
-
-cameras = Table(
-    "cameras", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("source_uri", Text, nullable=False, unique=False),
-    Column("name", Text, nullable=False),
-    Column("enabled", Integer, nullable=False, server_default="1"),
-    Column("tasks_json", Text, nullable=False, server_default="[]"),
-    Column("frame_width", Integer, nullable=False, server_default="640"),
-    Column("frame_height", Integer, nullable=False, server_default="640"),
-    Column("room_id", Integer, ForeignKey("rooms.id", ondelete="SET NULL")),
-    Column("source_type", String(16), nullable=False, server_default="rtsp"),
-    Column("metadata_json", Text, nullable=False, server_default="{}"),
-    Column("created_at_utc", UTC_TS, nullable=False), Column("updated_at_utc", UTC_TS, nullable=False),
-    CheckConstraint("enabled IN (0, 1)", name="ck_cameras_enabled"),
-    CheckConstraint("source_type IN ('rtsp', 'static_video')", name="ck_cameras_source_type"),
-)
-Index("idx_cameras_enabled", cameras.c.enabled)
-Index("idx_cameras_room", cameras.c.room_id)
 
 face_quality_settings = Table(
     "face_quality_settings", metadata,
@@ -350,7 +331,18 @@ model_general_settings = Table(
 )
 sources = Table(
     "sources", metadata,
+    Column("id", Integer),
     Column("source_uri", Text, primary_key=True),
+    Column("name", Text),
+    Column("enabled", Integer, server_default="1"),
+    Column("tasks_json", Text, server_default="[]"),
+    Column("frame_width", Integer, server_default="640"),
+    Column("frame_height", Integer, server_default="640"),
+    Column("room_id", Integer, ForeignKey("rooms.id", ondelete="SET NULL")),
+    Column("source_type", String(16), server_default="rtsp"),
+    Column("metadata_json", Text, server_default="{}"),
+    Column("created_at_utc", UTC_TS),
+    Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("fire_confidence", Float),
     Column("smoke_confidence", Float),
     Column("plate_confidence", Float),
@@ -360,8 +352,10 @@ sources = Table(
     Column("face_human_confidence", Float),
     Column("face_detection_confidence", Float),
     Column("face_recognition_threshold", Float),
-    Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
 )
+UniqueConstraint("id", name="uq_sources_id")
+Index("idx_sources_enabled", sources.c.enabled)
+Index("idx_sources_room", sources.c.room_id)
 general_settings = Table(
     "general_settings", metadata,
     Column("id", Integer, primary_key=True),

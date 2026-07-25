@@ -70,7 +70,7 @@ _SAMPLE_BY_NAME = {
 
 class DeveloperTestRequest(BaseModel):
     method: str = Field(examples=["GET"])
-    path: str = Field(examples=["/api/v1/cameras/active"])
+    path: str = Field(examples=["/api/v1/sources/active"])
     query: dict[str, Any] = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
     body: Any | None = None

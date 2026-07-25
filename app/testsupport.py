@@ -92,7 +92,6 @@ def build_test_settings(tmp_path: Path) -> Any:
         _BASE_SETTINGS,
         processor_mode="mock",
         database_url=database_url,
-        source_registry_path=tmp_path / "sources.json",
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
         auth_default_admin_username=AUTH_USER,

@@ -73,7 +73,6 @@ class Settings:
     database_max_overflow: int = _env_int("DATABASE_MAX_OVERFLOW", 20)
     data_path: Path = _path("DATA_PATH", "data")
     business_timezone_name: str = os.getenv("BUSINESS_TIMEZONE", "Asia/Tehran")
-    source_registry_path: Path = _path("SOURCE_REGISTRY_PATH", "data/sources.json")
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)
     model_root_path: Path = _path("MODEL_ROOT_PATH", "weights")
     model_preferred_format: str = os.getenv(

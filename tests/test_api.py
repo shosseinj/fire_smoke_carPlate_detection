@@ -25,8 +25,8 @@ def _test_database_url() -> str:
     return os.environ["TEST_DATABASE_URL"]
 
 
-def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path) -> None:
-    seed_path = tmp_path / "sources.json"
+def test_source_table_imports_json_once_and_becomes_authoritative(tmp_path: Path) -> None:
+
     seed_path.write_text(
         json.dumps(
             [
@@ -46,7 +46,7 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
         settings,
         processor_mode="mock",
         database_url=_test_database_url(),
-        source_registry_path=seed_path,
+
         video_ingestion_enabled=False,
     )
 
@@ -58,10 +58,10 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
     finally:
         first_runtime.close()
 
-    columns = set(metadata.tables["cameras"].c.keys())
+    columns = set(metadata.tables["sources"].c.keys())
     with get_database(_test_database_url()).connection() as connection:
         assert {
-            "camera_id",
+            "id",
             "name",
             "enabled",
             "tasks_json",
@@ -70,7 +70,7 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
             "created_at_utc",
             "updated_at_utc",
         }.issubset(columns)
-        assert connection.execute("SELECT COUNT(*) FROM cameras").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM sources WHERE source_uri != '__default__'").fetchone()[0] == 1
 
     seed_path.write_text("[]", encoding="utf-8")
     second_runtime = build_runtime(test_settings)
@@ -80,7 +80,7 @@ def test_camera_table_imports_json_once_and_becomes_authoritative(tmp_path: Path
         second_runtime.close()
 
 
-def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
+def test_source_crud_emits_online_websocket_events_and_allows_renaming(
     tmp_path: Path,
 ) -> None:
     import app.main as main_module
@@ -90,7 +90,7 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing-sources.json",
+            
             video_ingestion_enabled=False,
         )
     )
@@ -100,28 +100,27 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
         with TestClient(main_module.app) as client:
             with client.websocket_connect("/api/v1/broadcast/ws") as websocket:
                 created = client.post(
-                    "/api/v1/cameras",
+                    "/api/v1/sources",
                     json={
-                        "camera_id": "camera-live",
-                        "name": "Live camera",
-                        "source_uri": "rtsp://operator:secret@example.test/live",
+                        "name": "Live source",
+                        "source_uri": "data/live.mp4",
+                        "source_type": "static_video",
                         "metadata": {"area": "gate"},
                     },
                 )
                 assert created.status_code == 201
-                assert created.json()["camera_id"] == "camera-live"
-                assert "secret" not in created.json()["source_uri"]
+                assert created.json()["source_uri"] == "data/live.mp4"
                 event = websocket.receive_json()
                 if event.get("type") != "camera_changed":
                     event = websocket.receive_json()
                 assert event == {
                     "type": "camera_changed",
                     "action": "created",
-                    "camera_id": "camera-live",
+                    "source_uri": "data/live.mp4",
                     "revision": event["revision"],
                     "camera": {
-                        "camera_id": "camera-live",
-                        "name": "Live camera",
+                        "source_uri": "data/live.mp4",
+                        "name": "Live source",
                         "enabled": True,
                         "tasks": [],
                         "frame_width": 640,
@@ -130,48 +129,52 @@ def test_camera_crud_emits_online_websocket_events_and_keeps_source_alias(
                     },
                 }
 
-                source_alias = client.get("/api/v1/sources/camera-live")
+                source_alias = client.get("/api/v1/sources/data/live.mp4")
                 assert source_alias.status_code == 200
-                assert source_alias.json()["source_id"] == "camera-live"
+                assert source_alias.json()["id"] == created.json()["id"]
                 assert source_alias.json()["frame_width"] == 640
                 assert source_alias.json()["frame_height"] == 640
-                assert "secret" not in source_alias.json()["source_uri"]
+                assert source_alias.json()["source_uri"] == "data/live.mp4"
 
                 updated = client.patch(
-                    "/api/v1/cameras/camera-live",
+                    "/api/v1/sources/data/live.mp4",
                     json={
-                        "name": "Updated camera",
+                        "name": "Updated source",
+                        "source_uri": "data/renamed.mp4",
                         "frame_width": 960,
                         "frame_height": 544,
                     },
                 )
                 assert updated.status_code == 200
-                assert updated.json()["name"] == "Updated camera"
+                assert updated.json()["name"] == "Updated source"
                 assert updated.json()["frame_width"] == 960
                 assert updated.json()["frame_height"] == 544
                 assert websocket.receive_json()["action"] == "updated"
+                assert client.get("/api/v1/sources/data/live.mp4").status_code == 404
+                assert client.get("/api/v1/sources/data/renamed.mp4").status_code == 200
 
                 replaced = client.put(
-                    "/api/v1/cameras/camera-live",
+                    "/api/v1/sources/data/renamed.mp4",
                     json={
-                        "name": "Replacement camera",
+                        "name": "Replacement source",
                         "source_uri": "data/replacement.mp4",
                         "metadata": {},
+                        "source_type": "static_video",
                     },
                 )
                 assert replaced.status_code == 200
 
-                deleted = client.delete("/api/v1/cameras/camera-live")
+                deleted = client.delete("/api/v1/sources/data/replacement.mp4")
                 assert deleted.status_code == 204
                 deleted_event = websocket.receive_json()
                 assert deleted_event["action"] == "deleted"
                 assert deleted_event["camera"] is None
-                assert client.get("/api/v1/cameras/camera-live").status_code == 404
+                assert client.get("/api/v1/sources/data/replacement.mp4").status_code == 404
     finally:
         main_module.runtime = old_runtime
 
 
-def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
+def test_broadcast_zone_refresh_uses_source_registry_source_uris(tmp_path: Path) -> None:
     import app.main as main_module
 
     test_runtime = build_runtime(
@@ -179,7 +182,38 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing-sources.json",
+            
+            video_ingestion_enabled=False,
+        )
+    )
+    old_runtime = main_module.runtime
+    main_module.runtime = test_runtime
+    try:
+        recorded: list[tuple[str, list[list[list[float]]]]] = []
+        cleared: list[str] = []
+
+        test_runtime.broadcast.set_source_zones = lambda source_uri, zones: recorded.append((source_uri, zones))  # type: ignore[method-assign]
+        test_runtime.broadcast.clear_source_zones = lambda source_uri: cleared.append(source_uri)  # type: ignore[method-assign]
+
+        test_runtime._refresh_all_source_zones()
+
+        source_uris = [record.source_uri for record in test_runtime.registry.list()]
+        assert set(source_uris)
+        assert all(uri in source_uris for uri, _ in recorded)
+        assert all(uri in source_uris for uri in cleared)
+    finally:
+        main_module.runtime = old_runtime
+
+
+def test_single_and_bulk_source_updates(tmp_path: Path) -> None:
+    import app.main as main_module
+
+    test_runtime = build_runtime(
+        replace(
+            settings,
+            processor_mode="mock",
+            database_url=_test_database_url(),
+            
             video_ingestion_enabled=False,
         )
     )
@@ -187,10 +221,10 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
     main_module.runtime = test_runtime
     try:
         with TestClient(main_module.app) as client:
-            camera_ids = [record.source_id for record in test_runtime.registry.list()[:2]]
+            source_ids = [record.source_uri for record in test_runtime.registry.list()[:2]]
 
             single = client.patch(
-                f"/api/v1/cameras/{camera_ids[0]}",
+                f"/api/v1/sources/{source_ids[0]}",
                 json={"name": "Single update"},
             )
             assert single.status_code == 200
@@ -198,56 +232,48 @@ def test_single_and_bulk_camera_updates(tmp_path: Path) -> None:
             assert "metadata" in single.json()
             assert "updated_at_utc" in single.json()
 
-            bulk = client.patch(
-                "/api/v1/cameras/bulk",
+            bulk = client.put(
+                "/api/v1/sources/bulk/task-assignment",
                 json=[
                     {
-                        "camera_id": f"  {camera_ids[0]}  ",
+                        "source_id": source_ids[0],
                     },
                     {
-                        "camera_id": camera_ids[1],
-                        "name": "Bulk update",
-                        "frame_width": 960,
-                        "frame_height": 544,
+                        "source_id": source_ids[1],
                     },
                 ],
+            )
+            assert bulk.status_code == 422
+
+            bulk = client.put(
+                "/api/v1/sources/bulk/task-assignment",
+                json={
+                    "source_ids": [source_ids[0], source_ids[1]],
+                    "tasks": ["plate_recognition", "fire_smoke"],
+                    "enabled": True,
+                },
             )
             assert bulk.status_code == 200
-            assert [item["camera_id"] for item in bulk.json()] == camera_ids
-            assert bulk.json()[1]["name"] == "Bulk update"
-            assert bulk.json()[1]["frame_width"] == 960
-            assert bulk.json()[1]["frame_height"] == 544
+            assert [item["source_uri"] for item in bulk.json()] == source_ids
+            assert all(item["tasks"] == ["fire_smoke", "plate_recognition"] for item in bulk.json())
+            assert all(item["enabled"] is True for item in bulk.json())
 
-            rejected = client.patch(
-                "/api/v1/cameras/bulk",
-                json=[
-                    {"camera_id": camera_ids[0], "name": "Must not apply"},
-                    {"camera_id": "missing-camera", "name": "Should fail"},
-                ],
+            rejected = client.put(
+                "/api/v1/sources/bulk/task-assignment",
+                json={
+                    "source_ids": [source_ids[0], "missing-source"],
+                    "tasks": ["plate_recognition"],
+                },
             )
             assert rejected.status_code == 404
-            assert client.get(f"/api/v1/cameras/{camera_ids[0]}").json()["name"] == (
+            assert client.get(f"/api/v1/sources/{source_ids[0]}").json()["name"] == (
                 "Single update"
             )
 
-            duplicate = client.patch(
-                "/api/v1/cameras/bulk",
-                json=[
-                    {"camera_id": camera_ids[0]},
-                    {"camera_id": camera_ids[0]},
-                ],
-            )
-            assert duplicate.status_code == 422
-
-            no_changes = client.patch(
-                "/api/v1/cameras/bulk",
-                json=[{"camera_id": camera_ids[0]}],
-            )
-            assert no_changes.status_code == 422
-
             schema = client.get("/openapi.json")
             assert schema.status_code == 200
-            assert "/api/v1/cameras/bulk" in schema.json()["paths"]
+            assert "/api/v1/sources/bulk/task-assignment" in schema.json()["paths"]
+            assert "/api/v1/cameras" not in schema.json()["paths"]
     finally:
         main_module.runtime = old_runtime
         test_runtime.close()
@@ -261,7 +287,7 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "sources.json",
+            
             video_ingestion_enabled=False,
         )
     )
@@ -291,7 +317,8 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             response = client.get("/openapi.json")
             assert response.status_code == 200
             assert "/dashboard" in response.json()["paths"]
-            assert "/api/v1/cameras" in response.json()["paths"]
+            assert "/api/v1/cameras" not in response.json()["paths"]
+            assert "/api/v1/sources" in response.json()["paths"]
             assert "/api/v1/plate-logs" in response.json()["paths"]
 
             response = client.post(
@@ -353,7 +380,7 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "sources.json",
+            
             video_ingest_backend="deepstream",
         )
     )
@@ -372,7 +399,7 @@ def test_swagger_organizes_diagnostics_and_model_test_sections(tmp_path: Path) -
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing.json",
+            
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -465,7 +492,7 @@ def test_general_model_settings_and_play_only_camera_api(
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing.json",
+            
             saved_media_path=tmp_path / "media",
             model_root_path=model_root,
             fire_model_path=fire_model,
@@ -550,21 +577,47 @@ def test_general_model_settings_and_play_only_camera_api(
             assert downloaded.status_code == 200
             assert downloaded.content == b"engine"
 
-            camera_id = test_runtime.registry.list()[0].source_id
+            source_uri = test_runtime.registry.list()[0].source_uri
             play_only = client.patch(
-                f"/api/v1/sources/{camera_id}",
+                f"/api/v1/sources/{source_uri}",
                 json={"tasks": []},
             )
             assert play_only.status_code == 200
             assert play_only.json()["tasks"] == []
 
+            renamed = client.patch(
+                f"/api/v1/sources/{source_uri}",
+                json={"name": "Updated camera", "source_uri": "rtsp://example.test/ignored"},
+            )
+            assert renamed.status_code == 200
+            assert renamed.json()["name"] == "Updated camera"
+            assert renamed.json()["source_uri"] == source_uri
+
+            moved = client.patch(
+                f"/api/v1/sources/{source_uri}",
+                json={"source_uri": "data/4.mp4"},
+            )
+            assert moved.status_code == 200
+            assert moved.json()["source_uri"] == "data/4.mp4"
+            assert client.get(f"/api/v1/sources/data/4.mp4").status_code == 200
+            source_uri = "data/4.mp4"
+
+            numeric_id = str(test_runtime.registry.list()[0].id)
+            numeric_patch = client.patch(
+                f"/api/v1/sources/{numeric_id}",
+                json={"name": "Updated by id"},
+            )
+            assert numeric_patch.status_code == 200
+            assert numeric_patch.json()["name"] == "Updated by id"
+            assert numeric_patch.json()["id"] == int(numeric_id)
+
             summary = test_runtime.router.submit_round(
                 frames=[np.zeros((64, 64, 3), dtype=np.uint8)],
-                source_ids=[camera_id],
+                source_ids=[source_uri],
                 round_sequence=999,
             )
             assert summary["task_submissions"] == 0
-            latest = test_runtime.broadcast.wait_next(camera_id, 0, timeout=1.0)
+            latest = test_runtime.broadcast.wait_next(source_uri, 0, timeout=1.0)
             assert latest is not None
             assert latest.tasks == ()
     finally:
@@ -581,7 +634,7 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing.json",
+            
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -590,15 +643,15 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
     main_module.runtime = test_runtime
     try:
         with TestClient(main_module.app) as client:
-            camera_id = test_runtime.registry.list()[0].source_id
+            source_uri = test_runtime.registry.list()[0].source_uri
             inherited = client.get(
-                f"/api/v1/plate-settings/cameras/{camera_id}"
+                f"/api/v1/plate-settings/cameras/{source_uri}"
             )
             assert inherited.status_code == 200
             assert inherited.json()["overrides"] == {}
 
             overridden = client.patch(
-                f"/api/v1/plate-settings/cameras/{camera_id}",
+                f"/api/v1/plate-settings/cameras/{source_uri}",
                 json={"plate_confidence": 0.61},
             )
             assert overridden.status_code == 200
@@ -620,14 +673,14 @@ def test_plate_settings_api_applies_general_and_camera_inheritance(
             assert general.status_code == 200
 
             effective = client.get(
-                f"/api/v1/plate-settings/cameras/{camera_id}"
+                f"/api/v1/plate-settings/cameras/{source_uri}"
             ).json()["effective"]
             assert effective["plate_confidence"] == 0.61
             assert effective["vehicle_confidence"] == 0.41
             assert effective["min_vehicle_width_pixels"] == 150
 
             cleared = client.patch(
-                f"/api/v1/plate-settings/cameras/{camera_id}",
+                f"/api/v1/plate-settings/cameras/{source_uri}",
                 json={"plate_confidence": None},
             )
             assert cleared.status_code == 200
@@ -646,7 +699,7 @@ def test_get_all_sections_returns_all_groups(tmp_path: Path) -> None:
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing.json",
+            
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
@@ -698,7 +751,7 @@ def test_post_all_sections_smoke_runs_tests(tmp_path: Path) -> None:
             settings,
             processor_mode="mock",
             database_url=_test_database_url(),
-            source_registry_path=tmp_path / "missing.json",
+            
             saved_media_path=tmp_path / "media",
             video_ingestion_enabled=False,
         )
