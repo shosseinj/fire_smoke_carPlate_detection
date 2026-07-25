@@ -145,6 +145,16 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
     assert int(image.sum()) > 0
 
 
+def test_passthrough_render_does_not_mutate_worker_frame() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    source_packet = packet(["plate_recognition"])
+    original = source_packet.frame.copy()
+
+    hub.publish_passthrough(source_packet)
+
+    assert np.array_equal(source_packet.frame, original)
+
+
 def test_wall_rendition_is_bounded_and_full_rendition_keeps_camera_size() -> None:
     hub = AnnotatedBroadcastHub(
         enabled=True,
@@ -193,6 +203,18 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'header.render_profile || "Annotated"' in dashboard
     assert "if (broadcastSocket !== socket) return;" in dashboard
     assert "event.data instanceof ArrayBuffer" in dashboard
+
+
+def test_dashboard_uses_source_uri_task_manager_identity() -> None:
+    dashboard = (
+        Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
+    ).read_text(encoding="utf-8")
+
+    assert "source.source_id" not in dashboard
+    assert "item.source_id" not in dashboard
+    assert 'card.dataset.sourceId = source.source_uri' in dashboard
+    assert 'item.source_uri === sourceId' in dashboard
+    assert 'status.textContent = "Source disabled in task manager"' in dashboard
 
 
 def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> None:

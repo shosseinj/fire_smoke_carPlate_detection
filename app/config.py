@@ -261,7 +261,7 @@ class Settings:
     task_queue_policy: str = os.getenv("TASK_QUEUE_POLICY", "latest_per_source").strip().lower()
     task_queue_capacity: int = _env_int("TASK_QUEUE_CAPACITY", 256)
     task_queue_block_timeout_ms: float = _env_float("TASK_QUEUE_BLOCK_TIMEOUT_MS", 1000.0)
-    skip_taskless_sources: bool = _env_bool("SKIP_TASKLESS_SOURCES", True)
+    skip_taskless_sources: bool = _env_bool("SKIP_TASKLESS_SOURCES", False)
 
     # Authentication / JWT. Current names take precedence; legacy names are fallbacks.
     jwt_secret_key: str = str(

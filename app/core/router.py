@@ -33,6 +33,7 @@ class TaskRouter:
         self.frames_unregistered = 0
         self.task_submissions = 0
         self.task_submission_rejections = 0
+        self.broadcast_frames = 0
         self.play_only_frames = 0
         self.last_round_sequence: int | None = None
         self.started = False
@@ -99,10 +100,11 @@ class TaskRouter:
                 source_time_seconds=(source_times_seconds[index] if source_times_seconds is not None else None),
                 metadata=packet_metadata,
             )
+            if self.play_only_callback is not None:
+                self.play_only_callback(packet)
+                self.broadcast_frames += 1
             if not source.tasks:
                 self.play_only_frames += 1
-                if self.play_only_callback is not None:
-                    self.play_only_callback(packet)
             for task in source.tasks:
                 worker = self.workers.get(task)
                 if worker is None:
@@ -132,6 +134,7 @@ class TaskRouter:
             "frames_unregistered": self.frames_unregistered,
             "task_submissions": self.task_submissions,
             "task_submission_rejections": self.task_submission_rejections,
+            "broadcast_frames": self.broadcast_frames,
             "play_only_frames": self.play_only_frames,
             "last_round_sequence": self.last_round_sequence,
             "enabled_source_ids": self.registry.enabled_source_ids(),

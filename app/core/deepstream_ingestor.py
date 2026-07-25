@@ -673,14 +673,6 @@ class DeepStreamIngestor:
                 if state.latest_frame is not None
                 and state.latest_version > state.submitted_version
             ]
-            # Skip task-less sources when optimization is enabled
-            if self.skip_taskless_sources:
-                selected = [
-                    state
-                    for state in selected
-                    if self.registry.get(state.source_id) is not None
-                    and self.registry.get(state.source_id).tasks
-                ]
             source_frames = [state.latest_frame for state in selected]
             frames = [
                 (

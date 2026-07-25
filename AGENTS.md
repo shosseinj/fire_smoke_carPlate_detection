@@ -558,7 +558,7 @@ docker logs --tail 200 merged-video-ai-router
 | `PLATE_MAX_WAIT_MS` | 50.0 | Max wait time to fill plate batch |
 | `FACE_MAX_WAIT_MS` | 50.0 | Max wait time to fill face batch |
 | `WORKER_THREADS` | 1 | Number of threads sharing each task processor; values above 1 require target-runtime thread-safety proof |
-| `SKIP_TASKLESS_SOURCES` | true | Omits taskless sources from router submission and therefore disables their play-only broadcast path |
+| `SKIP_TASKLESS_SOURCES` | false | Legacy compatibility setting; enabled sources always reach router broadcast, while task assignments control AI worker submission |
 
 ### Performance optimization strategies
 
@@ -566,7 +566,7 @@ docker logs --tail 200 merged-video-ai-router
 2. **Resolve configuration precedence**: check `docker compose config`; service `environment` values override `env_file` and Python defaults.
 3. **Tune one limit at a time**: raise `VIDEO_INGEST_FPS` gradually only when decoders supply enough frames and worker replacements remain zero or acceptable.
 4. **Protect ordering and state**: do not increase `WORKER_THREADS` until TensorRT contexts, trackers, processors, callbacks, and stores are validated as thread-safe and per-source result ordering is preserved.
-5. **Preserve play-only delivery**: do not enable `SKIP_TASKLESS_SOURCES` when taskless cameras must remain visible on the dashboard.
+5. **Preserve source-selected delivery**: `/api/v1/sources` owns frontend stream selection through `enabled`; `tasks` selects AI workers. Every enabled frame is published to the bounded JPEG broadcast path before optional AI results upgrade it, so model latency or failure does not remove the video.
 
 ### CPU Bottlenecks and Optimizations
 

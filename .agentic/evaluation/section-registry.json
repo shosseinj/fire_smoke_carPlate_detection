@@ -65,10 +65,10 @@
       "metrics": [
         "rounds_received", "frames_received", "frames_disabled",
         "frames_unregistered", "task_submissions", "task_submission_rejections",
-        "play_only_frames", "queue_depth", "queue_capacity", "queue_replacements"
+        "broadcast_frames", "play_only_frames", "queue_depth", "queue_capacity", "queue_replacements"
       ],
       "acceptance": {},
-      "notes": "Mock mode testable. Real mode requires GPU and model files. Real-time Compose uses latest-per-source task queues; bounded lossless FIFO remains an explicit file/API option with backpressure."
+      "notes": "Mock mode testable. Real mode requires GPU and model files. Enabled Sources publish a raw frame independently of selected AI workers; tasks control inference, and disabled Sources do not route or broadcast. Real-time Compose uses latest-per-source task queues; bounded lossless FIFO remains an explicit file/API option with backpressure."
     },
     {
       "id": "video-ingestion",
@@ -215,7 +215,7 @@
         "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
       "acceptance": {},
-      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Face/human boxes are rendered server-side from TaskResult humans/faces; a short configurable face-overlay TTL smooths slower-task flicker and renderer failures are logged. Dashboard requires browser validation."
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard cards use source_uri consistently with the current Source contract; enabled state selects visible streams and tasks select AI overlays. Tasked sources receive passthrough frames before model results so video remains reachable during inference delay/failure. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Browser validation remains required."
     },
     {
       "id": "api-health",

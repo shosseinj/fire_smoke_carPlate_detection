@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -27,7 +28,7 @@ def build_router(registry: SourceRegistry) -> tuple[TaskRouter, ResultStore, Sou
             enabled = False
         registry.create(
             SourceRecord(
-                source_id=f"camera-{index:02d}",
+                source_uri=f"camera-{index:02d}",
                 name=f"Camera {index}",
                 enabled=enabled,
                 tasks=tasks,
@@ -129,12 +130,49 @@ def test_enabled_camera_with_no_tasks_uses_play_only_callback(source_registry: S
         router.close()
 
 
+def test_enabled_camera_with_tasks_is_broadcast_before_worker_result() -> None:
+    packets = []
+    submitted = []
+    source = SimpleNamespace(
+        enabled=True,
+        tasks={TaskName.PLATE_RECOGNITION},
+    )
+    registry = SimpleNamespace(
+        get=lambda source_id: source if source_id == "camera-01" else None,
+        enabled_source_ids=lambda: ["camera-01"],
+    )
+    worker = SimpleNamespace(
+        submit=lambda packet: submitted.append(packet) is None,
+        status=lambda: {},
+    )
+    router = TaskRouter(
+        registry=registry,
+        workers={TaskName.PLATE_RECOGNITION: worker},
+        result_store=ResultStore(10),
+        play_only_callback=packets.append,
+    )
+
+    summary = router.submit_round(
+        frames=[np.zeros((16, 16, 3), dtype=np.uint8)],
+        source_ids=["camera-01"],
+        round_sequence=4,
+    )
+
+    assert summary["accepted_sources"] == 1
+    assert summary["task_submissions"] == 1
+    assert len(packets) == 1
+    assert submitted == packets
+    assert packets[0].metadata["assigned_tasks"] == ["plate_recognition"]
+    assert router.status()["broadcast_frames"] == 1
+    assert router.status()["play_only_frames"] == 0
+
+
 def test_fifty_sources_can_be_routed_without_global_camera_limit(source_registry: SourceRegistry) -> None:
     registry = source_registry
     for index in range(1, 51):
         registry.create(
             SourceRecord(
-                source_id=f"camera-{index:02d}",
+                source_uri=f"camera-{index:02d}",
                 name=f"Camera {index}",
                 tasks={TaskName.FIRE_SMOKE, TaskName.PLATE_RECOGNITION},
             )
@@ -174,7 +212,7 @@ def test_face_recognition_has_an_independent_worker(source_registry: SourceRegis
     registry = source_registry
     registry.create(
         SourceRecord(
-            source_id="face-camera",
+            source_uri="face-camera",
             name="Face camera",
             tasks={TaskName.FACE_RECOGNITION},
         )

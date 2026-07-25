@@ -183,9 +183,9 @@ class Runtime:
                 continue
             polygons = self.location_store.get_polygons_for_section(section_id)
             if polygons:
-                self.broadcast.set_source_zones(camera.source_id, polygons)
+                self.broadcast.set_source_zones(camera.source_uri, polygons)
             else:
-                self.broadcast.clear_source_zones(camera.source_id)
+                self.broadcast.clear_source_zones(camera.source_uri)
 
     def selected_model_records(self) -> list[dict[str, object]]:
         """Return the exact startup model choices in runtime load order."""

@@ -97,7 +97,6 @@ def test_video_files_are_sampled_as_one_camera_round(
     registry = source_registry
     registry.create(
         SourceRecord(
-            source_id="camera-01",
             name="Fire camera",
             tasks={TaskName.FIRE_SMOKE},
             source_uri="data/fire.mp4",
@@ -106,7 +105,6 @@ def test_video_files_are_sampled_as_one_camera_round(
     )
     registry.create(
         SourceRecord(
-            source_id="camera-02",
             name="Mixed camera",
             tasks={TaskName.FIRE_SMOKE, TaskName.PLATE_RECOGNITION},
             source_uri="data/mixed.mp4",
@@ -115,7 +113,6 @@ def test_video_files_are_sampled_as_one_camera_round(
     )
     registry.create(
         SourceRecord(
-            source_id="camera-03",
             name="Disabled camera",
             enabled=False,
             tasks={TaskName.PLATE_RECOGNITION},
@@ -139,7 +136,7 @@ def test_video_files_are_sampled_as_one_camera_round(
         "accepted_sources": 2,
         "task_submissions": 3,
     }
-    assert router.calls[0]["source_ids"] == ["camera-01", "camera-02"]
+    assert router.calls[0]["source_ids"] == ["data/fire.mp4", "data/mixed.mp4"]
     assert router.calls[0]["frame_indexes"] == [0, 0]
     assert router.calls[0]["source_times_seconds"] == [0.1, 0.1]
     assert all(frame.shape == (640, 640, 3) for frame in router.calls[0]["frames"])
@@ -149,7 +146,7 @@ def test_video_files_are_sampled_as_one_camera_round(
     )
     assert router.calls[0]["metadata"][0]["source_frame_width"] == 6
     assert router.calls[0]["metadata"][0]["source_frame_height"] == 4
-    assert ingestor.status()["sources"]["camera-01"]["stride"] == 2
+    assert ingestor.status()["sources"]["data/fire.mp4"]["stride"] == 2
     ingestor.close()
 
 
@@ -164,13 +161,11 @@ def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(
         project_root=tmp_path,
     )
     rtsp = SourceRecord(
-        source_id="camera-01",
         name="RTSP",
         source_uri="rtsp://user:password@192.0.2.10:554/live",
         metadata={},
     )
     local = SourceRecord(
-        source_id="camera-02",
         name="File",
         source_uri="data/example.mp4",
         metadata={},
@@ -180,9 +175,9 @@ def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(
 
     assert ingestor.is_supported_source(rtsp) is True
     assert ingestor.is_supported_source(local) is True
-    assert [record.source_id for record in ingestor._active_records()] == [
-        "camera-01",
-        "camera-02",
+    assert [record.source_uri for record in ingestor._active_records()] == [
+        rtsp.source_uri,
+        local.source_uri,
     ]
     assert ingestor._resolve_uri(rtsp.source_uri or "") == rtsp.source_uri
     assert ingestor._resolve_uri(local.source_uri or "").startswith("file:")
@@ -195,7 +190,6 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(
     registry = source_registry
     registry.create(
         SourceRecord(
-            source_id="camera-01",
             name="RTSP",
             source_uri="rtsp://user:password@192.0.2.10:554/live",
             metadata={},
@@ -203,7 +197,6 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(
     )
     registry.create(
         SourceRecord(
-            source_id="camera-02",
             name="File",
             source_uri="data/example.mp4",
             metadata={},
@@ -216,7 +209,7 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(
         rtsp_enabled=False,
     )
 
-    assert [record.source_id for record in ingestor._active_records()] == ["camera-02"]
+    assert [record.source_uri for record in ingestor._active_records()] == ["data/example.mp4"]
 
 
 def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
@@ -267,7 +260,6 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
     registry = source_registry
     registry.create(
         SourceRecord(
-            source_id="camera-face",
             name="2K face camera",
             tasks={TaskName.FACE_RECOGNITION},
             source_uri="data/face.mp4",
@@ -282,11 +274,11 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
         project_root=tmp_path,
     )
     source_frame = np.full((1080, 2048, 3), 31, dtype=np.uint8)
-    ingestor._states["camera-face"] = SimpleNamespace(
+    ingestor._states["data/face.mp4"] = SimpleNamespace(
         latest_frame=source_frame,
         latest_version=1,
         submitted_version=0,
-        source_id="camera-face",
+        source_id="data/face.mp4",
         frame_width=640,
         frame_height=640,
         frame_index=7,
@@ -357,7 +349,7 @@ def test_deepstream_skips_unused_audio_during_decoder_autoplug(
     assert other.connections == []
 
 
-def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
+def test_deepstream_applies_source_enable_and_task_changes_without_restart(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
     registry = source_registry
@@ -370,8 +362,8 @@ def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
     closed: list[str] = []
 
     def open_source(record: SourceRecord) -> None:
-        opened.append((record.source_id, record.source_uri))
-        ingestor._states[record.source_id] = SimpleNamespace(
+        opened.append((record.source_uri, record.source_uri))
+        ingestor._states[record.source_uri] = SimpleNamespace(
             source_uri=record.source_uri,
             frame_width=record.frame_width,
             frame_height=record.frame_height,
@@ -386,35 +378,30 @@ def test_deepstream_applies_camera_crud_and_uri_changes_without_restart(
 
     registry.create(
         SourceRecord(
-            source_id="camera-live",
             name="Live camera",
             tasks={TaskName.FIRE_SMOKE},
             source_uri="rtsp://example.test/first",
         )
     )
     ingestor._sync_sources()
-    assert opened == [("camera-live", "rtsp://example.test/first")]
+    source_uri = "rtsp://example.test/first"
+    assert opened == [(source_uri, source_uri)]
 
     ingestor._sync_sources()
-    assert ingestor._states["camera-live"].delivery_target_fps == 5.0
-    registry.update("camera-live", tasks=set())
+    assert ingestor._states[source_uri].delivery_target_fps == 5.0
+    registry.update(source_uri, tasks=set())
     ingestor._sync_sources()
-    assert ingestor._states["camera-live"].delivery_target_fps == 25.0
+    assert ingestor._states[source_uri].delivery_target_fps == 25.0
     assert closed == []
 
-    registry.update("camera-live", source_uri="rtsp://example.test/second")
+    registry.update(source_uri, enabled=False)
     ingestor._sync_sources()
-    assert closed == ["camera-live"]
-    assert opened[-1] == ("camera-live", "rtsp://example.test/second")
+    assert closed == [source_uri]
 
-    registry.update("camera-live", enabled=False)
+    registry.update(source_uri, enabled=True)
     ingestor._sync_sources()
-    assert closed == ["camera-live", "camera-live"]
+    assert opened[-1] == (source_uri, source_uri)
 
-    registry.update("camera-live", enabled=True)
+    registry.delete(source_uri)
     ingestor._sync_sources()
-    assert opened[-1] == ("camera-live", "rtsp://example.test/second")
-
-    registry.delete("camera-live")
-    ingestor._sync_sources()
-    assert closed == ["camera-live", "camera-live", "camera-live"]
+    assert closed == [source_uri, source_uri]

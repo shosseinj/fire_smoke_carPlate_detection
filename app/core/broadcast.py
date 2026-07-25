@@ -629,12 +629,12 @@ class AnnotatedBroadcastHub:
             self._condition.notify_all()
 
     def publish_passthrough(self, packet: FramePacket) -> None:
-        """Broadcast an enabled camera frame without submitting any AI work."""
+        """Broadcast an enabled source frame independently of assigned AI work."""
         with self._condition:
             if not self._enabled:
                 return
             pending = PendingAnnotatedFrame(
-                frame=packet.frame,
+                frame=packet.frame.copy(),
                 expected_tasks=set(),
                 captured_monotonic=packet.captured_monotonic,
             )
