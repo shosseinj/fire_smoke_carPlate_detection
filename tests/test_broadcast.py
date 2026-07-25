@@ -145,6 +145,17 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
     assert int(image.sum()) > 0
 
 
+def test_passthrough_frame_with_assigned_tasks_keeps_ai_task_header() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    source_packet = packet(["face_recognition", "fire_smoke"])
+
+    hub.publish_passthrough(source_packet)
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.tasks == ("face_recognition", "fire_smoke")
+
+
 def test_passthrough_render_does_not_mutate_worker_frame() -> None:
     hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
     source_packet = packet(["plate_recognition"])

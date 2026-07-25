@@ -319,16 +319,19 @@ def test_enrollment_uses_same_detector_embedder_and_store(tmp_path: Path) -> Non
 def test_remote_qdrant_store_batches_search_and_manages_identity(tmp_path: Path) -> None:
     pytest.importorskip("qdrant_client")
     collection = f"faces-test-{uuid.uuid4().hex}"
-    store = QdrantFaceStore(
-        FaceRecognitionSettings(
-            human_model_path=tmp_path / "human.engine",
-            face_model_path=tmp_path / "face.engine",
-            embedding_model_path=tmp_path / "arcface.engine",
-            vector_size=3,
-            qdrant_url="http://127.0.0.1:6333",
-            qdrant_collection=collection,
+    try:
+        store = QdrantFaceStore(
+            FaceRecognitionSettings(
+                human_model_path=tmp_path / "human.engine",
+                face_model_path=tmp_path / "face.engine",
+                embedding_model_path=tmp_path / "arcface.engine",
+                vector_size=3,
+                qdrant_url="http://127.0.0.1:6333",
+                qdrant_collection=collection,
+            )
         )
-    )
+    except Exception as exc:
+        pytest.skip(f"Qdrant service not reachable for integration test: {type(exc).__name__}: {exc}")
     try:
         store.enroll("Alice", np.asarray([1.0, 0.0, 0.0]), "reference-1")
         matches = store.search_batch(
@@ -368,3 +371,50 @@ def test_postgresql_vector_store_is_persistent_and_uses_cosine(
         ]
     finally:
         reopened.close()
+
+
+def test_qdrant_init_failure_falls_back_to_postgresql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenQdrantFaceStore:
+        def __init__(self, settings: FaceRecognitionSettings) -> None:
+            raise RuntimeError("remote disconnected")
+
+    class FallbackStore:
+        def __init__(self, database: object, vector_size: int) -> None:
+            self.database = database
+            self.vector_size = vector_size
+
+        def status(self) -> dict[str, object]:
+            return {"mode": "postgresql", "points": 0}
+
+    monkeypatch.setattr(
+        "app.processors.face_recognition.QdrantFaceStore",
+        BrokenQdrantFaceStore,
+    )
+    monkeypatch.setattr(
+        "app.processors.face_recognition.PostgresFaceStore",
+        FallbackStore,
+    )
+    fake_database = object()
+    processor = FaceRecognitionProcessor(
+        FaceRecognitionSettings(
+            human_model_path=tmp_path / "human.engine",
+            face_model_path=tmp_path / "face.engine",
+            embedding_model_path=tmp_path / "arcface.engine",
+            qdrant_url="http://qdrant.invalid:6333",
+            vector_size=3,
+        ),
+        human_detector=FakeDetector(face=False),
+        face_detector=FakeDetector(face=True),
+        embedder=FakeEmbedder(),
+        database=fake_database,
+        tracker_backend_factory=FakeByteTracker,
+    )
+
+    processor._ensure_dependencies()
+
+    status = processor.status()
+    assert status["qdrant"]["mode"] == "postgresql"
+    assert "Qdrant unavailable; using PostgreSQL fallback" in status["vector_store_warning"]

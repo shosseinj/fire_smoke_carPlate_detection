@@ -304,7 +304,7 @@ class AnnotatedBroadcastHub:
             self._condition.notify_all()
 
     @staticmethod
-    def _expected_tasks(packet: FramePacket, result: TaskResult) -> set[TaskName]:
+    def _configured_tasks(packet: FramePacket) -> set[TaskName]:
         configured = packet.metadata.get("assigned_tasks", [])
         tasks: set[TaskName] = set()
         for value in configured:
@@ -312,6 +312,11 @@ class AnnotatedBroadcastHub:
                 tasks.add(TaskName(value))
             except ValueError:
                 continue
+        return tasks
+
+    @classmethod
+    def _expected_tasks(cls, packet: FramePacket, result: TaskResult) -> set[TaskName]:
+        tasks = cls._configured_tasks(packet)
         return tasks or {result.task}
 
     @staticmethod
@@ -693,11 +698,20 @@ class AnnotatedBroadcastHub:
         with self._condition:
             if not self._enabled:
                 return
-            pending = PendingAnnotatedFrame(
-                frame=packet.frame.copy(),
-                expected_tasks=set(),
-                captured_monotonic=packet.captured_monotonic,
-            )
+            expected = self._configured_tasks(packet)
+            source_pending = self._pending[packet.source_id]
+            pending = source_pending.get(packet.frame_index)
+            if pending is None:
+                pending = PendingAnnotatedFrame(
+                    frame=packet.frame.copy(),
+                    expected_tasks=expected,
+                    captured_monotonic=packet.captured_monotonic,
+                )
+                source_pending[packet.frame_index] = pending
+            else:
+                pending.expected_tasks.update(expected)
+            while len(source_pending) > self.pending_frames_per_source:
+                source_pending.popitem(last=False)
             
             # Use async rendering to avoid blocking the main pipeline
             if self._async_render:
@@ -729,7 +743,7 @@ class AnnotatedBroadcastHub:
                 frame_height=height,
                 wall_width=wall_width,
                 wall_height=wall_height,
-                tasks=(),
+                tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
                 updated_monotonic=time.monotonic(),
             )
             self._latest[packet.source_id] = encoded_frame

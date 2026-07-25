@@ -855,6 +855,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._last_embedding_ms = 0.0
         self._last_search_ms = 0.0
         self._last_error: str | None = None
+        self._vector_store_warning: str | None = None
 
     def _ensure_dependencies(self) -> None:
         with self._load_lock:
@@ -900,7 +901,20 @@ class FaceRecognitionProcessor(BatchProcessor):
                     raise ValueError("FACE_EMBEDDING_MODEL must be .engine or .onnx")
             if self._vector_store is None:
                 if self.settings.qdrant_url:
-                    self._vector_store = QdrantFaceStore(self.settings)
+                    try:
+                        self._vector_store = QdrantFaceStore(self.settings)
+                        self._vector_store_warning = None
+                    except Exception as exc:
+                        if self._database is None:
+                            raise
+                        self._vector_store = PostgresFaceStore(
+                            self._database,
+                            self.settings.vector_size,
+                        )
+                        self._vector_store_warning = (
+                            "Qdrant unavailable; using PostgreSQL fallback: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 else:
                     if self._database is None:
                         raise RuntimeError(
@@ -910,6 +924,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                         self._database,
                         self.settings.vector_size,
                     )
+                    self._vector_store_warning = None
 
     def preload(self) -> None:
         try:
@@ -2135,6 +2150,7 @@ class FaceRecognitionProcessor(BatchProcessor):
             ),
             "embedding_backend": getattr(self._embedder, "backend", None),
             "qdrant": vector_status,
+            "vector_store_warning": self._vector_store_warning,
             "tracker": "ByteTrack",
             "quality_gate": self.quality_settings(),
             "tracking_session_id": self._tracking_session_id,
