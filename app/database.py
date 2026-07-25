@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260724_0009"
+ALEMBIC_HEAD_REVISION = "20260725_0010"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
