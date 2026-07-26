@@ -78,8 +78,6 @@ def _read_image(path: Path | None):
 def _concat_if_needed(image, reference):
     if image is None or reference is None:
         return image
-    if image.shape[:2] != reference.shape[:2]:
-        reference = cv2.resize(reference, (image.shape[1], image.shape[0]))
     if len(image.shape) != len(reference.shape):
         if len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -92,6 +90,8 @@ def _concat_if_needed(image, reference):
             reference = cv2.cvtColor(reference, cv2.COLOR_GRAY2BGR)
     if image.dtype != reference.dtype:
         reference = reference.astype(image.dtype)
+    image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+    reference = cv2.resize(reference, (224, 224), interpolation=cv2.INTER_AREA)
     return cv2.hconcat([image, reference])
 
 
