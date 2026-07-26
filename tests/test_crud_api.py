@@ -741,7 +741,7 @@ class TestDetectionLogsApi:
         )
         assert resp.status_code == 404
 
-    def test_patch_log_attendance(self, crud):
+    def test_patch_log_attendance_route_removed(self, crud):
         base = "/api/v1/logs"
         log_id = self._first_log_id(crud)
 
@@ -750,20 +750,16 @@ class TestDetectionLogsApi:
             json={"counts_for_attendance": False},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data.get("counts_for_attendance") is False
+        assert resp.status_code == 404
 
-    def test_patch_log_attendance_requires_admin(self, crud):
-        base = "/api/v1/logs"
+    def test_patch_log_person_requires_identity(self, crud):
         log_id = self._first_log_id(crud)
-
         resp = crud.client.patch(
-            f"{base}/{log_id}/attendance",
-            json={"counts_for_attendance": False},
-            headers={"Authorization": f"Bearer {crud.operator_token}"},
+            f"/api/v1/logs/{log_id}/person",
+            json={"confidence": 0.8},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 422
 
 
 class TestPersonnelRequestsApi:
