@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 RECENT_DETECTIONS_LIMIT = max(0, int(os.getenv("WEBSOCKET_RECENT_DETECTIONS_LIMIT", "50")))
 _JALALI_TZ = ZoneInfo(os.getenv("BUSINESS_TIMEZONE", "Asia/Tehran"))
+LOGGER = logging.getLogger(__name__)
 
 
 def _parse_datetime(value: str | datetime | None) -> datetime | None:
@@ -208,8 +210,49 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
 
     if image is not None:
         if concatenate:
-            reference_image = _read_image(_reference_path(runtime, row))
-            image = _concat_if_needed(_upper_section(image), reference_image)
+            ref_img_id = row.get("ref_img_id")
+            reference_path = _reference_path(runtime, row)
+            reference_image = _read_image(reference_path)
+            if ref_img_id is None:
+                LOGGER.warning(
+                    "RECENT_KNOWN_REFERENCE_MISSING log_id=%s person=%s ref_img_id=None",
+                    row.get("id"),
+                    person,
+                )
+            elif reference_path is None:
+                LOGGER.warning(
+                    "RECENT_KNOWN_REFERENCE_NOT_FOUND log_id=%s person=%s ref_img_id=%s",
+                    row.get("id"),
+                    person,
+                    ref_img_id,
+                )
+            elif reference_image is None:
+                LOGGER.warning(
+                    "RECENT_KNOWN_REFERENCE unreadable log_id=%s person=%s ref_img_id=%s path=%s",
+                    row.get("id"),
+                    person,
+                    ref_img_id,
+                    reference_path,
+                )
+            else:
+                source_image = _upper_section(image)
+                image = _concat_if_needed(source_image, reference_image)
+                if image is source_image:
+                    LOGGER.warning(
+                        "RECENT_KNOWN_CONCATENATION_FAILED log_id=%s person=%s ref_img_id=%s",
+                        row.get("id"),
+                        person,
+                        ref_img_id,
+                    )
+                else:
+                    LOGGER.info(
+                        "RECENT_KNOWN_CONCATENATED log_id=%s person=%s ref_img_id=%s body_shape=%s reference_shape=%s",
+                        row.get("id"),
+                        person,
+                        ref_img_id,
+                        source_image.shape,
+                        reference_image.shape,
+                    )
         success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if success:
             encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
@@ -225,7 +268,7 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "full_name": full_name,
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
-        "face_image_base64": face_image_b64,
+        "face_image_base64": body_image_b64,
         "body_image_base64": body_image_b64,
         "image_kind": image_kind,
         "access_granted": bool(row.get("access_granted")),
