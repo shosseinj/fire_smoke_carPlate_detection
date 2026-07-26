@@ -225,6 +225,57 @@ def test_disappeared_track_is_visible_in_detection_log_filter(
                 )
 
 
+def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        detection_log_store=detection_logs,
+    )
+    observed = packet(6)
+    disappeared = packet(7)
+    final_result = result(disappeared, "Alice", 0.93)
+    final_result.data["humans"] = []
+    final_result.data["faces"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [0, 0, 0, 0],
+            "person": "Alice",
+            "recognition_score": 0.93,
+            "ref_img_id": None,
+            "confidence": 0.0,
+        }
+    ]
+    try:
+        # This represents a regular frame rejected by the polygon log gate.
+        store.observe_result(
+            observed,
+            result(observed, "Alice", 0.93, face_quality=0.90),
+            persist_human_log=False,
+        )
+        store.observe_result(disappeared, final_result)
+        store.flush()
+
+        row = store.list(track_id=13)[0]
+        assert row["name"] == "Alice"
+        records, _ = detection_logs.list_filter(
+            camera_id="camera-01",
+            log_type="camera_rtsp",
+        )
+        assert len(records) == 1
+        assert records[0].face_image
+        face_path = tmp_path / "media" / "detected_faces" / Path(
+            records[0].face_image
+        ).name
+        assert face_path.is_file()
+    finally:
+        store.close()
+
+
 def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
     tmp_path: Path,
     postgres_database: Database,

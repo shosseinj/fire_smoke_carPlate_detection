@@ -196,6 +196,12 @@ the separate result_observer + location_observer for the face_recognition worker
 6. If a transition (entered/exited) occurred → calls `HumanLogStore.observe_result()` to save the human log.
 7. No transition → human log is **not saved**.
 
+Face evidence is retained independently of this polygon admission gate: the face
+observer persists detected-face media for successful face results without creating
+a human log, so a later ByteTrack expiry can reuse that evidence when the face is
+no longer visible. Expiry finalization also upgrades an existing idempotent
+`detection_logs` bridge when its `face_image` was previously empty.
+
 ### API
 
 | Endpoint | Method | Description |

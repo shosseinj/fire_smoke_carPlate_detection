@@ -713,6 +713,20 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             cam = reg.get(source_id)
             if cam is None:
                 return
+
+            # Face evidence is retained independently of polygon-gated human
+            # log admission so an expiry result can finalize a log even when
+            # the face is no longer visible in the camera frame.
+            try:
+                human_log_store.observe_result(
+                    packet,
+                    result,
+                    persist_human_log=False,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Face evidence observer failed: source=%s", source_id
+                )
             room_id = cam.room_id
             has_polygons = ls.room_has_polygon(room_id)
             has_transition = False

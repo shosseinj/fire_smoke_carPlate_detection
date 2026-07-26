@@ -40,6 +40,7 @@ class HumanMediaEvent:
     face_video_frame: np.ndarray | None
     face_quality: float
     finalize_detection_log: bool = False
+    persist_human_log: bool = True
 
 
 @dataclass(slots=True)
@@ -277,7 +278,13 @@ class HumanLogStore:
             return None
         return cv2.warpAffine(frame, transform, (side, side))
 
-    def observe_result(self, packet: FramePacket, result: TaskResult) -> None:
+    def observe_result(
+        self,
+        packet: FramePacket,
+        result: TaskResult,
+        *,
+        persist_human_log: bool = True,
+    ) -> None:
         if result.error:
             return
         source_frame = packet.source_frame
@@ -316,8 +323,6 @@ class HumanLogStore:
                 )[:4]
             ]
             human_crop = self._human_crop(source_frame, bbox)
-            if human_crop is None:
-                continue
             face = faces_by_track.get(track_id)
             face_quality = float(face.get("quality_score", 0.0)) if face else 0.0
             frame_area = max(1.0, float(source_frame.shape[0] * source_frame.shape[1]))
@@ -362,6 +367,12 @@ class HumanLogStore:
                 if remembered_face is not None
                 else None
             )
+            if human_crop is None and disappeared:
+                human_crop = source_frame.copy()
+            if human_crop is None:
+                continue
+            if not persist_human_log and (disappeared or face_frame is None):
+                continue
             current_face_or_human = face_image_frame if face_image_frame is not None else human_crop
             reference_frame = (
                 self._reference_image(raw_ref) if name != "Unknown" else None
@@ -403,7 +414,7 @@ class HumanLogStore:
                     better_face
                     or now - previous_face_video_at >= 1.0 / self.video_fps
                 )
-                if not disappeared and not (
+                if persist_human_log is False and not disappeared and not (
                     identity_changed or better_snapshot or full_frame_due or face_due
                 ):
                     continue
@@ -435,16 +446,19 @@ class HumanLogStore:
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
                 snapshot_frame=(
-                    snapshot_image if (better_snapshot or disappeared) else None
+                    snapshot_image
+                    if persist_human_log and (better_snapshot or disappeared)
+                    else None
                 ),
                 face_image_frame=face_image_frame,
                 snapshot_quality=snapshot_quality,
                 full_frame_video_frame=(
-                    source_frame.copy() if full_frame_due else None
+                    source_frame.copy() if persist_human_log and full_frame_due else None
                 ),
-                face_video_frame=face_frame if face_due else None,
+                face_video_frame=face_frame if persist_human_log and face_due else None,
                 face_quality=face_quality,
-                finalize_detection_log=disappeared,
+                finalize_detection_log=persist_human_log and disappeared,
+                persist_human_log=persist_human_log,
             )
             try:
                 self._queue.put_nowait(event)
@@ -583,6 +597,10 @@ class HumanLogStore:
         face_image_url = ""
         if event.face_image_frame is not None:
             face_image_url, _ = self._save_face_image(event)
+        if not event.persist_human_log:
+            with self._lock:
+                self._last_error = None
+            return
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -724,7 +742,10 @@ class HumanLogStore:
             source_event_key = (
                 f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
             )
-            if self.detection_log_store.get_by_source_event_key(source_event_key) is None:
+            existing_detection = self.detection_log_store.get_by_source_event_key(
+                source_event_key
+            )
+            if existing_detection is None:
                 self.detection_log_store.create(
                     source_system="face_recognition",
                     source_event_key=source_event_key,
@@ -744,6 +765,17 @@ class HumanLogStore:
                     snapshot_image=snapshot_url,
                     video=state.video_url,
                     face_video_or_unknown_faces=state.face_video_url,
+                )
+            elif not existing_detection.face_image and face_image_url:
+                self.detection_log_store.update(
+                    existing_detection.id,
+                    face_image=face_image_url,
+                    snapshot_image=snapshot_url or existing_detection.snapshot_image,
+                    video=state.video_url or existing_detection.video,
+                    face_video_or_unknown_faces=(
+                        state.face_video_url
+                        or existing_detection.face_video_or_unknown_faces
+                    ),
                 )
         if old_snapshot_url and old_snapshot_url != new_snapshot_url:
             (self.snapshot_dir / Path(old_snapshot_url).name).unlink(missing_ok=True)
