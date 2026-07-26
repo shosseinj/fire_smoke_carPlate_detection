@@ -56,7 +56,7 @@ async def fps_diagnostics(
 ) -> dict[str, Any]:
     desired_fps = float(expected_fps or runtime.settings.video_preview_fps)
     camera_tasks = {
-        camera.source_id: tuple(sorted(task.value for task in camera.tasks))
+        camera.source_uri: tuple(sorted(task.value for task in camera.tasks))
         for camera in runtime.registry.list()
         if camera.enabled
     }

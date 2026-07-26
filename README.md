@@ -751,6 +751,8 @@ docker run --rm -it `
   -e PROCESSOR_MODE=real `
   -e FACE_QDRANT_URL=http://host.docker.internal:6333 `
   --mount "type=bind,source=$($PWD.Path),target=/workspace" `
+  -e VIDEO_INGEST_FPS=25 `
+  -e VIDEO_PREVIEW_FPS=25 `
   merged-video-ai-router:v9
 
   docker compose up -d qdrant

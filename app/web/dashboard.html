@@ -979,6 +979,7 @@
         if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
         const parameters = new URLSearchParams();
+        parameters.set("wall", "true");
         if (!useJpegFallback) {
           parameters.set("metadata_only", "true");
         }

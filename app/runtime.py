@@ -162,6 +162,10 @@ class Runtime:
             if hasattr(self.static_video_ingestor, "target_fps"):
                 setattr(self.static_video_ingestor, "target_fps", current.video_ingest_fps)
         self.broadcast.set_enabled(current.broadcast_enabled)
+        self.broadcast.jpeg_quality = current.broadcast_jpeg_quality
+        self.broadcast.wall_jpeg_quality = current.broadcast_wall_jpeg_quality
+        self.broadcast.wall_max_width = current.broadcast_wall_max_width
+        self.broadcast.wall_max_height = current.broadcast_wall_max_height
         # Push draw_zones and refresh zone polygons per source
         gs = self.general_settings.get()
         self.broadcast.set_draw_zones(gs.draw_zones)
@@ -828,6 +832,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         result_store=results,
         play_only_callback=broadcast.publish_passthrough,
         source_only_callback=broadcast.publish_source_only,
+        bypass_workers_callback=broadcast.source_only_exclusive,
     )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None

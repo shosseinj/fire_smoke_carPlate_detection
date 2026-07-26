@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -59,6 +60,7 @@ class VideoFileIngestor:
         rtsp_read_timeout_ms: int = 10000,
         rtsp_reconnect_seconds: float = 3.0,
         capture_factory: Callable[..., Any] = cv2.VideoCapture,
+        read_workers: int = 1,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -78,6 +80,15 @@ class VideoFileIngestor:
         self.rtsp_read_timeout_ms = max(1000, rtsp_read_timeout_ms)
         self.rtsp_reconnect_seconds = max(0.5, rtsp_reconnect_seconds)
         self.capture_factory = capture_factory
+        self.read_workers = max(1, int(read_workers))
+        self._read_executor = (
+            ThreadPoolExecutor(
+                max_workers=self.read_workers,
+                thread_name_prefix="video-source-reader",
+            )
+            if self.read_workers > 1
+            else None
+        )
         os.environ.setdefault(
             "OPENCV_FFMPEG_CAPTURE_OPTIONS",
             f"rtsp_transport;{self.rtsp_transport}",
@@ -253,6 +264,33 @@ class VideoFileIngestor:
                 break
         return True, frame, source_time_ms / 1000.0
 
+    def _read_due_state(
+        self,
+        item: tuple[SourceRecord, VideoState, float],
+    ) -> tuple[SourceRecord, VideoState, Any | None, Any | None, float | None, int]:
+        record, state, now_monotonic = item
+        ok, source_frame, source_time = self._read(state)
+        if not ok:
+            return record, state, None, None, None, state.frame_index
+        state.source_frame_width = int(source_frame.shape[1])
+        state.source_frame_height = int(source_frame.shape[0])
+        frame = source_frame
+        if (
+            source_frame.shape[1] != state.frame_width
+            or source_frame.shape[0] != state.frame_height
+        ):
+            frame = cv2.resize(
+                source_frame,
+                (state.frame_width, state.frame_height),
+                interpolation=cv2.INTER_AREA,
+            )
+        frame_index = state.frame_index
+        state.submitted_frames += 1
+        state.next_frame_due_monotonic = now_monotonic + (
+            1.0 / max(state.effective_fps, 0.1)
+        )
+        return record, state, frame, source_frame, source_time, frame_index
+
     def process_once(self) -> dict[str, int]:
         with self._state_lock:
             return self._process_once_unlocked()
@@ -285,6 +323,7 @@ class VideoFileIngestor:
         frame_indexes: list[int] = []
         source_times: list[float | None] = []
         metadata: list[dict[str, Any]] = []
+        due_states: list[tuple[SourceRecord, VideoState, float]] = []
 
         for record in records:
             now_monotonic = time.monotonic()
@@ -307,9 +346,22 @@ class VideoFileIngestor:
 
             if state.next_frame_due_monotonic > now_monotonic:
                 continue
+            due_states.append((record, state, now_monotonic))
 
-            ok, frame, source_time = self._read(state)
-            if not ok:
+        if self._read_executor is None:
+            read_results = map(self._read_due_state, due_states)
+        else:
+            read_results = self._read_executor.map(self._read_due_state, due_states)
+
+        for (
+            record,
+            state,
+            frame,
+            source_frame,
+            source_time,
+            frame_index,
+        ) in read_results:
+            if frame is None or source_frame is None:
                 if state.is_live:
                     self._reconnects += 1
                     self._retry_after[record.source_uri] = (
@@ -320,18 +372,9 @@ class VideoFileIngestor:
                     self._retry_after[record.source_uri] = float("inf")
                     self._release(record.source_uri)
                 continue
-            state.source_frame_width = int(frame.shape[1])
-            state.source_frame_height = int(frame.shape[0])
-            source_frame = frame
-            if frame.shape[1] != state.frame_width or frame.shape[0] != state.frame_height:
-                frame = cv2.resize(
-                    source_frame,
-                    (state.frame_width, state.frame_height),
-                    interpolation=cv2.INTER_AREA,
-                )
             frames.append(frame)
             source_ids.append(record.source_uri)
-            frame_indexes.append(state.frame_index)
+            frame_indexes.append(frame_index)
             source_times.append(source_time)
             metadata.append(
                 {
@@ -345,8 +388,6 @@ class VideoFileIngestor:
                     "video_loop_count": state.loop_count,
                 }
             )
-            state.submitted_frames += 1
-            state.next_frame_due_monotonic = now_monotonic + (1.0 / max(state.effective_fps, 0.1))
 
         if not frames:
             return {"received_frames": 0, "accepted_sources": 0, "task_submissions": 0}
@@ -394,6 +435,8 @@ class VideoFileIngestor:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+        if self._read_executor is not None:
+            self._read_executor.shutdown(wait=True, cancel_futures=True)
         with self._state_lock:
             for source_id in list(self._states):
                 self._release(source_id)
@@ -410,6 +453,7 @@ class VideoFileIngestor:
             "max_sources": self.max_sources,
             "running": self._thread is not None and self._thread.is_alive(),
             "target_fps": self.target_fps,
+            "read_workers": self.read_workers,
             "loop": self.loop,
             "rounds_submitted": self._rounds_submitted,
             "frames_submitted": self._frames_submitted,
@@ -465,5 +509,6 @@ class StaticVideoFileIngestor(VideoFileIngestor):
             loop=loop,
             max_sources=max_sources,
             source_type_filter=source_type_filter,
+            read_workers=min(8, max_sources),
             **kwargs,
         )

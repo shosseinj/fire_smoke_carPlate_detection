@@ -23,12 +23,14 @@ class TaskRouter:
         result_store: ResultStore,
         play_only_callback: Callable[[FramePacket], None] | None = None,
         source_only_callback: Callable[[FramePacket], None] | None = None,
+        bypass_workers_callback: Callable[[], bool] | None = None,
     ) -> None:
         self.registry = registry
         self.workers = dict(workers)
         self.result_store = result_store
         self.play_only_callback = play_only_callback
         self.source_only_callback = source_only_callback
+        self.bypass_workers_callback = bypass_workers_callback
         self.rounds_received = 0
         self.frames_received = 0
         self.frames_disabled = 0
@@ -37,6 +39,7 @@ class TaskRouter:
         self.task_submission_rejections = 0
         self.broadcast_frames = 0
         self.play_only_frames = 0
+        self.worker_bypass_frames = 0
         self.last_round_sequence: int | None = None
         self.started = False
 
@@ -107,6 +110,12 @@ class TaskRouter:
             if self.play_only_callback is not None:
                 self.play_only_callback(packet)
                 self.broadcast_frames += 1
+            if (
+                self.bypass_workers_callback is not None
+                and self.bypass_workers_callback()
+            ):
+                self.worker_bypass_frames += 1
+                continue
             if not source.tasks:
                 self.play_only_frames += 1
             for task in source.tasks:
@@ -140,6 +149,7 @@ class TaskRouter:
             "task_submission_rejections": self.task_submission_rejections,
             "broadcast_frames": self.broadcast_frames,
             "play_only_frames": self.play_only_frames,
+            "worker_bypass_frames": self.worker_bypass_frames,
             "last_round_sequence": self.last_round_sequence,
             "enabled_source_ids": self.registry.enabled_source_ids(),
             "workers": {task.value: worker.status() for task, worker in self.workers.items()},

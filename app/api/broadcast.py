@@ -72,7 +72,10 @@ async def annotated_broadcast_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    subscriber_id, target = runtime.broadcast.subscribe()
+    subscriber_id, target = runtime.broadcast.subscribe(
+        wall=wall,
+        fullscreen_source=fullscreen_source,
+    )
     recent_task = asyncio.create_task(
         asyncio.to_thread(build_recent_detections_message, runtime)
     )
@@ -158,7 +161,10 @@ async def source_video_wall_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    subscriber_id, target = runtime.broadcast.subscribe_source_only()
+    subscriber_id, target = runtime.broadcast.subscribe_source_only(
+        wall=wall,
+        fullscreen_source=fullscreen_source,
+    )
     try:
         while runtime.broadcast.enabled:
             try:

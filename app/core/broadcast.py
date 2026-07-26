@@ -101,10 +101,12 @@ class AnnotatedBroadcastHub:
         self._subscribers: dict[
             str, queue.Queue[EncodedBroadcastFrame | BroadcastControlEvent | None]
         ] = {}
+        self._subscriber_profiles: dict[str, tuple[bool, str | None]] = {}
         self._source_only_latest: dict[str, EncodedBroadcastFrame] = {}
         self._source_only_subscribers: dict[
             str, queue.Queue[EncodedBroadcastFrame | None]
         ] = {}
+        self._source_only_profiles: dict[str, tuple[bool, str | None]] = {}
         self._source_only_version = 0
         self._source_only_submitted = 0
         self._source_only_rendered = 0
@@ -606,12 +608,22 @@ class AnnotatedBroadcastHub:
             cv2.LINE_AA,
         )
         
-        # JPEG encode (CPU)
-        ok, full_jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
-        full_jpeg = full_jpeg.tobytes() if ok else b""
-        if not ok:
-            self._encode_failures += 1
-            return None
+        with self._condition:
+            need_full = not self._subscriber_profiles or any(
+                not wall or fullscreen_source == source_id
+                for wall, fullscreen_source in self._subscriber_profiles.values()
+            )
+        full_bytes: bytes | None = None
+        if need_full:
+            full_ok, full_jpeg = cv2.imencode(
+                ".jpg",
+                frame,
+                [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
+            )
+            if not full_ok:
+                self._encode_failures += 1
+                return None
+            full_bytes = full_jpeg.tobytes()
         scale = min(
             1.0,
             self.wall_max_width / max(width, 1),
@@ -620,26 +632,46 @@ class AnnotatedBroadcastHub:
         wall_width = max(1, min(width, int(round(width * scale))))
         wall_height = max(1, min(height, int(round(height * scale))))
         if wall_width == width and wall_height == height:
-            wall_jpeg = full_jpeg
+            wall_frame = frame
         else:
-            # Use faster interpolation for wall frame
             wall_frame = cv2.resize(
                 frame,
                 (wall_width, wall_height),
                 interpolation=cv2.INTER_LINEAR,
             )
-            wall_ok, wall_jpeg = cv2.imencode(".jpg", wall_frame, [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality])
-            wall_jpeg = wall_jpeg.tobytes() if wall_ok else b""
-            if not wall_ok:
-                self._encode_failures += 1
-                return None
-        self._full_encoded_bytes += len(full_jpeg)
-        self._wall_encoded_bytes += len(wall_jpeg)
-        return full_jpeg, wall_jpeg, width, height, wall_width, wall_height
+        wall_ok, wall_jpeg = cv2.imencode(
+            ".jpg",
+            wall_frame,
+            [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
+        )
+        if not wall_ok:
+            self._encode_failures += 1
+            return None
+        wall_bytes = wall_jpeg.tobytes()
+        full_width = wall_width
+        full_height = wall_height
+        if full_bytes is not None:
+            full_width = width
+            full_height = height
+        else:
+            full_bytes = wall_bytes
+        if need_full:
+            self._full_encoded_bytes += len(full_bytes)
+        self._wall_encoded_bytes += len(wall_bytes)
+        return (
+            full_bytes,
+            wall_bytes,
+            full_width,
+            full_height,
+            wall_width,
+            wall_height,
+        )
 
     def publish_result(self, packet: FramePacket, result: TaskResult) -> None:
         with self._condition:
             if not self._enabled:
+                return
+            if self._source_only_subscribers and not self._subscribers:
                 return
             expected = self._expected_tasks(packet, result)
             source_pending = self._pending[packet.source_id]
@@ -728,6 +760,8 @@ class AnnotatedBroadcastHub:
         with self._condition:
             if not self._enabled:
                 return
+            if self._source_only_subscribers and not self._subscribers:
+                return
             expected: set[TaskName] = set()
             source_pending = self._pending[packet.source_id]
             pending = source_pending.get(packet.frame_index)
@@ -796,7 +830,9 @@ class AnnotatedBroadcastHub:
             with self._condition:
                 if not self._enabled:
                     return
-            item = (packet.source_id, packet.frame_index, packet.frame.copy())
+                if self._subscribers and not self._source_only_subscribers:
+                    return
+            item = (packet.source_id, packet.frame_index, packet.frame)
             try:
                 self._source_only_render_queue.put_nowait(item)
             except queue.Full:
@@ -807,6 +843,9 @@ class AnnotatedBroadcastHub:
                 except (queue.Empty, queue.Full):
                     self._source_only_dropped += 1
             return
+        with self._condition:
+            if self._subscribers and not self._source_only_subscribers:
+                return
         self._render_source_only(packet.source_id, packet.frame_index, packet.frame)
 
     def _render_source_only(
@@ -816,13 +855,10 @@ class AnnotatedBroadcastHub:
             if not self._enabled:
                 return
             height, width = frame.shape[:2]
-            ok, full_jpeg = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+            need_full = not self._source_only_profiles or any(
+                not wall or fullscreen_source == source_id
+                for wall, fullscreen_source in self._source_only_profiles.values()
             )
-            if not ok:
-                self._encode_failures += 1
-                return
-            full_bytes = full_jpeg.tobytes()
             scale = min(
                 1.0,
                 self.wall_max_width / max(width, 1),
@@ -831,21 +867,34 @@ class AnnotatedBroadcastHub:
             wall_width = max(1, min(width, int(round(width * scale))))
             wall_height = max(1, min(height, int(round(height * scale))))
             if wall_width == width and wall_height == height:
-                wall_bytes = full_bytes
+                wall_frame = frame
             else:
                 wall_frame = cv2.resize(
                     frame,
                     (wall_width, wall_height),
                     interpolation=cv2.INTER_LINEAR,
                 )
-                wall_ok, wall_jpeg = cv2.imencode(
-                    ".jpg", wall_frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
+            wall_ok, wall_jpeg = cv2.imencode(
+                ".jpg", wall_frame,
+                [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
+            )
+            if not wall_ok:
+                self._encode_failures += 1
+                return
+            wall_bytes = wall_jpeg.tobytes()
+            full_width = wall_width
+            full_height = wall_height
+            full_bytes = wall_bytes
+            if need_full and (wall_width != width or wall_height != height):
+                full_ok, full_jpeg = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
                 )
-                if not wall_ok:
+                if not full_ok:
                     self._encode_failures += 1
                     return
-                wall_bytes = wall_jpeg.tobytes()
+                full_bytes = full_jpeg.tobytes()
+                full_width = width
+                full_height = height
             self._source_only_version += 1
             self._source_only_rendered += 1
             encoded = EncodedBroadcastFrame(
@@ -854,8 +903,8 @@ class AnnotatedBroadcastHub:
                 frame_index=frame_index,
                 jpeg=full_bytes,
                 wall_jpeg=wall_bytes,
-                frame_width=width,
-                frame_height=height,
+                frame_width=full_width,
+                frame_height=full_height,
                 wall_width=wall_width,
                 wall_height=wall_height,
                 tasks=(),
@@ -875,7 +924,10 @@ class AnnotatedBroadcastHub:
             self._condition.notify_all()
 
     def _start_source_only_render_thread(self) -> None:
-        if self._source_only_render_thread is not None and self._source_only_render_thread.is_alive():
+        if (
+            self._source_only_render_thread is not None
+            and self._source_only_render_thread.is_alive()
+        ):
             return
         self._stop_source_only_render.clear()
         self._source_only_render_thread = threading.Thread(
@@ -905,7 +957,11 @@ class AnnotatedBroadcastHub:
                 self._source_only_render_queue.task_done()
 
     def subscribe_source_only(
-        self, maximum_queue: int = 64
+        self,
+        maximum_queue: int = 64,
+        *,
+        wall: bool = True,
+        fullscreen_source: str | None = None,
     ) -> tuple[str, queue.Queue[EncodedBroadcastFrame | None]]:
         subscriber_id = uuid.uuid4().hex
         target: queue.Queue[EncodedBroadcastFrame | None] = queue.Queue(
@@ -913,6 +969,7 @@ class AnnotatedBroadcastHub:
         )
         with self._condition:
             self._source_only_subscribers[subscriber_id] = target
+            self._source_only_profiles[subscriber_id] = (wall, fullscreen_source)
             for frame in sorted(
                 self._source_only_latest.values(), key=lambda item: item.version
             ):
@@ -925,10 +982,18 @@ class AnnotatedBroadcastHub:
     def unsubscribe_source_only(self, subscriber_id: str) -> None:
         with self._condition:
             self._source_only_subscribers.pop(subscriber_id, None)
+            self._source_only_profiles.pop(subscriber_id, None)
+
+    def source_only_exclusive(self) -> bool:
+        with self._condition:
+            return bool(self._source_only_subscribers) and not bool(self._subscribers)
 
     def subscribe(
         self,
         maximum_queue: int = 64,
+        *,
+        wall: bool = False,
+        fullscreen_source: str | None = None,
     ) -> tuple[
         str,
         queue.Queue[EncodedBroadcastFrame | BroadcastControlEvent | None],
@@ -941,6 +1006,7 @@ class AnnotatedBroadcastHub:
         )
         with self._condition:
             self._subscribers[subscriber_id] = target
+            self._subscriber_profiles[subscriber_id] = (wall, fullscreen_source)
             for frame in sorted(self._latest.values(), key=lambda item: item.version):
                 try:
                     target.put_nowait(frame)
@@ -951,6 +1017,7 @@ class AnnotatedBroadcastHub:
     def unsubscribe(self, subscriber_id: str) -> None:
         with self._condition:
             self._subscribers.pop(subscriber_id, None)
+            self._subscriber_profiles.pop(subscriber_id, None)
 
     def latest(self, source_id: str) -> EncodedBroadcastFrame | None:
         with self._condition:
@@ -995,7 +1062,15 @@ class AnnotatedBroadcastHub:
                 "source_only_rendered": self._source_only_rendered,
                 "source_only_dropped": self._source_only_dropped,
                 "source_only_render_queue_depth": self._source_only_render_queue.qsize(),
+                "source_only_render_threads": int(
+                    self._source_only_render_thread is not None
+                    and self._source_only_render_thread.is_alive()
+                ),
                 "websocket_subscribers": len(self._subscribers),
+                "source_only_websocket_subscribers": len(self._source_only_subscribers),
+                "source_only_exclusive": (
+                    bool(self._source_only_subscribers) and not bool(self._subscribers)
+                ),
                 "active_streams": {
                     source_id: {
                         "frame_index": frame.frame_index,

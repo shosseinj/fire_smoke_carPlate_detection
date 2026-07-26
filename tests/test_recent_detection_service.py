@@ -65,7 +65,7 @@ def test_recent_detection_uses_body_snapshot_when_face_is_missing(tmp_path: Path
     assert payload["image_kind"] == "body"
 
 
-def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> None:
+def test_recent_detection_prefers_human_snapshot_over_face(tmp_path: Path) -> None:
     face = tmp_path / "detected_faces" / "face.jpg"
     snapshot = tmp_path / "human_snapshots" / "body.jpg"
     face.parent.mkdir(parents=True)
@@ -78,9 +78,9 @@ def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> No
     payload = _build_payload_from_enriched_row(_runtime(tmp_path), row)
 
     assert payload is not None
-    assert payload["face_image_base64"]
-    assert payload["body_image_base64"] is None
-    assert payload["image_kind"] == "face"
+    assert payload["face_image_base64"] is None
+    assert payload["body_image_base64"]
+    assert payload["image_kind"] == "body"
 
 
 def test_known_body_snapshot_uses_upper_section_and_ref_img_id_reference(
@@ -119,8 +119,8 @@ def test_known_body_snapshot_uses_upper_section_and_ref_img_id_reference(
     encoded = base64.b64decode(str(payload["body_image_base64"]))
     decoded = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert decoded is not None
-    assert decoded.shape[0] == 60
-    assert decoded.shape[1] == 160
+    assert decoded.shape[0] == 224
+    assert decoded.shape[1] == 448
 
 
 def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None:
