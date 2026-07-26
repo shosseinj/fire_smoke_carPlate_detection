@@ -83,8 +83,10 @@ async def annotated_broadcast_websocket(
                 recent_sent = True
                 try:
                     recent_message = recent_task.result()
-                    if recent_message is not None:
-                        await websocket.send_json(recent_message)
+                    await websocket.send_json(
+                        recent_message
+                        or {"type": "recent_detections", "detections": [], "count": 0}
+                    )
                 except Exception:
                     import logging
                     logging.getLogger("uvicorn.error").exception(

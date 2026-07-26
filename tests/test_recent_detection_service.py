@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
-from app.core.recent_detection_service import _build_payload_from_enriched_row
+from app.core.recent_detection_service import (
+    _build_payload_from_enriched_row,
+    build_recent_detections_message,
+)
 
 
-def _runtime(media_root: Path) -> SimpleNamespace:
+def _runtime(media_root: Path, database: object | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         settings=SimpleNamespace(saved_media_path=media_root),
         general_settings=SimpleNamespace(
@@ -23,6 +27,7 @@ def _runtime(media_root: Path) -> SimpleNamespace:
             get_image=lambda _image_id: None,
             list_images=lambda _personnel_id: [],
         ),
+        database=database,
     )
 
 
@@ -44,7 +49,7 @@ def _row(snapshot_image: str | None = None) -> dict[str, object]:
     }
 
 
-def test_recent_detection_omits_entry_when_face_is_missing(tmp_path: Path) -> None:
+def test_recent_detection_uses_body_snapshot_when_face_is_missing(tmp_path: Path) -> None:
     snapshot = tmp_path / "human_snapshots" / "body.jpg"
     snapshot.parent.mkdir(parents=True)
     assert cv2.imwrite(str(snapshot), np.full((40, 30, 3), 120, dtype=np.uint8))
@@ -54,7 +59,10 @@ def test_recent_detection_omits_entry_when_face_is_missing(tmp_path: Path) -> No
         _row("/media/human_snapshots/body.jpg"),
     )
 
-    assert payload is None
+    assert payload is not None
+    assert payload["face_image_base64"] is None
+    assert payload["body_image_base64"]
+    assert payload["image_kind"] == "body"
 
 
 def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> None:
@@ -71,15 +79,89 @@ def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> No
 
     assert payload is not None
     assert payload["face_image_base64"]
-    assert set(payload) == {
-        "id",
-        "area",
-        "person",
-        "full_name",
-        "confidence",
-        "detection_time",
-        "face_image_base64",
-        "access_granted",
-        "counts_for_attendance",
-        "classification",
-    }
+    assert payload["body_image_base64"] is None
+    assert payload["image_kind"] == "face"
+
+
+def test_known_body_snapshot_uses_upper_section_and_ref_img_id_reference(
+    tmp_path: Path,
+) -> None:
+    body = tmp_path / "human_snapshots" / "body.jpg"
+    reference = tmp_path / "personnel_snapshots" / "reference.jpg"
+    body.parent.mkdir(parents=True)
+    reference.parent.mkdir(parents=True)
+    assert cv2.imwrite(str(body), np.full((100, 80, 3), 120, dtype=np.uint8))
+    assert cv2.imwrite(str(reference), np.full((20, 10, 3), 20, dtype=np.uint8))
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _query: str, params: tuple[int]) -> "Connection":
+            assert params == (7,)
+            return self
+
+        def fetchone(self) -> dict[str, str]:
+            return {"storage_key": "personnel_snapshots/reference.jpg"}
+
+    row = _row("/media/human_snapshots/body.jpg")
+    row.update({"person": "Alice", "ref_img_id": "7"})
+    payload = _build_payload_from_enriched_row(
+        _runtime(tmp_path, SimpleNamespace(connection=lambda: Connection())),
+        row,
+    )
+
+    assert payload is not None
+    assert payload["image_kind"] == "body"
+    encoded = base64.b64decode(str(payload["body_image_base64"]))
+    decoded = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert decoded.shape[0] == 60
+    assert decoded.shape[1] == 160
+
+
+def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None:
+    snapshot = tmp_path / "human_snapshots" / "body.jpg"
+    snapshot.parent.mkdir(parents=True)
+    assert cv2.imwrite(str(snapshot), np.full((40, 30, 3), 120, dtype=np.uint8))
+
+    row = _row("/media/human_snapshots/body.jpg")
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _query: str, _params: tuple[int]) -> "Connection":
+            return self
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return [row]
+
+    message = build_recent_detections_message(
+        SimpleNamespace(
+            database=SimpleNamespace(connection=lambda: Connection()),
+            settings=SimpleNamespace(saved_media_path=tmp_path),
+            general_settings=SimpleNamespace(
+                get=lambda: SimpleNamespace(
+                    face_rec_score=0.45,
+                    confirmation_threshold=0.75,
+                )
+            ),
+            registry=SimpleNamespace(get=lambda _camera_id: None),
+            personnel_store=SimpleNamespace(
+                get_image=lambda _image_id: None,
+                list_images=lambda _personnel_id: [],
+            ),
+        )
+    )
+
+    assert message is not None
+    assert message["type"] == "recent_detections"
+    assert message["count"] == 1
+    assert message["detections"][0]["body_image_base64"]

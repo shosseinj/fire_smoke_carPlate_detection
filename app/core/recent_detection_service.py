@@ -121,11 +121,22 @@ def _reference_path(runtime: Runtime, row: dict[str, Any]) -> Path | None:
     ref_img_id = row.get("ref_img_id")
     if ref_img_id is not None:
         try:
-            image = runtime.personnel_store.get_image(int(ref_img_id))
+            image_id = int(ref_img_id)
         except (TypeError, ValueError):
-            image = None
-        if image is not None:
-            return runtime.personnel_store.get_image_path(image.storage_key)
+            image_id = None
+        if image_id is not None:
+            with runtime.database.connection() as connection:
+                image_row = connection.execute(
+                    "SELECT storage_key FROM personnel_images WHERE id = ?",
+                    (image_id,),
+                ).fetchone()
+            if image_row is not None:
+                storage_key = Path(str(image_row["storage_key"]))
+                candidate = (runtime.settings.saved_media_path.resolve() / storage_key).resolve()
+                media_root = runtime.settings.saved_media_path.resolve()
+                if media_root == candidate or media_root in candidate.parents:
+                    if candidate.is_file():
+                        return candidate
     personnel_id = row.get("personnel_id")
     if personnel_id is not None:
         images = runtime.personnel_store.list_images(int(personnel_id))
@@ -194,11 +205,11 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     )
     image = _read_image(body_image_path)
     image_kind = "body" if image is not None else "placeholder"
+
     if image is not None:
         if concatenate:
             reference_image = _read_image(_reference_path(runtime, row))
-            image = _concat_if_needed(image, reference_image)
-            # image = _concat_if_needed(_upper_section(image), reference_image)
+            image = _concat_if_needed(_upper_section(image), reference_image)
         success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if success:
             encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
@@ -214,9 +225,9 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "full_name": full_name,
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
-        # "face_image_base64": face_image_b64,
+        "face_image_base64": face_image_b64,
         "body_image_base64": body_image_b64,
-        "image_kind": "body" ,
+        "image_kind": image_kind,
         "access_granted": bool(row.get("access_granted")),
         "counts_for_attendance": bool(row.get("counts_for_attendance")),
         "classification": classification,
@@ -264,7 +275,9 @@ def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[st
         "confidence": record.confidence,
         "camera_id": record.camera_id,
         "source_human_log_id": record.source_human_log_id,
-        "face_image": record.body_image,
+        "face_image": record.face_image,
+        "body_image": record.body_image,
+        "snapshot_image": record.snapshot_image,
         "ref_img_id": record.ref_img_id,
         "personnel_id": record.personnel_id,
         "person": record.person,
