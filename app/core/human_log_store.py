@@ -34,6 +34,7 @@ class HumanMediaEvent:
     ref_img_id: str | int | None
     personnel_id: int | None
     snapshot_frame: np.ndarray | None
+    face_image_frame: np.ndarray | None
     snapshot_quality: float
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
@@ -69,15 +70,22 @@ class HumanLogStore:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
         self.snapshot_dir = media_root / "human_snapshots"
+        self.detected_face_dir = media_root / "detected_faces"
         self.video_dir = media_root / "human_videos"
         self.face_video_dir = media_root / "human_face_videos"
-        for directory in (self.snapshot_dir, self.video_dir, self.face_video_dir):
+        for directory in (
+            self.snapshot_dir,
+            self.detected_face_dir,
+            self.video_dir,
+            self.face_video_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         self.video_fps = max(1.0, float(video_fps))
         self.video_idle_seconds = max(1.0, float(video_idle_seconds))
         self.snapshot_min_improvement = max(0.0, float(snapshot_min_improvement))
         self.detection_log_store = detection_log_store
         self._personnel_identity_cache: dict[str, tuple[str, int] | None] = {}
+        self._reference_image_cache: dict[str, np.ndarray | None] = {}
         self._queue: queue.Queue[HumanMediaEvent | object] = queue.Queue(
             maxsize=max(8, int(queue_size))
         )
@@ -87,6 +95,7 @@ class HumanLogStore:
         self._last_face_video_at: dict[tuple[str, str, int], float] = {}
         self._best_face_scores: dict[tuple[str, str, int], float] = {}
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
+        self._last_face_images: dict[tuple[str, str, int], np.ndarray] = {}
         self._lock = threading.RLock()
         self._dropped_events = 0
         self._saved_snapshots = 0
@@ -151,6 +160,65 @@ class HumanLogStore:
                 return identity
             self._personnel_identity_cache[cache_key] = None
         return person, None
+
+    def _reference_image(self, ref_img_id: str | int | None) -> np.ndarray | None:
+        if ref_img_id is None:
+            return None
+        ref_text = str(ref_img_id).strip()
+        if not ref_text:
+            return None
+        cached = self._reference_image_cache.get(ref_text)
+        if cached is not None:
+            return cached.copy()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT storage_key FROM personnel_images WHERE id = ?",
+                (int(ref_text),),
+            ).fetchone() if ref_text.isdigit() else None
+            if row is None and ref_text.isdigit():
+                row = connection.execute(
+                    "SELECT storage_key FROM personnel_images "
+                    "WHERE personnel_id = ? ORDER BY is_primary DESC, id DESC LIMIT 1",
+                    (int(ref_text),),
+                ).fetchone()
+            if row is None and ref_text.startswith("personnel_"):
+                row = connection.execute(
+                    "SELECT storage_key FROM personnel_images "
+                    "WHERE personnel_id = ? ORDER BY is_primary DESC, id DESC LIMIT 1",
+                    (int(ref_text[len("personnel_"):]),),
+                ).fetchone()
+            if row is None:
+                return None
+        storage_key = Path(str(row["storage_key"])).as_posix()
+        path = (self.snapshot_dir.parent / storage_key).resolve()
+        media_root = self.snapshot_dir.parent.resolve()
+        if media_root not in path.parents or not path.is_file():
+            return None
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None or image.size == 0:
+            return None
+        self._reference_image_cache[ref_text] = image.copy()
+        return image
+
+    @staticmethod
+    def _concat_reference_and_face(
+        reference_image: np.ndarray,
+        face_image: np.ndarray,
+    ) -> np.ndarray | None:
+        if reference_image.size == 0 or face_image.size == 0:
+            return None
+        reference = reference_image
+        face = face_image
+        if reference.ndim == 2:
+            reference = cv2.cvtColor(reference, cv2.COLOR_GRAY2BGR)
+        if face.ndim == 2:
+            face = cv2.cvtColor(face, cv2.COLOR_GRAY2BGR)
+        target_height = min(max(reference.shape[0], face.shape[0]), 512)
+        parts: list[np.ndarray] = []
+        for image in (reference, face):
+            width = max(1, int(round(image.shape[1] * target_height / image.shape[0])))
+            parts.append(cv2.resize(image, (width, target_height), interpolation=cv2.INTER_AREA))
+        return cv2.hconcat(parts)
 
     @staticmethod
     def _bounded_box(
@@ -217,7 +285,7 @@ class HumanLogStore:
         faces_by_track: dict[int, dict[str, Any]] = {}
         for face in result.data.get("faces", []):
             track_id = face.get("track_id")
-            if track_id is None or not bool(face.get("quality_valid")):
+            if track_id is None:
                 continue
             existing = faces_by_track.get(int(track_id))
             if existing is None or float(face.get("quality_score", 0.0)) > float(
@@ -275,7 +343,38 @@ class HumanLogStore:
                     ],
                     list(face.get("source_landmarks", face.get("landmarks", []))),
                 )
+                if face_frame is None:
+                    face_frame = self._human_crop(
+                        source_frame,
+                        [
+                            float(value)
+                            for value in face.get(
+                                "source_bbox", face.get("bbox", [0, 0, 0, 0])
+                            )[:4]
+                        ],
+                    )
             with self._lock:
+                remembered_face = self._last_face_images.get(key)
+            face_image_frame = (
+                face_frame
+                if face_frame is not None
+                else remembered_face
+                if remembered_face is not None
+                else None
+            )
+            current_face_or_human = face_image_frame if face_image_frame is not None else human_crop
+            reference_frame = (
+                self._reference_image(raw_ref) if name != "Unknown" else None
+            )
+            snapshot_image = current_face_or_human
+            if reference_frame is not None and face_image_frame is not None:
+                snapshot_image = self._concat_reference_and_face(
+                    reference_frame,
+                    face_image_frame,
+                )
+            with self._lock:
+                if face_frame is not None:
+                    self._last_face_images[key] = face_frame.copy()
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
                 previous_full_frame_at = self._last_full_frame_at.get(
@@ -335,7 +434,10 @@ class HumanLogStore:
                 recognition_score=float(human.get("recognition_score", 0.0) or 0.0),
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
-                snapshot_frame=human_crop if better_snapshot else None,
+                snapshot_frame=(
+                    snapshot_image if (better_snapshot or disappeared) else None
+                ),
+                face_image_frame=face_image_frame,
                 snapshot_quality=snapshot_quality,
                 full_frame_video_frame=(
                     source_frame.copy() if full_frame_due else None
@@ -346,6 +448,9 @@ class HumanLogStore:
             )
             try:
                 self._queue.put_nowait(event)
+                if disappeared:
+                    with self._lock:
+                        self._last_face_images.pop(key, None)
             except queue.Full:
                 with self._lock:
                     self._dropped_events += 1
@@ -374,6 +479,12 @@ class HumanLogStore:
                         else:
                             self._best_face_scores[key] = previous_best_face
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
+            if disappeared and face_image_frame is None:
+                LOGGER.warning(
+                    "HUMAN_FACE_IMAGE_UNAVAILABLE camera=%s track_id=%s",
+                    packet.source_id,
+                    track_id,
+                )
 
     @staticmethod
     def _safe_stem(camera: str, track_id: int) -> str:
@@ -447,10 +558,31 @@ class HumanLogStore:
             raise RuntimeError(f"Could not save human snapshot: {path}")
         return f"/media/human_snapshots/{filename}", path
 
+    def _save_face_image(self, event: HumanMediaEvent) -> tuple[str, Path]:
+        assert event.face_image_frame is not None
+        filename = f"{self._safe_stem(event.camera, event.track_id)}_face.jpg"
+        path = self.detected_face_dir / filename
+        if not cv2.imwrite(
+            str(path),
+            event.face_image_frame,
+            [cv2.IMWRITE_JPEG_QUALITY, 92],
+        ):
+            raise RuntimeError(f"Could not save human face image: {path}")
+        LOGGER.info(
+            "HUMAN_FACE_IMAGE_SAVED camera=%s track_id=%s path=%s",
+            event.camera,
+            event.track_id,
+            path.relative_to(self.snapshot_dir.parent),
+        )
+        return f"/media/detected_faces/{filename}", path
+
     def _write(self, event: HumanMediaEvent) -> None:
         state = self._media_state(event)
         wrote_full_frame = False
         wrote_face = False
+        face_image_url = ""
+        if event.face_image_frame is not None:
+            face_image_url, _ = self._save_face_image(event)
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -608,6 +740,7 @@ class HumanLogStore:
                     access_granted=event.personnel_id is not None,
                     counts_for_attendance=True,
                     log_type="camera_rtsp",
+                    face_image=face_image_url,
                     snapshot_image=snapshot_url,
                     video=state.video_url,
                     face_video_or_unknown_faces=state.face_video_url,
@@ -691,7 +824,19 @@ class HumanLogStore:
                 + " ORDER BY id DESC LIMIT ?",
                 values,
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        for item in items:
+            full_name = str(item.get("name") or "Unknown").strip() or "Unknown"
+            if full_name == "Unknown":
+                first_name, last_name = "Unknown", ""
+            else:
+                parts = full_name.split(maxsplit=1)
+                first_name = parts[0]
+                last_name = parts[1] if len(parts) > 1 else ""
+            item["first_name"] = first_name
+            item["last_name"] = last_name
+            item["image_url"] = item.get("snapshot_url") or ""
+        return items
 
     def count(self) -> int:
         with self._connect() as connection:
@@ -713,6 +858,7 @@ class HumanLogStore:
                 "open_track_recorders": len(self._media),
                 "video_fps": self.video_fps,
                 "snapshot_directory": str(self.snapshot_dir),
+                "detected_face_directory": str(self.detected_face_dir),
                 "video_directory": str(self.video_dir),
                 "face_video_directory": str(self.face_video_dir),
                 "last_error": self._last_error,

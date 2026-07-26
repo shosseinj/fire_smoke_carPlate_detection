@@ -225,6 +225,62 @@ def test_disappeared_track_is_visible_in_detection_log_filter(
                 )
 
 
+def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    national_code = "1234567892"
+    media_root = tmp_path / "media"
+    media_root.mkdir(parents=True, exist_ok=True)
+    reference_path = media_root / "personnel_snapshots" / "reference.jpg"
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(reference_path), np.full((40, 30, 3), (20, 80, 160), dtype=np.uint8))
+    with postgres_database.connection() as connection:
+        person_cursor = connection.execute(
+            "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+            ("Known", "Person", national_code),
+        )
+        image_cursor = connection.execute(
+            "INSERT INTO personnel_images "
+            "(personnel_id, storage_key, is_primary) VALUES (?, ?, 1)",
+            (person_cursor.lastrowid, "personnel_snapshots/reference.jpg"),
+        )
+        ref_img_id = int(image_cursor.lastrowid)
+
+    store = HumanLogStore(postgres_database, media_root)
+    disappeared = packet(5)
+    final_result = result(disappeared, national_code, 0.94)
+    final_result.data["humans"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": national_code,
+            "recognition_score": 0.94,
+            "ref_img_id": ref_img_id,
+            "confidence": 0.0,
+        }
+    ]
+    try:
+        store.observe_result(disappeared, final_result)
+        store.flush()
+        row = store.list(track_id=13)[0]
+        assert row["name"] == "Known Person"
+        snapshot_path = media_root / "human_snapshots" / Path(
+            row["snapshot_url"]
+        ).name
+        saved = cv2.imread(str(snapshot_path))
+        assert saved is not None
+        assert saved.shape[1] > 90
+    finally:
+        store.close()
+        with postgres_database.connection() as connection:
+            connection.execute(
+                "DELETE FROM personnel WHERE national_code = ?",
+                (national_code,),
+            )
+
+
 def test_postgresql_human_log_schema_uses_current_fields() -> None:
     columns = metadata.tables["human_logs"].c
     assert "full_frame_video_frames" in columns

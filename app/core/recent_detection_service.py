@@ -96,7 +96,10 @@ def _concat_if_needed(image, reference):
 def _media_path(runtime: Runtime, raw: str | None) -> Path | None:
     if not raw:
         return None
-    candidate = Path(raw)
+    raw_text = str(raw)
+    if raw_text.startswith("/media/"):
+        raw_text = raw_text[len("/media/") :]
+    candidate = Path(raw_text)
     if candidate.is_absolute():
         return candidate
     media_root = runtime.settings.saved_media_path.resolve()
@@ -124,6 +127,31 @@ def _reference_path(runtime: Runtime, row: dict[str, Any]) -> Path | None:
     return None
 
 
+def _detected_face_path(runtime: Runtime, row: dict[str, Any]) -> Path | None:
+    configured = _media_path(runtime, row.get("face_image"))
+    if configured is not None and configured.is_file():
+        return configured
+    human_log_id = row.get("source_human_log_id")
+    if human_log_id is None:
+        return None
+    with runtime.database.connection() as connection:
+        human = connection.execute(
+            "SELECT camera, track_id FROM human_logs WHERE id = ?",
+            (human_log_id,),
+        ).fetchone()
+    if human is None:
+        return None
+    camera = str(human["camera"]).replace("/", "_").replace("\\", "_")
+    prefix = f"{camera}_{int(human['track_id'])}_"
+    directory = runtime.settings.saved_media_path.resolve() / "detected_faces"
+    matches = sorted(
+        directory.glob(f"{prefix}*_face.jpg"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return matches[0] if matches else None
+
+
 def _thresholds(runtime: Runtime, camera_id: str | None) -> tuple[float, float]:
     settings = runtime.general_settings.get()
     face_rec = float(settings.face_rec_score)
@@ -140,8 +168,10 @@ def _thresholds(runtime: Runtime, camera_id: str | None) -> tuple[float, float]:
 def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> dict[str, Any] | None:
     confidence = float(row.get("confidence") or 0.0)
     face_rec, confirmation = _thresholds(runtime, row.get("camera_id"))
-    classification, concatenate = _classification(confidence, face_rec, confirmation)
+    classification, _ = _classification(confidence, face_rec, confirmation)
     person = row.get("person") or "Unknown"
+    known_identity = bool(row.get("personnel_id")) or str(person).strip().lower() != "unknown"
+    concatenate = known_identity
     fname = row.get("fname")
     lname = row.get("lname")
     if fname or lname:
@@ -150,7 +180,8 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         full_name = person
 
     face_image_b64: str | None = None
-    image = _read_image(_media_path(runtime, row.get("face_image")))
+    face_image_path = _detected_face_path(runtime, row)
+    image = _read_image(face_image_path)
     if image is not None:
         if concatenate:
             image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
@@ -212,6 +243,7 @@ def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[st
         "id": record.id,
         "confidence": record.confidence,
         "camera_id": record.camera_id,
+        "source_human_log_id": record.source_human_log_id,
         "face_image": record.face_image,
         "ref_img_id": record.ref_img_id,
         "personnel_id": record.personnel_id,

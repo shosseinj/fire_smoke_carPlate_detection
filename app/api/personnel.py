@@ -221,28 +221,25 @@ async def create_personnel_with_images(
             errors.append(f"{img_file.filename}: {validation.failure_message}")
             continue
         storage_key = store._save_image_file(person.id, raw, img_file.filename or "image.jpg", person.national_code)
+        img_record = store.create_image(
+            personnel_id=person.id,
+            storage_key=storage_key,
+            embedding_id=None,
+            is_primary=len(saved_images) == 0,
+        )
         embedding_id: str | None = None
         process_result = processor.process_image(
             raw,
             person_name=person.national_code,
-            ref_img_id=f"{person.id}",
+            ref_img_id=str(img_record.id),
             enable_cropping=enable_cropping,
         )
         if process_result.success:
             embedding_id = process_result.vector_point_id
+            store.update_image_embedding(img_record.id, embedding_id)
         else:
             errors.append(f"{img_file.filename}: {process_result.failure_message}")
-        try:
-            img_record = store.create_image(
-                personnel_id=person.id,
-                storage_key=storage_key,
-                embedding_id=embedding_id,
-                is_primary=len(saved_images) == 0,
-            )
-            saved_images.append(img_record)
-        except ValueError as exc:
-            store._delete_storage_file(storage_key)
-            errors.append(f"{img_file.filename}: {exc}")
+        saved_images.append(img_record)
 
     if not saved_images and not errors:
         store.delete(person.id)

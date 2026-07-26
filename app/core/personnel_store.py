@@ -576,6 +576,13 @@ class PersonnelStore:
                 return None
             return self._row_to_image(row)
 
+    def update_image_embedding(self, image_id: int, embedding_id: str | None) -> None:
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "UPDATE personnel_images SET embedding_id = ? WHERE id = ?",
+                (embedding_id, image_id),
+            )
+
     def list_images(self, personnel_id: int) -> list[PersonnelImageRecord]:
         with self._lock, self._connection() as conn:
             rows = conn.execute(
@@ -909,6 +916,11 @@ class PersonnelStore:
                     person_name = f"{person.fname} {person.lname}".strip() 
                     try:
                         storage_key = self._save_image_file(person.id, file_data, img_filename, nc_candidate)
+                        image_record = self.create_image(
+                            person.id,
+                            storage_key,
+                            embedding_id=None,
+                        )
 
                         # Face processing
                         face_status = -1
@@ -949,7 +961,7 @@ class PersonnelStore:
                                             enroll_result = face_processor.enroll(
                                                 image,
                                                 person=person.national_code,
-                                                ref_img_id=f"{person.id}",
+                                                ref_img_id=str(image_record.id),
                                             )
                                             embedding_id = enroll_result.get("point_id")
                                             face_status = 1
@@ -981,10 +993,7 @@ class PersonnelStore:
                             # No face processor — image saved without face check
                             face_status = -1
 
-                        self.create_image(
-                            person.id, storage_key,
-                            embedding_id=embedding_id,
-                        )
+                        self.update_image_embedding(image_record.id, embedding_id)
                         created_images += 1
 
                         # Save to error folder if there was a problem
