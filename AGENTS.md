@@ -157,6 +157,12 @@ detection contains only `id`, `area`, `person`, `full_name`, `confidence`,
 and `classification`. Entries without an encodable face image are omitted; body
 snapshot fallback fields are not sent.
 
+Historical detection frames are available through the authenticated
+`GET /api/v1/extract-frames/{detection_id}/` endpoint. It reads the detection
+log's saved `face_video_or_unknown_faces` path, resolves
+`/media/...` paths beneath `SAVED_MEDIA_PATH`, and returns sequential JPEG frames
+as base64 with `frame_interval` and `max_frames` controls.
+
 ## Polygon zone system
 
 ### Overview

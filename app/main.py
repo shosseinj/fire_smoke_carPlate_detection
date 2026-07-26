@@ -33,6 +33,7 @@ from app.api.requests import router as requests_router
 from app.api.personnel_requests import router as personnel_requests_router
 from app.api.personnel_images import router as personnel_images_router
 from app.api.detection_logs import router as detection_logs_router
+from app.api.extract_frames import router as extract_frames_router
 from app.api.developer import router as developer_router
 from app.api.project_info import router as project_info_router
 from app.api.import_progress import router as import_progress_router
@@ -121,6 +122,7 @@ app.include_router(requests_router)
 app.include_router(personnel_requests_router)
 app.include_router(personnel_images_router)
 app.include_router(detection_logs_router)
+app.include_router(extract_frames_router)
 app.include_router(plate_settings_router)
 app.include_router(developer_router)
 app.include_router(project_info_router)
