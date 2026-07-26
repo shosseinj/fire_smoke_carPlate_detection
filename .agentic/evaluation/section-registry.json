@@ -179,7 +179,7 @@
       "acceptance": {
         "track_expiry_log": "An expired face track is emitted once, recognized national_code is resolved through personnel to fname lname, persisted to human_logs, and bridged to detection_logs so GET /api/v1/logs/filter can retrieve it.",
         "polygon_gated_face_evidence": "Face media is retained independently of polygon-gated human-log admission and is linked to the expiry detection bridge when the face is no longer visible.",
-        "no_face_body_snapshot": "Recent detection output uses the persisted human snapshot when a face image is unavailable, while preserving face-image precedence."
+        "recent_detection_contract": "Recent detection output preserves the legacy exact field set and omits entries without an encodable face image."
       },
       "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant. Face quality is emitted per recognition and each tracked human exposes accumulated best_face_quality; history persistence binds PostgreSQL CASE booleans correctly. Qdrant national-code identities are resolved against personnel during persistence, while expired tracks create an idempotent detection-log bridge at finalization."
     },
@@ -483,6 +483,26 @@
       "metrics": [],
       "acceptance": {},
       "notes": "Recent results, router status, result WebSocket."
+    },
+    {
+      "id": "api-extract-frames",
+      "name": "Detection Video Frame Extraction API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": true,
+      "owner_paths": ["app/api/extract_frames.py", "app/core/detection_log_store.py", "app/main.py"],
+      "dependencies": ["configuration", "api-auth"],
+      "consumers": ["user-interface", "downstream-api-clients"],
+      "commands": [
+        "python -m pytest tests/test_extract_frames.py -q",
+        "python -m py_compile app/api/extract_frames.py app/main.py"
+      ],
+      "metrics": ["frames_read", "frames_extracted", "frame_interval", "max_frames", "read_failures"],
+      "acceptance": {
+        "saved_video_source": "Frames are extracted only from detection_logs.face_video_or_unknown_faces resolved under SAVED_MEDIA_PATH",
+        "response_contract": "Response matches the legacy extract-frames shape with base64 JPEG frames"
+      },
+      "notes": "Authenticated endpoint GET /api/v1/extract-frames/{detection_id}/. Runtime validation requires a running API and a detection log with a readable saved video."
     },
     {
       "id": "api-attendance",

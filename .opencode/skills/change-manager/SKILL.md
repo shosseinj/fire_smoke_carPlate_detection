@@ -15,9 +15,11 @@ metadata:
 
 2. **Ask before commit** — present the summary to the user and ask whether to commit and push. Do not commit without explicit confirmation.
 
-3. **Pre-pull safety** — before committing, stash any uncommitted changes, pull the target branch, then pop the stash. This ensures the commit applies on top of the latest remote state.
+3. **Confirm synchronization target** — before any pull or push, ask the user to confirm the target remote and branch. Do not infer a push branch from the current checkout, upstream tracking branch, or user arguments unless the user explicitly confirms it. If no target is confirmed, stop after the change report.
 
-4. **Conflict resolution** — if a pull or stash pop produces merge conflicts:
+4. **Pre-pull safety** — after the user confirms the remote and branch, stash any uncommitted changes, pull the confirmed target branch, then pop the stash. This ensures the commit applies on top of the latest remote state.
+
+5. **Conflict resolution** — if a pull or stash pop produces merge conflicts:
     - Identify every conflicted file via `git diff --name-only --diff-filter=U`.
     - For each conflict, inspect the content to understand both sides (theirs = remote/other developer, ours = local changes).
     - Before manually resolving any serious conflict, stop and ask the user. A serious conflict includes overlapping edits to the same function or logical block, delete/modify conflicts, schema or persistence conflicts, API contract conflicts, deployment/configuration conflicts, or any conflict where preserving both sides could change behavior.
@@ -25,11 +27,11 @@ metadata:
     - For explicitly approved resolutions, preserve both sides' features only when they are behaviorally compatible. Favor keeping the remote version for independent upstream work and the local version for the current task's changes.
     - After resolving all conflicts, stage the resolved files and continue.
 
-5. **Commit** — stage all intended files (`git add -A`), write a descriptive commit message summarizing the changes, and commit.
+6. **Commit** — stage all intended files (`git add -A`), write a descriptive commit message summarizing the changes, and commit.
 
-6. **Push** — push the commit to remote (`git push`).
+7. **Push** — only after the user has confirmed the target, push explicitly to that remote and branch (`git push <remote> <branch>`). Never silently push to the current branch's upstream.
 
-7. **Report outcome** — print the commit hash, short stat, and any warnings or skipped files.
+8. **Report outcome** — print the commit hash, remote, branch, short stat, and any warnings or skipped files.
 
 ## Safety rules
 
@@ -57,14 +59,15 @@ metadata:
 ```text
 1. Inspect git status and diff.
 2. Report summary to user.
-3. Wait for user confirmation to proceed.
-4. Stash local changes (git stash push).
-5. Pull remote branch (git pull --rebase or git pull).
-6. Pop stash (git stash pop).
-7. If conflicts → classify them, report serious conflicts, and ask before resolving them.
-8. Stage all (git add -A).
-9. Review staged diff for secrets.
-10. Commit with descriptive message.
-11. Push (git push).
-12. Report commit hash and summary.
+3. Ask the user to confirm both commit/push and the exact `<remote>` plus `<branch>` target.
+4. Wait for explicit confirmation; if the target is not confirmed, do not pull, commit, or push.
+5. Stash local changes (`git stash push -u`).
+6. Pull the confirmed remote branch (`git pull --rebase <remote> <branch>`).
+7. Pop the stash (`git stash pop`).
+8. If conflicts → classify them, report serious conflicts, and ask before resolving them.
+9. Stage all intended files (`git add -A`).
+10. Review staged diff for secrets.
+11. Commit with descriptive message.
+12. Push explicitly to the confirmed target (`git push <remote> <branch>`).
+13. Report commit hash, remote, branch, and summary.
 ```
