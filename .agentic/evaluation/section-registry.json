@@ -178,7 +178,8 @@
       ],
       "acceptance": {
         "track_expiry_log": "An expired face track is emitted once, recognized national_code is resolved through personnel to fname lname, persisted to human_logs, and bridged to detection_logs so GET /api/v1/logs/filter can retrieve it.",
-        "polygon_gated_face_evidence": "Face media is retained independently of polygon-gated human-log admission and is linked to the expiry detection bridge when the face is no longer visible."
+        "polygon_gated_face_evidence": "Face media is retained independently of polygon-gated human-log admission and is linked to the expiry detection bridge when the face is no longer visible.",
+        "no_face_body_snapshot": "Recent detection output uses the persisted human snapshot when a face image is unavailable, while preserving face-image precedence."
       },
       "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant. Face quality is emitted per recognition and each tracked human exposes accumulated best_face_quality; history persistence binds PostgreSQL CASE booleans correctly. Qdrant national-code identities are resolved against personnel during persistence, while expired tracks create an idempotent detection-log bridge at finalization."
     },
