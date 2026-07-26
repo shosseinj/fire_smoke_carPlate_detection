@@ -63,7 +63,7 @@ class TestAuthDisabledFlag:
             os.environ.pop("DISABLE_AUTH", None)
 
     def test_sentinel_user_is_admin(self) -> None:
-        assert _DISABLED_AUTH_USER.role == "admin"
+        assert _DISABLED_AUTH_USER.role == "superadmin"
         assert _DISABLED_AUTH_USER.username == "dev"
         assert _DISABLED_AUTH_USER.id == 0
         assert _DISABLED_AUTH_USER.is_active is True

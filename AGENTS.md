@@ -14,6 +14,14 @@ This file is the shared operating contract for Codex, OpenCode, and any sub-agen
 - Dashboard: `http://127.0.0.1:9999/dashboard`
 - Health and runtime evidence: `http://127.0.0.1:9999/health`
 
+Authentication role management uses exactly three canonical roles: `superadmin > admin >
+user`. Legacy `superuser` is normalized to `superadmin`, while legacy `operator` and
+`viewer` values are normalized to `user`. The configured
+default account is seeded as `superadmin`; `POST /api/v1/auth/create-user` permits
+superadmin to create superadmin/admin/user and admin to create admin/user. Persian
+role guidance is available at `GET /api/v1/auth/roles`, and authentication or
+authorization denials return Persian details.
+
 ## Product priorities
 
 Use this priority order unless the user explicitly overrides it for a task:

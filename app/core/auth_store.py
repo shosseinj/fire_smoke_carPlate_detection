@@ -47,8 +47,8 @@ class AuthStore:
 
     def _init_db(self) -> None:
         with self._lock, self._connection() as conn:
-            conn.execute("UPDATE users SET role = 'admin' WHERE role = 'superuser'")
-            conn.execute("UPDATE users SET role = 'viewer' WHERE role = 'user'")
+            conn.execute("UPDATE users SET role = 'superadmin' WHERE role = 'superuser'")
+            conn.execute("UPDATE users SET role = 'user' WHERE role IN ('viewer', 'operator')")
 
 
     @staticmethod
@@ -57,7 +57,7 @@ class AuthStore:
             id=int(row["id"]),
             username=str(row["username"]),
             password_hash=str(row["password_hash"]),
-            role=str(row["role"]),
+            role=_normalize_stored_role(str(row["role"])),
             is_active=bool(row["is_active"]),
             created_at_utc=str(row["created_at_utc"]),
             email=row["email"],
@@ -88,7 +88,7 @@ class AuthStore:
             cursor = conn.execute(
                 "INSERT INTO users (username, password_hash, role, email, full_name) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (username, _hash(password), role, email, full_name),
+                (username, _hash(password), _normalize_stored_role(role), email, full_name),
             )
             return self._select_user(conn, "id = ?", cursor.lastrowid)
 
@@ -105,7 +105,7 @@ class AuthStore:
             cursor = conn.execute(
                 "INSERT INTO users (username, password_hash, role, email, full_name) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING",
-                (username, _hash(password), role, email, full_name),
+                (username, _hash(password), _normalize_stored_role(role), email, full_name),
             )
             if cursor.lastrowid is not None:
                 created = self._select_user(conn, "id = ?", cursor.lastrowid)
@@ -160,7 +160,7 @@ class AuthStore:
                 "INSERT INTO users "
                 "(username, password_hash, role, email, is_active, full_name) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (username, password_hash, role, email, int(is_active), full_name),
+                (username, password_hash, _normalize_stored_role(role), email, int(is_active), full_name),
             )
             user = self._select_user(conn, "id = ?", cursor.lastrowid)
             if user is None:
@@ -207,7 +207,10 @@ class AuthStore:
         with self._lock, self._connection() as conn:
             if self._select_user(conn, "id = ?", user_id) is None:
                 return None
-            conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+            conn.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (_normalize_stored_role(role), user_id),
+            )
             return self._select_user(conn, "id = ?", user_id)
 
     def update_password(self, user_id: int, new_password_hash: str) -> UserRecord | None:
@@ -270,7 +273,7 @@ class AuthStore:
         with self._lock, self._connection() as conn:
             return int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                    "SELECT COUNT(*) FROM users WHERE role IN ('admin', 'superadmin') AND is_active = 1"
                 ).fetchone()[0]
             )
 
@@ -318,3 +321,14 @@ def _checkpw(plain: bytes, stored: bytes) -> bool:
     import bcrypt
 
     return bcrypt.checkpw(plain, stored)
+
+
+def _normalize_stored_role(role: str) -> str:
+    return {
+        "superuser": "superadmin",
+        "superadmin": "superadmin",
+        "admin": "admin",
+        "operator": "user",
+        "viewer": "user",
+        "user": "user",
+    }.get(role.strip().lower(), role.strip().lower())

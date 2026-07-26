@@ -589,21 +589,25 @@
     },
     {
       "id": "api-auth",
-      "name": "Authentication API (Login + Profile)",
+      "name": "Authentication API (Login + Profile + Role Management)",
       "enabled": true,
       "critical": true,
       "runtime_required": false,
-      "owner_paths": ["app/api/auth.py", "app/api/auth_schemas.py", "app/core/auth.py", "app/core/auth_store.py"],
+      "owner_paths": ["app/api/auth.py", "app/api/auth_schemas.py", "app/core/auth.py", "app/core/auth_store.py", "app/api/import_progress.py", "alembic/versions/20260726_0026_canonical_auth_roles.py"],
       "dependencies": ["configuration"],
       "consumers": ["user-interface", "all-api-endpoints"],
       "commands": [
-        "python -m pytest tests/test_auth.py -q",
+        "python -m pytest tests/test_auth.py tests/test_auth_role_policy.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestAuthCrud\"",
         "python -m py_compile app/api/auth.py app/core/auth.py app/core/auth_store.py"
       ],
       "metrics": ["login_count", "token_creations", "token_validations", "auth_errors"],
-      "acceptance": {},
-      "notes": "JWT-based auth with bcrypt password hashing. Default admin seeded on first startup. Role hierarchy: admin > operator > viewer."
+      "acceptance": {
+        "role_creation": "superadmin creates superadmin/admin/user; admin creates admin/user; user is denied with Persian details",
+        "role_information": "GET /api/v1/auth/roles returns Persian descriptions and generally allowed actions",
+        "localized_denials": "Authentication and insufficient-role failures use Persian details"
+      },
+      "notes": "JWT-based auth with bcrypt password hashing. Exactly three canonical roles are stored and emitted: superadmin > admin > user. Legacy superuser/operator/viewer values normalize to superadmin/user. Runtime auth evidence requires DISABLE_AUTH=false."
     },
     {
       "id": "crud-coverage",

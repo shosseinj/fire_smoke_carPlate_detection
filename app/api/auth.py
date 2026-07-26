@@ -17,6 +17,7 @@ from app.api.auth_schemas import (
     LogoutResponse,
     PasswordChangeResponse,
     RefreshRequest,
+    RoleInfoResponse,
     TokenResponse,
     UserResponse,
     validate_legacy_password_strength,
@@ -78,11 +79,39 @@ def _build_token_response(user: UserRecord) -> TokenResponse:
 
 
 def _require_admin(user: UserRecord) -> None:
-    if normalize_role(user.role) != "admin":
+    if normalize_role(user.role) not in {"superadmin", "admin"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required",
+            detail="برای مدیریت کاربران، دسترسی مدیر یا سوپرادمین لازم است",
         )
+
+
+def _require_superadmin(user: UserRecord) -> None:
+    if normalize_role(user.role) != "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="برای این درخواست فقط دسترسی سوپرادمین مجاز است",
+        )
+
+
+def _require_creation_permission(current_user: UserRecord, requested_role: str) -> str:
+    actor_role = normalize_role(current_user.role)
+    target_role = normalize_role(requested_role)
+    if target_role not in {"superadmin", "admin", "user"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="نقش ایجادشده باید یکی از «superadmin»، «admin» یا «user» باشد",
+        )
+    allowed = {
+        "superadmin": {"superadmin", "admin", "user"},
+        "admin": {"admin", "user"},
+    }.get(actor_role, set())
+    if target_role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما اجازه ایجاد کاربر با این نقش را ندارید",
+        )
+    return target_role
 
 
 def _parse_utc(value: str | None) -> datetime | None:
@@ -117,13 +146,13 @@ def _extract_refresh_token(
     if body_token and query_token and body_token != query_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Conflicting refresh tokens were supplied",
+            detail="توکن‌های نوسازی ارسال‌شده با یکدیگر مغایرت دارند",
         )
     token = query_token or body_token
     if not token:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="refresh_token is required in the query or JSON body",
+            detail="توکن نوسازی باید در پرس‌وجو یا بدنه JSON ارسال شود",
         )
     return token
 
@@ -162,12 +191,12 @@ def _create_user_record(
     if store.get_user_by_username(payload.username) is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Username '{payload.username}' already exists",
+            detail="این نام کاربری قبلاً استفاده شده است",
         )
     if payload.email and store.get_user_by_email(payload.email) is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Email '{payload.email}' already exists",
+            detail="این ایمیل قبلاً استفاده شده است",
         )
 
     try:
@@ -194,7 +223,7 @@ def _create_user_record(
         LOGGER.exception("Failed to create user")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create user",
+            detail="ایجاد کاربر با خطا مواجه شد",
         ) from exc
 
 
@@ -278,20 +307,20 @@ def refresh(
     if refresh_payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid, expired, or revoked refresh token",
+            detail="توکن نوسازی نامعتبر، منقضی یا لغوشده است",
         )
 
     user = resolve_user_from_payload(refresh_payload)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or disabled",
+            detail="کاربر یافت نشد یا حساب کاربری غیرفعال است",
         )
 
     if not revoke_refresh_token(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
+            detail="توکن نوسازی نامعتبر است",
         )
     return _build_token_response(user)
 
@@ -311,13 +340,13 @@ def logout(
     if refresh_token is not None and current_user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail="برای انجام این درخواست باید وارد حساب کاربری شوید",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not revoke_refresh_token(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
+            detail="توکن نوسازی نامعتبر است",
         )
     return LogoutResponse(message="خروج با موفقیت انجام شد")
 
@@ -336,7 +365,7 @@ def create_admin(
     response: Response,
     current_user: UserRecord = Depends(get_current_user),
 ) -> CreateUserResponse:
-    _require_admin(current_user)
+    _require_superadmin(current_user)
     _validate_legacy_creation(payload)
     response.status_code = status.HTTP_200_OK
     user = _create_user_record(
@@ -358,15 +387,54 @@ def create_user(
     response: Response,
     current_user: UserRecord = Depends(get_current_user),
 ) -> CreateUserResponse:
-    _require_admin(current_user)
+    role = _require_creation_permission(current_user, payload.role)
     _validate_legacy_creation(payload)
     response.status_code = status.HTTP_200_OK
     user = _create_user_record(
         payload,
-        role="viewer",
+        role=role,
         is_active=True,
     )
     return _create_user_response(user, "کاربر با موفقیت ساخته شد.")
+
+
+_ROLE_INFORMATION = [
+    {
+        "role": "superadmin",
+        "title": "سوپرادمین",
+        "description": "دسترسی کامل مدیریتی و امکان ایجاد سوپرادمین، ادمین و کاربر.",
+        "allowed_actions": ["مدیریت کاربران", "مدیریت تنظیمات", "مشاهده و مدیریت همه داده‌ها"],
+    },
+    {
+        "role": "admin",
+        "title": "ادمین",
+        "description": "مدیریت عمومی سامانه و امکان ایجاد ادمین و کاربر، بدون ایجاد سوپرادمین.",
+        "allowed_actions": ["مدیریت کاربران عادی", "مشاهده و مدیریت داده‌های مجاز"],
+    },
+    {
+        "role": "user",
+        "title": "کاربر",
+        "description": "استفاده از امکاناتی که برای کاربر عادی فعال شده است.",
+        "allowed_actions": ["مشاهده امکانات مجاز"],
+    },
+]
+
+
+@router.get(
+    "/roles",
+    response_model=RoleInfoResponse,
+    summary="راهنمای نقش‌های کاربری",
+)
+@router.get(
+    "/role-info",
+    response_model=RoleInfoResponse,
+    include_in_schema=False,
+)
+def role_information() -> RoleInfoResponse:
+    return RoleInfoResponse(
+        message="راهنمای عمومی نقش‌های کاربری سامانه",
+        roles=_ROLE_INFORMATION,
+    )
 
 
 # ── Current user and password changes ───────────────────────────────
@@ -385,7 +453,7 @@ def _change_password(
     if not verify_password(current_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
+            detail="رمز عبور فعلی نادرست است",
         )
     try:
         new_hash = hash_password(new_password)
@@ -397,7 +465,7 @@ def _change_password(
     if get_auth_store().update_password(current_user.id, new_hash) is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update password",
+            detail="تغییر رمز عبور با خطا مواجه شد",
         )
 
 
@@ -458,23 +526,28 @@ def list_users(
 def _change_user_role(user_id: int, requested_role: str) -> UserRecord:
     store = get_auth_store()
     role = normalize_role(requested_role)
-    if role not in {"admin", "viewer"}:
+    if role not in {"admin", "user"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="نقش کاربر باید یکی از این موارد باشد: ['user', 'admin']",
         )
     user = store.get_user_by_id(user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
+    if normalize_role(user.role) == "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="تغییر نقش حساب سوپرادمین مجاز نیست",
+        )
     if normalize_role(user.role) == "admin" and role != "admin" and user.is_active:
         if store.count_active_admins() <= 1:
             raise HTTPException(
                 status_code=400,
-                detail="Cannot change the role of the last active admin",
+                detail="امکان تغییر نقش آخرین مدیر فعال وجود ندارد",
             )
     updated = store.set_user_role(user_id, role)
     if updated is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
     return updated
 
 
@@ -489,12 +562,12 @@ def change_role_legacy(
     current_user: UserRecord = Depends(get_current_user),
 ) -> LegacyRoleChangeResponse:
     _require_admin(current_user)
-    if role not in {"user", "admin"}:
+    if normalize_role(role) not in {"user", "admin"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="نقش کاربر باید یکی از این موارد باشد: ['user', 'admin']",
         )
-    updated = _change_user_role(user_id, "viewer" if role == "user" else "admin")
+    updated = _change_user_role(user_id, normalize_role(role))
     public = _user_to_response(updated)
     return LegacyRoleChangeResponse(
         **public.model_dump(),
@@ -518,11 +591,16 @@ def delete_user(
     user = store.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="کاربر یافت نشد")
+    if normalize_role(user.role) == "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="حذف حساب سوپرادمین مجاز نیست",
+        )
     if normalize_role(user.role) == "admin" and user.is_active:
         if store.count_active_admins() <= 1:
             raise HTTPException(
                 status_code=400,
-                detail="Cannot delete the last active admin",
+                detail="امکان حذف آخرین مدیر فعال وجود ندارد",
             )
     if not store.delete_user(user_id):
         raise HTTPException(status_code=404, detail="کاربر یافت نشد")
