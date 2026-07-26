@@ -14,6 +14,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.cam_store import CamRecord, CamStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
@@ -195,16 +196,70 @@ def create_default_cameras(
                 )
             )
             created.append(record)
-            LOGGER.info("INIT_DB created camera '%s' uri=%s", record.name, record.source_uri)
-        except (ValueError, Exception) as exc:
-            LOGGER.warning("INIT_DB skip camera %s: %s", url, exc)
+            LOGGER.info("INIT_DB created source camera '%s'", record.name)
+        except Exception as exc:
+            LOGGER.warning("INIT_DB skip source camera %d: %s", idx, exc)
     return created
+
+
+def create_default_cam_records(
+    cam_store: CamStore,
+    section_id: int,
+    urls: list[str] | None = None,
+) -> tuple[list[CamRecord], int]:
+    """Ensure each seed camera has a hierarchy record in ``cam``."""
+    existing, _ = cam_store.list(section_id=section_id, limit=1000)
+    by_url = {record.url: record for record in existing}
+    by_number = {record.camera_number: record for record in existing}
+    records: list[CamRecord] = []
+    created_count = 0
+
+    selected_urls = set(_SEED_CAMERA_URLS if urls is None else urls)
+    for index, url in enumerate(_SEED_CAMERA_URLS, 1):
+        if url not in selected_urls:
+            continue
+        record = by_url.get(url)
+        if record is not None:
+            records.append(record)
+            continue
+
+        conflict = by_number.get(index)
+        if conflict is not None:
+            LOGGER.warning(
+                "INIT_DB skip cam %d: camera_number already belongs to '%s'",
+                index,
+                conflict.camera_name,
+            )
+            continue
+
+        try:
+            record = cam_store.create(
+                camera_name=_camera_name_from_url(url, index),
+                camera_number=index,
+                width=640,
+                high=640,
+                source_type="rtsp",
+                section_id=section_id,
+                url=url,
+            )
+        except ValueError as exc:
+            LOGGER.warning("INIT_DB skip cam %d: %s", index, exc)
+            continue
+
+        records.append(record)
+        by_url[url] = record
+        by_number[index] = record
+        created_count += 1
+        LOGGER.info("INIT_DB created cam '%s' id=%d", record.camera_name, record.id)
+
+    return records, created_count
 
 
 def create_rooms_for_cameras(
     location_store: LocationStore,
     cameras: list[SourceRecord],
     section_id: int | None = None,
+    cam_records: list[CamRecord] | None = None,
 ) -> int:
     """Create one room per camera under *section_id* using the camera
     name as the room name and a full-frame polygon.
@@ -213,24 +268,39 @@ def create_rooms_for_cameras(
     in that section. Returns the number of rooms created.
     """
     existing_rooms, _ = location_store.list_rooms(section_id=section_id, limit=1000)
-    existing_names: set[str] = {r.name for r in existing_rooms if r.name}
+    rooms_by_name = {record.name: record for record in existing_rooms if record.name}
+    cams_by_url = {record.url: record for record in cam_records or []}
     count = 0
-    for cam in cameras:
-        room_name = cam.name
-        if room_name in existing_names:
+    for source in cameras:
+        room_name = source.name
+        cam = cams_by_url.get(source.source_uri)
+        existing_room = rooms_by_name.get(room_name)
+        if existing_room is not None:
+            if cam is not None and existing_room.cam_id is None:
+                updated = location_store.update_room(existing_room.id, cam_id=cam.id)
+                if updated is not None:
+                    rooms_by_name[room_name] = updated
+                    count += 1
+            elif cam is not None and existing_room.cam_id != cam.id:
+                LOGGER.warning(
+                    "INIT_DB room '%s' already belongs to cam %d",
+                    room_name,
+                    existing_room.cam_id,
+                )
             continue
         try:
-            location_store.create_room(
+            room = location_store.create_room(
                 name=room_name,
-                section_id=section_id,
-                description=f"Room monitored by {cam.name}",
+                section_id=section_id if cam is None else None,
+                cam_id=cam.id if cam is not None else None,
+                description=f"Room monitored by {source.name}",
                 polygon_json=json.dumps([[0, 0], [640, 0], [640, 640], [0, 640]]),
             )
             count += 1
-            existing_names.add(room_name)
-            LOGGER.info("INIT_DB created room '%s' for camera '%s'", room_name, cam.name)
+            rooms_by_name[room_name] = room
+            LOGGER.info("INIT_DB created room '%s' for camera '%s'", room_name, source.name)
         except Exception as exc:
-            LOGGER.warning("INIT_DB skip room for camera '%s': %s", cam.name, exc)
+            LOGGER.warning("INIT_DB skip room for camera '%s': %s", source.name, exc)
     return count
 
 
@@ -463,6 +533,7 @@ def init_database(
     location_store: LocationStore | None = None,
     shift_store: ShiftStore | None = None,
     registry: SourceRegistry | None = None,
+    cam_store: CamStore | None = None,
     target_log_count: int = 100,
 ) -> bool:
     """Seed the database with foundational records and sample data.
@@ -477,7 +548,8 @@ def init_database(
 
     Parameters
     ----------
-    personnel_store, detection_log_store, location_store, shift_store:
+    personnel_store, detection_log_store, location_store, shift_store,
+    registry, cam_store:
         Store instances through which seed operations are performed.
         Any store that is ``None`` is skipped.
     target_log_count:
@@ -533,23 +605,51 @@ def init_database(
 
     # ── Seed default cameras and per-camera rooms ────────────────────
     if registry is not None and section is not None:
+        source_count_before = len(registry.list())
         seed_cameras = create_default_cameras(registry)
-        if seed_cameras:
+        if len(seed_cameras) > source_count_before:
             seeded = True
+        seed_cam_records: list[CamRecord] = []
+        if cam_store is not None:
+            seed_urls = [
+                source.source_uri
+                for source in seed_cameras
+                if source.source_uri in _SEED_CAMERA_URLS
+            ]
+            seed_cam_records, cams_created = create_default_cam_records(
+                cam_store,
+                section.id,
+                urls=seed_urls,
+            )
+            if cams_created:
+                seeded = True
         if location_store is not None and seed_cameras:
             rooms_created = create_rooms_for_cameras(
                 location_store,
                 seed_cameras,
                 section_id=section.id,
+                cam_records=seed_cam_records,
             )
             if rooms_created > 0:
                 LOGGER.info("INIT_DB created %d room(s) for seed cameras", rooms_created)
+                seeded = True
             rooms, _ = location_store.list_rooms(section_id=section.id, limit=1000)
-            rooms_by_name = {item.name: item.id for item in rooms}
-            for camera in seed_cameras:
-                room_id = rooms_by_name.get(camera.name)
-                if room_id is not None and camera.room_id != room_id:
-                    registry.update(camera.source_uri, room_id=room_id)
+            rooms_by_name = {item.name: item for item in rooms}
+            cams_by_url = {item.url: item for item in seed_cam_records}
+            for source in seed_cameras:
+                room = rooms_by_name.get(source.name)
+                cam = cams_by_url.get(source.source_uri)
+                if room is None:
+                    continue
+                if cam is not None and room.cam_id != cam.id:
+                    LOGGER.warning(
+                        "INIT_DB skip source room assignment for '%s': cam ownership mismatch",
+                        source.name,
+                    )
+                    continue
+                if source.room_id != room.id:
+                    registry.update(source.source_uri, room_id=room.id)
+                    seeded = True
 
     # ── Seed all default shifts ─────────────────────────────────────
     shifts = _create_all_default_shifts(shift_store) if shift_store is not None else []

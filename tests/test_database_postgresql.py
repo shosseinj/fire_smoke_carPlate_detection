@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from sqlalchemy import Date, DateTime, LargeBinary, Time
@@ -51,6 +52,10 @@ def test_alembic_migration_chain_covers_every_application_table() -> None:
         assert (
             f"CREATE TABLE {table_name} " in migration
             or f"CREATE TABLE IF NOT EXISTS {table_name} " in migration
+            or re.search(
+                rf"op\.create_table\(\s*['\"]{re.escape(table_name)}['\"]",
+                migration,
+            )
         )
     assert "revision: str = '20260722_0001'" in migration
     assert "down_revision" in migration

@@ -11,6 +11,7 @@ import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from openpyxl.styles import Alignment
+from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
 from app.core.auth import require_role
@@ -30,6 +31,35 @@ from app.core.recent_detection_service import (
     build_recent_detection_refresh_message,
     get_single_detection_payload_by_id,
 )
+
+
+# ── PATCH request schemas ──────────────────────────────────────────────────
+
+
+class DetectionLogUpdate(BaseModel):
+    """Request body for PATCH /{log_id}/person.
+
+    ``personnel_id`` is the preferred input. The legacy ``person`` field is
+    still accepted as a national code or ``fname lname`` pair.
+    """
+
+    person: str | None = None
+    personnel_id: int | None = Field(default=None, gt=0)
+    confidence: float | None = None
+
+    @model_validator(mode="after")
+    def _require_person_or_personnel_id(self) -> DetectionLogUpdate:
+        if self.person is not None:
+            self.person = self.person.strip()
+        if not self.person and self.personnel_id is None:
+            raise ValueError("Either person or personnel_id must be provided")
+        return self
+
+
+class DetectionLogAttendanceUpdate(BaseModel):
+    """Request body for PATCH /{log_id}/attendance."""
+
+    counts_for_attendance: bool = True
 
 router = APIRouter(prefix="/api/v1/logs", tags=["Detection Logs"])
 
@@ -69,6 +99,21 @@ def get_personnel_store() -> Any:
 
 def _get_current_user_id(current_user: dict) -> int | None:
     return current_user.get("id")
+
+
+def _choose_reference_image(
+    images: list[Any],
+) -> Any | None:
+    """Choose a stable reference image: primary first, then lowest image id."""
+    if not images:
+        return None
+    return min(
+        images,
+        key=lambda img: (
+            0 if bool(getattr(img, "is_primary", False)) else 1,
+            int(getattr(img, "id", 0)),
+        ),
+    )
 
 
 def _resolve_media_path(relative_path: str | None) -> Path:
@@ -202,6 +247,8 @@ def _period_to_utc_range(
         utc_start, _ = local_day_utc_range(start_local)
         _, utc_end = local_day_utc_range(today_local)
         return utc_start.isoformat(), utc_end.isoformat()
+    if period == "all":
+        return None, None
     if period == "custom":
         if not from_date_jalali or not to_date_jalali:
             raise HTTPException(400, "from_date_jalali and to_date_jalali are required for period=custom")
@@ -286,7 +333,7 @@ def create_detection_log(
 
 @router.get("/filter")
 def filter_logs(
-    period: str = Query("today"),
+    period: str = Query("all"),
     from_date_jalali: str | None = Query(None),
     to_date_jalali: str | None = Query(None),
     personnel_id: int | None = Query(None),
@@ -747,10 +794,10 @@ def generate_fake_detections(
         cam = get_runtime().registry.get(camera_id)
         if cam is None:
             raise HTTPException(404, "دوربین یافت نشد")
-        selected_camera_ids = [cam.source_id]
+        selected_camera_ids = [cam.source_uri]
     else:
         all_cams = get_runtime().registry.list()
-        selected_camera_ids = [c.source_id for c in all_cams] if all_cams else [None]
+        selected_camera_ids = [c.source_uri for c in all_cams] if all_cams else [None]
 
     created = 0
 
@@ -772,9 +819,9 @@ def generate_fake_detections(
             )
         else:
             det_time = base_time - timedelta(
-                days=_random.randint(0, 180),
                 hours=_random.randint(0, 23),
                 minutes=_random.randint(0, 59),
+                seconds=_random.randint(0, 59),
             )
 
         confidence = round(_random.uniform(0.5, 1.0), 4)
@@ -833,26 +880,78 @@ def get_log(
 @router.patch("/{log_id}/person")
 def patch_log_person(
     log_id: int,
-    body: dict[str, Any],
+    update_data: DetectionLogUpdate,
     current_user: dict = Depends(require_role("admin")),
 ) -> dict:
+    """Reassign a detection log and recalculate access - Admin only.
+
+    ``personnel_id`` is the preferred input. The legacy ``person`` field is
+    still accepted (national code or ``fname lname``). When the resolved
+    personnel changes, ``ref_img_id`` is replaced with one of the new
+    personnel's images (primary first, then the lowest image id).
+    """
     store = get_detection_log_store()
     record = store.get(log_id)
     if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
+        raise HTTPException(404, "لاگ تشخیص یافت نشد")
 
-    kwargs: dict[str, Any] = {}
-    if "person" in body:
-        kwargs["person"] = str(body["person"])
-    if "personnel_id" in body:
-        kwargs["personnel_id"] = int(body["personnel_id"])
-    if "confidence" in body:
-        kwargs["confidence"] = float(body["confidence"])
-    kwargs["updated_by"] = _get_current_user_id(current_user)
+    # ── Resolve current / new personnel ──────────────────────────────
+    personnel_store = get_personnel_store()
+
+    def _find_personnel_by_identity(identity: str | None):
+        if not identity:
+            return None
+        identity = identity.strip()
+        if identity.isdigit():
+            return personnel_store.get_by_national_code(identity)
+        name_parts = identity.split(" ", 1)
+        if len(name_parts) == 2:
+            return personnel_store.get_by_name(name_parts[0], name_parts[1])
+        return None
+
+    old_person = record.person
+    old_personnel_id = record.personnel_id
+
+    if update_data.personnel_id is not None:
+        personnel = personnel_store.get(update_data.personnel_id)
+        if personnel is None:
+            raise HTTPException(404, "پرسنل جدید یافت نشد")
+        person = personnel.national_code
+    else:
+        person = update_data.person.strip()
+        personnel = _find_personnel_by_identity(person)
+
+    new_personnel_id = personnel.id if personnel else None
+    new_ref_img_id = record.ref_img_id
+    if new_personnel_id is not None and new_personnel_id != old_personnel_id:
+        images = personnel_store.list_images(new_personnel_id)
+        selected_image = _choose_reference_image(images)
+        if selected_image is not None:
+            new_ref_img_id = str(selected_image.id)
+
+    # ── Recalculate access ───────────────────────────────────────────
+    location_store = get_location_store()
+    access_granted = calculate_access(
+        new_personnel_id,
+        record.room_id,
+        location_store,
+    )
+
+    # ── Persist ──────────────────────────────────────────────────────
+    kwargs: dict[str, Any] = {
+        "person": person,
+        "personnel_id": new_personnel_id,
+        "access_granted": access_granted,
+        "ref_img_id": new_ref_img_id,
+        "updated_by": _get_current_user_id(current_user),
+    }
+    if update_data.confidence is not None:
+        kwargs["confidence"] = update_data.confidence
 
     updated = store.update(log_id, **kwargs)
     if updated is None:
-        raise HTTPException(404, "لاگ یافت نشد")
+        raise HTTPException(404, "لاگ تشخیص یافت نشد")
+
     _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 
@@ -860,22 +959,22 @@ def patch_log_person(
 @router.patch("/{log_id}/attendance")
 def patch_log_attendance(
     log_id: int,
-    body: dict[str, Any],
+    payload: DetectionLogAttendanceUpdate,
     current_user: dict = Depends(require_role("admin")),
 ) -> dict:
+    """Include or exclude one detection log from attendance calculations."""
     store = get_detection_log_store()
     record = store.get(log_id)
     if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
+        raise HTTPException(404, "لاگ تشخیص یافت نشد")
 
-    counts = bool(body.get("counts_for_attendance", False))
     updated = store.update(
         log_id,
-        counts_for_attendance=counts,
+        counts_for_attendance=payload.counts_for_attendance,
         updated_by=_get_current_user_id(current_user),
     )
     if updated is None:
-        raise HTTPException(404, "لاگ یافت نشد")
+        raise HTTPException(404, "لاگ تشخیص یافت نشد")
     _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 

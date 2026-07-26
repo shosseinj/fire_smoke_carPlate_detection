@@ -48,4 +48,4 @@ Run:
 alembic upgrade head
 ```
 
-The new head revision is `20260725_0023`.
+The new head revision is `20260725_0024`.

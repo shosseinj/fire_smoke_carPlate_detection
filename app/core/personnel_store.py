@@ -318,6 +318,16 @@ class PersonnelStore:
                 return None
             return self._row_to_personnel(row)
 
+    def get_by_name(self, fname: str, lname: str) -> PersonnelRecord | None:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                f"SELECT {self._personnel_columns()} FROM personnel WHERE fname = ? AND lname = ?",
+                (fname.strip(), lname.strip()),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_personnel(row)
+
     def update(
         self,
         personnel_id: int,
