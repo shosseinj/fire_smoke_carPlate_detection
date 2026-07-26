@@ -93,6 +93,13 @@ def _concat_if_needed(image, reference):
     return cv2.hconcat([image, reference])
 
 
+def _upper_section(image):
+    if image is None or image.size == 0:
+        return image
+    height = max(1, int(round(image.shape[0] * 0.60)))
+    return image[:height, :].copy()
+
+
 def _media_path(runtime: Runtime, raw: str | None) -> Path | None:
     if not raw:
         return None
@@ -188,6 +195,10 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     image = _read_image(body_image_path)
     image_kind = "body" if image is not None else "placeholder"
     if image is not None:
+        if concatenate:
+            reference_image = _read_image(_reference_path(runtime, row))
+            image = _concat_if_needed(image, reference_image)
+            # image = _concat_if_needed(_upper_section(image), reference_image)
         success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if success:
             encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
