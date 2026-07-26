@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260726_0025"
+ALEMBIC_HEAD_REVISION = "20260726_0026"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -45,12 +45,13 @@ users = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("username", Text, nullable=False, unique=True),
     Column("password_hash", Text, nullable=False),
-    Column("role", Text, nullable=False, server_default="viewer"),
+    Column("role", Text, nullable=False, server_default="user"),
     Column("is_active", Integer, nullable=False, server_default="1"),
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("email", Text), Column("full_name", Text),
     Column("last_login_utc", UTC_TS), Column("login_attempts", Integer, nullable=False, server_default="0"),
     Column("locked_until_utc", UTC_TS),
+    CheckConstraint("role IN ('superadmin', 'admin', 'user')", name="ck_users_role"),
 )
 Index("idx_users_username", users.c.username)
 Index("idx_users_email", users.c.email)

@@ -22,13 +22,14 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 _auth_store: AuthStore | None = None
 
 ROLE_ALIASES = {
-    "superuser": "admin",
+    "superuser": "superadmin",
+    "superadmin": "superadmin",
     "admin": "admin",
-    "operator": "operator",
-    "user": "viewer",
-    "viewer": "viewer",
+    "operator": "user",
+    "viewer": "user",
+    "user": "user",
 }
-CANONICAL_ROLES = frozenset({"admin", "operator", "viewer"})
+CANONICAL_ROLES = frozenset({"superadmin", "admin", "user"})
 
 
 def normalize_role(role: str | None) -> str:
@@ -44,7 +45,7 @@ def initialize_auth_store(database: Database, app_settings: Settings = settings)
     _auth_store.ensure_default_admin(
         username=app_settings.auth_default_admin_username,
         password=app_settings.auth_default_admin_password,
-        role="admin",
+        role="superadmin",
         email=app_settings.auth_default_admin_email,
     )
     return _auth_store
@@ -221,7 +222,7 @@ _DISABLED_AUTH_USER = UserRecord(
     id=0,
     username="dev",
     password_hash="",
-    role="admin",
+    role="superadmin",
     is_active=True,
     created_at_utc="",
 )
@@ -240,27 +241,27 @@ def get_current_user(
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail="برای انجام این درخواست باید وارد حساب کاربری شوید",
             headers={"WWW-Authenticate": "Bearer"},
         )
     payload = decode_access_token(credentials.credentials)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail="توکن نامعتبر یا منقضی شده است",
             headers={"WWW-Authenticate": "Bearer"},
         )
     user = resolve_user_from_payload(payload)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="کاربر یافت نشد",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is disabled",
+            detail="حساب کاربری غیرفعال است",
         )
     return user
 
@@ -282,9 +283,11 @@ def get_optional_user(
 
 
 def require_role(required_role: str):
-    """Return a dependency enforcing the canonical admin > operator > viewer hierarchy."""
-    hierarchy = {"admin": 3, "operator": 2, "viewer": 1}
+    """Return a dependency enforcing the canonical superadmin > admin > user hierarchy."""
+    hierarchy = {"superadmin": 3, "admin": 2, "user": 1}
     canonical_required = normalize_role(required_role)
+    if canonical_required not in hierarchy:
+        raise ValueError(f"Unknown authorization role: {required_role}")
 
     def _role_checker(current_user: UserRecord = Depends(get_current_user)) -> UserRecord:
         user_level = hierarchy.get(normalize_role(current_user.role), 0)
@@ -292,7 +295,7 @@ def require_role(required_role: str):
         if user_level < required_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{canonical_required}' or higher required",
+                detail=f"برای این درخواست دسترسی با نقش «{canonical_required}» یا بالاتر لازم است",
             )
         return current_user
 

@@ -14,6 +14,14 @@ This file is the shared operating contract for Codex, OpenCode, and any sub-agen
 - Dashboard: `http://127.0.0.1:9999/dashboard`
 - Health and runtime evidence: `http://127.0.0.1:9999/health`
 
+Authentication role management uses exactly three canonical roles: `superadmin > admin >
+user`. Legacy `superuser` is normalized to `superadmin`, while legacy `operator` and
+`viewer` values are normalized to `user`. The configured
+default account is seeded as `superadmin`; `POST /api/v1/auth/create-user` permits
+superadmin to create superadmin/admin/user and admin to create admin/user. Persian
+role guidance is available at `GET /api/v1/auth/roles`, and authentication or
+authorization denials return Persian details.
+
 ## Product priorities
 
 Use this priority order unless the user explicitly overrides it for a task:
@@ -143,10 +151,11 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Binary WS delivers JPEG frames: connect to `ws://host/api/v1/broadcast/ws` without params
 - Results WS delivers overlays: connect to `ws://host/api/v1/results/ws`
 
-Recent detection cards prefer `face_image_base64`; when no face exists they use
-`detection_logs.snapshot_image` (the persisted `/media/human_snapshots/...` body
-snapshot) through `body_image_base64`, and only use the unknown-face placeholder
-when neither image is available.
+The recent-detections WebSocket payload matches the legacy contract exactly. Each
+detection contains only `id`, `area`, `person`, `full_name`, `confidence`,
+`detection_time`, `face_image_base64`, `access_granted`, `counts_for_attendance`,
+and `classification`. Entries without an encodable face image are omitted; body
+snapshot fallback fields are not sent.
 
 ## Polygon zone system
 

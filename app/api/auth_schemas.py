@@ -7,8 +7,8 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-VALID_ROLES = frozenset({"admin", "operator", "viewer"})
-LEGACY_ROLE_VALUES = frozenset({"superuser", "admin", "user"})
+VALID_ROLES = frozenset({"superadmin", "admin", "user"})
+LEGACY_ROLE_VALUES = frozenset({"superuser", "superadmin", "admin", "user", "viewer", "operator"})
 
 
 class LoginRequest(BaseModel):
@@ -61,7 +61,28 @@ class CreateUserRequest(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     email: str
     confirm_password: str
+    role: str = Field(default="user", min_length=1, max_length=30)
     full_name: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def valid_role(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in LEGACY_ROLE_VALUES:
+            raise ValueError("نقش کاربر نامعتبر است")
+        return normalized
+
+
+class RoleInfo(BaseModel):
+    role: str
+    title: str
+    description: str
+    allowed_actions: list[str]
+
+
+class RoleInfoResponse(BaseModel):
+    message: str
+    roles: list[RoleInfo]
 
 
 class CreateUserResponse(BaseModel):

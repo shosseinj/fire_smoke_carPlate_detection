@@ -735,8 +735,8 @@ def test_create_user_weak_password(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_create_user_invalid_role(tmp_path: Path) -> None:
-    """Creating a user with an invalid role returns 422."""
+def test_admin_cannot_create_superadmin(tmp_path: Path) -> None:
+    """An admin may not create a superadmin account."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
@@ -745,7 +745,8 @@ def test_create_user_invalid_role(tmp_path: Path) -> None:
             json={"username": "newuser", "password": "StrongPass1", "role": "superadmin"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 422
+        assert response.status_code == 403
+        assert "اجازه" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 

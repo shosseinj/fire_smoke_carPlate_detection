@@ -207,8 +207,6 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
         "face_image_base64": face_image_b64,
-        "body_image_base64": body_image_b64,
-        "image_kind": image_kind,
         "access_granted": bool(row.get("access_granted")),
         "counts_for_attendance": bool(row.get("counts_for_attendance")),
         "classification": classification,

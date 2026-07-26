@@ -209,11 +209,12 @@
       "enabled": true,
       "critical": true,
       "runtime_required": true,
-      "owner_paths": ["app/core/broadcast.py", "app/api/broadcast.py", "app/web/dashboard.html"],
+      "owner_paths": ["app/core/broadcast.py", "app/api/broadcast.py", "app/core/recent_detection_service.py", "app/api/detection_logs.py", "app/web/dashboard.html"],
       "dependencies": ["configuration", "frame-pipeline"],
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_broadcast.py -q",
+        "python -m pytest tests/test_recent_detection_service.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestBroadcastApi\"",
         "python -m py_compile app/core/broadcast.py app/api/broadcast.py"
       ],
@@ -222,8 +223,10 @@
         "jpeg_quality", "wall_jpeg_quality", "full_resolution", "wall_resolution",
         "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
-      "acceptance": {},
-      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard cards use source_uri consistently with the current Source contract; enabled state selects visible streams and tasks select AI overlays. Tasked sources receive passthrough frames before model results so video remains reachable during inference delay/failure. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Browser validation remains required."
+      "acceptance": {
+        "recent_detections_contract": "recent_detections entries contain exactly the legacy ten fields and omit entries without an encodable face image"
+      },
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard cards use source_uri consistently with the current Source contract; enabled state selects visible streams and tasks select AI overlays. Tasked sources receive passthrough frames before model results so video remains reachable during inference delay/failure. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Recent detection initial and refresh messages preserve the legacy exact field set. Browser validation remains required."
     },
     {
       "id": "api-health",
@@ -589,21 +592,25 @@
     },
     {
       "id": "api-auth",
-      "name": "Authentication API (Login + Profile)",
+      "name": "Authentication API (Login + Profile + Role Management)",
       "enabled": true,
       "critical": true,
       "runtime_required": false,
-      "owner_paths": ["app/api/auth.py", "app/api/auth_schemas.py", "app/core/auth.py", "app/core/auth_store.py"],
+      "owner_paths": ["app/api/auth.py", "app/api/auth_schemas.py", "app/core/auth.py", "app/core/auth_store.py", "app/api/import_progress.py", "alembic/versions/20260726_0026_canonical_auth_roles.py"],
       "dependencies": ["configuration"],
       "consumers": ["user-interface", "all-api-endpoints"],
       "commands": [
-        "python -m pytest tests/test_auth.py -q",
+        "python -m pytest tests/test_auth.py tests/test_auth_role_policy.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestAuthCrud\"",
         "python -m py_compile app/api/auth.py app/core/auth.py app/core/auth_store.py"
       ],
       "metrics": ["login_count", "token_creations", "token_validations", "auth_errors"],
-      "acceptance": {},
-      "notes": "JWT-based auth with bcrypt password hashing. Default admin seeded on first startup. Role hierarchy: admin > operator > viewer."
+      "acceptance": {
+        "role_creation": "superadmin creates superadmin/admin/user; admin creates admin/user; user is denied with Persian details",
+        "role_information": "GET /api/v1/auth/roles returns Persian descriptions and generally allowed actions",
+        "localized_denials": "Authentication and insufficient-role failures use Persian details"
+      },
+      "notes": "JWT-based auth with bcrypt password hashing. Exactly three canonical roles are stored and emitted: superadmin > admin > user. Legacy superuser/operator/viewer values normalize to superadmin/user. Runtime auth evidence requires DISABLE_AUTH=false."
     },
     {
       "id": "crud-coverage",
