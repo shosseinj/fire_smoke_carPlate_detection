@@ -142,6 +142,59 @@ async def annotated_broadcast_websocket(
         runtime.broadcast.unsubscribe(subscriber_id)
 
 
+@router.websocket("/api/v1/video-wall/ws")
+async def source_video_wall_websocket(
+    websocket: WebSocket,
+    wall: bool = True,
+    fullscreen_source: str | None = None,
+    runtime: Runtime = Depends(get_runtime),
+) -> None:
+    """Stream source frames without AI overlays or result dependencies."""
+    await websocket.accept()
+    if not runtime.broadcast.enabled:
+        await websocket.close(code=1013, reason="Video wall is disabled")
+        return
+    if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
+        await websocket.close(code=1008, reason="Fullscreen source not found")
+        return
+
+    subscriber_id, target = runtime.broadcast.subscribe_source_only()
+    try:
+        while runtime.broadcast.enabled:
+            try:
+                frame = await asyncio.to_thread(target.get, True, 20.0)
+            except queue.Empty:
+                await websocket.send_json({"type": "keepalive"})
+                continue
+            try:
+                if frame is None:
+                    break
+                if fullscreen_source is not None and frame.source_id != fullscreen_source:
+                    continue
+                jpeg, width, height, profile = frame.rendition(
+                    full_resolution=not wall or frame.source_id == fullscreen_source
+                )
+                header = {
+                    "type": "source_frame",
+                    "source_id": frame.source_id,
+                    "frame_index": frame.frame_index,
+                    "frame_width": width,
+                    "frame_height": height,
+                    "render_profile": profile,
+                    "ai_processed": False,
+                }
+                encoded_header = json.dumps(header, separators=(",", ":")).encode()
+                await websocket.send_bytes(
+                    struct.pack("!I", len(encoded_header)) + encoded_header + jpeg
+                )
+            finally:
+                target.task_done()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        runtime.broadcast.unsubscribe_source_only(subscriber_id)
+
+
 def _mjpeg_stream(hub: AnnotatedBroadcastHub, source_id: str) -> Iterator[bytes]:
     version = 0
     while hub.enabled:

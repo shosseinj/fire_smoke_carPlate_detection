@@ -827,6 +827,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         workers=workers,
         result_store=results,
         play_only_callback=broadcast.publish_passthrough,
+        source_only_callback=broadcast.publish_source_only,
     )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None

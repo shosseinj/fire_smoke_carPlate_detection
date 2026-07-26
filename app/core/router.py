@@ -22,11 +22,13 @@ class TaskRouter:
         workers: Mapping[TaskName, TaskWorker],
         result_store: ResultStore,
         play_only_callback: Callable[[FramePacket], None] | None = None,
+        source_only_callback: Callable[[FramePacket], None] | None = None,
     ) -> None:
         self.registry = registry
         self.workers = dict(workers)
         self.result_store = result_store
         self.play_only_callback = play_only_callback
+        self.source_only_callback = source_only_callback
         self.rounds_received = 0
         self.frames_received = 0
         self.frames_disabled = 0
@@ -100,6 +102,8 @@ class TaskRouter:
                 source_time_seconds=(source_times_seconds[index] if source_times_seconds is not None else None),
                 metadata=packet_metadata,
             )
+            if self.source_only_callback is not None:
+                self.source_only_callback(packet)
             if self.play_only_callback is not None:
                 self.play_only_callback(packet)
                 self.broadcast_frames += 1

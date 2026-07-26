@@ -140,6 +140,8 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Produces full-res and wall-res JPEG per source
 - `publish_result()` accepts `FramePacket` + `TaskResult` and queues annotation + encoding
 - `publish_passthrough()` broadcasts frames without AI overlay
+- `publish_passthrough()` publishes the source-only wall frame immediately; later AI results may upgrade that frame with annotations but never gate initial video delivery
+- The independent `/api/v1/video-wall/ws` source-only path uses a bounded background JPEG encoder queue and exposes submitted/rendered/dropped counters; it never waits on model workers.
 - Binary WS format: `struct.pack("!I", len(header)) + header.encode() + jpeg_bytes`
 - The WebSocket handler (`/api/v1/broadcast/ws`) supports `metadata_only` and `fullscreen_source` query params
 - MJPEG fallback at `/api/v1/broadcast/streams/{source_id}.mjpg`

@@ -101,6 +101,14 @@ class AnnotatedBroadcastHub:
         self._subscribers: dict[
             str, queue.Queue[EncodedBroadcastFrame | BroadcastControlEvent | None]
         ] = {}
+        self._source_only_latest: dict[str, EncodedBroadcastFrame] = {}
+        self._source_only_subscribers: dict[
+            str, queue.Queue[EncodedBroadcastFrame | None]
+        ] = {}
+        self._source_only_version = 0
+        self._source_only_submitted = 0
+        self._source_only_rendered = 0
+        self._source_only_dropped = 0
         self._version = 0
         self._rendered_frames = 0
         self._encode_failures = 0
@@ -113,10 +121,16 @@ class AnnotatedBroadcastHub:
         self._render_queue: queue.Queue[
             tuple[str, int, PendingAnnotatedFrame]
         ] = queue.Queue(maxsize=64)
+        self._source_only_render_queue: queue.Queue[
+            tuple[str, int, np.ndarray]
+        ] = queue.Queue(maxsize=64)
         self._render_thread: threading.Thread | None = None
+        self._source_only_render_thread: threading.Thread | None = None
         self._stop_render = threading.Event()
+        self._stop_source_only_render = threading.Event()
         if self._async_render:
             self._start_render_thread()
+            self._start_source_only_render_thread()
 
     def _start_render_thread(self) -> None:
         if self._render_thread is not None and self._render_thread.is_alive():
@@ -193,7 +207,11 @@ class AnnotatedBroadcastHub:
             if not self._enabled:
                 self._pending.clear()
                 self._latest.clear()
-                for target in self._subscribers.values():
+                self._source_only_latest.clear()
+                for target in [
+                    *self._subscribers.values(),
+                    *self._source_only_subscribers.values(),
+                ]:
                     try:
                         target.put_nowait(None)
                     except queue.Full:
@@ -234,8 +252,11 @@ class AnnotatedBroadcastHub:
     def close(self) -> None:
         """Stop the render thread and clean up resources."""
         self._stop_render.set()
+        self._stop_source_only_render.set()
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
+        if self._source_only_render_thread is not None:
+            self._source_only_render_thread.join(timeout=2.0)
         self.set_enabled(False)
 
     def publish_source_change(self, change: SourceChange) -> None:
@@ -699,11 +720,15 @@ class AnnotatedBroadcastHub:
             self._condition.notify_all()
 
     def publish_passthrough(self, packet: FramePacket) -> None:
-        """Broadcast an enabled source frame independently of assigned AI work."""
+        """Publish the source frame immediately, independently of assigned AI work.
+
+        A later task result may upgrade this same frame with annotations, but the
+        video wall must never wait for model workers before showing live video.
+        """
         with self._condition:
             if not self._enabled:
                 return
-            expected = self._configured_tasks(packet)
+            expected: set[TaskName] = set()
             source_pending = self._pending[packet.source_id]
             pending = source_pending.get(packet.frame_index)
             if pending is None:
@@ -763,6 +788,143 @@ class AnnotatedBroadcastHub:
                     except (queue.Empty, queue.Full):
                         pass
             self._condition.notify_all()
+
+    def publish_source_only(self, packet: FramePacket) -> None:
+        """Publish a source-only JPEG frame for the independent video-wall WS."""
+        self._source_only_submitted += 1
+        if self._async_render:
+            with self._condition:
+                if not self._enabled:
+                    return
+            item = (packet.source_id, packet.frame_index, packet.frame.copy())
+            try:
+                self._source_only_render_queue.put_nowait(item)
+            except queue.Full:
+                try:
+                    self._source_only_render_queue.get_nowait()
+                    self._source_only_render_queue.task_done()
+                    self._source_only_render_queue.put_nowait(item)
+                except (queue.Empty, queue.Full):
+                    self._source_only_dropped += 1
+            return
+        self._render_source_only(packet.source_id, packet.frame_index, packet.frame)
+
+    def _render_source_only(
+        self, source_id: str, frame_index: int, frame: np.ndarray
+    ) -> None:
+        with self._condition:
+            if not self._enabled:
+                return
+            height, width = frame.shape[:2]
+            ok, full_jpeg = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+            )
+            if not ok:
+                self._encode_failures += 1
+                return
+            full_bytes = full_jpeg.tobytes()
+            scale = min(
+                1.0,
+                self.wall_max_width / max(width, 1),
+                self.wall_max_height / max(height, 1),
+            )
+            wall_width = max(1, min(width, int(round(width * scale))))
+            wall_height = max(1, min(height, int(round(height * scale))))
+            if wall_width == width and wall_height == height:
+                wall_bytes = full_bytes
+            else:
+                wall_frame = cv2.resize(
+                    frame,
+                    (wall_width, wall_height),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                wall_ok, wall_jpeg = cv2.imencode(
+                    ".jpg", wall_frame,
+                    [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
+                )
+                if not wall_ok:
+                    self._encode_failures += 1
+                    return
+                wall_bytes = wall_jpeg.tobytes()
+            self._source_only_version += 1
+            self._source_only_rendered += 1
+            encoded = EncodedBroadcastFrame(
+                version=self._source_only_version,
+                source_id=source_id,
+                frame_index=frame_index,
+                jpeg=full_bytes,
+                wall_jpeg=wall_bytes,
+                frame_width=width,
+                frame_height=height,
+                wall_width=wall_width,
+                wall_height=wall_height,
+                tasks=(),
+                updated_monotonic=time.monotonic(),
+            )
+            self._source_only_latest[source_id] = encoded
+            for target in self._source_only_subscribers.values():
+                try:
+                    target.put_nowait(encoded)
+                except queue.Full:
+                    try:
+                        target.get_nowait()
+                        target.task_done()
+                        target.put_nowait(encoded)
+                    except (queue.Empty, queue.Full):
+                        pass
+            self._condition.notify_all()
+
+    def _start_source_only_render_thread(self) -> None:
+        if self._source_only_render_thread is not None and self._source_only_render_thread.is_alive():
+            return
+        self._stop_source_only_render.clear()
+        self._source_only_render_thread = threading.Thread(
+            target=self._source_only_render_loop,
+            name="source-only-broadcast-renderer",
+            daemon=True,
+        )
+        self._source_only_render_thread.start()
+
+    def _source_only_render_loop(self) -> None:
+        while not self._stop_source_only_render.is_set():
+            try:
+                source_id, frame_index, frame = self._source_only_render_queue.get(
+                    timeout=0.1
+                )
+            except queue.Empty:
+                continue
+            try:
+                self._render_source_only(source_id, frame_index, frame)
+            except Exception:
+                LOGGER.exception(
+                    "Source-only broadcast render failed: source=%s frame=%s",
+                    source_id,
+                    frame_index,
+                )
+            finally:
+                self._source_only_render_queue.task_done()
+
+    def subscribe_source_only(
+        self, maximum_queue: int = 64
+    ) -> tuple[str, queue.Queue[EncodedBroadcastFrame | None]]:
+        subscriber_id = uuid.uuid4().hex
+        target: queue.Queue[EncodedBroadcastFrame | None] = queue.Queue(
+            maxsize=max(8, maximum_queue)
+        )
+        with self._condition:
+            self._source_only_subscribers[subscriber_id] = target
+            for frame in sorted(
+                self._source_only_latest.values(), key=lambda item: item.version
+            ):
+                try:
+                    target.put_nowait(frame)
+                except queue.Full:
+                    break
+        return subscriber_id, target
+
+    def unsubscribe_source_only(self, subscriber_id: str) -> None:
+        with self._condition:
+            self._source_only_subscribers.pop(subscriber_id, None)
 
     def subscribe(
         self,
@@ -829,6 +991,10 @@ class AnnotatedBroadcastHub:
                 "wall_encoded_bytes": self._wall_encoded_bytes,
                 "face_overlay_ttl_ms": self.face_overlay_ttl_seconds * 1000.0,
                 "face_overlay_cache_hits": self._face_overlay_cache_hits,
+                "source_only_submitted": self._source_only_submitted,
+                "source_only_rendered": self._source_only_rendered,
+                "source_only_dropped": self._source_only_dropped,
+                "source_only_render_queue_depth": self._source_only_render_queue.qsize(),
                 "websocket_subscribers": len(self._subscribers),
                 "active_streams": {
                     source_id: {

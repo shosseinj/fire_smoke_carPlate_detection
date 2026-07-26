@@ -146,7 +146,7 @@ def test_play_only_frame_is_broadcast_without_ai_result() -> None:
     assert int(image.sum()) > 0
 
 
-def test_passthrough_frame_with_assigned_tasks_keeps_ai_task_header() -> None:
+def test_passthrough_frame_with_assigned_tasks_starts_as_source_only() -> None:
     hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
     source_packet = packet(["face_recognition", "fire_smoke"])
 
@@ -154,7 +154,21 @@ def test_passthrough_frame_with_assigned_tasks_keeps_ai_task_header() -> None:
 
     encoded = hub.latest("camera-07")
     assert encoded is not None
-    assert encoded.tasks == ("face_recognition", "fire_smoke")
+    assert encoded.tasks == ()
+
+
+def test_video_wall_passthrough_is_available_before_ai_result() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True)
+    source_packet = packet(["face_recognition"])
+
+    hub.publish_passthrough(source_packet)
+
+    encoded = hub.wait_next("camera-07", 0, timeout=1.0)
+    assert encoded is not None
+    assert encoded.tasks == ()
+    assert cv2.imdecode(
+        np.frombuffer(encoded.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+    ) is not None
 
 
 def test_passthrough_render_does_not_mutate_worker_frame() -> None:
@@ -297,10 +311,46 @@ def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
             header_length = struct.unpack("!I", payload[:4])[0]
             header = json.loads(payload[4 : 4 + header_length])
             hub.set_enabled(False)
-
     assert header["render_profile"] == "full"
     assert (header["frame_width"], header["frame_height"]) == (320, 180)
 
+
+def test_source_video_wall_websocket_sends_unannotated_frames() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True, wall_max_width=160, wall_max_height=160, async_render=False
+    )
+    hub.publish_source_only(packet(["face_recognition"]))
+    runtime = SimpleNamespace(
+        broadcast=hub,
+        registry=SimpleNamespace(get=lambda source_id: object()),
+    )
+    app = FastAPI()
+    app.include_router(broadcast_router)
+    app.dependency_overrides[get_runtime] = lambda: runtime
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/video-wall/ws") as websocket:
+            payload = websocket.receive_bytes()
+            header_length = struct.unpack("!I", payload[:4])[0]
+            header = json.loads(payload[4 : 4 + header_length])
+            image = cv2.imdecode(
+                np.frombuffer(payload[4 + header_length :], dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            assert header["type"] == "source_frame"
+            assert header["ai_processed"] is False
+            assert header["render_profile"] == "wall"
+            assert image is not None
+            hub.set_enabled(False)
+
+
+def test_dashboard_can_switch_between_source_only_and_ai_streams() -> None:
+    dashboard = (Path(__file__).parents[1] / "app" / "web" / "dashboard.html").read_text(
+        encoding="utf-8"
+    )
+    assert '"/api/v1/video-wall/ws"' in dashboard
+    assert '"/api/v1/broadcast/ws"' in dashboard
+    assert "sourceOnlyWall" in dashboard
 
 def test_source_change_with_previous_uri_clears_old_broadcast_state() -> None:
     hub = AnnotatedBroadcastHub(enabled=True, async_render=False)

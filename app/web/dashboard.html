@@ -535,6 +535,7 @@
         <a class="docs-link" href="/docs" target="_blank" rel="noopener">API / Swagger</a>
         <a class="docs-link" href="/api/v1/diagnostics/fps?sample_seconds=5" target="_blank" rel="noopener">FPS diagnostics</a>
         <button id="wallFullscreenButton" type="button">Fullscreen wall</button>
+        <button id="streamModeButton" type="button">AI stream</button>
         <button id="toggleButton" type="button" disabled>Loading…</button>
       </div>
     </header>
@@ -565,6 +566,7 @@
       const receiverStats = document.getElementById("receiverStats");
       const syncStatus = document.getElementById("syncStatus");
       const wallFullscreenButton = document.getElementById("wallFullscreenButton");
+      const streamModeButton = document.getElementById("streamModeButton");
       let sources = [];
       let broadcasting = false;
       let sourcesSignature = "";
@@ -576,6 +578,7 @@
       let previewBaseUrl = "";
       let previewAvailable = false;
       let useJpegFallback = false;
+      let sourceOnlyWall = true;
       const previewStates = new Map();
       const previewRetryTimers = new Map();
       const jpegBlobUrls = new Map();
@@ -980,7 +983,8 @@
           parameters.set("metadata_only", "true");
         }
         if (fullscreenSourceId) parameters.set("fullscreen_source", fullscreenSourceId);
-        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/broadcast/ws?${parameters}`);
+         const endpoint = sourceOnlyWall ? "/api/v1/video-wall/ws" : "/api/v1/broadcast/ws";
+         const socket = new WebSocket(`${scheme}://${window.location.host}${endpoint}?${parameters}`);
         broadcastSocket = socket;
         socket.binaryType = "arraybuffer";
         socket.addEventListener("message", (event) => {
@@ -1133,6 +1137,13 @@
         if (changed) applyStreams();
       }
 
+      function updateStreamModeButton() {
+        streamModeButton.textContent = sourceOnlyWall ? "AI stream" : "Source-only wall";
+        streamModeButton.title = sourceOnlyWall
+          ? "Switch to the AI-processed broadcast"
+          : "Switch to the source-only video wall";
+      }
+
       function signatureFor(items) {
         return JSON.stringify(
           items.map((source) => ({
@@ -1203,6 +1214,12 @@
         }
       });
 
+      streamModeButton.addEventListener("click", () => {
+        sourceOnlyWall = !sourceOnlyWall;
+        updateStreamModeButton();
+        reconnectBroadcastSocket();
+      });
+
       document.addEventListener("fullscreenchange", () => {
         const fullscreenElement = document.fullscreenElement;
         const nextFullscreenSourceId = fullscreenElement?.classList.contains("camera-card") ? fullscreenElement.dataset.sourceId : null;
@@ -1224,6 +1241,7 @@
       });
 
       synchronizeDashboard();
+      updateStreamModeButton();
       window.setInterval(synchronizeDashboard, 2000);
       window.setInterval(updateFrameMetrics, 500);
     </script>
