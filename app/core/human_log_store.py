@@ -34,6 +34,7 @@ class HumanMediaEvent:
     ref_img_id: str | int | None
     personnel_id: int | None
     snapshot_frame: np.ndarray | None
+    whole_snapshot_frame: np.ndarray | None
     face_image_frame: np.ndarray | None
     snapshot_quality: float
     full_frame_video_frame: np.ndarray | None
@@ -71,11 +72,13 @@ class HumanLogStore:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
         self.snapshot_dir = media_root / "human_snapshots"
+        self.whole_snapshot_dir = media_root / "whole_snapshots"
         self.detected_face_dir = media_root / "detected_faces"
         self.video_dir = media_root / "human_videos"
         self.face_video_dir = media_root / "human_face_videos"
         for directory in (
             self.snapshot_dir,
+            self.whole_snapshot_dir,
             self.detected_face_dir,
             self.video_dir,
             self.face_video_dir,
@@ -450,6 +453,11 @@ class HumanLogStore:
                     if persist_human_log and (better_snapshot or disappeared)
                     else None
                 ),
+                whole_snapshot_frame=(
+                    source_frame.copy()
+                    if persist_human_log and (better_snapshot or disappeared)
+                    else None
+                ),
                 face_image_frame=face_image_frame,
                 snapshot_quality=snapshot_quality,
                 full_frame_video_frame=(
@@ -562,6 +570,7 @@ class HumanLogStore:
 
     def _save_snapshot(self, event: HumanMediaEvent) -> tuple[str, Path]:
         assert event.snapshot_frame is not None
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{self._safe_stem(event.camera, event.track_id)}.jpg"
         path = self.snapshot_dir / filename
         if not cv2.imwrite(
@@ -572,8 +581,22 @@ class HumanLogStore:
             raise RuntimeError(f"Could not save human snapshot: {path}")
         return f"/media/human_snapshots/{filename}", path
 
+    def _save_whole_snapshot(self, event: HumanMediaEvent) -> tuple[str, Path]:
+        assert event.whole_snapshot_frame is not None
+        self.whole_snapshot_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{self._safe_stem(event.camera, event.track_id)}.jpg"
+        path = self.whole_snapshot_dir / filename
+        if not cv2.imwrite(
+            str(path),
+            event.whole_snapshot_frame,
+            [cv2.IMWRITE_JPEG_QUALITY, 92],
+        ):
+            raise RuntimeError(f"Could not save whole snapshot: {path}")
+        return f"/media/whole_snapshots/{filename}", path
+
     def _save_face_image(self, event: HumanMediaEvent) -> tuple[str, Path]:
         assert event.face_image_frame is not None
+        self.detected_face_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{self._safe_stem(event.camera, event.track_id)}_face.jpg"
         path = self.detected_face_dir / filename
         if not cv2.imwrite(
@@ -595,8 +618,11 @@ class HumanLogStore:
         wrote_full_frame = False
         wrote_face = False
         face_image_url = ""
+        whole_snapshot_url = ""
         if event.face_image_frame is not None:
             face_image_url, _ = self._save_face_image(event)
+        if event.whole_snapshot_frame is not None:
+            whole_snapshot_url, _ = self._save_whole_snapshot(event)
         if not event.persist_human_log:
             with self._lock:
                 self._last_error = None
@@ -762,7 +788,8 @@ class HumanLogStore:
                     counts_for_attendance=True,
                     log_type="camera_rtsp",
                     face_image=face_image_url,
-                    snapshot_image=snapshot_url,
+                    body_image=snapshot_url,
+                    snapshot_image=whole_snapshot_url,
                     video=state.video_url,
                     face_video_or_unknown_faces=state.face_video_url,
                 )
@@ -770,7 +797,8 @@ class HumanLogStore:
                 self.detection_log_store.update(
                     existing_detection.id,
                     face_image=face_image_url,
-                    snapshot_image=snapshot_url or existing_detection.snapshot_image,
+                    body_image=existing_detection.body_image or snapshot_url,
+                    snapshot_image=whole_snapshot_url or existing_detection.snapshot_image,
                     video=state.video_url or existing_detection.video,
                     face_video_or_unknown_faces=(
                         state.face_video_url

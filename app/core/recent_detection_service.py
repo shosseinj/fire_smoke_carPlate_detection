@@ -181,20 +181,13 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
 
     face_image_b64: str | None = None
     body_image_b64: str | None = None
-    face_image_path = _detected_face_path(runtime, row)
-    image = _read_image(face_image_path)
-    image_kind = "placeholder"
-    if image is None:
-        body_image_path = _media_path(
-            runtime,
-            row.get("snapshot_image") or row.get("body_image"),
-        )
-        image = _read_image(body_image_path)
-        if image is not None:
-            image_kind = "body"
+    body_image_path = _media_path(
+        runtime,
+        row.get("body_image") or row.get("snapshot_image"),
+    )
+    image = _read_image(body_image_path)
+    image_kind = "body" if image is not None else "placeholder"
     if image is not None:
-        if concatenate and image_kind == "face":
-            image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
         success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if success:
             encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
@@ -202,7 +195,6 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
                 body_image_b64 = encoded_image
             else:
                 face_image_b64 = encoded_image
-                image_kind = "face"
 
     return {
         "id": row["id"],
@@ -261,9 +253,7 @@ def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[st
         "confidence": record.confidence,
         "camera_id": record.camera_id,
         "source_human_log_id": record.source_human_log_id,
-        "face_image": record.face_image,
-        "body_image": record.body_image,
-        "snapshot_image": record.snapshot_image,
+        "face_image": record.body_image,
         "ref_img_id": record.ref_img_id,
         "personnel_id": record.personnel_id,
         "person": record.person,
