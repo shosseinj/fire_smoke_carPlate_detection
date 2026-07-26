@@ -1,7 +1,7 @@
 [
   {
     "id": 1,
-    "source_uri": "./data/company/video3.mp4",
+    "source_uri": "./data/11.mp4",
     "name": "hossein",
     "enabled": true,
     "tasks": ["face_recognition", "fire_smoke", "plate_recognition"],
@@ -212,7 +212,7 @@
   },
   {
     "id": 8,
-    "source_uri": "./data/company/video4.mp4",
+    "source_uri": "./data/12.mp4",
     "name": "Camera 8 - Channel 101",
     "enabled": true,
     "tasks": ["face_recognition", "fire_smoke", "plate_recognition"],

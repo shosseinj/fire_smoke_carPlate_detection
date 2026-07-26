@@ -262,6 +262,8 @@ def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[st
         "camera_id": record.camera_id,
         "source_human_log_id": record.source_human_log_id,
         "face_image": record.face_image,
+        "body_image": record.body_image,
+        "snapshot_image": record.snapshot_image,
         "ref_img_id": record.ref_img_id,
         "personnel_id": record.personnel_id,
         "person": record.person,

@@ -73,18 +73,23 @@ async def annotated_broadcast_websocket(
         return
 
     subscriber_id, target = runtime.broadcast.subscribe()
+    recent_task = asyncio.create_task(
+        asyncio.to_thread(build_recent_detections_message, runtime)
+    )
+    recent_sent = False
     try:
-        # Subscribe first so live events queue while recent history is loaded.
-        try:
-            recent_message = await asyncio.to_thread(build_recent_detections_message, runtime)
-            if recent_message is not None:
-                await websocket.send_json(recent_message)
-        except Exception:
-            # Recent-history loading must never prevent the live stream from connecting.
-            import logging
-            logging.getLogger("uvicorn.error").exception("Failed to send recent detections")
-
         while runtime.broadcast.enabled:
+            if not recent_sent and recent_task.done():
+                recent_sent = True
+                try:
+                    recent_message = recent_task.result()
+                    if recent_message is not None:
+                        await websocket.send_json(recent_message)
+                except Exception:
+                    import logging
+                    logging.getLogger("uvicorn.error").exception(
+                        "Failed to send recent detections"
+                    )
             try:
                 frame = await asyncio.to_thread(target.get, True, 20.0)
             except queue.Empty:
@@ -130,6 +135,8 @@ async def annotated_broadcast_websocket(
     except WebSocketDisconnect:
         pass
     finally:
+        if not recent_task.done():
+            recent_task.cancel()
         runtime.broadcast.unsubscribe(subscriber_id)
 
 
