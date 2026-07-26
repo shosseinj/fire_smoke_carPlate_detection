@@ -151,10 +151,11 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Binary WS delivers JPEG frames: connect to `ws://host/api/v1/broadcast/ws` without params
 - Results WS delivers overlays: connect to `ws://host/api/v1/results/ws`
 
-Recent detection cards prefer `face_image_base64`; when no face exists they use
-`detection_logs.snapshot_image` (the persisted `/media/human_snapshots/...` body
-snapshot) through `body_image_base64`, and only use the unknown-face placeholder
-when neither image is available.
+The recent-detections WebSocket payload matches the legacy contract exactly. Each
+detection contains only `id`, `area`, `person`, `full_name`, `confidence`,
+`detection_time`, `face_image_base64`, `access_granted`, `counts_for_attendance`,
+and `classification`. Entries without an encodable face image are omitted; body
+snapshot fallback fields are not sent.
 
 ## Polygon zone system
 

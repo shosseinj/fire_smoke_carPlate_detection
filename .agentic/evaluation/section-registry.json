@@ -209,11 +209,12 @@
       "enabled": true,
       "critical": true,
       "runtime_required": true,
-      "owner_paths": ["app/core/broadcast.py", "app/api/broadcast.py", "app/web/dashboard.html"],
+      "owner_paths": ["app/core/broadcast.py", "app/api/broadcast.py", "app/core/recent_detection_service.py", "app/api/detection_logs.py", "app/web/dashboard.html"],
       "dependencies": ["configuration", "frame-pipeline"],
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_broadcast.py -q",
+        "python -m pytest tests/test_recent_detection_service.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestBroadcastApi\"",
         "python -m py_compile app/core/broadcast.py app/api/broadcast.py"
       ],
@@ -222,8 +223,10 @@
         "jpeg_quality", "wall_jpeg_quality", "full_resolution", "wall_resolution",
         "full_encoded_bytes", "wall_encoded_bytes", "enabled", "per_camera_mjpeg_clients"
       ],
-      "acceptance": {},
-      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard cards use source_uri consistently with the current Source contract; enabled state selects visible streams and tasks select AI overlays. Tasked sources receive passthrough frames before model results so video remains reachable during inference delay/failure. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Browser validation remains required."
+      "acceptance": {
+        "recent_detections_contract": "recent_detections entries contain exactly the legacy ten fields and omit entries without an encodable face image"
+      },
+      "notes": "Default WebSocket, MJPEG, and snapshots retain full resolution. Dashboard cards use source_uri consistently with the current Source contract; enabled state selects visible streams and tasks select AI overlays. Tasked sources receive passthrough frames before model results so video remains reachable during inference delay/failure. Dashboard wall requests the bounded wall rendition and one fullscreen camera requests its configured full resolution. Recent detection initial and refresh messages preserve the legacy exact field set. Browser validation remains required."
     },
     {
       "id": "api-health",

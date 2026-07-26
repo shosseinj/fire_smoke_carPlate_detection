@@ -179,30 +179,16 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     else:
         full_name = person
 
-    face_image_b64: str | None = None
-    body_image_b64: str | None = None
     face_image_path = _detected_face_path(runtime, row)
     image = _read_image(face_image_path)
-    image_kind = "placeholder"
     if image is None:
-        body_image_path = _media_path(
-            runtime,
-            row.get("snapshot_image") or row.get("body_image"),
-        )
-        image = _read_image(body_image_path)
-        if image is not None:
-            image_kind = "body"
-    if image is not None:
-        if concatenate and image_kind == "face":
-            image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
-        success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        if success:
-            encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
-            if image_kind == "body":
-                body_image_b64 = encoded_image
-            else:
-                face_image_b64 = encoded_image
-                image_kind = "face"
+        return None
+    if concatenate:
+        image = _concat_if_needed(image, _read_image(_reference_path(runtime, row)))
+    success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    if not success:
+        return None
+    face_image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
 
     return {
         "id": row["id"],
@@ -212,8 +198,6 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
         "face_image_base64": face_image_b64,
-        "body_image_base64": body_image_b64,
-        "image_kind": image_kind,
         "access_granted": bool(row.get("access_granted")),
         "counts_for_attendance": bool(row.get("counts_for_attendance")),
         "classification": classification,

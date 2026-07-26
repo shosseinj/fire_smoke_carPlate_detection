@@ -44,7 +44,7 @@ def _row(snapshot_image: str | None = None) -> dict[str, object]:
     }
 
 
-def test_recent_detection_uses_human_snapshot_when_face_is_missing(tmp_path: Path) -> None:
+def test_recent_detection_omits_entry_when_face_is_missing(tmp_path: Path) -> None:
     snapshot = tmp_path / "human_snapshots" / "body.jpg"
     snapshot.parent.mkdir(parents=True)
     assert cv2.imwrite(str(snapshot), np.full((40, 30, 3), 120, dtype=np.uint8))
@@ -54,10 +54,7 @@ def test_recent_detection_uses_human_snapshot_when_face_is_missing(tmp_path: Pat
         _row("/media/human_snapshots/body.jpg"),
     )
 
-    assert payload is not None
-    assert payload["face_image_base64"] is None
-    assert payload["body_image_base64"]
-    assert payload["image_kind"] == "body"
+    assert payload is None
 
 
 def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> None:
@@ -74,5 +71,15 @@ def test_recent_detection_prefers_face_over_human_snapshot(tmp_path: Path) -> No
 
     assert payload is not None
     assert payload["face_image_base64"]
-    assert payload["body_image_base64"] is None
-    assert payload["image_kind"] == "face"
+    assert set(payload) == {
+        "id",
+        "area",
+        "person",
+        "full_name",
+        "confidence",
+        "detection_time",
+        "face_image_base64",
+        "access_granted",
+        "counts_for_attendance",
+        "classification",
+    }
