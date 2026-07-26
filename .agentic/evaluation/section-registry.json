@@ -126,8 +126,10 @@
         "fire_confidence", "smoke_confidence", "window_seconds",
         "severity_counts", "incident_count"
       ],
-      "acceptance": {},
-      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model. Severity confidence floors are separate from detector admission to prevent repeated low-confidence false incidents."
+      "acceptance": {
+        "video_persistence": "Fire event list/get responses include video_url and the saved MP4 artifact beside snapshot_url."
+      },
+      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model. Severity confidence floors are separate from detector admission to prevent repeated low-confidence false incidents. Fire event video is a bounded single-detection-frame MP4 because this store does not own a historical frame buffer."
     },
     {
       "id": "plate-processing",
@@ -149,8 +151,10 @@
         "vehicle_confidence", "plate_confidence", "ocr_confidence",
         "processed_frames", "pipeline_stages", "crop_batch_size"
       ],
-      "acceptance": {},
-      "notes": "Mock mode tested. Real OCR requires Hezar model. Iranian format validation tested. Plate persistence uses a bounded background writer so snapshot/database I/O does not block inference."
+      "acceptance": {
+        "video_persistence": "Plate event list/get/create responses include video_url and the saved MP4 artifact beside snapshot_url."
+      },
+      "notes": "Mock mode tested. Real OCR requires Hezar model. Iranian format validation tested. Plate persistence uses a bounded background writer so snapshot/video/database I/O does not block inference. Plate event video is a bounded single-detection-frame MP4 because this store does not own a historical frame buffer."
     },
     {
       "id": "face-processing",
@@ -323,8 +327,10 @@
         "python -m py_compile app/api/plate_logs.py"
       ],
       "metrics": [],
-      "acceptance": {},
-      "notes": "CRUD for persisted plate recognition records."
+      "acceptance": {
+        "video_response": "Plate list/get/create responses expose video_url beside snapshot_path/snapshot_url."
+      },
+      "notes": "CRUD for persisted plate recognition records; pipeline detections save a bounded single-frame MP4 beside the snapshot."
     },
     {
       "id": "api-plate-settings",
@@ -358,8 +364,10 @@
         "python -m py_compile app/api/fire_smoke_logs.py"
       ],
       "metrics": [],
-      "acceptance": {},
-      "notes": "Fire/smoke incident logs and severity policy settings."
+      "acceptance": {
+        "video_response": "Fire list/get/manual responses expose video_url beside snapshot_url."
+      },
+      "notes": "Fire/smoke incident logs and severity policy settings; pipeline detections save a bounded single-frame MP4 beside the snapshot."
     },
     {
       "id": "api-faces",

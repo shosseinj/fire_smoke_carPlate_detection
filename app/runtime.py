@@ -451,6 +451,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         app_settings.draw_info,
         app_settings.save_plate_snapshot,
         queue_size=app_settings.plate_log_queue_size,
+        media_root=app_settings.saved_media_path,
     )
     car_plates = CarPlateStore(database)
     fire_smoke_logs = FireSmokeLogStore(

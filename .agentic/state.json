@@ -103,15 +103,15 @@
     },
     {
       "id": "fire-smoke-processing",
-      "status": "PASS",
+      "status": "PASS_WITH_WARNINGS",
       "commands_passed": ["python -m pytest tests/test_fire_processor.py -q", "python -m pytest tests/test_fire_smoke_log_store.py -q"],
-      "notes": "5+1=6 tests. Real mode requires GPU + fire/smoke model files."
+      "notes": "Video URL/file assertions added to the store test; PostgreSQL-dependent store test was skipped here. Real mode requires GPU + fire/smoke model files; runtime video delivery was not validated in this environment."
     },
     {
       "id": "plate-processing",
-      "status": "PASS",
+      "status": "PASS_WITH_WARNINGS",
       "commands_passed": ["python -m pytest tests/test_plate_processor.py -q", "python -m pytest tests/test_plate_log_store.py -q"],
-      "notes": "9+2=11 tests. Real OCR requires Hezar model at weights/plate_recognizer/model.pt."
+      "notes": "Video URL/file assertions added to the persistence test; PostgreSQL-dependent store test was skipped here. Real OCR requires Hezar model at weights/plate_recognizer/model.pt; runtime video delivery was not validated in this environment."
     },
     {
       "id": "face-processing",

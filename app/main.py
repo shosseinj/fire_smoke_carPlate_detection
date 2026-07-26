@@ -135,6 +135,8 @@ os.makedirs("media/personnel_cropped_faces", exist_ok=True)
 os.makedirs("media/personnel_snapshots", exist_ok=True)
 os.makedirs("media/personnel_zip_errors", exist_ok=True)
 os.makedirs("media/plate_snapshots", exist_ok=True)
+os.makedirs("media/plate_videos", exist_ok=True)
+os.makedirs("media/fire_smoke_videos", exist_ok=True)
 os.makedirs("media/static_videos", exist_ok=True)
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(

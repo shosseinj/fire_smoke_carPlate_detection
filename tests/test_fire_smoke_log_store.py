@@ -99,4 +99,8 @@ def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     assert rows[0]["snapshot_url"].startswith("/media/fire_smoke_snapshots/")
     snapshot = tmp_path / "media" / rows[0]["snapshot_url"].removeprefix("/media/")
     assert snapshot.is_file()
+    assert rows[0]["video_url"].startswith("/media/fire_smoke_videos/")
+    video = tmp_path / "media" / rows[0]["video_url"].removeprefix("/media/")
+    assert video.is_file()
     assert {"fire_smoke_logs", "fire_smoke_settings"}.issubset(metadata.tables)
+    assert "video_url" in metadata.tables["fire_smoke_logs"].c

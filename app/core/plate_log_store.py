@@ -17,6 +17,7 @@ from uuid import uuid4
 import cv2
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.media_utils import save_single_frame_video
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,10 +38,12 @@ class PlateLogStore:
         draw_info: bool,
         save_plate_snapshot: bool,
         queue_size: int = 128,
+        media_root: Path | None = None,
     ) -> None:
         self.database = ensure_database(database)
         self.draw_info = draw_info
         self.save_plate_snapshot = save_plate_snapshot
+        self.media_root = (media_root or Path("saved_media")).resolve()
         self._lock = threading.RLock()
         self._queue: queue.Queue[_PendingPlateEvent | None] = queue.Queue(
             maxsize=max(8, int(queue_size))
@@ -71,6 +74,7 @@ class PlateLogStore:
         time: str,
         plate: str,
         snapshot_url: str,
+        video_url: str = "",
     ) -> dict[str, str]:
         camera = camera.strip()
         detected_at = time.strip()
@@ -96,15 +100,17 @@ class PlateLogStore:
                     camera,
                     time,
                     plate,
-                    snapshot_url
+                    snapshot_url,
+                    video_url
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     camera,
                     detected_at,
                     plate,
                     snapshot_url,
+                    video_url,
                 ),
             )
 
@@ -115,6 +121,7 @@ class PlateLogStore:
             "time": detected_at,
             "plate": plate,
             "snapshot_url": snapshot_url,
+            "video_url": video_url,
         }
 
     
@@ -155,11 +162,14 @@ class PlateLogStore:
             f"{uuid4().hex[:8]}.jpg"
         )
 
-        snapshot_directory = Path("saved_media") / "plate_snapshots"
+        snapshot_directory = self.media_root / "plate_snapshots"
+        video_directory = self.media_root / "plate_videos"
         snapshot_directory.mkdir(parents=True, exist_ok=True)
 
         snapshot_path = snapshot_directory / file_name
         snapshot_url = f"/media/plate_snapshots/{file_name}"
+        video_path = video_directory / f"{Path(file_name).stem}.mp4"
+        video_url = f"/media/plate_videos/{video_path.name}"
 
         if packet.frame is None or packet.frame.size == 0:
             raise ValueError("Snapshot frame is empty")
@@ -167,7 +177,7 @@ class PlateLogStore:
         # Copy prevents changing the original frame.
         snapshot_frame = packet.frame.copy()
 
-        records: list[tuple[str, str, str, str]] = []
+        records: list[tuple[str, str, str, str, str]] = []
 
         for item in plates:
             if isinstance(item, dict):
@@ -215,6 +225,7 @@ class PlateLogStore:
                     result.processed_at_utc,
                     plate,
                     snapshot_url,
+                    video_url,
                 )
             )
 
@@ -231,6 +242,11 @@ class PlateLogStore:
                 raise RuntimeError(
                     f"Plate snapshot could not be saved: {snapshot_path}"
                 )
+        try:
+            save_single_frame_video(snapshot_frame, video_path)
+        except Exception:
+            snapshot_path.unlink(missing_ok=True)
+            raise
 
         try:
             with self._lock, self._connect() as connection:
@@ -240,9 +256,10 @@ class PlateLogStore:
                         camera,
                         time,
                         plate,
-                        snapshot_url
+                        snapshot_url,
+                        video_url
                     )
-                    VALUES (?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     records,
                 )
@@ -250,6 +267,7 @@ class PlateLogStore:
 
         except Exception:
             snapshot_path.unlink(missing_ok=True)
+            video_path.unlink(missing_ok=True)
             raise
 
         return len(records)
@@ -325,7 +343,8 @@ class PlateLogStore:
                     camera,
                     time,
                     plate,
-                    snapshot_url
+                    snapshot_url,
+                    video_url
                 FROM plate_logs
                 {where_clause}
                 ORDER BY id DESC
@@ -456,6 +475,15 @@ class PlateLogStore:
 
     @staticmethod
     def _serialize_plate_log(value: dict[str, Any]) -> dict[str, Any]:
+        legacy_aliases = {
+            "plate_full_number": "plate",
+            "camera_id": "camera",
+            "detection_time": "time",
+            "snapshot_path": "snapshot_url",
+        }
+        for target, source in legacy_aliases.items():
+            if value.get(target) is None:
+                value[target] = value.get(source)
         if "is_verified" in value:
             value["is_verified"] = bool(value["is_verified"])
         return value

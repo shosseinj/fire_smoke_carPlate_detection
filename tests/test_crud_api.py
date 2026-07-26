@@ -632,11 +632,33 @@ class TestFireLogsCrud:
 class TestDetectionLogsApi:
     MODULE = "detection_logs"
 
+    def _first_log_id(self, crud) -> int:
+        resp = crud.client.get(
+            "/api/v1/logs/filter",
+            params={"period": "all", "limit": 1},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert resp.status_code == 200
+        logs = resp.json()
+        assert logs, "No detection logs exist; seed data may be missing"
+        return logs[0]["id"]
+
+    def _first_personnel_id(self, crud) -> int:
+        resp = crud.client.get(
+            "/api/v1/personnel/",
+            params={"limit": 1},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("total", 0) > 0, "No personnel found"
+        return data["items"][0]["id"]
+
     def test_filter_validation_not_found_and_permissions(self, crud):
         base = "/api/v1/logs"
         listed = crud.client.get(
             f"{base}/filter",
-            params={"period": "today", "limit": 10},
+            params={"period": "all", "limit": 10},
             headers={"Authorization": f"Bearer {crud.operator_token}"},
         )
         assert listed.status_code == 200
@@ -657,6 +679,91 @@ class TestDetectionLogsApi:
 
         unauthenticated = crud.client.get(f"{base}/filter")
         assert unauthenticated.status_code == 401
+
+    def test_generate_fake_creates_logs_visible_in_filter_all(self, crud):
+        base = "/api/v1/logs"
+        count_before = len(
+            crud.client.get(
+                f"{base}/filter",
+                params={"period": "all"},
+                headers={"Authorization": f"Bearer {crud.operator_token}"},
+            ).json()
+        )
+
+        resp = crud.client.post(
+            f"{base}/generate-fake",
+            json={"count": 5},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["count"] == 5
+
+        count_after = len(
+            crud.client.get(
+                f"{base}/filter",
+                params={"period": "all"},
+                headers={"Authorization": f"Bearer {crud.operator_token}"},
+            ).json()
+        )
+        assert count_after >= count_before + 5
+
+    def test_patch_log_person_by_personnel_id(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+        pid = self._first_personnel_id(crud)
+
+        resp = crud.client.patch(
+            f"{base}/{log_id}/person",
+            json={"personnel_id": pid},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["personnel_id"] == pid
+
+    def test_patch_log_person_requires_admin(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+
+        resp = crud.client.patch(
+            f"{base}/{log_id}/person",
+            json={"person": "0311344119"},
+            headers={"Authorization": f"Bearer {crud.viewer_token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_patch_log_person_not_found(self, crud):
+        resp = crud.client.patch(
+            "/api/v1/logs/99999999/person",
+            json={"personnel_id": 1},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 404
+
+    def test_patch_log_attendance(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+
+        resp = crud.client.patch(
+            f"{base}/{log_id}/attendance",
+            json={"counts_for_attendance": False},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("counts_for_attendance") is False
+
+    def test_patch_log_attendance_requires_admin(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+
+        resp = crud.client.patch(
+            f"{base}/{log_id}/attendance",
+            json={"counts_for_attendance": False},
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+        assert resp.status_code == 403
 
 
 class TestPersonnelRequestsApi:

@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260725_0024"
+ALEMBIC_HEAD_REVISION = "20260726_0025"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -115,6 +115,7 @@ fire_smoke_logs = Table(
     Column("fire_count", Integer, nullable=False), Column("smoke_count", Integer, nullable=False),
     Column("fire_confidence", Float, nullable=False), Column("smoke_confidence", Float, nullable=False),
     Column("window_seconds", Float, nullable=False), Column("snapshot_url", Text, nullable=False, server_default=""),
+    Column("video_url", Text, nullable=False, server_default=""),
     Column("details_json", Text, nullable=False, server_default="{}"),
 )
 Index("idx_fire_smoke_logs_time", fire_smoke_logs.c.time)
@@ -297,6 +298,7 @@ plate_logs = Table(
     Column("time", UTC_TS, nullable=False),
     Column("plate", Text, nullable=False),
     Column("snapshot_url", Text, nullable=False, server_default=""),
+    Column("video_url", Text, nullable=False, server_default=""),
     Column("details_json", Text, nullable=False, server_default="{}"),
     Column("plate_id", Integer),
     Column("plate_full_number", String(32)),

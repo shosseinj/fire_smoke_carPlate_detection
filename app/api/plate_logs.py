@@ -31,6 +31,7 @@ class PlateLogCreate(BaseModel):
     direction: PlateLogDirection = Field(default=PlateLogDirection.UNKNOWN)
     source_type: PlateLogSourceType = Field(default=PlateLogSourceType.CAMERA)
     snapshot_path: Optional[str] = Field(default=None, max_length=512)
+    video_url: Optional[str] = Field(default=None, max_length=512)
     plate_crop_path: Optional[str] = Field(default=None, max_length=512)
     notes: Optional[str] = None
 
@@ -61,6 +62,7 @@ class PlateLogUpdate(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0, le=1)
     direction: Optional[PlateLogDirection] = None
     snapshot_path: Optional[str] = Field(default=None, max_length=512)
+    video_url: Optional[str] = Field(default=None, max_length=512)
     plate_crop_path: Optional[str] = Field(default=None, max_length=512)
     is_verified: Optional[bool] = None
     notes: Optional[str] = None
@@ -96,6 +98,7 @@ class PlateLogResponse(BaseModel):
     direction: Optional[str] = None
     source_type: Optional[str] = None
     snapshot_path: Optional[str] = None
+    video_url: Optional[str] = None
     plate_crop_path: Optional[str] = None
     is_verified: bool = False
     created_by_user_id: Optional[int] = None

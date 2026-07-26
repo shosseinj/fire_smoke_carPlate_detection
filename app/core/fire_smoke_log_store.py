@@ -16,6 +16,7 @@ from uuid import uuid4
 import cv2
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.media_utils import save_single_frame_video
 from app.fire_core.policy import FireSmokePolicyConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -41,7 +42,9 @@ class FireSmokeLogStore:
         self.database = ensure_database(database)
         self.media_root = media_root.resolve()
         self.snapshot_dir = self.media_root / "fire_smoke_snapshots"
+        self.video_dir = self.media_root / "fire_smoke_videos"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.video_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._policy_revision = 0
         self._queue: queue.Queue[_PendingEvent | None] = queue.Queue(maxsize=queue_size)
@@ -163,7 +166,7 @@ class FireSmokeLogStore:
         if incident_id:
             with self._lock, self._connect() as connection:
                 existing = connection.execute(
-                    "SELECT id, severity, snapshot_url FROM fire_smoke_logs "
+                    "SELECT id, severity, snapshot_url, video_url FROM fire_smoke_logs "
                     "WHERE incident_id = ? ORDER BY id LIMIT 1",
                     (incident_id,),
                 ).fetchone()
@@ -196,6 +199,14 @@ class FireSmokeLogStore:
         if not cv2.imwrite(str(snapshot_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 88]):
             raise RuntimeError(f"Could not save fire/smoke snapshot: {snapshot_path}")
         snapshot_url = f"/media/fire_smoke_snapshots/{filename}"
+        video_filename = f"{Path(filename).stem}.mp4"
+        video_path = self.video_dir / video_filename
+        try:
+            save_single_frame_video(frame, video_path)
+        except Exception:
+            snapshot_path.unlink(missing_ok=True)
+            raise
+        video_url = f"/media/fire_smoke_videos/{video_filename}"
         values = (
             result.source_id,
             result.processed_at_utc,
@@ -207,6 +218,7 @@ class FireSmokeLogStore:
             float(smoke.get("max_confidence", 0.0)),
             float(result.data.get("severity_window_seconds", 3.0)),
             snapshot_url,
+            video_url,
             json.dumps(result.data, ensure_ascii=False, sort_keys=True),
         )
         with self._lock, self._connect() as connection:
@@ -216,8 +228,8 @@ class FireSmokeLogStore:
                     INSERT INTO fire_smoke_logs (
                         camera, time, incident_id, severity, fire_count, smoke_count,
                         fire_confidence, smoke_confidence, window_seconds,
-                        snapshot_url, details_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        snapshot_url, video_url, details_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -228,7 +240,7 @@ class FireSmokeLogStore:
                     SET camera = ?, time = ?, incident_id = ?, severity = ?,
                         fire_count = ?, smoke_count = ?, fire_confidence = ?,
                         smoke_confidence = ?, window_seconds = ?, snapshot_url = ?,
-                        details_json = ?
+                        video_url = ?, details_json = ?
                     WHERE id = ?
                     """,
                     (*values, int(existing["id"])),
@@ -239,6 +251,10 @@ class FireSmokeLogStore:
             old_path = self.snapshot_dir / Path(str(existing["snapshot_url"])).name
             if old_path != snapshot_path:
                 old_path.unlink(missing_ok=True)
+        if existing is not None and existing["video_url"]:
+            old_video = self.video_dir / Path(str(existing["video_url"])).name
+            if old_video != video_path:
+                old_video.unlink(missing_ok=True)
 
     def _run(self) -> None:
         while True:
@@ -285,7 +301,7 @@ class FireSmokeLogStore:
             rows = connection.execute(
                 "SELECT id, camera, time, incident_id, severity, fire_count, "
                 "smoke_count, fire_confidence, smoke_confidence, window_seconds, "
-                f"snapshot_url FROM fire_smoke_logs{where} ORDER BY id DESC LIMIT ?",
+                f"snapshot_url, video_url FROM fire_smoke_logs{where} ORDER BY id DESC LIMIT ?",
                 parameters,
             ).fetchall()
         return [dict(row) for row in rows]
@@ -299,7 +315,8 @@ class FireSmokeLogStore:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT id, camera, time, incident_id, severity, fire_count, smoke_count, "
-                "fire_confidence, smoke_confidence, window_seconds, snapshot_url FROM fire_smoke_logs WHERE id = ?",
+                "fire_confidence, smoke_confidence, window_seconds, snapshot_url, video_url "
+                "FROM fire_smoke_logs WHERE id = ?",
                 (log_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -308,13 +325,13 @@ class FireSmokeLogStore:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO fire_smoke_logs (camera, time, severity, fire_count, smoke_count, "
-                "fire_confidence, smoke_confidence, window_seconds, snapshot_url, details_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                "fire_confidence, smoke_confidence, window_seconds, snapshot_url, video_url, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
                 (
                     str(values["camera_id"]), values["detection_time"].isoformat(), values["severity"],
                     int(values.get("fire_count", 0)), int(values.get("smoke_count", 0)),
                     float(values.get("confidence") or 0.0), float(values.get("confidence") or 0.0),
-                    0.0, values.get("snapshot_url") or "", "{}",
+                    0.0, values.get("snapshot_url") or "", values.get("video_url") or "", "{}",
                 ),
             )
             log_id = int(cursor.fetchone()[0])
@@ -324,7 +341,7 @@ class FireSmokeLogStore:
     def update_manual(self, log_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         mapping = {
             "camera_id": "camera", "detection_time": "time", "severity": "severity",
-            "snapshot_url": "snapshot_url",
+            "snapshot_url": "snapshot_url", "video_url": "video_url",
         }
         updates = [(mapping[key], value.isoformat() if isinstance(value, datetime) else value) for key, value in values.items() if key in mapping]
         if not updates:
