@@ -163,6 +163,13 @@ log's saved `face_video_or_unknown_faces` path, resolves
 `/media/...` paths beneath `SAVED_MEDIA_PATH`, and returns sequential JPEG frames
 as base64 with `frame_interval` and `max_frames` controls.
 
+Detection-log person updates use the single authenticated
+`PATCH /api/v1/logs/{log_id}/person` route. The separate attendance PATCH route
+is intentionally not exposed; attendance remains part of the persisted log state.
+The person PATCH accepts `person`, `personnel_id`, and `confidence`, requires an
+identity field, recalculates access, and rejects reassignment to personnel without
+a reference image, matching the old person-update contract.
+
 ## Polygon zone system
 
 ### Overview

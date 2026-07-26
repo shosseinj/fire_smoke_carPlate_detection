@@ -505,6 +505,27 @@
       "notes": "Authenticated endpoint GET /api/v1/extract-frames/{detection_id}/. Runtime validation requires a running API and a detection log with a readable saved video."
     },
     {
+      "id": "api-detection-logs",
+      "name": "Detection Log Mutation API",
+      "enabled": true,
+      "critical": false,
+      "runtime_required": false,
+      "owner_paths": ["app/api/detection_logs.py", "app/core/detection_log_store.py", "app/core/recent_detection_service.py"],
+      "dependencies": ["api-auth", "human-logs"],
+      "consumers": ["user-interface", "recent-detections-websocket"],
+      "commands": [
+        "python -m pytest tests/test_detection_log_patch_policy.py tests/test_crud_api.py -q -k \"patch_log or person_patch\"",
+        "python -m py_compile app/api/detection_logs.py app/core/detection_log_store.py"
+      ],
+      "metrics": ["person_updates", "recent_detection_refreshes", "access_recalculations"],
+      "acceptance": {
+        "single_patch": "PATCH /api/v1/logs/{log_id}/person is the only detection-log PATCH route",
+        "attendance_route_removed": "PATCH /api/v1/logs/{log_id}/attendance is not exposed",
+        "old_person_behavior": "person/personnel_id/confidence validation, identity resolution, reference-image requirement, access recalculation, persistence, and refresh follow the old person PATCH contract"
+      },
+      "notes": "Person reassignment persists identity, reference image, confidence, access, audit user, and updated timestamp, then emits a recent-detection refresh. Attendance remains persisted state without a separate PATCH route."
+    },
+    {
       "id": "api-attendance",
       "name": "Attendance API",
       "enabled": true,

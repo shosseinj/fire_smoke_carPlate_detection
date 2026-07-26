@@ -52,14 +52,9 @@ class DetectionLogUpdate(BaseModel):
         if self.person is not None:
             self.person = self.person.strip()
         if not self.person and self.personnel_id is None:
-            raise ValueError("Either person or personnel_id must be provided")
+            raise ValueError("شخص یا شناسه پرسنل باید ارسال شود")
         return self
 
-
-class DetectionLogAttendanceUpdate(BaseModel):
-    """Request body for PATCH /{log_id}/attendance."""
-
-    counts_for_attendance: bool = True
 
 router = APIRouter(prefix="/api/v1/logs", tags=["Detection Logs"])
 
@@ -114,6 +109,27 @@ def _choose_reference_image(
             int(getattr(img, "id", 0)),
         ),
     )
+
+
+def _calculate_old_person_access(
+    person: str,
+    personnel_id: int | None,
+    room_id: int | None,
+    location_store: Any,
+) -> bool:
+    if "unknown" in person.lower():
+        return False
+    if room_id in (None, 0):
+        return True
+    room = location_store.get_room(room_id)
+    if room is None:
+        return False
+    room_name = (room.name or "").lower()
+    if "general" in room_name or "عمومی" in room_name:
+        return True
+    if "forbidden" in room_name or "ممنوع" in room_name:
+        return False
+    return personnel_id is not None and location_store.check_room_access(personnel_id, room_id)
 
 
 def _resolve_media_path(relative_path: str | None) -> Path:
@@ -909,8 +925,18 @@ def patch_log_person(
             return personnel_store.get_by_name(name_parts[0], name_parts[1])
         return None
 
-    old_person = record.person
     old_personnel_id = record.personnel_id
+    if record.ref_img_id:
+        try:
+            reference_image = personnel_store.get_image(int(record.ref_img_id))
+        except (TypeError, ValueError):
+            reference_image = None
+        if reference_image is not None:
+            old_personnel_id = reference_image.personnel_id
+    if old_personnel_id is None:
+        existing_personnel = _find_personnel_by_identity(record.person)
+        if existing_personnel is not None:
+            old_personnel_id = existing_personnel.id
 
     if update_data.personnel_id is not None:
         personnel = personnel_store.get(update_data.personnel_id)
@@ -926,12 +952,17 @@ def patch_log_person(
     if new_personnel_id is not None and new_personnel_id != old_personnel_id:
         images = personnel_store.list_images(new_personnel_id)
         selected_image = _choose_reference_image(images)
-        if selected_image is not None:
-            new_ref_img_id = str(selected_image.id)
+        if selected_image is None:
+            raise HTTPException(
+                status_code=400,
+                detail="پرسنل جدید هیچ تصویر ثبت‌شده‌ای برای تصویر مرجع ندارد",
+            )
+        new_ref_img_id = str(selected_image.id)
 
     # ── Recalculate access ───────────────────────────────────────────
     location_store = get_location_store()
-    access_granted = calculate_access(
+    access_granted = _calculate_old_person_access(
+        person,
         new_personnel_id,
         record.room_id,
         location_store,
@@ -952,29 +983,6 @@ def patch_log_person(
     if updated is None:
         raise HTTPException(404, "لاگ تشخیص یافت نشد")
 
-    _push_refresh_for_log(get_runtime(), log_id)
-    return _build_response(updated, include_detail=True)
-
-
-@router.patch("/{log_id}/attendance")
-def patch_log_attendance(
-    log_id: int,
-    payload: DetectionLogAttendanceUpdate,
-    current_user: dict = Depends(require_role("admin")),
-) -> dict:
-    """Include or exclude one detection log from attendance calculations."""
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ تشخیص یافت نشد")
-
-    updated = store.update(
-        log_id,
-        counts_for_attendance=payload.counts_for_attendance,
-        updated_by=_get_current_user_id(current_user),
-    )
-    if updated is None:
-        raise HTTPException(404, "لاگ تشخیص یافت نشد")
     _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 
