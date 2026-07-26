@@ -127,9 +127,9 @@
         "severity_counts", "incident_count"
       ],
       "acceptance": {
-        "video_persistence": "Fire event list/get responses include video_url and the saved MP4 artifact beside snapshot_url."
+        "video_persistence": "Fire event list/get responses include video_url and the saved MP4 contains multiple bounded annotated fire/smoke frames."
       },
-      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model. Severity confidence floors are separate from detector admission to prevent repeated low-confidence false incidents. Fire event video is a bounded single-detection-frame MP4 because this store does not own a historical frame buffer."
+      "notes": "Mock mode tested. Real mode requires GPU and fire/smoke model. Severity confidence floors are separate from detector admission to prevent repeated low-confidence false incidents. Fire event video is a bounded multi-frame MP4 of annotated fire/smoke frames, with configurable frame cap and update interval."
     },
     {
       "id": "plate-processing",

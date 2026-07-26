@@ -127,6 +127,9 @@ class Settings:
     fire_low_incident_count: int = _env_int("FIRE_LOW_INCIDENT_COUNT", 5)
     fire_medium_incident_count: int = _env_int("FIRE_MEDIUM_INCIDENT_COUNT", 10)
     fire_high_incident_count: int = _env_int("FIRE_HIGH_INCIDENT_COUNT", 20)
+    fire_video_fps: float = _env_float("FIRE_VIDEO_FPS", 5.0)
+    fire_video_max_frames: int = _env_int("FIRE_VIDEO_MAX_FRAMES", 30)
+    fire_video_update_interval_frames: int = _env_int("FIRE_VIDEO_UPDATE_INTERVAL_FRAMES", 5)
 
     fire_model_path: Path = _path(
         "FIRE_SMOKE_MODEL_PATH",

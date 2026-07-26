@@ -105,7 +105,7 @@
       "id": "fire-smoke-processing",
       "status": "PASS_WITH_WARNINGS",
       "commands_passed": ["python -m pytest tests/test_fire_processor.py -q", "python -m pytest tests/test_fire_smoke_log_store.py -q"],
-      "notes": "Video URL/file assertions added to the store test; PostgreSQL-dependent store test was skipped here. Real mode requires GPU + fire/smoke model files; runtime video delivery was not validated in this environment."
+      "notes": "Multi-frame video URL/file assertions added to the store test; PostgreSQL-dependent store test was skipped here. Runtime container produced fire video artifacts and a sampled MP4 contained 30 frames; authenticated API delivery was not independently validated."
     },
     {
       "id": "plate-processing",

@@ -463,6 +463,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             medium_count=app_settings.fire_medium_incident_count,
             high_count=app_settings.fire_high_incident_count,
         ),
+        video_fps=app_settings.fire_video_fps,
+        video_max_frames=app_settings.fire_video_max_frames,
+        video_update_interval_frames=app_settings.fire_video_update_interval_frames,
     )
     human_logs = HumanLogStore(
         database,

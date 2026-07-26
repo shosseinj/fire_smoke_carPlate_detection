@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import cv2
 
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
@@ -102,5 +103,13 @@ def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     assert rows[0]["video_url"].startswith("/media/fire_smoke_videos/")
     video = tmp_path / "media" / rows[0]["video_url"].removeprefix("/media/")
     assert video.is_file()
+    capture = cv2.VideoCapture(str(video))
+    frame_count = 0
+    try:
+        while capture.grab():
+            frame_count += 1
+    finally:
+        capture.release()
+    assert frame_count >= 2
     assert {"fire_smoke_logs", "fire_smoke_settings"}.issubset(metadata.tables)
     assert "video_url" in metadata.tables["fire_smoke_logs"].c

@@ -7,6 +7,7 @@ import json
 import logging
 import queue
 import threading
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,8 +16,8 @@ from uuid import uuid4
 
 import cv2
 
+from app.core.media_utils import save_video_frames
 from app.core.types import FramePacket, TaskName, TaskResult
-from app.core.media_utils import save_single_frame_video
 from app.fire_core.policy import FireSmokePolicyConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -26,10 +27,12 @@ LOGGER = logging.getLogger(__name__)
 class _PendingEvent:
     frame: Any
     result: TaskResult
+    video_frames: tuple[Any, ...]
+    video_only: bool = False
 
 
 class FireSmokeLogStore:
-    """Persistent hazard events with non-blocking, background snapshot writes."""
+    """Persistent hazard events with bounded background media writes."""
 
     def __init__(
         self,
@@ -38,6 +41,9 @@ class FireSmokeLogStore:
         *,
         default_policy: FireSmokePolicyConfig = FireSmokePolicyConfig(),
         queue_size: int = 64,
+        video_fps: float = 5.0,
+        video_max_frames: int = 30,
+        video_update_interval_frames: int = 5,
     ) -> None:
         self.database = ensure_database(database)
         self.media_root = media_root.resolve()
@@ -48,6 +54,10 @@ class FireSmokeLogStore:
         self._lock = threading.RLock()
         self._policy_revision = 0
         self._queue: queue.Queue[_PendingEvent | None] = queue.Queue(maxsize=queue_size)
+        self.video_fps = max(0.1, float(video_fps))
+        self.video_max_frames = max(1, int(video_max_frames))
+        self.video_update_interval_frames = max(1, int(video_update_interval_frames))
+        self._video_buffers: dict[tuple[str, str], deque[Any]] = {}
         self._dropped = 0
         self._saved = 0
         self._closed = False
@@ -131,22 +141,87 @@ class FireSmokeLogStore:
         }
 
     def observe_result(self, packet: FramePacket, result: TaskResult) -> None:
+        if self._closed or result.error or result.task != TaskName.FIRE_SMOKE:
+            return
+        ended_incidents = {
+            str(event["incident_id"])
+            for event in result.data.get("events", [])
+            if event.get("event_type") == "incident_ended" and event.get("incident_id")
+        }
+        with self._lock:
+            for incident_id in ended_incidents:
+                frames = self._video_buffers.pop((result.source_id, incident_id), None)
+                if frames:
+                    self._queue_video_only(result, tuple(frames))
+
+        incident_id = result.data.get("incident_id")
         if (
-            self._closed
-            or result.error
-            or result.task != TaskName.FIRE_SMOKE
-            or result.data.get("severity") not in {"medium", "high"}
-            or not result.data.get("incident_id")
-            or not result.data.get("severity_changed", False)
+            result.data.get("severity") not in {"medium", "high"}
+            or not incident_id
+            or not self._has_hazard_detection(result)
         ):
             return
+        key = (result.source_id, str(incident_id))
+        frame = self._annotate_frame(packet.frame.copy(), result)
+        with self._lock:
+            buffer = self._video_buffers.setdefault(
+                key,
+                deque(maxlen=self.video_max_frames),
+            )
+            buffer.append(frame)
+            should_queue = (
+                bool(result.data.get("severity_changed", False))
+                or len(buffer) % self.video_update_interval_frames == 0
+            )
+            video_frames = tuple(buffer)
+        if not should_queue:
+            return
         try:
-            # Copy once while the ingest buffer is still valid; all drawing,
-            # JPEG encoding, and PostgreSQL I/O happens on the writer thread.
-            self._queue.put_nowait(_PendingEvent(packet.frame.copy(), result))
+            self._queue.put_nowait(_PendingEvent(frame, result, video_frames))
         except queue.Full:
             self._dropped += 1
             LOGGER.warning("Fire/smoke log queue is full; newest event was dropped")
+
+    @staticmethod
+    def _has_hazard_detection(result: TaskResult) -> bool:
+        items = [
+            *result.data.get("tracks", []),
+            *result.data.get("detections", []),
+        ]
+        return any(item.get("label") in {"fire", "smoke"} for item in items)
+
+    @staticmethod
+    def _annotate_frame(frame: Any, result: TaskResult) -> Any:
+        for track in result.data.get("tracks", []):
+            if track.get("label") not in {"fire", "smoke"}:
+                continue
+            x1, y1, x2, y2 = (int(round(float(v))) for v in track.get("bbox", [0, 0, 0, 0]))
+            color = (0, 0, 255) if track.get("label") == "fire" else (0, 165, 255)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                f"{track.get('label')} {float(track.get('confidence', 0.0)):.2f}",
+                (x1, max(20, y1 - 7)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+        return frame
+
+    def _queue_video_only(
+        self,
+        result: TaskResult,
+        video_frames: tuple[Any, ...],
+    ) -> None:
+        try:
+            self._queue.put_nowait(
+                _PendingEvent(video_frames[-1], result, video_frames, video_only=True)
+            )
+        except queue.Full:
+            self._dropped += 1
+            LOGGER.warning("Fire/smoke video queue is full; final frames were dropped")
 
     @staticmethod
     def _incident_id(result: TaskResult) -> str | None:
@@ -170,28 +245,35 @@ class FireSmokeLogStore:
                     "WHERE incident_id = ? ORDER BY id LIMIT 1",
                     (incident_id,),
                 ).fetchone()
-        severity_rank = {"medium": 2, "high": 3}
-        if existing is not None and severity_rank.get(
-            str(existing["severity"]), 0
-        ) >= severity_rank.get(str(result.data.get("severity")), 0):
+        if pending.video_only:
+            if existing is None or not pending.video_frames:
+                return
+            camera_stem = result.source_id.replace("/", "_").replace("\\", "_")
+            timestamp = result.processed_at_utc.replace(":", "-").replace("+", "_")
+            video_filename = f"{camera_stem}_{timestamp}_{uuid4().hex[:8]}.mp4"
+            video_path = self.video_dir / video_filename
+            save_video_frames(pending.video_frames, video_path, self.video_fps)
+            video_url = f"/media/fire_smoke_videos/{video_filename}"
+            with self._lock, self._connect() as connection:
+                connection.execute(
+                    "UPDATE fire_smoke_logs SET video_url = ? WHERE id = ?",
+                    (video_url, int(existing["id"])),
+                )
+                connection.commit()
+            if existing["video_url"]:
+                old_video = self.video_dir / Path(str(existing["video_url"])).name
+                if old_video != video_path:
+                    old_video.unlink(missing_ok=True)
             return
+        severity_rank = {"medium": 2, "high": 3}
+        if existing is not None:
+            existing_rank = severity_rank.get(str(existing["severity"]), 0)
+            result_rank = severity_rank.get(str(result.data.get("severity")), 0)
+            if existing_rank > result_rank:
+                return
+            if existing_rank == result_rank and len(pending.video_frames) <= 1:
+                return
         frame = pending.frame
-        for track in result.data.get("tracks", []):
-            if track.get("label") not in {"fire", "smoke"}:
-                continue
-            x1, y1, x2, y2 = (int(round(float(v))) for v in track.get("bbox", [0, 0, 0, 0]))
-            color = (0, 0, 255) if track.get("label") == "fire" else (0, 165, 255)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame,
-                f"{track.get('label')} {float(track.get('confidence', 0.0)):.2f}",
-                (x1, max(20, y1 - 7)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                color,
-                2,
-                cv2.LINE_AA,
-            )
         timestamp = result.processed_at_utc.replace(":", "-").replace("+", "_")
         camera_stem = result.source_id.replace("/", "_").replace("\\", "_")
         filename = f"{camera_stem}_{timestamp}_{uuid4().hex[:8]}.jpg"
@@ -202,7 +284,7 @@ class FireSmokeLogStore:
         video_filename = f"{Path(filename).stem}.mp4"
         video_path = self.video_dir / video_filename
         try:
-            save_single_frame_video(frame, video_path)
+            save_video_frames(pending.video_frames or (frame,), video_path, self.video_fps)
         except Exception:
             snapshot_path.unlink(missing_ok=True)
             raise
@@ -366,6 +448,9 @@ class FireSmokeLogStore:
         return {
             "count": self.count(),
             "queued": self._queue.qsize(),
+            "video_buffer_sources": len(self._video_buffers),
+            "video_buffer_frames": sum(len(value) for value in self._video_buffers.values()),
+            "video_max_frames": self.video_max_frames,
             "saved": self._saved,
             "dropped": self._dropped,
         }
@@ -374,5 +459,7 @@ class FireSmokeLogStore:
         if self._closed:
             return
         self._closed = True
+        with self._lock:
+            self._video_buffers.clear()
         self._queue.put(None)
         self._thread.join(timeout=10.0)
