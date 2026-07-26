@@ -467,6 +467,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_max_frames=app_settings.fire_video_max_frames,
         video_update_interval_frames=app_settings.fire_video_update_interval_frames,
     )
+    detection_log_store = DetectionLogStore(database)
     human_logs = HumanLogStore(
         database,
         app_settings.saved_media_path,
@@ -474,6 +475,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_fps=app_settings.human_video_fps,
         video_idle_seconds=app_settings.human_video_idle_seconds,
         snapshot_min_improvement=app_settings.human_snapshot_min_improvement,
+        detection_log_store=detection_log_store,
     )
     personnel_store = PersonnelStore(
         database,
@@ -486,7 +488,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     shift_store = ShiftStore(database)
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
-    detection_log_store = DetectionLogStore(database)
     import_progress = ImportProgressStore(database)
     static_video_store = StaticVideoStore(database)
 
@@ -700,8 +701,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         2. If the camera's section has custom polygon rooms → calls match_detection_to_rooms
         3. If no custom polygons → uses the default full-frame polygon
         4. Records polygon zone matches in the database (if custom) or in-memory (if default)
-        5. Only calls human_log_store.observe_result() when a transition (entered/exited) occurs
-        6. No transition → human log is NOT saved (reduces noise and storage)
+        5. Calls human_log_store.observe_result() for zone transitions and expired tracks
+        6. No transition or expired track → human log is NOT saved (reduces noise and storage)
         """
         def face_observer(packet: FramePacket, result: TaskResult) -> None:
             if result.error:
@@ -715,6 +716,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             room_id = cam.room_id
             has_polygons = ls.room_has_polygon(room_id)
             has_transition = False
+            has_disappeared = bool(result.data.get("disappeared_humans"))
 
             for human in result.data.get("humans", []):
                 bbox = human.get("bbox")
@@ -748,8 +750,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                     if transition is not None:
                         has_transition = True
 
-            # Only save human log when a polygon zone transition occurred
-            if has_transition:
+            # Save on a polygon transition or when the tracker has expired a track.
+            if has_transition or has_disappeared:
                 try:
                     human_log_store.observe_result(packet, result)
                 except Exception:

@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from app.core.human_log_store import HumanLogStore
+from app.core.detection_log_store import DetectionLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database, metadata
 
@@ -165,6 +166,63 @@ def test_best_face_is_saved_when_full_frame_sample_is_not_due(
             capture.release()
     finally:
         store.close()
+
+
+def test_disappeared_track_is_visible_in_detection_log_filter(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    national_code = "1234567891"
+    with postgres_database.connection() as connection:
+        existing = connection.execute(
+            "SELECT id FROM personnel WHERE national_code = ?",
+            (national_code,),
+        ).fetchone()
+        inserted_personnel = existing is None
+        if existing is None:
+            connection.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Test First", "Test Last", national_code),
+            )
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        detection_log_store=detection_logs,
+    )
+    disappeared = packet(4)
+    final_result = result(disappeared, "Alice", 0.93)
+    final_result.data["humans"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": national_code,
+            "recognition_score": 0.93,
+            "ref_img_id": "qdrant-point",
+            "confidence": 0.0,
+        }
+    ]
+    try:
+        store.observe_result(disappeared, final_result)
+        store.flush()
+        records, _ = detection_logs.list_filter(
+            camera_id="camera-01",
+            log_type="camera_rtsp",
+        )
+        assert len(records) == 1
+        assert records[0].person == "Test First Test Last"
+        assert records[0].personnel_id is not None
+        assert records[0].source_human_log_id is not None
+        assert records[0].source_event_key == "human-track:session-a:camera-01:13"
+    finally:
+        store.close()
+        if inserted_personnel:
+            with postgres_database.connection() as connection:
+                connection.execute(
+                    "DELETE FROM personnel WHERE national_code = ?",
+                    (national_code,),
+                )
 
 
 def test_postgresql_human_log_schema_uses_current_fields() -> None:

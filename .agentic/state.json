@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project_name": "Unified Video AI Task Router",
   "initialized": true,
-  "last_updated": "2026-07-21T05:30:00Z",
+  "last_updated": "2026-07-26T12:25:00Z",
   "verified_commands": {
     "install": [
       "pip install -r requirements.txt",
@@ -115,9 +115,9 @@
     },
     {
       "id": "face-processing",
-      "status": "PASS",
-      "commands_passed": ["python -m pytest tests/test_face_recognition.py -q", "python -m pytest tests/test_face_quality_store.py -q"],
-      "notes": "7+2=9 tests. Real mode requires 3 face models + Qdrant at data/qdrant."
+      "status": "PASS_WITH_WARNINGS",
+      "commands_passed": ["python -m pytest tests/test_face_recognition.py tests/test_human_log_store.py -q", "python -m py_compile app/processors/face_recognition.py app/core/detection_log_store.py app/core/human_log_store.py app/runtime.py"],
+      "notes": "Track expiry now emits a one-shot disappeared_humans payload; HumanLogStore resolves Qdrant national-code identities through personnel and finalizes an idempotent detection_logs record for /api/v1/logs/filter. Focused tests passed; PostgreSQL-backed persistence tests were skipped in the current host environment. Real mode requires 3 face models + Qdrant."
     },
     {
       "id": "model-management",

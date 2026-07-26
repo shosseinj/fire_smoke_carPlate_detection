@@ -164,7 +164,7 @@
       "runtime_required": true,
       "owner_paths": ["app/processors/face_recognition.py", "app/core/human_log_store.py", "app/core/face_quality_store.py"],
       "dependencies": ["configuration", "model-management", "frame-pipeline"],
-      "consumers": ["broadcast", "api-faces", "api-humans"],
+      "consumers": ["broadcast", "api-faces", "api-humans", "api-detection-logs"],
       "commands": [
         "python -m pytest tests/test_face_recognition.py -q",
         "python -m pytest tests/test_face_quality_store.py -q",
@@ -176,8 +176,10 @@
         "tracked_humans", "stable_tracks", "embedding_search_time",
         "quality_processed", "quality_rejected", "qdrant_status"
       ],
-      "acceptance": {},
-      "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant. Face quality is emitted per recognition and each tracked human exposes accumulated best_face_quality; history persistence binds PostgreSQL CASE booleans correctly."
+      "acceptance": {
+        "track_expiry_log": "An expired face track is emitted once, recognized national_code is resolved through personnel to fname lname, persisted to human_logs, and bridged to detection_logs so GET /api/v1/logs/filter can retrieve it."
+      },
+      "notes": "Mock mode tested. Real mode requires GPU and 3 face models + Qdrant. Face quality is emitted per recognition and each tracked human exposes accumulated best_face_quality; history persistence binds PostgreSQL CASE booleans correctly. Qdrant national-code identities are resolved against personnel during persistence, while expired tracks create an idempotent detection-log bridge at finalization."
     },
     {
       "id": "model-management",

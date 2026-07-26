@@ -228,6 +228,7 @@ class SourceFaceTracker:
         self._object_track_ids: dict[int, int] = {}
         self._visible_boxes: dict[int, list[float]] = {}
         self.tracks: dict[int, TrackState] = {}
+        self._disappeared: list[TrackState] = []
 
     def update(
         self,
@@ -244,13 +245,31 @@ class SourceFaceTracker:
 
         assigned: list[int | None] = [None] * len(box_values)
         self._visible_boxes = {}
+        self._disappeared = []
         active_objects = list(getattr(self._backend, "tracked_stracks", []))
         lost_objects = list(getattr(self._backend, "lost_stracks", []))
         alive_object_ids = {id(track) for track in active_objects + lost_objects}
         for object_id, local_id in list(self._object_track_ids.items()):
             if object_id not in alive_object_ids:
                 self._object_track_ids.pop(object_id, None)
-                self.tracks.pop(local_id, None)
+                state = self.tracks.pop(local_id, None)
+                if state is not None:
+                    self._disappeared.append(
+                        TrackState(
+                            track_id=state.track_id,
+                            bbox=list(state.bbox),
+                            missed=state.missed,
+                            names=deque(state.names, maxlen=self.history_size),
+                            scores=deque(state.scores, maxlen=self.history_size),
+                            ref_img_ids=deque(
+                                state.ref_img_ids, maxlen=self.history_size
+                            ),
+                            stable_person=state.stable_person,
+                            stable_score=state.stable_score,
+                            stable_ref_img_id=state.stable_ref_img_id,
+                            best_face_quality=state.best_face_quality,
+                        )
+                    )
 
         for track in active_objects:
             if not bool(getattr(track, "is_activated", False)):
@@ -282,6 +301,11 @@ class SourceFaceTracker:
             if track_id not in visible_ids:
                 state.missed += 1
         return assigned
+
+    def consume_disappeared(self) -> list[TrackState]:
+        disappeared = self._disappeared
+        self._disappeared = []
+        return disappeared
 
     def track_for_face(self, face_box: Sequence[float]) -> int | None:
         center_x = (float(face_box[0]) + float(face_box[2])) / 2.0
@@ -1799,7 +1823,29 @@ class FaceRecognitionProcessor(BatchProcessor):
                     for index, human in enumerate(humans)
                     if index < len(track_ids)
                 ]
-                frame_payloads.append({"humans": tracked_humans, "faces": []})
+                disappeared_humans = [
+                    {
+                        "track_id": state.track_id,
+                        "bbox": list(state.bbox),
+                        "source_bbox": self._scale_bbox(
+                            state.bbox, packet.frame.shape, source_frame.shape
+                        ),
+                        "person": state.stable_person,
+                        "recognition_score": round(state.stable_score, 6),
+                        "ref_img_id": state.stable_ref_img_id,
+                        "identity_stable": state.stable_person != "Unknown",
+                        "best_face_quality": round(state.best_face_quality, 6),
+                        "confidence": 0.0,
+                    }
+                    for state in tracker.consume_disappeared()
+                ]
+                frame_payloads.append(
+                    {
+                        "humans": tracked_humans,
+                        "faces": [],
+                        "disappeared_humans": disappeared_humans,
+                    }
+                )
 
             # 3) Build human crops, concatenate them into batched mosaic images,
             # and run face detection only on those human ROI mosaics.
@@ -1963,6 +2009,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                     },
                     "tracking_session_id": self._tracking_session_id,
                     "human_count": len(payload["humans"]),
+                    "disappeared_human_count": len(payload["disappeared_humans"]),
                     "face_count": len(faces),
                     "recognized_count": recognized,
                     "recognized_human_count": recognized_humans,

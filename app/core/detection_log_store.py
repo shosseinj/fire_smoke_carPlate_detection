@@ -145,6 +145,14 @@ class DetectionLogStore:
             ).fetchone()
             return self._row_to_log(row) if row is not None else None
 
+    def get_by_source_event_key(self, source_event_key: str) -> DetectionLogRecord | None:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM detection_logs WHERE source_event_key = ?",
+                (source_event_key,),
+            ).fetchone()
+            return self._row_to_log(row) if row is not None else None
+
     def update(self, log_id: int, **kwargs: Any) -> DetectionLogRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(

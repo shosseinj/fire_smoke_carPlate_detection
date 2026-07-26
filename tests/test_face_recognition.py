@@ -15,6 +15,7 @@ from app.processors.face_recognition import (
     FaceRecognitionSettings,
     PostgresFaceStore,
     QdrantFaceStore,
+    SourceFaceTracker,
 )
 
 
@@ -138,6 +139,42 @@ class FakeByteTracker:
             self.tracked_stracks = []
             self.lost_stracks = [self.track]
         return np.empty((0, 8), dtype=np.float32)
+
+
+class ExpiringByteTracker(FakeByteTracker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def update(self, detections):
+        self.calls += 1
+        if self.calls == 1:
+            return super().update(detections)
+        self.tracked_stracks = []
+        self.lost_stracks = [self.track] if self.calls == 2 else []
+        return np.empty((0, 8), dtype=np.float32)
+
+
+def test_tracker_emits_a_track_once_when_byte_track_expires() -> None:
+    tracker = SourceFaceTracker(
+        high_threshold=0.5,
+        low_threshold=0.1,
+        new_threshold=0.5,
+        match_threshold=0.8,
+        max_missed=2,
+        history_size=4,
+        stable_min_hits=1,
+        backend=ExpiringByteTracker(),
+    )
+
+    tracker.update([[5, 5, 100, 115]], [0.95])
+    tracker.update([], [])
+    assert tracker.consume_disappeared() == []
+    tracker.update([], [])
+    disappeared = tracker.consume_disappeared()
+
+    assert [state.track_id for state in disappeared] == [1]
+    assert tracker.consume_disappeared() == []
 
 
 def packet(source_id: str, frame_index: int) -> FramePacket:

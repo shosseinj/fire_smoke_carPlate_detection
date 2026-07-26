@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 
 from app.core.types import FramePacket, TaskResult
+from app.core.detection_log_store import DetectionLogStore
+from app.core.personnel_store import normalize_national_code
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class HumanMediaEvent:
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
+    finalize_detection_log: bool = False
 
 
 @dataclass(slots=True)
@@ -61,6 +64,7 @@ class HumanLogStore:
         video_fps: float = 10.0,
         video_idle_seconds: float = 5.0,
         snapshot_min_improvement: float = 0.01,
+        detection_log_store: DetectionLogStore | None = None,
     ) -> None:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
@@ -72,6 +76,8 @@ class HumanLogStore:
         self.video_fps = max(1.0, float(video_fps))
         self.video_idle_seconds = max(1.0, float(video_idle_seconds))
         self.snapshot_min_improvement = max(0.0, float(snapshot_min_improvement))
+        self.detection_log_store = detection_log_store
+        self._personnel_identity_cache: dict[str, tuple[str, int] | None] = {}
         self._queue: queue.Queue[HumanMediaEvent | object] = queue.Queue(
             maxsize=max(8, int(queue_size))
         )
@@ -104,6 +110,47 @@ class HumanLogStore:
     def _create_schema(self) -> None:
         # Alembic owns the PostgreSQL schema; runtime startup validates it.
         return None
+
+    def _resolve_personnel_identity(
+        self,
+        person: str,
+        ref_img_id: str | int | None,
+    ) -> tuple[str, int | None]:
+        """Resolve Qdrant's national-code identity to the stored full name."""
+        candidates: list[tuple[str, str]] = []
+        person_code = normalize_national_code(person)
+        if len(person_code) == 10:
+            candidates.append(("national_code", person_code))
+        ref_text = str(ref_img_id).strip() if ref_img_id is not None else ""
+        if ref_text.startswith("personnel_"):
+            candidates.append(("id", ref_text[len("personnel_") :]))
+        else:
+            ref_code = normalize_national_code(ref_text)
+            if len(ref_code) == 10 and ref_code != person_code:
+                candidates.append(("national_code", ref_code))
+
+        for lookup_type, lookup_value in candidates:
+            cache_key = f"{lookup_type}:{lookup_value}"
+            if cache_key in self._personnel_identity_cache:
+                cached = self._personnel_identity_cache[cache_key]
+                if cached is not None:
+                    return cached
+                continue
+            if lookup_type == "id":
+                query = "SELECT id, fname, lname FROM personnel WHERE id = ?"
+            else:
+                query = "SELECT id, fname, lname FROM personnel WHERE national_code = ?"
+            with self._connect() as connection:
+                row = connection.execute(query, (lookup_value,)).fetchone()
+            if row is not None:
+                identity = (
+                    f"{str(row['fname']).strip()} {str(row['lname']).strip()}".strip(),
+                    int(row["id"]),
+                )
+                self._personnel_identity_cache[cache_key] = identity
+                return identity
+            self._personnel_identity_cache[cache_key] = None
+        return person, None
 
     @staticmethod
     def _bounded_box(
@@ -178,13 +225,22 @@ class HumanLogStore:
             ):
                 faces_by_track[int(track_id)] = face
 
-        for human in result.data.get("humans", []):
+        human_entries = [
+            (human, False) for human in result.data.get("humans", [])
+        ] + [
+            (human, True) for human in result.data.get("disappeared_humans", [])
+        ]
+        for human, disappeared in human_entries:
             track_id = human.get("track_id")
             if track_id is None:
                 continue
             track_id = int(track_id)
             key = (session_id, packet.source_id, track_id)
-            name = str(human.get("person") or "Unknown").strip() or "Unknown"
+            raw_name = str(human.get("person") or "Unknown").strip() or "Unknown"
+            raw_ref = human.get("ref_img_id")
+            name, resolved_personnel_id = self._resolve_personnel_identity(
+                raw_name, raw_ref
+            )
             bbox = [
                 float(value)
                 for value in human.get(
@@ -236,7 +292,7 @@ class HumanLogStore:
                     snapshot_quality
                     >= previous_score + self.snapshot_min_improvement
                 )
-                full_frame_due = (
+                full_frame_due = not disappeared and (
                     now - previous_full_frame_at >= 1.0 / self.video_fps
                 )
                 better_face = (
@@ -248,7 +304,7 @@ class HumanLogStore:
                     better_face
                     or now - previous_face_video_at >= 1.0 / self.video_fps
                 )
-                if not (
+                if not disappeared and not (
                     identity_changed or better_snapshot or full_frame_due or face_due
                 ):
                     continue
@@ -262,9 +318,8 @@ class HumanLogStore:
                 if better_face:
                     self._best_face_scores[key] = face_quality
 
-            raw_ref = human.get("ref_img_id")
-            raw_personnel_id: int | None = None
-            if raw_ref is not None:
+            raw_personnel_id = resolved_personnel_id
+            if raw_personnel_id is None and raw_ref is not None:
                 ref_str = str(raw_ref)
                 if ref_str.startswith("personnel_"):
                     try:
@@ -287,6 +342,7 @@ class HumanLogStore:
                 ),
                 face_video_frame=face_frame if face_due else None,
                 face_quality=face_quality,
+                finalize_detection_log=disappeared,
             )
             try:
                 self._queue.put_nowait(event)
@@ -527,6 +583,34 @@ class HumanLogStore:
                         event.camera,
                         event.track_id,
                     ),
+                )
+            human_row = connection.execute(
+                "SELECT id FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
+                (event.session_id, event.camera, event.track_id),
+            ).fetchone()
+        if event.finalize_detection_log and self.detection_log_store is not None:
+            source_event_key = (
+                f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
+            )
+            if self.detection_log_store.get_by_source_event_key(source_event_key) is None:
+                self.detection_log_store.create(
+                    source_system="face_recognition",
+                    source_event_key=source_event_key,
+                    source_human_log_id=(int(human_row["id"]) if human_row else None),
+                    personnel_id=event.personnel_id,
+                    person=event.name,
+                    confidence=event.recognition_score,
+                    detection_time=event.captured_at_utc,
+                    ref_img_id=(
+                        None if event.ref_img_id is None else str(event.ref_img_id)
+                    ),
+                    camera_id=event.camera,
+                    access_granted=event.personnel_id is not None,
+                    counts_for_attendance=True,
+                    log_type="camera_rtsp",
+                    snapshot_image=snapshot_url,
+                    video=state.video_url,
+                    face_video_or_unknown_faces=state.face_video_url,
                 )
         if old_snapshot_url and old_snapshot_url != new_snapshot_url:
             (self.snapshot_dir / Path(old_snapshot_url).name).unlink(missing_ok=True)

@@ -68,6 +68,15 @@ Face recognition quality is emitted per face (`quality_score`, metrics, validity
 while each tracked human accumulates `best_face_quality`; human history persistence
 must bind PostgreSQL boolean CASE parameters as booleans, not integer `0/1` values.
 
+When ByteTrack expires a source track, face recognition emits one additive
+`disappeared_humans` entry with the last stable identity. The runtime finalizes that
+track in `human_logs` and creates an idempotent `detection_logs` bridge using a
+`human-track:<session>:<camera>:<track>` source event key, making the record visible
+through `/api/v1/logs/filter` without changing the visible `humans` broadcast list.
+When Qdrant's `FaceMatch.person` is a national code, `HumanLogStore` resolves it
+against `personnel.national_code` and stores the personnel `fname lname` plus
+`personnel_id`; unknown or legacy non-code identities retain their original value.
+
 Task workers support `TASK_QUEUE_POLICY=latest_per_source` for bounded-latency CCTV or
 `TASK_QUEUE_POLICY=lossless_fifo` for bounded FIFO admission with backpressure. The
 real-time Compose default is latest-per-source; FIFO is an explicit file/API workload
