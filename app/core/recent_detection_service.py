@@ -188,9 +188,6 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     image = _read_image(body_image_path)
     image_kind = "body" if image is not None else "placeholder"
     if image is not None:
-        if concatenate:
-            reference_image = _read_image(_reference_path(runtime, row))
-            image = _concat_if_needed(image, reference_image)
         success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if success:
             encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
@@ -206,7 +203,9 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         "full_name": full_name,
         "confidence": confidence,
         "detection_time": _to_jalali_str(row.get("detection_time")),
-        "face_image_base64": face_image_b64,
+        # "face_image_base64": face_image_b64,
+        "body_image_base64": body_image_b64,
+        "image_kind": "body" ,
         "access_granted": bool(row.get("access_granted")),
         "counts_for_attendance": bool(row.get("counts_for_attendance")),
         "classification": classification,
