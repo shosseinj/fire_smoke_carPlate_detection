@@ -22,6 +22,8 @@ class CamRecord:
     url: str
     created_at_utc: str
     updated_at_utc: str
+    created_by: int | None = None
+    updated_by: int | None = None
 
 
 class CamStore:
@@ -44,6 +46,8 @@ class CamStore:
             url=str(row["url"]),
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
         )
 
     @staticmethod
@@ -106,6 +110,7 @@ class CamStore:
         source_type: str,
         section_id: int,
         url: str,
+        created_by: int | None = None,
     ) -> CamRecord:
         values = self._clean_values(
             camera_name=camera_name,
@@ -122,8 +127,8 @@ class CamStore:
                 self._validate_section(conn, section_id=values["section_id"])
                 cursor = conn.execute(
                     "INSERT INTO cam (camera_name, camera_number, width, high, source_type, "
-                    "section_id, url, created_at_utc, updated_at_utc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "section_id, url, created_at_utc, updated_at_utc, created_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         values["camera_name"],
                         values["camera_number"],
@@ -134,6 +139,7 @@ class CamStore:
                         values["url"],
                         now,
                         now,
+                        created_by,
                     ),
                 )
                 row = conn.execute(
@@ -207,6 +213,7 @@ class CamStore:
             "source_type",
             "section_id",
             "url",
+            "updated_by",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -231,10 +238,11 @@ class CamStore:
                     section_id=changes.get("section_id", existing["section_id"]),
                     url=changes.get("url", existing["url"]),
                 )
+                updated_by = changes.get("updated_by", existing.get("updated_by"))
                 self._validate_section(conn, section_id=merged["section_id"])
                 conn.execute(
                     "UPDATE cam SET camera_name=?, camera_number=?, width=?, high=?, "
-                    "source_type=?, section_id=?, url=?, updated_at_utc=? WHERE id=?",
+                    "source_type=?, section_id=?, url=?, updated_at_utc=?, updated_by=? WHERE id=?",
                     (
                         merged["camera_name"],
                         merged["camera_number"],
@@ -244,6 +252,7 @@ class CamStore:
                         merged["section_id"],
                         merged["url"],
                         utc_now_text(),
+                        updated_by,
                         cam_id,
                     ),
                 )

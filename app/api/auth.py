@@ -5,6 +5,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.auth_schemas import (
     ChangePasswordRequest,
@@ -25,15 +26,17 @@ from app.api.auth_schemas import (
 from app.config import settings
 from app.database import IntegrityError
 from app.core.auth import (
+    _bearer_scheme,
     create_access_token,
     create_refresh_token,
+    decode_access_token,
     decode_refresh_token,
     get_auth_store,
     get_current_user,
-    get_optional_user,
     hash_password,
     normalize_role,
     resolve_user_from_payload,
+    revoke_access_token,
     revoke_refresh_token,
     verify_password,
 )
@@ -45,6 +48,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
 
 def _user_to_response(user: UserRecord) -> UserResponse:
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -54,6 +58,8 @@ def _user_to_response(user: UserRecord) -> UserResponse:
         is_active=user.is_active,
         created_at=_parse_utc(user.created_at_utc) or datetime.now(timezone.utc),
         last_login=_parse_utc(user.last_login_utc),
+        created_at_jalali=utc_iso_to_jalali_datetime(user.created_at_utc) or "",
+        last_login_jalali=utc_iso_to_jalali_datetime(user.last_login_utc),
     )
 
 
@@ -328,26 +334,14 @@ def refresh(
 @router.post(
     "/logout",
     response_model=LogoutResponse,
-    summary="Revoke a refresh token",
-    description="Accepts refresh_token in either the JSON body or query string.",
+    summary="Logout and revoke the current access token",
+    description="No request body needed. Sends the Bearer token (Authorization header) to revoke it.",
 )
 def logout(
-    payload: LogoutRequest | None = Body(default=None),
-    refresh_token: str | None = Query(default=None),
-    current_user: UserRecord | None = Depends(get_optional_user),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> LogoutResponse:
-    token = _extract_refresh_token(payload, refresh_token)
-    if refresh_token is not None and current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="برای انجام این درخواست باید وارد حساب کاربری شوید",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not revoke_refresh_token(token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="توکن نوسازی نامعتبر است",
-        )
+    if credentials is not None:
+        revoke_access_token(credentials.credentials)
     return LogoutResponse(message="خروج با موفقیت انجام شد")
 
 
@@ -358,7 +352,7 @@ def logout(
     "/create-admin",
     response_model=CreateUserResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={200: {"description": "Legacy-compatible admin creation"}},
+    responses={200: {"description": "Update User Role"}},
 )
 def create_admin(
     payload: CreateUserRequest,

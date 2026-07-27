@@ -39,6 +39,8 @@ class PersonnelRecord:
     last_seen: str | None
     created_at_utc: str
     updated_at_utc: str
+    created_by: int | None = None
+    updated_by: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,11 +249,14 @@ class PersonnelStore:
             last_seen=last_seen,
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
         )
 
     def _personnel_columns(self) -> str:
         return ("id, fname, lname, national_code, employee_type, degree, "
-                "shift_id, department_id, last_seen, created_at_utc, updated_at_utc")
+                "shift_id, department_id, last_seen, created_at_utc, updated_at_utc, "
+                "created_by, updated_by")
 
     def create(
         self,
@@ -262,6 +267,7 @@ class PersonnelStore:
         degree: str | None = None,
         shift_id: int | None = None,
         department_id: int | None = None,
+        created_by: int | None = None,
     ) -> PersonnelRecord:
         fname = fname.strip()
         lname = lname.strip()
@@ -280,9 +286,10 @@ class PersonnelStore:
             try:
                 cursor = conn.execute(
                     "INSERT INTO personnel "
-                    "(fname, lname, national_code, employee_type, degree, shift_id, department_id, created_at_utc, updated_at_utc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (fname, lname, raw_code, employee_type, degree, shift_id, department_id, now, now),
+                    "(fname, lname, national_code, employee_type, degree, shift_id, department_id, "
+                    "created_at_utc, updated_at_utc, created_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (fname, lname, raw_code, employee_type, degree, shift_id, department_id, now, now, created_by),
                 )
                 row = conn.execute(
                     f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (cursor.lastrowid,)
@@ -338,6 +345,7 @@ class PersonnelStore:
         degree: str | None = None,
         shift_id: int | None = None,
         department_id: int | None = None,
+        updated_by: int | None = None,
     ) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
@@ -368,9 +376,9 @@ class PersonnelStore:
                 conn.execute(
                     "UPDATE personnel SET fname=?, lname=?, national_code=?, "
                     "employee_type=?, degree=?, shift_id=?, department_id=?, "
-                    "updated_at_utc=? WHERE id=?",
+                    "updated_at_utc=?, updated_by=? WHERE id=?",
                     (new_fname, new_lname, raw_code, new_employee_type, new_degree,
-                     new_shift_id, new_department_id, now, personnel_id),
+                     new_shift_id, new_department_id, now, updated_by, personnel_id),
                 )
                 row = conn.execute(
                     f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)

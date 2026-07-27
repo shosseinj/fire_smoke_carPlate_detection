@@ -29,6 +29,8 @@ class BuildingRecord:
     description: str | None
     created_at_utc: str
     updated_at_utc: str
+    created_by: int | None = None
+    updated_by: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,8 @@ class SectionRecord:
     description: str | None
     created_at_utc: str
     updated_at_utc: str
+    created_by: int | None = None
+    updated_by: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,8 @@ class RoomRecord:
     polygon_json: str | None
     created_at_utc: str
     updated_at_utc: str
+    created_by: int | None = None
+    updated_by: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +151,13 @@ class LocationStore:
             description=row["description"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
         )
 
     def create_building(
-        self, name: str, address: str | None = None, description: str | None = None
+        self, name: str, address: str | None = None, description: str | None = None,
+        created_by: int | None = None,
     ) -> BuildingRecord:
         name = name.strip()
         if not name:
@@ -156,9 +165,9 @@ class LocationStore:
         now = self._now()
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO buildings (name, address, description, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (name, address, description, now, now),
+                "INSERT INTO buildings (name, address, description, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (name, address, description, now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM buildings WHERE id = ?", (cursor.lastrowid,)
@@ -180,6 +189,7 @@ class LocationStore:
         name: str | None = None,
         address: str | None = None,
         description: str | None = None,
+        updated_by: int | None = None,
     ) -> BuildingRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
@@ -194,8 +204,8 @@ class LocationStore:
             new_description = description if description is not None else existing["description"]
             now = self._now()
             conn.execute(
-                "UPDATE buildings SET name=?, address=?, description=?, updated_at_utc=? WHERE id=?",
-                (new_name, new_address, new_description, now, building_id),
+                "UPDATE buildings SET name=?, address=?, description=?, updated_at_utc=?, updated_by=? WHERE id=?",
+                (new_name, new_address, new_description, now, updated_by, building_id),
             )
             row = conn.execute(
                 "SELECT * FROM buildings WHERE id = ?", (building_id,)
@@ -239,6 +249,8 @@ class LocationStore:
             description=row["description"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
         )
 
     def create_section(
@@ -246,6 +258,7 @@ class LocationStore:
         name: str,
         building_id: int | None = None,
         description: str | None = None,
+        created_by: int | None = None,
     ) -> SectionRecord:
         name = name.strip()
         if not name:
@@ -259,9 +272,9 @@ class LocationStore:
                 if bld is None:
                     raise ValueError(f"Building not found: {building_id}")
             cursor = conn.execute(
-                "INSERT INTO sections (building_id, name, description, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (building_id, name, description, now, now),
+                "INSERT INTO sections (building_id, name, description, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (building_id, name, description, now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM sections WHERE id = ?", (cursor.lastrowid,)
@@ -283,6 +296,7 @@ class LocationStore:
         name: str | None = None,
         building_id: int | None = None,
         description: str | None = None,
+        updated_by: int | None = None,
     ) -> SectionRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
@@ -305,8 +319,8 @@ class LocationStore:
             new_description = description if description is not None else existing["description"]
             now = self._now()
             conn.execute(
-                "UPDATE sections SET name=?, building_id=?, description=?, updated_at_utc=? WHERE id=?",
-                (new_name, new_building_id, new_description, now, section_id),
+                "UPDATE sections SET name=?, building_id=?, description=?, updated_at_utc=?, updated_by=? WHERE id=?",
+                (new_name, new_building_id, new_description, now, updated_by, section_id),
             )
             row = conn.execute(
                 "SELECT * FROM sections WHERE id = ?", (section_id,)
@@ -378,6 +392,8 @@ class LocationStore:
             polygon_json=row["polygon_json"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
+            created_by=row.get("created_by"),
+            updated_by=row.get("updated_by"),
         )
 
     def create_room(
@@ -387,6 +403,7 @@ class LocationStore:
         cam_id: int | None = None,
         description: str | None = None,
         polygon_json: str | None = None,
+        created_by: int | None = None,
     ) -> RoomRecord:
         name = name.strip()
         if not name:
@@ -419,9 +436,9 @@ class LocationStore:
                     raise ValueError(f"Section not found: {section_id}")
 
             cursor = conn.execute(
-                "INSERT INTO rooms (section_id, cam_id, name, description, polygon_json, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (effective_section_id, cam_id, name, description, polygon_json, now, now),
+                "INSERT INTO rooms (section_id, cam_id, name, description, polygon_json, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (effective_section_id, cam_id, name, description, polygon_json, now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (cursor.lastrowid,)
@@ -445,6 +462,7 @@ class LocationStore:
         cam_id: int | None | object = _UNSET,
         description: str | None = None,
         polygon_json: str | None = None,
+        updated_by: int | None = None,
     ) -> RoomRecord | None:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
@@ -494,8 +512,8 @@ class LocationStore:
             now = self._now()
             conn.execute(
                 "UPDATE rooms SET name=?, section_id=?, cam_id=?, description=?, polygon_json=?, "
-                "updated_at_utc=? WHERE id=?",
-                (new_name, new_section_id, new_cam_id, new_description, new_polygon, now, room_id),
+                "updated_at_utc=?, updated_by=? WHERE id=?",
+                (new_name, new_section_id, new_cam_id, new_description, new_polygon, now, updated_by, room_id),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (room_id,)

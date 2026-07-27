@@ -40,6 +40,14 @@ def _audit_columns() -> tuple[Column[Any], Column[Any]]:
     )
 
 
+def _user_audit_columns() -> tuple[Column[Any], Column[Any]]:
+    """Return ``created_by`` / ``updated_by`` FK columns referencing ``users.id``."""
+    return (
+        Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+        Column("updated_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    )
+
+
 users = Table(
     "users", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -142,7 +150,7 @@ holidays = Table(
     Column("date_value", Date, nullable=False), Column("description", Text),
     Column("holiday_type", Text, nullable=False, server_default="national"),
     Column("every_year", Integer, nullable=False, server_default="0"),
-    Column("is_active", Integer, nullable=False, server_default="1"), *_audit_columns(),
+    Column("is_active", Integer, nullable=False, server_default="1"), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_holidays_date", holidays.c.date_value)
 Index("idx_holidays_active", holidays.c.is_active)
@@ -169,7 +177,7 @@ personnel = Table(
     Column("employee_type", Text, nullable=False, server_default="unknown"), Column("degree", Text),
     Column("shift_id", Integer),
     Column("department_id", Integer),
-    Column("last_seen", UTC_TS), *_audit_columns(),
+    Column("last_seen", UTC_TS), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_personnel_national_code", personnel.c.national_code)
 Index("idx_personnel_name", personnel.c.lname, personnel.c.fname)
@@ -191,14 +199,14 @@ Index("idx_personnel_images_primary", personnel_images.c.personnel_id, personnel
 buildings = Table(
     "buildings", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("name", Text, nullable=False),
-    Column("address", Text), Column("description", Text), *_audit_columns(),
+    Column("address", Text), Column("description", Text), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_buildings_name", buildings.c.name)
 sections = Table(
     "sections", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("building_id", Integer, ForeignKey("buildings.id", ondelete="SET NULL")),
-    Column("name", Text, nullable=False), Column("description", Text), *_audit_columns(),
+    Column("name", Text, nullable=False), Column("description", Text), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_sections_building", sections.c.building_id); Index("idx_sections_name", sections.c.name)
 rooms = Table(
@@ -208,7 +216,7 @@ rooms = Table(
     # New room writes derive it from cam.section_id.
     Column("section_id", Integer, ForeignKey("sections.id", ondelete="SET NULL")),
     Column("cam_id", Integer, ForeignKey("cam.id", ondelete="RESTRICT")),
-    Column("name", Text, nullable=False), Column("description", Text), Column("polygon_json", Text), *_audit_columns(),
+    Column("name", Text, nullable=False), Column("description", Text), Column("polygon_json", Text), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_rooms_section", rooms.c.section_id); Index("idx_rooms_cam", rooms.c.cam_id); Index("idx_rooms_name", rooms.c.name)
 cam = Table(
@@ -221,7 +229,7 @@ cam = Table(
     Column("source_type", String(16), nullable=False),
     Column("section_id", Integer, ForeignKey("sections.id", ondelete="RESTRICT"), nullable=False),
     Column("url", Text, nullable=False),
-    *_audit_columns(),
+    *_audit_columns(), *_user_audit_columns(),
     CheckConstraint("camera_number > 0", name="ck_cam_camera_number_positive"),
     CheckConstraint("width > 0", name="ck_cam_width_positive"),
     CheckConstraint("high > 0", name="ck_cam_high_positive"),

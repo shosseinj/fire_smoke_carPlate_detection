@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.engine import make_url
 
 from app.api.models import ModelSettingsPatch
-from app.core.auth import require_role
+from app.core.auth import get_current_user, require_role
 from app.core.auth_store import UserRecord
 from app.core.plate_settings_store import PlateDetectionPolicy
 from app.fire_core.policy import FireSmokePolicyConfig
@@ -159,7 +159,10 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
         "and the supported camera processing modes."
     ),
 )
-def get_general_settings(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+def get_general_settings(
+    runtime: Runtime = Depends(get_runtime),
+    _: UserRecord = Depends(get_current_user),
+) -> dict[str, Any]:
     return _snapshot(runtime)
 
 

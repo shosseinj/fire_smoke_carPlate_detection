@@ -142,6 +142,7 @@ def list_request_statuses(
 
 
 def _record_to_dict(r: PersonnelRequestRecord) -> dict[str, Any]:
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
     return {
         "id": r.id,
         "personnel_id": r.personnel_id,
@@ -154,4 +155,6 @@ def _record_to_dict(r: PersonnelRequestRecord) -> dict[str, Any]:
         "rejection_reason": r.rejection_reason,
         "created_at_utc": r.created_at_utc,
         "updated_at_utc": r.updated_at_utc,
+        "created_at_jalali": utc_iso_to_jalali_datetime(r.created_at_utc) or "",
+        "updated_at_jalali": utc_iso_to_jalali_datetime(r.updated_at_utc),
     }
