@@ -40,7 +40,7 @@ services:
       - "8189:8189/udp"
 
   video-ai-router:
-    image: merged-video-ai-router:v9
+    image: merged-video-ai-router:v10-flat
     build:
       context: .
       dockerfile: Dockerfile.deepstream
@@ -178,7 +178,7 @@ services:
               capabilities: [gpu]
 
   video-ai-router-shell:
-    image: merged-video-ai-router:v9
+    image: merged-video-ai-router:v10-flat
     profiles: ["shell"]
     entrypoint: /bin/bash
     working_dir: /workspace
