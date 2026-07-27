@@ -973,6 +973,11 @@ class AnnotatedBroadcastHub:
             for frame in sorted(
                 self._source_only_latest.values(), key=lambda item: item.version
             ):
+                if (
+                    fullscreen_source is not None
+                    and frame.source_id == fullscreen_source
+                ):
+                    continue
                 try:
                     target.put_nowait(frame)
                 except queue.Full:
@@ -1008,6 +1013,11 @@ class AnnotatedBroadcastHub:
             self._subscribers[subscriber_id] = target
             self._subscriber_profiles[subscriber_id] = (wall, fullscreen_source)
             for frame in sorted(self._latest.values(), key=lambda item: item.version):
+                if (
+                    fullscreen_source is not None
+                    and frame.source_id == fullscreen_source
+                ):
+                    continue
                 try:
                     target.put_nowait(frame)
                 except queue.Full:

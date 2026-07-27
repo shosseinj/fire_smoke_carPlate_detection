@@ -12,7 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.broadcast import get_runtime, router as broadcast_router
-from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
+from app.core.broadcast import (
+    AnnotatedBroadcastHub,
+    EncodedBroadcastFrame,
+    SourceDrawSettings,
+)
 from app.core.source_registry import SourceChange, SourceRecord
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
@@ -266,6 +270,7 @@ def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> N
         with client.websocket_connect(
             "/api/v1/broadcast/ws?wall=true&fullscreen_source=camera-07"
         ) as websocket:
+            hub.publish_passthrough(packet([], "camera-07"))
             received: dict[str, tuple[dict, bytes]] = {}
             for _ in known_sources:
                 payload = websocket.receive_bytes()
@@ -292,6 +297,64 @@ def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> N
     assert cv2.imdecode(
         np.frombuffer(wall_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
     ).shape == (90, 160, 3)
+
+
+def test_fullscreen_subscription_skips_cached_wall_only_frame() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+        async_render=False,
+    )
+    wall_subscriber_id, wall_queue = hub.subscribe(wall=True)
+    hub.publish_passthrough(packet([], "camera-07"))
+    cached = wall_queue.get_nowait()
+    assert isinstance(cached, EncodedBroadcastFrame)
+    assert (cached.frame_width, cached.frame_height) == (160, 90)
+
+    fullscreen_subscriber_id, fullscreen_queue = hub.subscribe(
+        wall=True,
+        fullscreen_source="camera-07",
+    )
+    assert fullscreen_queue.empty()
+
+    next_packet = packet([], "camera-07")
+    hub.publish_passthrough(next_packet)
+    fullscreen = fullscreen_queue.get_nowait()
+
+    assert isinstance(fullscreen, EncodedBroadcastFrame)
+    assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
+    hub.unsubscribe(fullscreen_subscriber_id)
+    hub.unsubscribe(wall_subscriber_id)
+
+
+def test_source_only_fullscreen_subscription_skips_cached_wall_only_frame() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+        async_render=False,
+    )
+    wall_subscriber_id, wall_queue = hub.subscribe_source_only(wall=True)
+    hub.publish_source_only(packet([], "camera-07"))
+    cached = wall_queue.get_nowait()
+    assert isinstance(cached, EncodedBroadcastFrame)
+    assert (cached.frame_width, cached.frame_height) == (160, 90)
+
+    fullscreen_subscriber_id, fullscreen_queue = hub.subscribe_source_only(
+        wall=True,
+        fullscreen_source="camera-07",
+    )
+    assert fullscreen_queue.empty()
+
+    next_packet = packet([], "camera-07")
+    hub.publish_source_only(next_packet)
+    fullscreen = fullscreen_queue.get_nowait()
+
+    assert isinstance(fullscreen, EncodedBroadcastFrame)
+    assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
+    hub.unsubscribe_source_only(fullscreen_subscriber_id)
+    hub.unsubscribe_source_only(wall_subscriber_id)
 
 
 def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
