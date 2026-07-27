@@ -54,7 +54,9 @@ def _camera_report(
     expected_fps: float,
     tasks: tuple[str, ...],
 ) -> dict[str, Any]:
-    target_fps = float(after.get("delivery_target_fps") or 0.0)
+    configured_target_fps = float(after.get("delivery_target_fps") or 0.0)
+    native_fps = float(after.get("native_fps") or 0.0)
+    comparison_target_fps = configured_target_fps or native_fps
     appsink_sample_fps = _counter_rate(
         before, after, "decoded_samples", sample_seconds
     )
@@ -73,21 +75,27 @@ def _camera_report(
 
     causes: list[str] = []
     if (
-        target_fps > 0
-        and target_fps < expected_fps * 0.95
+        appsink_sample_fps == 0
+        and (admitted_fps is None or admitted_fps == 0)
+        and (router_frame_fps is None or router_frame_fps == 0)
+    ):
+        causes.append("source_unavailable")
+    if (
+        configured_target_fps > 0
+        and configured_target_fps < expected_fps * 0.95
         and (rate_limited_fps is None or rate_limited_fps > 0)
     ):
         causes.append("configured_ingest_cap")
     if (
-        target_fps > 0
+        comparison_target_fps > 0
         and appsink_sample_fps is not None
-        and appsink_sample_fps < target_fps * 0.75
+        and appsink_sample_fps < comparison_target_fps * 0.75
     ):
         causes.append("source_decode_starvation")
     if (
-        target_fps > 0
+        comparison_target_fps > 0
         and admitted_fps is not None
-        and admitted_fps < target_fps * 0.75
+        and admitted_fps < comparison_target_fps * 0.75
         and "source_decode_starvation" not in causes
     ):
         causes.append("ingestion_delivery_shortfall")
@@ -104,23 +112,31 @@ def _camera_report(
     observed_fps = (
         router_frame_fps if router_frame_fps is not None else admitted_fps
     )
-    if observed_fps is None or observed_fps == 0:
-        status = "idle"
-    elif causes:
+    if causes:
         status = "limited"
+    elif observed_fps is None or observed_fps == 0:
+        status = "idle"
     else:
         status = "healthy"
     return {
         "status": status,
         "tasks": list(tasks),
-        "configured_target_fps": target_fps or None,
+        "source_type": after.get("source_type"),
+        "fps_mode": after.get("fps_mode") or (
+            "override" if configured_target_fps > 0 else "native"
+        ),
+        "configured_target_fps": configured_target_fps or None,
+        "native_fps": native_fps or None,
         "expected_fps": expected_fps,
         "appsink_sample_fps": appsink_sample_fps,
         "rate_limited_fps": rate_limited_fps,
         "admitted_fps": admitted_fps,
         "pre_router_replacement_fps": pre_router_replacement_fps,
         "router_frame_fps": router_frame_fps,
-        "target_utilization_percent": _ratio_percent(observed_fps, target_fps),
+        "target_utilization_percent": _ratio_percent(
+            observed_fps,
+            comparison_target_fps,
+        ),
         "expected_utilization_percent": _ratio_percent(observed_fps, expected_fps),
         "last_frame_age_seconds": after.get("last_frame_age_seconds"),
         "causes": causes,
@@ -283,7 +299,7 @@ def build_fps_report(
             for cause in detail["causes"]:
                 if cause not in camera["causes"]:
                     camera["causes"].append(cause)
-        if camera["causes"] and camera["status"] != "idle":
+        if camera["causes"]:
             camera["status"] = "limited"
     cause_counts = Counter(
         cause
@@ -293,11 +309,15 @@ def build_fps_report(
     guidance: list[str] = []
     if cause_counts["configured_ingest_cap"]:
         guidance.append(
-            "VIDEO_INGEST_FPS is below the requested FPS for AI cameras; raise it gradually and re-run this check while watching worker replacements and latency."
+            "A sources.fps override is below the requested FPS; raise that source row gradually and re-run this check while watching worker replacements and latency."
         )
     if cause_counts["source_decode_starvation"]:
         guidance.append(
             "One or more decoders are producing fewer frames than their configured target; inspect source FPS, connectivity, decode warnings, and frame age."
+        )
+    if cause_counts["source_unavailable"]:
+        guidance.append(
+            "One or more enabled sources delivered no frames during the sample; inspect only those camera connections while healthy sources continue independently."
         )
     if cause_counts["latest_frame_replacement"] or cause_counts[
         "processor_throughput_shortfall"
@@ -314,8 +334,17 @@ def build_fps_report(
         "sample_seconds": round(duration, 3),
         "expected_fps_per_camera": expected_fps,
         "backend": after_video.get("backend"),
-        "configured_ai_target_fps": after_video.get("target_fps"),
-        "configured_preview_target_fps": after_video.get("preview_fps"),
+        "fps_control": "sources.fps",
+        "native_fps_sources": sum(
+            1
+            for source in after_sources.values()
+            if source.get("delivery_target_fps") is None
+        ),
+        "overridden_fps_sources": sum(
+            1
+            for source in after_sources.values()
+            if source.get("delivery_target_fps") is not None
+        ),
         "cameras": cameras,
         "workers": workers,
         "broadcast": {

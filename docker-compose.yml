@@ -20,7 +20,8 @@ services:
     image: qdrant/qdrant:v1.18.3
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6333:6333"
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
     healthcheck:
@@ -62,15 +63,13 @@ services:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-real}
       VIDEO_INGEST_BACKEND: deepstream
       VIDEO_INGESTION_ENABLED: "true"
-      VIDEO_INGEST_FPS: ${VIDEO_INGEST_FPS:-25}
-      VIDEO_PREVIEW_FPS: ${VIDEO_PREVIEW_FPS:-25}
       TASK_QUEUE_POLICY: ${TASK_QUEUE_POLICY:-latest_per_source}
       TASK_QUEUE_CAPACITY: ${TASK_QUEUE_CAPACITY:-256}
       TASK_QUEUE_BLOCK_TIMEOUT_MS: ${TASK_QUEUE_BLOCK_TIMEOUT_MS:-0}
       BROADCAST_WALL_JPEG_QUALITY: ${BROADCAST_WALL_JPEG_QUALITY:-70}
       BROADCAST_WALL_MAX_WIDTH: ${BROADCAST_WALL_MAX_WIDTH:-320}
       BROADCAST_WALL_MAX_HEIGHT: ${BROADCAST_WALL_MAX_HEIGHT:-320}
-      BROADCAST_FACE_OVERLAY_TTL_MS: ${BROADCAST_FACE_OVERLAY_TTL_MS:-250}
+      BROADCAST_FACE_OVERLAY_TTL_MS: ${BROADCAST_FACE_OVERLAY_TTL_MS:-750}
       MEDIA_PREVIEW_ENABLED: ${MEDIA_PREVIEW_ENABLED:-true}
       MEDIA_PREVIEW_PUBLISH_BASE: ${MEDIA_PREVIEW_PUBLISH_BASE:-rtsp://mediamtx:8554}
       MEDIA_PREVIEW_WHEP_BASE_URL: "${MEDIA_PREVIEW_WHEP_BASE_URL:-}"
@@ -157,12 +156,7 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      - ./app:/workspace/app:ro
-      - ./alembic:/workspace/alembic:ro
-      - ./alembic.ini:/workspace/alembic.ini:ro
-      - ./data:/workspace/data
-      - ./weights:/workspace/weights:ro
-      - ./saved_media:/workspace/saved_media
+      - .:/workspace
     shm_size: "2gb"
     depends_on:
       qdrant:

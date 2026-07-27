@@ -128,7 +128,8 @@ class MediaPreviewPublisher:
 
     @staticmethod
     def _safe_name(source_id: str) -> str:
-        return "".join(char if char.isalnum() else "_" for char in source_id)
+        display_uri = redact_rtsp_credentials(source_id)
+        return "".join(char if char.isalnum() else "_" for char in display_uri)
 
     def _local_path(self, source_uri: str) -> Path:
         path = Path(source_uri).expanduser()
@@ -165,6 +166,7 @@ class MediaPreviewPublisher:
 
     def _fail(self, source_id: str, message: str, *, immediate: bool = False) -> None:
         safe_message = redact_rtsp_credentials(message)
+        display_uri = redact_rtsp_credentials(source_id)
         with self._lock:
             state = self._states.get(source_id)
             if state is not None:
@@ -179,8 +181,8 @@ class MediaPreviewPublisher:
                 if immediate
                 else time.monotonic() + self.reconnect_seconds
             )
-            self._last_error = f"{source_id}: {safe_message}"
-        LOGGER.warning("Preview publisher %s: %s", source_id, safe_message)
+            self._last_error = f"{display_uri}: {safe_message}"
+        LOGGER.warning("Preview publisher %s: %s", display_uri, safe_message)
 
     def _on_bus_message(self, bus: Any, message: Any, source_id: str) -> None:
         Gst, _ = self._require_runtime()
@@ -381,9 +383,14 @@ class MediaPreviewPublisher:
             except Exception as exc:
                 self._open_failures += 1
                 safe_error = redact_rtsp_credentials(f"{type(exc).__name__}: {exc}")
-                self._last_error = f"{source_id}: {safe_error}"
+                display_uri = redact_rtsp_credentials(source_id)
+                self._last_error = f"{display_uri}: {safe_error}"
                 self._retry_after[source_id] = time.monotonic() + self.reconnect_seconds
-                LOGGER.warning("Could not open preview publisher %s: %s", source_id, safe_error)
+                LOGGER.warning(
+                    "Could not open preview publisher %s: %s",
+                    display_uri,
+                    safe_error,
+                )
 
     def _run(self) -> None:
         _, GLib = self._require_runtime()

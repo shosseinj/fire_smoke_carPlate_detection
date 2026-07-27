@@ -13,3 +13,17 @@ Retry 3: Corrected verified legacy/current test modes, holiday auth typing, shif
 Current diagnosis: AUTH_APP route coverage still does not include the complete auth router contract; automatic primary selection checks image count rather than whether a primary exists; personnel upload serialization still disagrees with the no-legacy-fields response contract.
 Manual next step: Inspect AUTH_APP router construction, change default primary selection to query for an existing primary image, define one authoritative personnel upload response schema, then rerun the failed focused command followed by the full PostgreSQL suite.
 ================================================================================
+Timestamp UTC: 2026-07-27T07:25:57.9712502Z
+Agent: Codex GPT-5
+Task: Isolate failed RTSP cameras and diagnose low FPS and latency
+Status: FAILED_AFTER_3_RETRIES
+Changed files: alembic/versions/20260727_0028_canonicalize_rtsp_source_types.py, app/core/deepstream_ingestor.py, app/core/media_preview_publisher.py, app/core/source_registry.py, app/core/video_ingestor.py, app/database.py, tests/test_media_preview.py, tests/test_video_ingestor.py
+Baseline: Focused ingestion, FPS diagnostic, and preview tests pass; the repository-wide suite does not complete.
+Failed command: $env:TEST_DATABASE_URL='postgresql+psycopg2://postgres:postgres-test@127.0.0.1:55432/video_ai_test'; python -m pytest -q -x --tb=short --deselect tests/test_api.py::test_source_table_imports_json_once_and_becomes_authoritative
+Final error: The suite timed out after five minutes; a verbose retry showed tests/test_api.py::test_source_crud_emits_online_websocket_events_and_allows_renaming failed and then hung during teardown without emitting a traceback.
+Retry 1: Reran with -vv -x; tests/test_api.py::test_source_table_imports_json_once_and_becomes_authoritative failed immediately because seed_path is undefined at line 49.
+Retry 2: Deselected only the proven seed_path baseline failure and reran; the suite timed out after five minutes with the pytest process still idle.
+Retry 3: Reran the remaining suite with per-test progress; the source CRUD websocket test reported FAILED and then remained stuck during teardown until the confirmed pytest process was stopped.
+Current diagnosis: The regression suite has a pre-existing undefined seed_path test defect plus a separate source CRUD websocket teardown hang; neither failure is in the focused RTSP routing, lifecycle, migration, FPS diagnostics, or preview tests.
+Manual next step: Define the missing seed_path fixture or local variable in tests/test_api.py, then isolate and fix the TestClient/runtime teardown hang in test_source_crud_emits_online_websocket_events_and_allows_renaming before rerunning the full PostgreSQL suite.
+================================================================================

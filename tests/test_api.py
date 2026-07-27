@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.core.deepstream_ingestor import DeepStreamIngestor
+from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
 from app.database import get_database, metadata
 from app.runtime import build_runtime
@@ -24,6 +25,27 @@ pytestmark = pytest.mark.usefixtures("postgres_database")
 
 def _test_database_url() -> str:
     return os.environ["TEST_DATABASE_URL"]
+
+
+def test_source_registry_upsert_persists_source_fps() -> None:
+    database = get_database(_test_database_url())
+    registry = SourceRegistry(database)
+    try:
+        registry.upsert(
+            SourceRecord(
+                source_uri="data/upsert-fps.mp4",
+                name="Upsert FPS",
+                fps=37.5,
+            )
+        )
+    finally:
+        registry.close()
+
+    reloaded = SourceRegistry(database)
+    try:
+        assert reloaded.require("data/upsert-fps.mp4").fps == 37.5
+    finally:
+        reloaded.close()
 
 
 def test_fire_smoke_worker_uses_configured_queue_policy() -> None:
@@ -403,6 +425,14 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
             assert get_a.json()["name"] == "Bulk A"
             assert get_a.json()["fps"] == 7.5
             assert get_a.json()["draw_smoke"] is False
+
+            native_fps = client.patch(
+                f"/api/v1/sources/{id_a}",
+                json={"fps": None},
+            )
+            assert native_fps.status_code == 200
+            assert native_fps.json()["fps"] is None
+            assert client.get(f"/api/v1/sources/{id_a}").json()["fps"] is None
 
             # Missing id returns 404
             resp_missing = client.put(

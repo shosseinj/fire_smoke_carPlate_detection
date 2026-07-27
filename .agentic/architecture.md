@@ -72,8 +72,8 @@ Video Source (MP4/RTSP)
   │
   ▼
 VideoFileIngestor / DeepStreamIngestor
-  │  Decodes at VIDEO_INGEST_FPS (default 5)
-  │  Preview at VIDEO_PREVIEW_FPS (default 25) for play-only
+  │  Native FPS when sources.fps is NULL
+  │  Per-source override from sources.fps when configured
   │  Per-camera pipeline control
   ▼
 TaskRouter.submit_round(frames, source_ids)

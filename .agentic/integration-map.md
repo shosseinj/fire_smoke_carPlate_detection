@@ -13,7 +13,7 @@ Input                   Transformation                      Consumers           
 RTSP/MP4 URI            DeepStreamIngestor /                TaskRouter                  ResultStore
                         VideoFileIngestor                    │                          Broadcast (WS + MJPEG)
                         │                                   ├─ LatestBuffer (per task)  PlateLogStore
-                        │  Decode @ VIDEO_INGEST_FPS        ├─ TaskWorker (micro-batch) FireSmokeLogStore
+                        │  Decode @ native/sources.fps      ├─ TaskWorker (micro-batch) FireSmokeLogStore
                         │  Resize to frame_width/height     └─ BatchProcessor           HumanLogStore
                         │  Produce FramePacket                                              │
                         ▼                                   ▼                           ▼

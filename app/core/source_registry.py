@@ -24,6 +24,15 @@ STATIC_VIDEO = "static_video"
 SOURCE_TYPES = frozenset({RTSP, STATIC_VIDEO})
 
 
+def canonical_source_type(source_uri: str, source_type: str | None) -> str:
+    normalized_uri = source_uri.strip().lower()
+    if normalized_uri.startswith(("rtsp://", "rtsps://")):
+        return RTSP
+    if source_type in SOURCE_TYPES:
+        return source_type
+    return RTSP
+
+
 @dataclass(slots=True)
 class SourceRecord:
     id: int | None = None
@@ -57,9 +66,10 @@ class SourceRecord:
         source_uri = value.get("source_uri", value.get("camera_id", value.get("source_id")))
         if source_uri is None:
             raise ValueError("Source record requires source_uri")
-        source_type = value.get("source_type", RTSP)
-        if source_type not in SOURCE_TYPES:
-            source_type = RTSP
+        source_type = canonical_source_type(
+            str(source_uri),
+            value.get("source_type", RTSP),
+        )
         return cls(
             id=value.get("id"),
             source_uri=str(source_uri),
@@ -128,6 +138,7 @@ class SourceRegistry:
                 ORDER BY COALESCE(created_at_utc, updated_at_utc), source_uri
                 """
             ).fetchall()
+            self._connection.commit()
             self._records = {
                 str(row["source_uri"]): self._row_to_record(row) for row in rows
             }
@@ -158,8 +169,10 @@ class SourceRegistry:
             raise ValueError("frame_width must be between 16 and 4096")
         if not 16 <= value.frame_height <= 4096:
             raise ValueError("frame_height must be between 16 and 4096")
-        if value.source_type not in SOURCE_TYPES:
-            value.source_type = RTSP
+        value.source_type = canonical_source_type(
+            value.source_uri,
+            value.source_type,
+        )
         return value
 
     @staticmethod
@@ -173,7 +186,10 @@ class SourceRegistry:
             tasks={TaskName(item) for item in json.loads(row["tasks_json"])},
             frame_width=int(row["frame_width"]),
             frame_height=int(row["frame_height"]),
-            source_type=str(row["source_type"]) if row["source_type"] else RTSP,
+            source_type=canonical_source_type(
+                str(row["source_uri"]),
+                str(row["source_type"]) if row["source_type"] else RTSP,
+            ),
             room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
             fps=float(row["fps"]) if row["fps"] is not None else None,
@@ -407,8 +423,10 @@ class SourceRegistry:
                 INSERT INTO sources (
                     id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
-                    metadata_json, loop, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
+                    draw_smoke, draw_vehicle, draw_plate,
+                    created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -419,7 +437,14 @@ class SourceRegistry:
                     room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
+                    fps = excluded.fps,
                     loop = excluded.loop,
+                    draw_human = excluded.draw_human,
+                    draw_zone = excluded.draw_zone,
+                    draw_fire = excluded.draw_fire,
+                    draw_smoke = excluded.draw_smoke,
+                    draw_vehicle = excluded.draw_vehicle,
+                    draw_plate = excluded.draw_plate,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),

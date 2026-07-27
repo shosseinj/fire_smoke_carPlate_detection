@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260727_0028"
+ALEMBIC_HEAD_REVISION = "20260727_0029"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -79,6 +79,10 @@ face_quality_settings = Table(
     Column("min_face_height", Integer, nullable=False), Column("min_eye_distance", Float, nullable=False),
     Column("max_abs_yaw", Float, nullable=False), Column("max_abs_pitch", Float, nullable=False),
     Column("max_abs_roll", Float, nullable=False), Column("require_landmarks", Integer, nullable=False),
+    Column("human_pose_enabled", Integer, nullable=False, server_default="1"),
+    Column("human_pose_min_keypoints", Integer, nullable=False, server_default="4"),
+    Column("human_pose_keypoint_confidence", Float, nullable=False, server_default="0.25"),
+    Column("recognition_quality_weight", Float, nullable=False, server_default="0.5"),
     CheckConstraint("singleton = 1", name="ck_face_quality_singleton"),
 )
 

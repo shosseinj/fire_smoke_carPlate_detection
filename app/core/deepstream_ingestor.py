@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -12,7 +13,13 @@ import cv2
 import numpy as np
 
 from app.core.router import TaskRouter
-from app.core.source_registry import RTSP, SOURCE_TYPES, SourceRecord, SourceRegistry
+from app.core.source_registry import (
+    RTSP,
+    SOURCE_TYPES,
+    SourceRecord,
+    SourceRegistry,
+    canonical_source_type,
+)
 from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
@@ -51,7 +58,8 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     preserve_source_resolution: bool
-    delivery_target_fps: float
+    delivery_target_fps: float | None
+    next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
@@ -73,6 +81,8 @@ class DeepStreamSourceState:
 class DeepStreamIngestor:
     """Uses DeepStream/NVDEC for file and RTSP decoding, then feeds the router."""
 
+    SCHEDULER_MAX_FPS = 240.0
+
     REQUIRED_ELEMENTS = (
         "nvurisrcbin",
         "nvvideoconvert",
@@ -88,8 +98,6 @@ class DeepStreamIngestor:
         registry: SourceRegistry,
         router: TaskRouter,
         project_root: Path,
-        target_fps: float = 5.0,
-        preview_fps: float = 25.0,
         gpu_resize_enabled: bool = True,
         loop: bool = True,
         source_type_filter: str = RTSP,
@@ -109,8 +117,6 @@ class DeepStreamIngestor:
         self.registry = registry
         self.router = router
         self.project_root = project_root
-        self.target_fps = max(0.1, float(target_fps))
-        self.preview_fps = max(0.1, float(preview_fps))
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         self._gpu_resize_available = self._detect_gpu_resize()
         self.loop = bool(loop)
@@ -135,6 +141,8 @@ class DeepStreamIngestor:
         self._started = threading.Event()
         self._lock = threading.RLock()
         self._states: dict[str, DeepStreamSourceState] = {}
+        self._closing_sources: set[str] = set()
+        self._close_threads: dict[str, threading.Thread] = {}
         self._retry_after: dict[str, float] = {}
         self._failed_sources: set[str] = set()
         self._frame_sequences: dict[str, int] = {}
@@ -182,7 +190,10 @@ class DeepStreamIngestor:
     def _filter_by_type(self, records: list[SourceRecord]) -> list[SourceRecord]:
         return [
             r for r in records
-            if r.source_type == self.source_type_filter
+            if canonical_source_type(
+                r.source_uri,
+                r.source_type,
+            ) == self.source_type_filter
         ]
 
     def _resolve_uri(self, source_uri: str) -> str:
@@ -205,7 +216,11 @@ class DeepStreamIngestor:
 
     @staticmethod
     def _safe_element_name(source_id: str) -> str:
-        return "".join(character if character.isalnum() else "_" for character in source_id)
+        display_uri = VideoFileIngestor.redact_uri(source_id)
+        return "".join(
+            character if character.isalnum() else "_"
+            for character in display_uri
+        )
 
     def _gst_source_id(self, source_id: str) -> int:
         """Return a stable numeric ID so nvurisrcbin logs never show source -1."""
@@ -254,11 +269,12 @@ class DeepStreamIngestor:
             element.connect("autoplug-continue", self._on_autoplug_continue)
 
     def _redact_error(self, source_id: str, message: str) -> str:
+        display_uri = VideoFileIngestor.redact_uri(source_id)
         with self._lock:
             state = self._states.get(source_id)
-            if state is None:
-                return message
-            return message.replace(state.source_uri, state.display_uri)
+            if state is not None:
+                display_uri = state.display_uri
+        return message.replace(source_id, display_uri)
 
     def _mark_failed(
         self,
@@ -268,11 +284,13 @@ class DeepStreamIngestor:
         expected: bool = False,
     ) -> None:
         safe_message = self._redact_error(source_id, message)
+        display_uri = VideoFileIngestor.redact_uri(source_id)
         with self._lock:
             state = self._states.get(source_id)
             if state is not None:
                 state.last_error = safe_message
-            self._last_error = f"{source_id}: {safe_message}"
+                display_uri = state.display_uri
+            self._last_error = f"{display_uri}: {safe_message}"
             self._failed_sources.add(source_id)
             self._retry_after[source_id] = (
                 time.monotonic()
@@ -280,7 +298,7 @@ class DeepStreamIngestor:
                 else time.monotonic() + self.rtsp_reconnect_seconds
             )
         log = LOGGER.info if expected else LOGGER.error
-        log("DeepStream source %s: %s", source_id, safe_message)
+        log("DeepStream source %s: %s", display_uri, safe_message)
 
     def _on_bus_message(self, bus: Any, message: Any, source_id: str) -> None:
         Gst, _ = self._require_runtime()
@@ -301,14 +319,20 @@ class DeepStreamIngestor:
                         self._loop_counts[source_id] = (
                             self._loop_counts.get(source_id, 0) + 1
                         )
-                LOGGER.info("DeepStream file reached EOS; restarting cleanly: %s", source_id)
+                LOGGER.info(
+                    "DeepStream file reached EOS; restarting cleanly: %s",
+                    VideoFileIngestor.redact_uri(source_id),
+                )
                 self._mark_failed(
                     source_id,
                     "End of stream; source restart scheduled",
                     expected=True,
                 )
             else:
-                LOGGER.info("DeepStream file reached EOS: %s", source_id)
+                LOGGER.info(
+                    "DeepStream file reached EOS: %s",
+                    VideoFileIngestor.redact_uri(source_id),
+                )
                 with self._lock:
                     self._failed_sources.add(source_id)
                     self._retry_after[source_id] = float("inf")
@@ -320,7 +344,11 @@ class DeepStreamIngestor:
                 if state is not None:
                     state.warnings += 1
                     state.last_error = safe_warning
-            LOGGER.warning("DeepStream source warning: %s: %s", source_id, safe_warning)
+            LOGGER.warning(
+                "DeepStream source warning: %s: %s",
+                VideoFileIngestor.redact_uri(source_id),
+                safe_warning,
+            )
 
     def _on_new_sample(self, sink: Any, source_id: str) -> Any:
         Gst, _ = self._require_runtime()
@@ -334,10 +362,30 @@ class DeepStreamIngestor:
             if state is None or state.sink is not sink:
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
-            minimum_interval = 1.0 / state.delivery_target_fps
-            if now - state.last_frame_monotonic < minimum_interval:
-                state.rate_limited_frames += 1
-                return Gst.FlowReturn.OK
+            if state.delivery_target_fps is not None:
+                period = 1.0 / state.delivery_target_fps
+                tolerance = min(0.004, period * 0.10)
+                if (
+                    state.next_frame_due_monotonic > 0.0
+                    and now + tolerance < state.next_frame_due_monotonic
+                ):
+                    state.rate_limited_frames += 1
+                    return Gst.FlowReturn.OK
+                if state.next_frame_due_monotonic <= 0.0:
+                    state.next_frame_due_monotonic = now + period
+                else:
+                    periods = max(
+                        1,
+                        math.floor(
+                            max(
+                                0.0,
+                                now - state.next_frame_due_monotonic,
+                            )
+                            / period
+                        )
+                        + 1,
+                    )
+                    state.next_frame_due_monotonic += periods * period
 
         try:
             caps = sample.get_caps()
@@ -526,9 +574,7 @@ class DeepStreamIngestor:
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
                 preserve_source_resolution=preserve_source_resolution,
-                delivery_target_fps=(
-                    self.target_fps if record.tasks else self.preview_fps
-                ),
+                delivery_target_fps=record.fps,
                 loop_count=self._loop_counts.get(record.source_uri, 0),
             )
             with self._lock:
@@ -542,7 +588,7 @@ class DeepStreamIngestor:
             with self._lock:
                 state = self._states.pop(record.source_uri, None)
             if state is not None:
-                self._dispose_state(state)
+                self._schedule_state_disposal(state)
             else:
                 pipeline.set_state(Gst.State.NULL)
                 try:
@@ -575,19 +621,61 @@ class DeepStreamIngestor:
         except Exception:
             LOGGER.debug("GStreamer NULL-state wait failed for %s", state.source_id)
 
+    def _schedule_state_disposal(self, state: DeepStreamSourceState) -> None:
+        source_id = state.source_id
+        with self._lock:
+            if source_id in self._closing_sources:
+                return
+            self._closing_sources.add(source_id)
+
+        def dispose() -> None:
+            try:
+                self._dispose_state(state)
+            finally:
+                with self._lock:
+                    self._closing_sources.discard(source_id)
+                    current = self._close_threads.get(source_id)
+                    if current is threading.current_thread():
+                        self._close_threads.pop(source_id, None)
+
+        thread = threading.Thread(
+            target=dispose,
+            name="deepstream-source-disposer",
+            daemon=True,
+        )
+        with self._lock:
+            self._close_threads[source_id] = thread
+        thread.start()
+
     def _close_source(self, source_id: str) -> None:
         with self._lock:
             state = self._states.pop(source_id, None)
         if state is None:
             return
-        self._dispose_state(state)
+        self._schedule_state_disposal(state)
+
+    def _join_close_threads(self, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._lock:
+                threads = list(self._close_threads.values())
+            if not threads:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            for thread in threads:
+                thread.join(timeout=min(remaining, 0.25))
 
     def _active_records(self) -> list[SourceRecord]:
         records = [
             record
             for record in self.registry.list()
             if record.enabled and self.is_supported_source(record)
-            and record.source_type == self.source_type_filter
+            and canonical_source_type(
+                record.source_uri,
+                record.source_type,
+            ) == self.source_type_filter
             and (
                 self.rtsp_enabled
                 or not VideoFileIngestor.is_rtsp_uri(record.source_uri or "")
@@ -636,10 +724,11 @@ class DeepStreamIngestor:
             with self._lock:
                 state = self._states.get(record.source_uri)
                 retry_after = self._retry_after.get(record.source_uri, 0.0)
+                closing = record.source_uri in self._closing_sources
                 if state is not None:
-                    state.delivery_target_fps = (
-                        self.target_fps if record.tasks else self.preview_fps
-                    )
+                    if state.delivery_target_fps != record.fps:
+                        state.next_frame_due_monotonic = 0.0
+                    state.delivery_target_fps = record.fps
             if state is not None and (
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
@@ -649,16 +738,18 @@ class DeepStreamIngestor:
             ):
                 self._close_source(record.source_uri)
                 state = None
-            if state is not None or retry_after > time.monotonic():
+                closing = True
+            if state is not None or closing or retry_after > time.monotonic():
                 continue
             try:
                 self._open_source(record)
             except Exception as exc:
                 self._open_failures += 1
                 safe_uri = VideoFileIngestor.redact_uri(record.source_uri or "")
+                safe_error = str(exc).replace(record.source_uri, safe_uri)
                 self._last_error = (
-                    f"Could not open {record.source_uri} ({safe_uri}): "
-                    f"{type(exc).__name__}: {exc}"
+                    f"Could not open {safe_uri}: "
+                    f"{type(exc).__name__}: {safe_error}"
                 )
                 self._retry_after[record.source_uri] = (
                     time.monotonic() + self.rtsp_reconnect_seconds
@@ -733,7 +824,7 @@ class DeepStreamIngestor:
 
     def _run(self) -> None:
         self._started.set()
-        submit_interval = 1.0 / max(self.target_fps, self.preview_fps)
+        submit_interval = 1.0 / self.SCHEDULER_MAX_FPS
         next_sync = 0.0
         next_submit = 0.0
         registry_revision = -1
@@ -758,6 +849,7 @@ class DeepStreamIngestor:
             source_ids = list(self._states)
         for source_id in source_ids:
             self._close_source(source_id)
+        self._join_close_threads(timeout=10.0)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -796,8 +888,7 @@ class DeepStreamIngestor:
                 "source_type_filter": self.source_type_filter,
                 "max_sources": self.max_sources,
                 "running": self._thread is not None and self._thread.is_alive(),
-                "target_fps": self.target_fps,
-                "preview_fps": self.preview_fps,
+                "fps_control": "sources.fps",
                 "gpu_resize_enabled": self.gpu_resize_enabled,
                 "gpu_resize_active": self._gpu_resize_available,
                 "loop": self.loop,
@@ -809,6 +900,7 @@ class DeepStreamIngestor:
                 "frames_submitted": self._frames_submitted,
                 "open_failures": self._open_failures,
                 "reconnects": self._reconnects,
+                "closing_sources": len(self._closing_sources),
                 "last_error": self._last_error,
                 "sources": {
                     source_id: {
@@ -819,6 +911,12 @@ class DeepStreamIngestor:
                         "source_frame_width": state.source_frame_width,
                         "source_frame_height": state.source_frame_height,
                         "preserve_source_resolution": state.preserve_source_resolution,
+                        "configured_fps": state.delivery_target_fps,
+                        "fps_mode": (
+                            "override"
+                            if state.delivery_target_fps is not None
+                            else "native"
+                        ),
                         "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
                         "rate_limited_frames": state.rate_limited_frames,
