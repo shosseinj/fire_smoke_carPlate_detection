@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database
 from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -594,13 +597,28 @@ class QdrantFaceStore:
             api_key=settings.qdrant_api_key,
         )
         self.mode = "qdrant-remote"
-        if not self.client.collection_exists(self.collection):
-            self.client.create_collection(
-                collection_name=self.collection,
-                vectors_config=models.VectorParams(
-                    size=self.vector_size,
-                    distance=models.Distance.COSINE,
-                ),
+        self._ensure_collection()
+
+    def _ensure_collection(self) -> None:
+        with self.lock:
+            if self.client.collection_exists(self.collection):
+                return
+            try:
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=self.models.VectorParams(
+                        size=self.vector_size,
+                        distance=self.models.Distance.COSINE,
+                    ),
+                )
+            except Exception:
+                if self.client.collection_exists(self.collection):
+                    return
+                raise
+            LOGGER.info(
+                "Created Qdrant face collection '%s' with vector size %d",
+                self.collection,
+                self.vector_size,
             )
 
     def search_batch(self, embeddings: np.ndarray, threshold: float) -> list[FaceMatch]:
@@ -616,10 +634,17 @@ class QdrantFaceStore:
             for embedding in embeddings
         ]
         with self.lock:
-            responses = self.client.query_batch_points(
-                collection_name=self.collection,
-                requests=requests,
-            )
+            try:
+                responses = self.client.query_batch_points(
+                    collection_name=self.collection,
+                    requests=requests,
+                )
+            except Exception:
+                self._ensure_collection()
+                responses = self.client.query_batch_points(
+                    collection_name=self.collection,
+                    requests=requests,
+                )
         matches: list[FaceMatch] = []
         for response in responses:
             points = list(getattr(response, "points", []) or [])
@@ -645,6 +670,7 @@ class QdrantFaceStore:
     ) -> str:
         point_id = str(uuid.uuid4())
         with self.lock:
+            self._ensure_collection()
             self.client.upsert(
                 collection_name=self.collection,
                 wait=True,
@@ -663,6 +689,7 @@ class QdrantFaceStore:
         offset = None
         remaining = max(1, min(int(limit), 10000))
         with self.lock:
+            self._ensure_collection()
             while remaining > 0:
                 records, offset = self.client.scroll(
                     collection_name=self.collection,
@@ -691,6 +718,7 @@ class QdrantFaceStore:
         )
         query_filter = self.models.Filter(must=[condition])
         with self.lock:
+            self._ensure_collection()
             count = int(
                 self.client.count(
                     collection_name=self.collection,
@@ -709,6 +737,7 @@ class QdrantFaceStore:
         if not point_ids:
             return 0
         with self.lock:
+            self._ensure_collection()
             self.client.delete(
                 collection_name=self.collection,
                 points_selector=point_ids,
@@ -718,6 +747,7 @@ class QdrantFaceStore:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
+            self._ensure_collection()
             count = int(self.client.count(collection_name=self.collection).count)
         return {"mode": self.mode, "collection": self.collection, "points": count}
 

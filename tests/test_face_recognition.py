@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import uuid
 
@@ -384,6 +385,63 @@ def test_remote_qdrant_store_batches_search_and_manages_identity(tmp_path: Path)
     finally:
         store.client.delete_collection(collection)
         store.close()
+
+
+def test_qdrant_store_recreates_collection_before_enrollment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQdrantClient:
+        def __init__(self, **_kwargs: object) -> None:
+            self.collection_exists_value = False
+            self.create_calls: list[dict[str, object]] = []
+            self.upsert_calls: list[dict[str, object]] = []
+
+        def collection_exists(self, _collection: str) -> bool:
+            return self.collection_exists_value
+
+        def create_collection(self, **kwargs: object) -> None:
+            self.create_calls.append(kwargs)
+            self.collection_exists_value = True
+
+        def upsert(self, **kwargs: object) -> None:
+            assert self.collection_exists_value is True
+            self.upsert_calls.append(kwargs)
+
+    fake_models = SimpleNamespace(
+        Distance=SimpleNamespace(COSINE="cosine"),
+        VectorParams=lambda **kwargs: kwargs,
+        PointStruct=lambda **kwargs: kwargs,
+    )
+    fake_qdrant_module = SimpleNamespace(
+        QdrantClient=FakeQdrantClient,
+        models=fake_models,
+    )
+    monkeypatch.setitem(sys.modules, "qdrant_client", fake_qdrant_module)
+
+    store = QdrantFaceStore(
+        FaceRecognitionSettings(
+            human_model_path=tmp_path / "human.engine",
+            face_model_path=tmp_path / "face.engine",
+            embedding_model_path=tmp_path / "arcface.engine",
+            vector_size=3,
+            qdrant_url="http://qdrant:6333",
+            qdrant_collection="faces",
+        )
+    )
+    assert len(store.client.create_calls) == 1
+
+    store.client.collection_exists_value = False
+    point_id = store.enroll(
+        "1234567891",
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+        "42",
+    )
+
+    assert point_id
+    assert len(store.client.create_calls) == 2
+    assert len(store.client.upsert_calls) == 1
+    assert store.client.upsert_calls[0]["collection_name"] == "faces"
 
 
 def test_postgresql_vector_store_is_persistent_and_uses_cosine(
