@@ -110,7 +110,7 @@ class Settings:
     broadcast_source_only_render_threads: int = _env_int(
         "BROADCAST_SOURCE_ONLY_RENDER_THREADS", 4
     )
-    broadcast_render_threads: int = _env_int("BROADCAST_RENDER_THREADS", 2)
+    broadcast_render_threads: int = _env_int("BROADCAST_RENDER_THREADS", 4)
     broadcast_face_overlay_ttl_ms: float = _env_float(
         "BROADCAST_FACE_OVERLAY_TTL_MS", 750.0
     )

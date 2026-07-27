@@ -13,14 +13,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.broadcast import (
+    _annotated_frame_payload,
     _source_frame_batch_payload,
     _source_frame_payload,
     get_runtime,
     router as broadcast_router,
 )
 from app.core.broadcast import (
+    AnnotatedRenderRequest,
     AnnotatedBroadcastHub,
     EncodedBroadcastFrame,
+    LatestAnnotatedRenderBuffer,
+    PendingAnnotatedFrame,
     SourceDrawSettings,
 )
 from app.core.source_registry import SourceChange, SourceRecord
@@ -268,6 +272,52 @@ def test_source_frame_batch_envelope_contains_complete_frame_records() -> None:
     offset = 4 + outer_header_length
     first_record_length = struct.unpack("!I", payload[offset : offset + 4])[0]
     assert payload[offset + 4 : offset + 4 + first_record_length] == record
+
+
+def test_annotated_render_buffer_replaces_stale_work_per_source() -> None:
+    buffer = LatestAnnotatedRenderBuffer()
+    pending = PendingAnnotatedFrame(
+        frame=np.zeros((10, 10, 3), dtype=np.uint8),
+        expected_tasks={TaskName.FIRE_SMOKE},
+    )
+    buffer.put(AnnotatedRenderRequest("camera-07", 10, pending))
+    buffer.put(AnnotatedRenderRequest("camera-07", 11, pending))
+    buffer.put(AnnotatedRenderRequest("camera-08", 20, pending))
+
+    first = buffer.take()
+    second = buffer.take()
+
+    assert first is not None and first.frame_index == 11
+    assert second is not None and second.source_id == "camera-08"
+    assert buffer.stats()["stale_replaced"] == 1
+    buffer.task_done(first.source_id)
+    buffer.task_done(second.source_id)
+
+
+def test_annotated_frame_payload_contains_server_drawn_task_metadata() -> None:
+    frame = EncodedBroadcastFrame(
+        version=1,
+        source_id="camera-07",
+        frame_index=9,
+        jpeg=b"full",
+        wall_jpeg=b"wall",
+        frame_width=640,
+        frame_height=640,
+        wall_width=240,
+        wall_height=240,
+        tasks=("fire_smoke",),
+        updated_monotonic=time.monotonic(),
+    )
+
+    payload = _annotated_frame_payload(
+        frame, wall=True, fullscreen_source=None
+    )
+    header_length = struct.unpack("!I", payload[:4])[0]
+    header = json.loads(payload[4 : 4 + header_length])
+
+    assert header["tasks"] == ["fire_smoke"]
+    assert header["render_profile"] == "wall"
+    assert payload[4 + header_length :] == b"wall"
 
 
 def test_dashboard_uses_source_uri_task_manager_identity() -> None:

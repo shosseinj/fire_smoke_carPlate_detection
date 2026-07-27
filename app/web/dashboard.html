@@ -986,7 +986,7 @@
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
         const parameters = new URLSearchParams();
         parameters.set("wall", "true");
-        if (sourceOnlyWall) parameters.set("batch", "true");
+        parameters.set("batch", "true");
         if (!useJpegFallback) {
           parameters.set("metadata_only", "true");
         }
@@ -1173,8 +1173,9 @@
         }
         if (broadcasting) {
           connectBroadcastSocket();
-          if (useJpegFallback) disconnectResultSocket();
-          else connectResultSocket();
+          // AI overlays are already drawn into /api/v1/broadcast/ws JPEGs.
+          // The dashboard must not redraw result metadata on a canvas.
+          disconnectResultSocket();
         } else {
           disconnectBroadcastSocket();
           disconnectResultSocket();

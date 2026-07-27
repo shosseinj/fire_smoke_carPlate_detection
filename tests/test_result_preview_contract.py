@@ -33,19 +33,18 @@ def test_result_includes_frame_geometry_and_source_timestamp() -> None:
     assert payload["processed_at_utc"]
 
 
-def test_dashboard_uses_public_preview_and_bounded_multi_task_overlays() -> None:
+def test_dashboard_uses_server_drawn_ai_frames_without_client_overlays() -> None:
     dashboard = (
         Path(__file__).parents[1] / "app" / "web" / "dashboard.html"
     ).read_text(encoding="utf-8")
 
     assert 'fetch("/api/v1/sources/preview-config"' in dashboard
     assert "source.preview_path" in dashboard
-    assert "requestVideoFrameCallback" in dashboard
-    assert "OVERLAY_STALE_MS = 4000" in dashboard
-    assert "taskResults.set(result.task, result)" in dashboard
     assert "schedulePreviewRetry(sourceId)" in dashboard
     assert "previewRetryTimers" in dashboard
     assert 'method: "DELETE"' in dashboard
     assert "/api/v1/broadcast/ws" in dashboard
+    assert "AI overlays are already drawn into /api/v1/broadcast/ws JPEGs" in dashboard
+    assert "if (useJpegFallback) disconnectResultSocket()" not in dashboard
     assert "source.source_id" not in dashboard
     assert "source.source_uri" in dashboard

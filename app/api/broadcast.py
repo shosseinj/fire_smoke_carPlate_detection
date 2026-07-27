@@ -65,6 +65,7 @@ async def annotated_broadcast_websocket(
     websocket: WebSocket,
     wall: bool = False,
     metadata_only: bool = False,
+    batch: bool = False,
     fullscreen_source: str | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> None:
@@ -122,22 +123,56 @@ async def annotated_broadcast_websocket(
                         }
                     )
                     continue
-                jpeg, width, height, profile = frame.rendition(
-                    full_resolution=not wall or frame.source_id == fullscreen_source
-                )
-                header = json.dumps(
-                    {
-                        "source_id": frame.source_id,
-                        "frame_index": frame.frame_index,
-                        "tasks": list(frame.tasks),
-                        "render_profile": profile,
-                        "frame_width": width,
-                        "frame_height": height,
-                    },
-                    separators=(",", ":"),
-                ).encode("utf-8")
+                if batch:
+                    frames = [frame]
+                    stop_after_send = False
+                    await asyncio.sleep(0.005)
+                    while len(frames) < 64:
+                        try:
+                            candidate = target.get_nowait()
+                        except queue.Empty:
+                            break
+                        try:
+                            if candidate is None:
+                                stop_after_send = True
+                                break
+                            if isinstance(candidate, BroadcastControlEvent):
+                                await websocket.send_json(candidate.payload)
+                            else:
+                                frames.append(candidate)
+                        finally:
+                            target.task_done()
+                    latest_by_source: dict[str, EncodedBroadcastFrame] = {}
+                    for item in frames:
+                        previous = latest_by_source.get(item.source_id)
+                        if previous is None or (
+                            item.frame_index,
+                            len(item.tasks),
+                            item.version,
+                        ) >= (
+                            previous.frame_index,
+                            len(previous.tasks),
+                            previous.version,
+                        ):
+                            latest_by_source[item.source_id] = item
+                    records = [
+                        _annotated_frame_payload(
+                            item,
+                            wall=wall,
+                            fullscreen_source=fullscreen_source,
+                        )
+                        for item in latest_by_source.values()
+                    ]
+                    await websocket.send_bytes(_source_frame_batch_payload(records))
+                    if stop_after_send:
+                        break
+                    continue
                 await websocket.send_bytes(
-                    struct.pack("!I", len(header)) + header + jpeg
+                    _annotated_frame_payload(
+                        frame,
+                        wall=wall,
+                        fullscreen_source=fullscreen_source,
+                    )
                 )
             finally:
                 target.task_done()
@@ -253,6 +288,27 @@ def _source_frame_payload(
         "frame_height": height,
         "render_profile": profile,
         "ai_processed": False,
+    }
+    encoded_header = json.dumps(header, separators=(",", ":")).encode()
+    return struct.pack("!I", len(encoded_header)) + encoded_header + jpeg
+
+
+def _annotated_frame_payload(
+    frame: EncodedBroadcastFrame,
+    *,
+    wall: bool,
+    fullscreen_source: str | None,
+) -> bytes:
+    jpeg, width, height, profile = frame.rendition(
+        full_resolution=not wall or frame.source_id == fullscreen_source
+    )
+    header = {
+        "source_id": frame.source_id,
+        "frame_index": frame.frame_index,
+        "tasks": list(frame.tasks),
+        "render_profile": profile,
+        "frame_width": width,
+        "frame_height": height,
     }
     encoded_header = json.dumps(header, separators=(",", ":")).encode()
     return struct.pack("!I", len(encoded_header)) + encoded_header + jpeg

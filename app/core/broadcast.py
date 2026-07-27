@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 import uuid
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +69,91 @@ class SourceDrawSettings:
     draw_plate: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class AnnotatedRenderRequest:
+    source_id: str
+    frame_index: int
+    pending: PendingAnnotatedFrame
+
+
+class LatestAnnotatedRenderBuffer:
+    """Fair latest-per-source queue with one in-flight render per source."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._latest: dict[str, AnnotatedRenderRequest] = {}
+        self._order: deque[str] = deque()
+        self._in_flight: set[str] = set()
+        self._closed = False
+        self.accepted = 0
+        self.stale_replaced = 0
+
+    def put(self, request: AnnotatedRenderRequest) -> bool:
+        with self._condition:
+            if self._closed:
+                return False
+            source_id = request.source_id
+            if source_id in self._latest:
+                self.stale_replaced += 1
+            elif source_id not in self._in_flight:
+                self._order.append(source_id)
+            self._latest[source_id] = request
+            self.accepted += 1
+            self._condition.notify()
+            return True
+
+    def take(self, timeout: float = 0.1) -> AnnotatedRenderRequest | None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while not self._order and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._condition.wait(timeout=remaining)
+            if not self._order:
+                return None
+            source_id = self._order.popleft()
+            request = self._latest.pop(source_id, None)
+            if request is not None:
+                self._in_flight.add(source_id)
+            return request
+
+    def task_done(self, source_id: str) -> None:
+        with self._condition:
+            self._in_flight.discard(source_id)
+            if source_id in self._latest and source_id not in self._order:
+                self._order.append(source_id)
+            self._condition.notify_all()
+
+    def discard(self, source_id: str) -> None:
+        with self._condition:
+            self._latest.pop(source_id, None)
+            self._order = deque(item for item in self._order if item != source_id)
+
+    def clear(self) -> int:
+        with self._condition:
+            count = len(self._latest)
+            self._latest.clear()
+            self._order.clear()
+            return count
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._latest.clear()
+            self._order.clear()
+            self._condition.notify_all()
+
+    def stats(self) -> dict[str, int]:
+        with self._condition:
+            return {
+                "accepted": self.accepted,
+                "stale_replaced": self.stale_replaced,
+                "pending_sources": len(self._latest),
+                "in_flight_sources": len(self._in_flight),
+            }
+
+
 class AnnotatedBroadcastHub:
     """Composes exact-frame AI results and exposes latest annotated JPEGs."""
 
@@ -85,7 +170,7 @@ class AnnotatedBroadcastHub:
         async_render: bool = True,
         draw_zones: bool = True,
         source_only_render_threads: int = 4,
-        render_threads: int = 2,
+        render_threads: int = 4,
     ) -> None:
         self._enabled = enabled
         self.draw_zones = draw_zones
@@ -132,9 +217,8 @@ class AnnotatedBroadcastHub:
         ] = defaultdict(dict)
         self._source_zones: dict[str, list[list[list[float]]]] = {}
         self._source_draw_settings: dict[str, SourceDrawSettings] = {}
-        self._render_queue: queue.Queue[
-            tuple[str, int, PendingAnnotatedFrame]
-        ] = queue.Queue(maxsize=64)
+        self._render_queue = LatestAnnotatedRenderBuffer()
+        self._latest_render_inputs: dict[str, tuple[int, PendingAnnotatedFrame]] = {}
         self._source_only_render_buffer = LatestPerSourceBuffer(
             policy="latest_per_source",
             capacity=256,
@@ -164,19 +248,44 @@ class AnnotatedBroadcastHub:
 
     def _render_loop(self) -> None:
         while not self._stop_render.is_set():
-            try:
-                source_id, frame_index, pending = self._render_queue.get(timeout=0.1)
-            except queue.Empty:
+            request = self._render_queue.take(timeout=0.1)
+            if request is None:
                 continue
             try:
-                self._do_render(source_id, frame_index, pending)
+                self._do_render(
+                    request.source_id,
+                    request.frame_index,
+                    request.pending,
+                )
             except Exception:
                 LOGGER.exception(
                     "Broadcast render failed: source=%s frame=%s tasks=%s",
-                    source_id,
-                    frame_index,
-                    sorted(task.value for task in pending.expected_tasks),
+                    request.source_id,
+                    request.frame_index,
+                    sorted(task.value for task in request.pending.expected_tasks),
                 )
+            finally:
+                self._render_queue.task_done(request.source_id)
+
+    @staticmethod
+    def _render_snapshot(pending: PendingAnnotatedFrame) -> PendingAnnotatedFrame:
+        return PendingAnnotatedFrame(
+            frame=pending.frame,
+            expected_tasks=set(pending.expected_tasks),
+            captured_monotonic=pending.captured_monotonic,
+            results=dict(pending.results),
+        )
+
+    def _queue_render(
+        self, source_id: str, frame_index: int, pending: PendingAnnotatedFrame
+    ) -> None:
+        self._render_queue.put(
+            AnnotatedRenderRequest(
+                source_id=source_id,
+                frame_index=frame_index,
+                pending=self._render_snapshot(pending),
+            )
+        )
 
     def _do_render(self, source_id: str, frame_index: int, pending: PendingAnnotatedFrame) -> None:
         rendered = self._render(source_id, frame_index, pending)
@@ -233,7 +342,9 @@ class AnnotatedBroadcastHub:
             self._enabled = bool(enabled)
             if not self._enabled:
                 self._source_only_dropped += self._source_only_render_buffer.clear()
+                self._render_queue.clear()
                 self._pending.clear()
+                self._latest_render_inputs.clear()
                 self._latest.clear()
                 self._source_only_latest.clear()
                 self._latest_face_results.clear()
@@ -283,6 +394,7 @@ class AnnotatedBroadcastHub:
         """Stop the render thread and clean up resources."""
         self._stop_render.set()
         self._stop_source_only_render.set()
+        self._render_queue.close()
         self._source_only_render_buffer.close()
         for render_thread in self._render_threads:
             render_thread.join(timeout=2.0)
@@ -327,7 +439,9 @@ class AnnotatedBroadcastHub:
             if previous_source_uri and previous_source_uri != change.source_uri:
                 source_ids.add(previous_source_uri)
             for source_id in source_ids:
+                self._render_queue.discard(source_id)
                 self._pending.pop(source_id, None)
+                self._latest_render_inputs.pop(source_id, None)
                 self._latest.pop(source_id, None)
                 self._latest_face_results.pop(source_id, None)
                 self._latest_nonface_results.pop(source_id, None)
@@ -759,28 +873,29 @@ class AnnotatedBroadcastHub:
                 source_pending.popitem(last=False)
 
             complete = pending.expected_tasks.issubset(pending.results)
-            # Fire/smoke is latency-sensitive. Publish its result immediately on
-            # the exact source frame instead of waiting for the slower face and
-            # plate workers to also finish that frame. If they do, the same frame
-            # is rendered again below with the complete result set.
-            eager_fire_smoke = result.task == TaskName.FIRE_SMOKE
-            if not complete and not eager_fire_smoke:
-                return
-            
-            # Use async rendering to avoid blocking the main pipeline
+            # Never send an old inference frame. Apply the newest cached result
+            # to the newest source frame and replace any pending render for that
+            # source before CPU drawing/JPEG encoding.
+            render_frame_index, render_pending = self._latest_render_inputs.get(
+                packet.source_id,
+                (packet.frame_index, pending),
+            )
             if self._async_render:
-                try:
-                    self._render_queue.put_nowait(
-                        (packet.source_id, packet.frame_index, pending)
-                    )
-                except queue.Full:
-                    pass  # Drop frame if render queue is full
+                self._queue_render(
+                    packet.source_id,
+                    render_frame_index,
+                    render_pending,
+                )
                 if complete:
                     source_pending.pop(packet.frame_index, None)
                 return
             
             # Synchronous rendering (fallback)
-            rendered = self._render(packet.source_id, packet.frame_index, pending)
+            rendered = self._render(
+                packet.source_id,
+                render_frame_index,
+                render_pending,
+            )
             if complete:
                 source_pending.pop(packet.frame_index, None)
             if rendered is None:
@@ -795,14 +910,14 @@ class AnnotatedBroadcastHub:
                 rendered_tasks,
             ) = rendered
             latest = self._latest.get(packet.source_id)
-            if latest is not None and packet.frame_index < latest.frame_index:
+            if latest is not None and render_frame_index < latest.frame_index:
                 return
             self._version += 1
             self._rendered_frames += 1
             encoded_frame = EncodedBroadcastFrame(
                 version=self._version,
                 source_id=packet.source_id,
-                frame_index=packet.frame_index,
+                frame_index=render_frame_index,
                 jpeg=jpeg,
                 wall_jpeg=wall_jpeg,
                 frame_width=width,
@@ -848,17 +963,16 @@ class AnnotatedBroadcastHub:
                 source_pending[packet.frame_index] = pending
             else:
                 pending.expected_tasks.update(expected)
+            self._latest_render_inputs[packet.source_id] = (
+                packet.frame_index,
+                pending,
+            )
             while len(source_pending) > self.pending_frames_per_source:
                 source_pending.popitem(last=False)
             
             # Use async rendering to avoid blocking the main pipeline
             if self._async_render:
-                try:
-                    self._render_queue.put_nowait(
-                        (packet.source_id, packet.frame_index, pending)
-                    )
-                except queue.Full:
-                    pass  # Drop frame if render queue is full
+                self._queue_render(packet.source_id, packet.frame_index, pending)
                 return
             
             # Synchronous rendering (fallback)
@@ -1179,6 +1293,7 @@ class AnnotatedBroadcastHub:
         with self._condition:
             now = time.monotonic()
             source_only_buffer = self._source_only_render_buffer.stats()
+            annotated_buffer = self._render_queue.stats()
             return {
                 "enabled": self._enabled,
                 "rendered_frames": self._rendered_frames,
@@ -1213,6 +1328,17 @@ class AnnotatedBroadcastHub:
                 "render_threads": int(
                     sum(thread.is_alive() for thread in self._render_threads)
                 ),
+                "annotated_render_submitted": annotated_buffer["accepted"],
+                "annotated_render_stale_replaced": annotated_buffer[
+                    "stale_replaced"
+                ],
+                "annotated_render_pending_sources": annotated_buffer[
+                    "pending_sources"
+                ],
+                "annotated_render_in_flight_sources": annotated_buffer[
+                    "in_flight_sources"
+                ],
+                "annotated_queue_policy": "latest_per_source",
                 "websocket_subscribers": len(self._subscribers),
                 "source_only_websocket_subscribers": len(self._source_only_subscribers),
                 "source_only_exclusive": (
