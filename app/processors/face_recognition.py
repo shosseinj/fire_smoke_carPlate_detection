@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database
 from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +44,10 @@ class FaceRecognitionSettings:
     max_abs_pitch: float = 55.0
     max_abs_roll: float = 35.0
     require_landmarks: bool = True
+    human_pose_enabled: bool = True
+    human_pose_min_keypoints: int = 4
+    human_pose_keypoint_confidence: float = 0.25
+    recognition_quality_weight: float = 0.5
     tracker_high_threshold: float = 0.40
     tracker_low_threshold: float = 0.10
     tracker_new_threshold: float = 0.40
@@ -594,13 +601,28 @@ class QdrantFaceStore:
             api_key=settings.qdrant_api_key,
         )
         self.mode = "qdrant-remote"
-        if not self.client.collection_exists(self.collection):
-            self.client.create_collection(
-                collection_name=self.collection,
-                vectors_config=models.VectorParams(
-                    size=self.vector_size,
-                    distance=models.Distance.COSINE,
-                ),
+        self._ensure_collection()
+
+    def _ensure_collection(self) -> None:
+        with self.lock:
+            if self.client.collection_exists(self.collection):
+                return
+            try:
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=self.models.VectorParams(
+                        size=self.vector_size,
+                        distance=self.models.Distance.COSINE,
+                    ),
+                )
+            except Exception:
+                if self.client.collection_exists(self.collection):
+                    return
+                raise
+            LOGGER.info(
+                "Created Qdrant face collection '%s' with vector size %d",
+                self.collection,
+                self.vector_size,
             )
 
     def search_batch(self, embeddings: np.ndarray, threshold: float) -> list[FaceMatch]:
@@ -616,10 +638,19 @@ class QdrantFaceStore:
             for embedding in embeddings
         ]
         with self.lock:
-            responses = self.client.query_batch_points(
-                collection_name=self.collection,
-                requests=requests,
-            )
+            try:
+                responses = self.client.query_batch_points(
+                    collection_name=self.collection,
+                    requests=requests,
+                )
+            except Exception:
+                if self.client.collection_exists(self.collection):
+                    raise
+                self._ensure_collection()
+                responses = self.client.query_batch_points(
+                    collection_name=self.collection,
+                    requests=requests,
+                )
         matches: list[FaceMatch] = []
         for response in responses:
             points = list(getattr(response, "points", []) or [])
@@ -645,6 +676,7 @@ class QdrantFaceStore:
     ) -> str:
         point_id = str(uuid.uuid4())
         with self.lock:
+            self._ensure_collection()
             self.client.upsert(
                 collection_name=self.collection,
                 wait=True,
@@ -855,6 +887,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         vector_store: FaceVectorStore | None = None,
         database: Database | None = None,
         tracker_backend_factory: Callable[[], Any] | None = None,
+        settings_provider: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         self.settings = settings
         self._human_detector = human_detector
@@ -863,6 +896,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._vector_store = vector_store
         self._database = database
         self._tracker_backend_factory = tracker_backend_factory
+        self._settings_provider = settings_provider
         self._load_lock = threading.RLock()
         self._trackers: dict[str, SourceFaceTracker] = {}
         self._tracking_session_id = uuid.uuid4().hex
@@ -870,6 +904,8 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._processed_frames = 0
         self._detected_faces = 0
         self._recognized_faces = 0
+        self._human_candidates = 0
+        self._filtered_humans = 0
         self._last_batch_ms = 0.0
         self._last_detection_ms = 0.0
         self._last_human_detection_ms = 0.0
@@ -880,6 +916,28 @@ class FaceRecognitionProcessor(BatchProcessor):
         self._last_search_ms = 0.0
         self._last_error: str | None = None
         self._vector_store_warning: str | None = None
+
+    def _source_thresholds(self, source_id: str) -> tuple[float, float, float]:
+        if self._settings_provider is None:
+            return (
+                float(self.settings.human_confidence),
+                float(self.settings.face_confidence),
+                float(self.settings.recognition_threshold),
+            )
+        try:
+            values = self._settings_provider(source_id)
+            return (
+                float(values.get("face_human_confidence", self.settings.human_confidence)),
+                float(values.get("face_detection_confidence", self.settings.face_confidence)),
+                float(values.get("face_recognition_threshold", self.settings.recognition_threshold)),
+            )
+        except Exception as exc:
+            LOGGER.warning("Face source settings unavailable for %s: %s", source_id, exc)
+            return (
+                float(self.settings.human_confidence),
+                float(self.settings.face_confidence),
+                float(self.settings.recognition_threshold),
+            )
 
     def _ensure_dependencies(self) -> None:
         with self._load_lock:
@@ -1046,8 +1104,84 @@ class FaceRecognitionProcessor(BatchProcessor):
                 )
         return output
 
-    def _faces(self, result: Any) -> list[dict[str, Any]]:
-        faces = self._boxes(result, self.settings.face_confidence)
+    def _human_boxes(
+        self,
+        result: Any,
+        confidence: float | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        candidates = self._boxes(
+            result,
+            self.settings.human_confidence if confidence is None else confidence,
+        )
+        if not self.settings.human_pose_enabled:
+            for candidate in candidates:
+                candidate.update(
+                    {
+                        "human_pose_valid": False,
+                        "human_pose_score": None,
+                        "human_pose_keypoint_count": 0,
+                        "human_pose_reason": "disabled",
+                    }
+                )
+            return candidates, []
+
+        keypoints = getattr(result, "keypoints", None)
+        xy = _as_numpy(getattr(keypoints, "xy", None)) if keypoints is not None else np.empty((0,))
+        confidence = (
+            _as_numpy(getattr(keypoints, "conf", None))
+            if keypoints is not None
+            else np.empty((0,))
+        )
+        accepted: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for candidate in candidates:
+            result_index = int(candidate.get("_result_index", -1))
+            points = (
+                np.asarray(xy[result_index], dtype=np.float32)
+                if xy.ndim == 3 and 0 <= result_index < len(xy)
+                else np.empty((0, 2), dtype=np.float32)
+            )
+            point_confidence = (
+                np.asarray(confidence[result_index], dtype=np.float32).reshape(-1)
+                if confidence.ndim >= 2 and 0 <= result_index < len(confidence)
+                else np.empty((0,), dtype=np.float32)
+            )
+            finite = np.isfinite(points).all(axis=1) if len(points) else np.empty((0,), dtype=bool)
+            if len(point_confidence) != len(points) or not len(points):
+                visible = np.zeros(len(points), dtype=bool)
+                pose_score = 0.0
+            else:
+                visible = finite & (point_confidence >= self.settings.human_pose_keypoint_confidence)
+                pose_score = float(np.mean(point_confidence[visible])) if np.any(visible) else 0.0
+            keypoint_count = int(np.count_nonzero(visible))
+            valid = keypoint_count >= self.settings.human_pose_min_keypoints
+            candidate.update(
+                {
+                    "human_pose_valid": valid,
+                    "human_pose_score": round(pose_score, 6),
+                    "human_pose_keypoint_count": keypoint_count,
+                    "human_pose_reason": "ok" if valid else "insufficient_keypoints",
+                }
+            )
+            if valid:
+                accepted.append(candidate)
+            else:
+                rejected.append(
+                    {
+                        "bbox": list(candidate["bbox"]),
+                        "confidence": float(candidate["confidence"]),
+                        "human_pose_score": round(pose_score, 6),
+                        "human_pose_keypoint_count": keypoint_count,
+                        "reason": "insufficient_keypoints",
+                    }
+                )
+        return accepted, rejected
+
+    def _faces(self, result: Any, confidence: float | None = None) -> list[dict[str, Any]]:
+        faces = self._boxes(
+            result,
+            self.settings.face_confidence if confidence is None else confidence,
+        )
         keypoints = getattr(result, "keypoints", None)
         values = _as_numpy(getattr(keypoints, "xy", None)) if keypoints is not None else np.empty((0,))
         for face in faces:
@@ -1460,10 +1594,14 @@ class FaceRecognitionProcessor(BatchProcessor):
         self,
         mosaics: Sequence[HumanRoiMosaic],
         face_results: Sequence[Any],
+        face_confidences: Sequence[float] | None = None,
     ) -> list[dict[str, Any]]:
         mapped_faces: list[dict[str, Any]] = []
         for mosaic, result in zip(mosaics, face_results):
-            faces = self._faces(result)
+            minimum_confidence = min(
+                face_confidences or [self.settings.face_confidence]
+            )
+            faces = self._faces(result, minimum_confidence)
             for face in faces:
                 bbox = [float(value) for value in face["bbox"]]
                 center_x = (bbox[0] + bbox[2]) / 2.0
@@ -1478,6 +1616,12 @@ class FaceRecognitionProcessor(BatchProcessor):
                     None,
                 )
                 if entry is None:
+                    continue
+                if (
+                    face_confidences is not None
+                    and float(face.get("confidence", 0.0))
+                    < float(face_confidences[entry.frame_index])
+                ):
                     continue
 
                 local_bbox = [
@@ -1767,6 +1911,10 @@ class FaceRecognitionProcessor(BatchProcessor):
         return tracker
 
     def process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
+        with self._load_lock:
+            return self._process_batch(packets)
+
+    def _process_batch(self, packets: Sequence[FramePacket]) -> list[TaskResult]:
         if not packets:
             return []
         started = time.perf_counter()
@@ -1779,6 +1927,7 @@ class FaceRecognitionProcessor(BatchProcessor):
 
             frames = [packet.frame for packet in packets]
             source_frames = [packet.source_frame for packet in packets]
+            thresholds = [self._source_thresholds(packet.source_id) for packet in packets]
 
             # 1) Human detection still runs on every input frame.
             detection_started = time.perf_counter()
@@ -1787,7 +1936,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 frames,
                 model_path=self.settings.human_model_path,
                 imgsz=self.settings.human_imgsz,
-                confidence=self.settings.human_confidence,
+                confidence=min(item[0] for item in thresholds),
                 fixed_batch=self.settings.human_engine_fixed_batch,
             )
             self._last_human_detection_ms = (time.perf_counter() - detection_started) * 1000.0
@@ -1798,7 +1947,13 @@ class FaceRecognitionProcessor(BatchProcessor):
             for frame_index, (packet, source_frame, human_result) in enumerate(
                 zip(packets, source_frames, human_results)
             ):
-                humans = self._boxes(human_result, self.settings.human_confidence)
+                humans, human_rejections = self._human_boxes(
+                    human_result,
+                    thresholds[frame_index][0],
+                )
+                candidate_count = len(humans) + len(human_rejections)
+                self._human_candidates += candidate_count
+                self._filtered_humans += len(human_rejections)
                 for human in humans:
                     human.pop("_result_index", None)
                     human["source_bbox"] = self._scale_bbox(
@@ -1844,6 +1999,13 @@ class FaceRecognitionProcessor(BatchProcessor):
                         "humans": tracked_humans,
                         "faces": [],
                         "disappeared_humans": disappeared_humans,
+                        "human_filter": {
+                            "enabled": self.settings.human_pose_enabled,
+                            "candidate_count": candidate_count,
+                            "accepted_count": len(humans),
+                            "rejected_count": len(human_rejections),
+                            "rejections": human_rejections,
+                        },
                     }
                 )
 
@@ -1857,10 +2019,14 @@ class FaceRecognitionProcessor(BatchProcessor):
                 [mosaic.image for mosaic in mosaics],
                 model_path=self.settings.face_model_path,
                 imgsz=self.settings.face_imgsz,
-                confidence=self.settings.face_confidence,
+                confidence=min(item[1] for item in thresholds),
                 fixed_batch=self.settings.face_engine_fixed_batch,
             )
-            detected_faces = self._faces_from_human_roi_mosaics(mosaics, face_results)
+            detected_faces = self._faces_from_human_roi_mosaics(
+                mosaics,
+                face_results,
+                [item[1] for item in thresholds],
+            )
             self._last_face_roi_detection_ms = (time.perf_counter() - face_roi_started) * 1000.0
             self._last_detection_ms = self._last_human_detection_ms + self._last_face_roi_detection_ms
 
@@ -1937,7 +2103,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 search_started = time.perf_counter()
                 matches = self._vector_store.search_batch(
                     embeddings,
-                    self.settings.recognition_threshold,
+                    min(item[2] for item in thresholds),
                 )
                 self._last_search_ms = (time.perf_counter() - search_started) * 1000.0
                 if len(matches) != len(face_crops):
@@ -1946,8 +2112,25 @@ class FaceRecognitionProcessor(BatchProcessor):
                 for (frame_index, face_index), match in zip(face_locations, matches):
                     face = frame_payloads[frame_index]["faces"][face_index]
                     track_id = face.get("track_id")
+                    quality_value = float(face.get("quality_score", 0.0) or 0.0)
+                    quality_weight = float(self.settings.recognition_quality_weight)
+                    quality_factor = (1.0 - quality_weight) + quality_weight * max(
+                        0.0, min(1.0, quality_value)
+                    )
+                    weighted_match = FaceMatch(
+                        person=match.person,
+                        score=float(match.score) * quality_factor,
+                        ref_img_id=match.ref_img_id,
+                    )
+                    adjusted_score = weighted_match.score
+                    admitted = adjusted_score >= thresholds[frame_index][2]
+                    admitted_match = (
+                        weighted_match
+                        if admitted
+                        else FaceMatch()
+                    )
                     stable = self._tracker(packets[frame_index].source_id).observe(
-                        int(track_id), match
+                        int(track_id), admitted_match
                     )
                     face.update(
                         {
@@ -1955,8 +2138,11 @@ class FaceRecognitionProcessor(BatchProcessor):
                             "recognition_score": round(stable.score, 6),
                             "ref_img_id": stable.ref_img_id,
                             "stable": stable.person != "Unknown",
-                            "raw_person": match.person,
+                            "raw_person": match.person if admitted else "Unknown",
                             "raw_recognition_score": round(match.score, 6),
+                            "recognition_admitted": admitted,
+                            "quality_weight": round(quality_weight, 6),
+                            "quality_adjusted_score": round(adjusted_score, 6),
                         }
                     )
             else:
@@ -1971,6 +2157,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                     face["track_id"]
                     for face in payload["faces"]
                     if face.get("track_id") is not None
+                    and face.get("quality_valid") is True
                 }
                 for human in payload["humans"]:
                     identity = tracker.identity(human.get("track_id"))
@@ -2151,6 +2338,10 @@ class FaceRecognitionProcessor(BatchProcessor):
             "max_abs_pitch": self.settings.max_abs_pitch,
             "max_abs_roll": self.settings.max_abs_roll,
             "require_landmarks": self.settings.require_landmarks,
+            "human_pose_enabled": self.settings.human_pose_enabled,
+            "human_pose_min_keypoints": self.settings.human_pose_min_keypoints,
+            "human_pose_keypoint_confidence": self.settings.human_pose_keypoint_confidence,
+            "recognition_quality_weight": self.settings.recognition_quality_weight,
         }
 
     def update_quality_settings(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -2161,6 +2352,21 @@ class FaceRecognitionProcessor(BatchProcessor):
         with self._load_lock:
             self.settings = replace(self.settings, **values)
         return self.quality_settings()
+
+    def update_runtime_thresholds(
+        self,
+        *,
+        human_confidence: float,
+        face_confidence: float,
+        recognition_threshold: float,
+    ) -> None:
+        with self._load_lock:
+            self.settings = replace(
+                self.settings,
+                human_confidence=float(human_confidence),
+                face_confidence=float(face_confidence),
+                recognition_threshold=float(recognition_threshold),
+            )
 
     def status(self) -> dict[str, Any]:
         vector_status: dict[str, Any] | None = None
@@ -2209,6 +2415,11 @@ class FaceRecognitionProcessor(BatchProcessor):
             "processed_frames": self._processed_frames,
             "detected_faces": self._detected_faces,
             "recognized_faces": self._recognized_faces,
+            "human_filter": {
+                "enabled": self.settings.human_pose_enabled,
+                "candidates": self._human_candidates,
+                "rejected": self._filtered_humans,
+            },
             "last_batch_ms": round(self._last_batch_ms, 3),
             "last_detection_ms": round(self._last_detection_ms, 3),
             "last_human_detection_ms": round(self._last_human_detection_ms, 3),

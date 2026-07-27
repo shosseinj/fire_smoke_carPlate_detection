@@ -10,6 +10,8 @@ from app.database import Database, Row, ensure_database
 from app.time_utils import utc_now_text
 
 _SOURCE_ONLY_OPERATIONAL_FIELDS = {
+    "video_ingest_fps",
+    "video_preview_fps",
     "fire_confidence",
     "smoke_confidence",
     "plate_confidence",

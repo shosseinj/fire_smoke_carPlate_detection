@@ -18,7 +18,15 @@ class SourceCreate(BaseModel):
     source_type: str = RTSP
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    fps: float | None = Field(default=None, gt=0, le=240)
+    fps: float | None = Field(
+        default=None,
+        gt=0,
+        le=240,
+        description=(
+            "Per-source delivery FPS override stored in sources.fps. "
+            "NULL uses the source-native FPS."
+        ),
+    )
     loop: bool = True
     draw_human: bool = True
     draw_zone: bool = True
@@ -63,7 +71,14 @@ class SourceUpdate(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
-    fps: float | None = Field(default=None, gt=0, le=240)
+    fps: float | None = Field(
+        default=None,
+        gt=0,
+        le=240,
+        description=(
+            "Per-source delivery FPS override. Send null to restore native FPS."
+        ),
+    )
     loop: bool | None = None
     draw_human: bool | None = None
     draw_zone: bool | None = None
@@ -103,7 +118,14 @@ class BulkSourceUpdateItem(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
-    fps: float | None = Field(default=None, gt=0, le=240)
+    fps: float | None = Field(
+        default=None,
+        gt=0,
+        le=240,
+        description=(
+            "Per-source delivery FPS override. Send null to restore native FPS."
+        ),
+    )
     loop: bool | None = None
     draw_human: bool | None = None
     draw_zone: bool | None = None
@@ -153,7 +175,10 @@ class SourceResponse(BaseModel):
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any]
-    fps: float | None = None
+    fps: float | None = Field(
+        default=None,
+        description="NULL means source-native FPS; otherwise sources.fps is used.",
+    )
     loop: bool = True
     draw_human: bool = True
     draw_zone: bool = True
@@ -266,8 +291,6 @@ class CameraResponse(BaseModel):
 
 
 class CameraSettingsPatch(BaseModel):
-    video_ingest_fps: float | None = Field(default=None, gt=0, le=240)
-    video_preview_fps: float | None = Field(default=None, gt=0, le=240)
     video_loop: bool | None = None
     rtsp_transport: str | None = None
     rtsp_open_timeout_ms: int | None = Field(default=None, gt=0)

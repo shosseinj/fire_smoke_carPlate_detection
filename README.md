@@ -143,8 +143,6 @@ The controls are:
 ```text
 VIDEO_INGESTION_ENABLED=true
 VIDEO_INGEST_BACKEND=deepstream
-VIDEO_INGEST_FPS=5
-VIDEO_PREVIEW_FPS=25
 VIDEO_LOOP=true
 RTSP_TRANSPORT=tcp
 RTSP_INGESTION_ENABLED=true
@@ -155,7 +153,7 @@ DEEPSTREAM_RTSP_LATENCY_MS=500
 DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS=30
 ```
 
-With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. Cameras with AI tasks use `VIDEO_INGEST_FPS`; play-only cameras with `tasks: []` use the higher `VIDEO_PREVIEW_FPS` without increasing inference load. TCP is the default for reliable LAN camera delivery. `RTSP_RECONNECT_SECONDS` controls the application retry delay after a failed pipeline, while `DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS` controls how long DeepStream waits without receiving data before forcing its internal RTSP reconnection. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
+With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. The nullable `sources.fps` column is the only delivery-rate control: `NULL` uses native pacing, while a positive value applies a per-source override. Raising an RTSP value cannot exceed the frames produced by the camera. TCP is the default for reliable LAN camera delivery. `RTSP_RECONNECT_SECONDS` controls the application retry delay after a failed pipeline, while `DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS` controls how long DeepStream waits without receiving data before forcing its internal RTSP reconnection. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
 
 Camera configuration is stored in the SQLite `cameras` table. `CAMERA_DB_PATH` defaults to `data/cameras.sqlite3`. On the first run only, when the table is empty, records are imported from `SOURCE_REGISTRY_PATH` (default `data/sources.json`). After import, SQLite is authoritative and the JSON file is not rewritten.
 
@@ -295,7 +293,7 @@ Content-Type: application/json
 }
 ```
 
-Read events with `GET /api/v1/fire-smoke-logs`; optional filters are `camera_id`, `severity`, and `limit`. Counts are based on frames actually submitted to AI, so configure `VIDEO_INGEST_FPS` high enough for the selected window and high threshold.
+Read events with `GET /api/v1/fire-smoke-logs`; optional filters are `camera_id`, `severity`, and `limit`. Counts are based on frames actually submitted to AI, so use the source row's `fps` override only after checking worker throughput and replacement metrics.
 
 Detection confidence is filtered both in the model call and again when model output is parsed. The defaults are:
 
@@ -756,6 +754,15 @@ docker run --rm -it `
   merged-video-ai-router:v10-flat
 
   docker compose up -d qdrant
+  docker pull minio/minio
+
+  docker run -p 9000:9000 `
+  -p 9001:9001 `
+  -e MINIO_ROOT_USER="minioadmin" `
+  -e MINIO_ROOT_PASSWORD="minioadmin" `
+  -v C:\minio\data:/data `
+  -v C:\minio\config:/root/.minio `
+  minio/minio server /data --console-address
 ```
 
 ```

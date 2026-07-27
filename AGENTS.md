@@ -48,22 +48,22 @@ For every low-FPS report, run the bounded sampler before changing FPS, batching,
 curl -fsS "http://127.0.0.1:9999/api/v1/diagnostics/fps?sample_seconds=5&expected_fps=25"
 ```
 
-Do not calculate FPS from a single cumulative counter snapshot. Use the sampler to distinguish a configured `VIDEO_INGEST_FPS` ceiling from source/decode starvation, router submission loss, task-worker replacements/backpressure, processor failures, and broadcast bandwidth. Increase `VIDEO_INGEST_FPS` gradually only after checking per-camera submitted FPS, per-task processed FPS, replacements, pending sources, batch latency, frame age, and GPU utilization. Lower dashboard resolution can reduce network and browser decode/render cost, but it does not increase decode or model-inference capacity.
+Do not calculate FPS from a single cumulative counter snapshot. Use the sampler to distinguish a configured `sources.fps` ceiling from source/decode starvation, router submission loss, task-worker replacements/backpressure, processor failures, and broadcast bandwidth. Raise a per-source `fps` override gradually only after checking per-camera submitted FPS, per-task processed FPS, replacements, pending sources, batch latency, frame age, and GPU utilization. Lower dashboard resolution can reduce network and browser decode/render cost, but it does not increase decode or model-inference capacity.
 
 The normal detector input is fixed at `3×640×640`. TensorRT detector engines should use a dynamic batch dimension only, normally batch 1–8. Use `--dynamic-batch-only`; do not make height and width dynamic unless the task explicitly requires it.
 
 The DeepStream ingest path converts frames with `nvvideoconvert` to BGRx and normalizes
 the mapped appsink buffer to the existing 3-channel NumPy processor contract. It does
-not insert a CPU `videoconvert` stage. The Compose AI-ingest default is 25 FPS, while
-`VIDEO_INGEST_FPS` remains the authoritative override; use the bounded FPS diagnostic
-sampler before raising it further.
+not insert a CPU `videoconvert` stage. `sources.fps` is the only delivery-rate
+override; `NULL` preserves source-native pacing. Use the bounded FPS diagnostic sampler
+before raising a source override.
 
 When OpenCV exposes CUDA resize, DeepStream uses it for the inference view and falls
 back to CPU resize without changing the NumPy frame contract. The native source frame
 is retained for face evidence and downstream media.
 
 The broadcast hub retains the most recent face/human result for a short configurable
-TTL (`BROADCAST_FACE_OVERLAY_TTL_MS`, default 250 ms) so slower face inference does not
+TTL (`BROADCAST_FACE_OVERLAY_TTL_MS`, default 750 ms) so slower inference does not
 make boxes flicker off every intermediate real-time frame. This is display smoothing,
 not a claim that inference ran on every displayed frame.
 
@@ -75,6 +75,13 @@ background writer so database and snapshot I/O do not block plate inference.
 Face recognition quality is emitted per face (`quality_score`, metrics, validity),
 while each tracked human accumulates `best_face_quality`; human history persistence
 must bind PostgreSQL boolean CASE parameters as booleans, not integer `0/1` values.
+The face pipeline consumes keypoints from the configured YOLO pose human model before
+ByteTrack and face-ROI inference. `human_pose_enabled` defaults to true, requires at
+least four keypoints at the configured confidence floor, and exposes rejection counts
+in face results/status; disable it only for a detector model that cannot emit pose
+keypoints. Valid face matches use `recognition_quality_weight` to reduce the raw vector
+similarity by face quality before track stabilization, while invalid-quality faces are
+excluded from face overlays and human-log face evidence.
 
 When ByteTrack expires a source track, face recognition emits one additive
 `disappeared_humans` entry with the last stable identity. The runtime finalizes that
@@ -304,7 +311,7 @@ The `sources` table (defined in `app/database.py`) stores 9 per‑source confide
 - The 9 confidence fields above are stored **only** in the `sources` table as typed SQL columns. Per‑source rows override the global `'__default__'` row.
 - The per-source `loop` and `draw_*` overlay flags are stored on normal source rows and flow through `SourceRegistry` / `/api/v1/sources` into ingest or broadcast behavior. They do not belong on the `'__default__'` confidence row.
 - The per-source nullable `fps` field is stored on normal source rows and flows through `SourceRegistry` / `/api/v1/sources` into file/static-video ingest pacing. `NULL` preserves source-native FPS when available instead of forcing a global playback rate.
-- All other `OperationalSettings` fields (`video_ingest_fps`, `rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob.
+- All other `OperationalSettings` fields (`rtsp_transport`, `broadcast_enabled`, `rtsp_source_count`, `video_loop`, …) remain in the `general_settings.operational_json` JSON blob. FPS is not stored there.
 - At read time, `Runtime.operational_settings()` and the `GET /api/v1/settings/general` snapshot merge: JSON‑blob fields first, then override the 9 fields from `source_settings.get_default()`. This keeps the JSON blob as a backward‑compatible fallback.
 - The 9 source-owned confidence fields are not part of the public `/api/v1/settings/general operational` contract; use `/api/v1/sources` to read or change them. Runtime snapshots may still resolve them internally through `SourceSettingsStore`.
 - `SourceSettingsStore` (in `app/core/source_settings_store.py`) provides `get_default()` → returns `OperationalSettings`, `set_default(changes)` → upserts the `__default__` row, `get(source_uri)` / `set(source_uri, …)` / `delete(source_uri)` for per‑source overrides, and `resolve(source_uri)` → merges default + per‑source.
@@ -669,8 +676,6 @@ docker logs --tail 200 merged-video-ai-router
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VIDEO_INGEST_FPS` | Python 10.0; Compose 5.0 | Per-source ceiling for cameras with AI tasks; resolved container environment wins |
-| `VIDEO_PREVIEW_FPS` | Python 10.0; Compose 25.0 | Per-source ceiling for play-only preview cameras |
 | `FIRE_SMOKE_MAX_WAIT_MS` | 50.0 | Max wait time to fill fire/smoke batch |
 | `PLATE_MAX_WAIT_MS` | 50.0 | Max wait time to fill plate batch |
 | `FACE_MAX_WAIT_MS` | 50.0 | Max wait time to fill face batch |
@@ -681,7 +686,7 @@ docker logs --tail 200 merged-video-ai-router
 
 1. **Measure first**: sample `/api/v1/diagnostics/fps` over the same bounded window before and after a tuning change.
 2. **Resolve configuration precedence**: check `docker compose config`; service `environment` values override `env_file` and Python defaults.
-3. **Tune one limit at a time**: raise `VIDEO_INGEST_FPS` gradually only when decoders supply enough frames and worker replacements remain zero or acceptable.
+3. **Tune one limit at a time**: raise one `sources.fps` value gradually only when that decoder supplies enough frames and worker replacements remain zero or acceptable.
 4. **Protect ordering and state**: do not increase `WORKER_THREADS` until TensorRT contexts, trackers, processors, callbacks, and stores are validated as thread-safe and per-source result ordering is preserved.
 5. **Preserve source-selected delivery**: `/api/v1/sources` owns frontend stream selection through `enabled`; `tasks` selects AI workers. Every enabled frame is published to the bounded JPEG broadcast path before optional AI results upgrade it, so model latency or failure does not remove the video.
 

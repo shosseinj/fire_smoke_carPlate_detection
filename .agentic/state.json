@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project_name": "Unified Video AI Task Router",
   "initialized": true,
-  "last_updated": "2026-07-26T12:25:00Z",
+  "last_updated": "2026-07-27T05:45:00Z",
   "verified_commands": {
     "install": [
       "pip install -r requirements.txt",
@@ -116,8 +116,8 @@
     {
       "id": "face-processing",
       "status": "PASS_WITH_WARNINGS",
-      "commands_passed": ["python -m pytest tests/test_face_recognition.py tests/test_human_log_store.py -q", "python -m py_compile app/processors/face_recognition.py app/core/detection_log_store.py app/core/human_log_store.py app/runtime.py"],
-      "notes": "Track expiry now emits a one-shot disappeared_humans payload; HumanLogStore resolves Qdrant national-code identities through personnel and finalizes an idempotent detection_logs record for /api/v1/logs/filter. Focused tests passed; PostgreSQL-backed persistence tests were skipped in the current host environment. Real mode requires 3 face models + Qdrant."
+      "commands_passed": ["python -m pytest tests/test_face_recognition.py tests/test_face_quality_store.py tests/test_human_log_store.py tests/test_broadcast.py -q", "python -m py_compile app/processors/face_recognition.py app/core/face_quality_store.py app/core/detection_log_store.py app/core/human_log_store.py app/core/broadcast.py app/runtime.py", "curl -fsS http://127.0.0.1:9999/api/v1/faces/status", "curl -fsS http://127.0.0.1:9999/api/v1/faces/quality-settings", "curl -fsS http://127.0.0.1:9999/api/v1/tests/face/models", "curl -fsS -X POST http://127.0.0.1:9999/api/v1/tests/face/full-pipeline -F files=@unknown.png", "curl -fsS http://127.0.0.1:9999/api/v1/diagnostics/fps?sample_seconds=5&expected_fps=25"],
+      "notes": "Pose-based human admission is enabled by default and rejects detector candidates without at least the configured number of confident keypoints before tracking and face ROI inference. Face quality remains an explicit admission gate; valid matches receive a configurable quality-adjusted score and invalid faces are excluded from persistence and face overlays. Source-specific face confidence and recognition thresholds resolve through SourceSettingsStore per packet, while runtime-wide mutations are serialized by the processor settings lock. Track expiry still emits a one-shot disappeared_humans payload; HumanLogStore resolves Qdrant national-code identities through personnel and finalizes an idempotent detection_logs record for /api/v1/logs/filter. Focused tests passed and the live TensorRT/Qdrant container reported active pose rejection counters with no failed face batches. Full regression has one pre-existing stale test expecting removed metadata table cameras."
     },
     {
       "id": "model-management",
@@ -164,8 +164,8 @@
     {
       "id": "deployment-docker",
       "status": "PASS",
-      "commands_passed": ["docker compose config --quiet"],
-      "notes": "Compose config valid. Build requires NVIDIA GPU (Dockerfile.deepstream based on custom image)."
+      "commands_passed": ["docker compose config --quiet", "docker compose exec -T video-ai-router alembic current", "curl -fsS http://127.0.0.1:9999/health", "curl -fsS http://127.0.0.1:9999/api/v1/tests/face/models", "curl -fsS -X POST http://127.0.0.1:9999/api/v1/tests/face/full-pipeline -F files=@unknown.png"],
+      "notes": "Compose config valid and the running NVIDIA container reports migration 20260727_0027 at head, TensorRT 10.7 face models loaded, and a successful full-pipeline smoke request. Build requires NVIDIA GPU (Dockerfile.deepstream based on custom image)."
     },
     {
       "id": "agentic-workflow",

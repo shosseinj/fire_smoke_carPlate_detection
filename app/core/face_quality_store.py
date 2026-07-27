@@ -19,6 +19,10 @@ class FaceQualityPolicy:
     max_abs_pitch: float = 55.0
     max_abs_roll: float = 35.0
     require_landmarks: bool = True
+    human_pose_enabled: bool = True
+    human_pose_min_keypoints: int = 4
+    human_pose_keypoint_confidence: float = 0.25
+    recognition_quality_weight: float = 0.5
 
     def validated(self) -> "FaceQualityPolicy":
         if not 0.0 <= self.quality_threshold <= 1.0:
@@ -33,6 +37,12 @@ class FaceQualityPolicy:
         for name in ("max_abs_yaw", "max_abs_pitch", "max_abs_roll"):
             if not 0 < float(getattr(self, name)) <= 90:
                 raise ValueError(f"{name} must be greater than 0 and at most 90")
+        if not 1 <= int(self.human_pose_min_keypoints) <= 17:
+            raise ValueError("human_pose_min_keypoints must be between 1 and 17")
+        if not 0.0 <= float(self.human_pose_keypoint_confidence) <= 1.0:
+            raise ValueError("human_pose_keypoint_confidence must be between 0 and 1")
+        if not 0.0 <= float(self.recognition_quality_weight) <= 1.0:
+            raise ValueError("recognition_quality_weight must be between 0 and 1")
         return self
 
 
@@ -56,8 +66,9 @@ class FaceQualitySettingsStore:
                     singleton, quality_threshold, blur_threshold,
                     min_face_width, min_face_height,
                     min_eye_distance, max_abs_yaw, max_abs_pitch, max_abs_roll,
-                    require_landmarks
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    require_landmarks, human_pose_enabled, human_pose_min_keypoints,
+                    human_pose_keypoint_confidence, recognition_quality_weight
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(singleton) DO NOTHING
                 """,
                 (
@@ -70,6 +81,10 @@ class FaceQualitySettingsStore:
                     values["max_abs_pitch"],
                     values["max_abs_roll"],
                     int(values["require_landmarks"]),
+                    int(values["human_pose_enabled"]),
+                    values["human_pose_min_keypoints"],
+                    values["human_pose_keypoint_confidence"],
+                    values["recognition_quality_weight"],
                 ),
             )
 
@@ -89,6 +104,10 @@ class FaceQualitySettingsStore:
             max_abs_pitch=float(row["max_abs_pitch"]),
             max_abs_roll=float(row["max_abs_roll"]),
             require_landmarks=bool(row["require_landmarks"]),
+            human_pose_enabled=bool(row["human_pose_enabled"]),
+            human_pose_min_keypoints=int(row["human_pose_min_keypoints"]),
+            human_pose_keypoint_confidence=float(row["human_pose_keypoint_confidence"]),
+            recognition_quality_weight=float(row["recognition_quality_weight"]),
         ).validated()
 
     def update(self, changes: dict[str, Any]) -> FaceQualityPolicy:
@@ -105,7 +124,9 @@ class FaceQualitySettingsStore:
                     quality_threshold = ?, blur_threshold = ?,
                     min_face_width = ?, min_face_height = ?,
                     min_eye_distance = ?, max_abs_yaw = ?, max_abs_pitch = ?,
-                    max_abs_roll = ?, require_landmarks = ?
+                    max_abs_roll = ?, require_landmarks = ?, human_pose_enabled = ?,
+                    human_pose_min_keypoints = ?, human_pose_keypoint_confidence = ?,
+                    recognition_quality_weight = ?
                 WHERE singleton = 1
                 """,
                 (
@@ -118,6 +139,10 @@ class FaceQualitySettingsStore:
                     values["max_abs_pitch"],
                     values["max_abs_roll"],
                     int(values["require_landmarks"]),
+                    int(values["human_pose_enabled"]),
+                    values["human_pose_min_keypoints"],
+                    values["human_pose_keypoint_confidence"],
+                    values["recognition_quality_weight"],
                 ),
             )
         return updated

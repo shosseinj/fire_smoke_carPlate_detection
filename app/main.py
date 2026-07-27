@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-import os
+
 from app.api.frames import router as frames_router
 from app.api.broadcast import router as broadcast_router
 
@@ -43,6 +49,8 @@ from app.config import settings
 from app.runtime import build_runtime
 
 runtime = build_runtime(settings)
+
+SWAGGER_UI_DIRECTORY = Path(__file__).resolve().parent / "web" / "swagger-ui"
 
 OPENAPI_TAGS = [
     {"name": "authentication"},
@@ -94,7 +102,32 @@ app = FastAPI(
     ),
     lifespan=lifespan,
     openapi_tags=OPENAPI_TAGS,
+    docs_url=None,
 )
+app.mount(
+    "/docs-assets",
+    StaticFiles(directory=SWAGGER_UI_DIRECTORY),
+    name="docs-assets",
+)
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_ui() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        swagger_js_url="/docs-assets/swagger-ui-bundle.js",
+        swagger_css_url="/docs-assets/swagger-ui.css",
+        swagger_favicon_url="/docs-assets/favicon.svg",
+    )
+
+
+@app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+def swagger_ui_redirect() -> HTMLResponse:
+    return get_swagger_ui_oauth2_redirect_html()
+
+
 app.include_router(auth_router)
 app.include_router(buildings_router)
 app.include_router(sections_router)

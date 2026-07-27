@@ -48,7 +48,7 @@ def _build_packets(frames: list[np.ndarray], task: TaskName) -> list[FramePacket
         FramePacket(
             source_id=f"test-{index}",
             frame=frame,
-            source_frame=frame.copy(),
+            metadata={"source_frame": frame.copy()},
             round_sequence=0,
             frame_index=index,
             captured_monotonic=time.monotonic(),
@@ -102,6 +102,7 @@ def _model_file_status(path: Path) -> dict[str, Any]:
 )
 def face_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     s = runtime.settings
+    active_quality = runtime.face_quality_settings.as_dict()
     trt_version = "unknown"
     try:
         import tensorrt as trt
@@ -122,6 +123,10 @@ def face_models_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
             "face_imgsz": s.face_detector_imgsz,
             "embedding_batch_size": s.face_embedding_batch_size,
             "device": s.face_device,
+            "human_pose_enabled": active_quality["human_pose_enabled"],
+            "human_pose_min_keypoints": active_quality["human_pose_min_keypoints"],
+            "human_pose_keypoint_confidence": active_quality["human_pose_keypoint_confidence"],
+            "recognition_quality_weight": active_quality["recognition_quality_weight"],
         },
     }
 
@@ -148,7 +153,7 @@ async def test_face_human_detection(
     )
     output: list[dict[str, Any]] = []
     for i, result in enumerate(results):
-        boxes = proc._boxes(result, proc.settings.human_confidence)
+        boxes, rejected = proc._human_boxes(result)
         output.append({
             "frame_index": i,
             "detections": len(boxes),
@@ -159,6 +164,7 @@ async def test_face_human_detection(
                 }
                 for b in boxes
             ],
+            "filtered": rejected,
         })
     return output
 

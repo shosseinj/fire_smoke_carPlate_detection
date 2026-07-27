@@ -23,10 +23,10 @@ def snapshot(
     return {
         "video_ingestor": {
             "backend": "deepstream",
-            "target_fps": 5.0,
-            "preview_fps": 25.0,
+            "fps_control": "sources.fps",
             "sources": {
                 "camera-01": {
+                    "fps_mode": "override",
                     "delivery_target_fps": 5.0,
                     "decoded_samples": decoded,
                     "rate_limited_frames": rate_limited,
@@ -104,6 +104,85 @@ def test_fps_report_identifies_configured_five_fps_cap() -> None:
     assert report["primary_causes"] == [
         {"code": "configured_ingest_cap", "affected_sections": 1}
     ]
+    assert report["fps_control"] == "sources.fps"
+    assert report["overridden_fps_sources"] == 1
+    assert report["native_fps_sources"] == 0
+
+
+def test_fps_report_uses_native_source_fps_without_a_global_cap() -> None:
+    before = snapshot(
+        decoded=100,
+        received=100,
+        submitted=100,
+        worker_accepted=100,
+        worker_processed=100,
+    )
+    after = snapshot(
+        decoded=150,
+        received=150,
+        submitted=150,
+        worker_accepted=150,
+        worker_processed=150,
+    )
+    for value in (before, after):
+        source = value["video_ingestor"]["sources"]["camera-01"]
+        source["delivery_target_fps"] = None
+        source["fps_mode"] = "native"
+        source["native_fps"] = 25.0
+
+    report = build_fps_report(
+        before,
+        after,
+        sample_seconds=2.0,
+        expected_fps=25.0,
+        camera_tasks={"camera-01": ("fire_smoke",)},
+    )
+
+    camera = report["cameras"]["camera-01"]
+    assert camera["fps_mode"] == "native"
+    assert camera["configured_target_fps"] is None
+    assert camera["native_fps"] == 25.0
+    assert camera["router_frame_fps"] == 25.0
+    assert "configured_ingest_cap" not in camera["causes"]
+    assert report["native_fps_sources"] == 1
+
+
+def test_fps_report_marks_a_native_source_with_no_frames_unavailable() -> None:
+    before = snapshot(
+        decoded=0,
+        received=0,
+        submitted=0,
+        worker_accepted=0,
+        worker_processed=0,
+    )
+    after = snapshot(
+        decoded=0,
+        received=0,
+        submitted=0,
+        worker_accepted=0,
+        worker_processed=0,
+    )
+    for value in (before, after):
+        source = value["video_ingestor"]["sources"]["camera-01"]
+        source["delivery_target_fps"] = None
+        source["fps_mode"] = "native"
+        source["source_type"] = "rtsp"
+
+    report = build_fps_report(
+        before,
+        after,
+        sample_seconds=2.0,
+        expected_fps=25.0,
+        camera_tasks={"camera-01": ("fire_smoke",)},
+    )
+
+    camera = report["cameras"]["camera-01"]
+    assert camera["source_type"] == "rtsp"
+    assert camera["status"] == "limited"
+    assert camera["causes"] == ["source_unavailable"]
+    assert report["primary_causes"] == [
+        {"code": "source_unavailable", "affected_sections": 1}
+    ]
 
 
 def test_fps_report_identifies_decode_and_worker_pressure() -> None:
@@ -172,6 +251,7 @@ def test_deepstream_delivery_gate_counts_rate_limited_samples() -> None:
         frame_height=640,
         preserve_source_resolution=False,
         delivery_target_fps=5.0,
+        next_frame_due_monotonic=time.monotonic() + 0.2,
         last_frame_monotonic=time.monotonic(),
     )
     ingestor = object.__new__(DeepStreamIngestor)
@@ -184,3 +264,86 @@ def test_deepstream_delivery_gate_counts_rate_limited_samples() -> None:
     assert state.decoded_samples == 1
     assert state.rate_limited_frames == 1
     assert state.received_frames == 0
+
+
+def _admitting_deepstream_sample(
+    *,
+    delivery_target_fps: float | None,
+    next_frame_due_monotonic: float = 0.0,
+) -> tuple[DeepStreamIngestor, DeepStreamSourceState, SimpleNamespace]:
+    structure = SimpleNamespace(
+        get_value=lambda name: {
+            "width": 1,
+            "height": 1,
+            "format": "BGRx",
+        }[name]
+    )
+    caps = SimpleNamespace(get_structure=lambda _: structure)
+    buffer = SimpleNamespace(
+        extract_dup=lambda _offset, _size: bytes([1, 2, 3, 255]),
+        get_size=lambda: 4,
+        pts=-1,
+    )
+    sample = SimpleNamespace(
+        get_caps=lambda: caps,
+        get_buffer=lambda: buffer,
+    )
+    gst = SimpleNamespace(
+        FlowReturn=SimpleNamespace(OK="ok", ERROR="error"),
+        CLOCK_TIME_NONE=-1,
+        SECOND=1_000_000_000,
+    )
+    sink = SimpleNamespace(emit=lambda _name: sample)
+    state = DeepStreamSourceState(
+        source_id="camera-01",
+        source_uri="rtsp://example.test/live",
+        display_uri="rtsp://example.test/live",
+        source_type="rtsp",
+        pipeline=None,
+        source=None,
+        sink=sink,
+        bus=None,
+        bus_handler_id=0,
+        pipeline_handler_id=0,
+        source_pad_handler_id=0,
+        sink_handler_id=0,
+        frame_width=1,
+        frame_height=1,
+        preserve_source_resolution=False,
+        delivery_target_fps=delivery_target_fps,
+        next_frame_due_monotonic=next_frame_due_monotonic,
+        last_frame_monotonic=time.monotonic(),
+    )
+    ingestor = object.__new__(DeepStreamIngestor)
+    ingestor._gst = gst
+    ingestor._glib = object()
+    ingestor._lock = threading.RLock()
+    ingestor._states = {state.source_id: state}
+    ingestor._frame_sequences = {}
+    ingestor._failed_sources = set()
+    ingestor._retry_after = {}
+    ingestor._last_error = None
+    return ingestor, state, sink
+
+
+def test_deepstream_native_fps_mode_admits_each_decoded_sample() -> None:
+    ingestor, state, sink = _admitting_deepstream_sample(
+        delivery_target_fps=None,
+    )
+
+    assert ingestor._on_new_sample(sink, state.source_id) == "ok"
+    assert state.decoded_samples == 1
+    assert state.rate_limited_frames == 0
+    assert state.received_frames == 1
+
+
+def test_deepstream_fps_override_tolerates_nominal_timestamp_jitter() -> None:
+    ingestor, state, sink = _admitting_deepstream_sample(
+        delivery_target_fps=25.0,
+        next_frame_due_monotonic=time.monotonic() + 0.001,
+    )
+
+    assert ingestor._on_new_sample(sink, state.source_id) == "ok"
+    assert state.decoded_samples == 1
+    assert state.rate_limited_frames == 0
+    assert state.received_frames == 1

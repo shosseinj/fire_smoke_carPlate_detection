@@ -139,6 +139,19 @@ class LatestPerSourceBuffer:
             self._closed = True
             self._condition.notify_all()
 
+    def clear(self) -> int:
+        with self._condition:
+            discarded = (
+                len(self._fifo)
+                if self._policy == "lossless_fifo"
+                else len(self._latest)
+            )
+            self._fifo.clear()
+            self._latest.clear()
+            self._order.clear()
+            self._condition.notify_all()
+            return discarded
+
     def stats(self) -> BufferStats:
         with self._condition:
             return BufferStats(

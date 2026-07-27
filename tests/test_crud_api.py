@@ -417,8 +417,19 @@ class TestFacesApi:
     def test_quality_settings(self, crud):
         resp = crud.client.get("/api/v1/faces/quality-settings", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
-        resp = crud.client.patch("/api/v1/faces/quality-settings", json={"quality_threshold": 0.6}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.patch(
+            "/api/v1/faces/quality-settings",
+            json={
+                "quality_threshold": 0.6,
+                "human_pose_min_keypoints": 5,
+                "recognition_quality_weight": 0.75,
+            },
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
         _ok(resp)
+        body = resp.json()
+        assert body["human_pose_min_keypoints"] == 5
+        assert body["recognition_quality_weight"] == 0.75
 
     def test_identities(self, crud):
         resp = crud.client.get("/api/v1/faces/identities", headers={"Authorization": f"Bearer {crud.admin_token}"})

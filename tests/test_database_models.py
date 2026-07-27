@@ -6,9 +6,11 @@ def test_personnel_table_in_metadata() -> None:
     assert "personnel" in metadata.tables
 
 
-def test_cameras_table_in_metadata() -> None:
+def test_sources_table_owns_nullable_fps() -> None:
     from app.database import metadata
-    assert "cameras" in metadata.tables
+
+    assert "sources" in metadata.tables
+    assert metadata.tables["sources"].c.fps.nullable is True
 
 
 def test_detection_logs_table_in_metadata() -> None:

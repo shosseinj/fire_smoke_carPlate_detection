@@ -8,8 +8,6 @@ from app.config import Settings
 
 @dataclass(frozen=True, slots=True)
 class OperationalSettings:
-    video_ingest_fps: float = 25.0
-    video_preview_fps: float = 25.0
     video_loop: bool = True
     rtsp_transport: str = "tcp"
     rtsp_open_timeout_ms: int = 20000
@@ -31,8 +29,8 @@ class OperationalSettings:
     face_human_confidence: float = 0.40
     face_detection_confidence: float = 0.50
     face_recognition_threshold: float = 0.45
-    rtsp_source_count: int = 100
-    static_video_source_count: int = 10
+    rtsp_source_count: int = 256
+    static_video_source_count: int = 256
 
     @classmethod
     def from_app_settings(cls, settings: Settings) -> "OperationalSettings":
@@ -54,8 +52,6 @@ class OperationalSettings:
             value = float(getattr(self, name))
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be between 0 and 1")
-        if self.video_ingest_fps <= 0 or self.video_preview_fps <= 0:
-            raise ValueError("video FPS values must be greater than zero")
         if self.rtsp_transport not in {"tcp", "udp", "udp_multicast", "http"}:
             raise ValueError("rtsp_transport must be tcp, udp, udp_multicast, or http")
         for name in ("rtsp_open_timeout_ms", "rtsp_read_timeout_ms", "deepstream_rtsp_latency_ms", "deepstream_rtsp_stall_timeout_seconds", "broadcast_wall_max_width", "broadcast_wall_max_height"):
@@ -73,3 +69,4 @@ class OperationalSettings:
 
 OVERRIDABLE_FIELDS = frozenset(OperationalSettings.__dataclass_fields__)
 CAMERA_SETTINGS_METADATA_KEY = "_settings_overrides"
+LEGACY_FPS_FIELDS = frozenset({"video_ingest_fps", "video_preview_fps"})

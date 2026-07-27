@@ -89,11 +89,9 @@ class Settings:
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
     video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()
-    video_ingest_fps: float = _env_float("VIDEO_INGEST_FPS", 10.0)
-    video_preview_fps: float = _env_float("VIDEO_PREVIEW_FPS", 10.0)
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
-    rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 128)
-    static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 16)
+    rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 256)
+    static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 256)
     gpu_resize_enabled: bool = _env_bool("GPU_RESIZE_ENABLED", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)
@@ -110,7 +108,7 @@ class Settings:
     broadcast_wall_max_width: int = _env_int("BROADCAST_WALL_MAX_WIDTH", 320)
     broadcast_wall_max_height: int = _env_int("BROADCAST_WALL_MAX_HEIGHT", 320)
     broadcast_face_overlay_ttl_ms: float = _env_float(
-        "BROADCAST_FACE_OVERLAY_TTL_MS", 250.0
+        "BROADCAST_FACE_OVERLAY_TTL_MS", 750.0
     )
     media_preview_enabled: bool = _env_bool("MEDIA_PREVIEW_ENABLED", False)
     media_preview_publish_base: str = os.getenv(
@@ -218,6 +216,14 @@ class Settings:
     face_max_abs_pitch: float = _env_float("FACE_MAX_ABS_PITCH", 55.0)
     face_max_abs_roll: float = _env_float("FACE_MAX_ABS_ROLL", 35.0)
     face_require_landmarks: bool = _env_bool("FACE_REQUIRE_LANDMARKS", True)
+    face_human_pose_enabled: bool = _env_bool("FACE_HUMAN_POSE_ENABLED", True)
+    face_human_pose_min_keypoints: int = _env_int("FACE_HUMAN_POSE_MIN_KEYPOINTS", 4)
+    face_human_pose_keypoint_confidence: float = _env_float(
+        "FACE_HUMAN_POSE_KEYPOINT_CONFIDENCE", 0.25
+    )
+    face_recognition_quality_weight: float = _env_float(
+        "FACE_RECOGNITION_QUALITY_WEIGHT", 0.5
+    )
     face_tracker_high_threshold: float = _env_float(
         "FACE_TRACKER_HIGH_THRESHOLD", 0.40
     )

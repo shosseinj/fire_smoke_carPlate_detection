@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import struct
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.broadcast import get_runtime, router as broadcast_router
-from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
+from app.core.broadcast import (
+    AnnotatedBroadcastHub,
+    EncodedBroadcastFrame,
+    SourceDrawSettings,
+)
 from app.core.source_registry import SourceChange, SourceRecord
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
@@ -229,6 +234,8 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'header.render_profile || "Annotated"' in dashboard
     assert "if (broadcastSocket !== socket) return;" in dashboard
     assert "event.data instanceof ArrayBuffer" in dashboard
+    assert "incomingFrameIndex < stats.frameIndex" in dashboard
+    assert 'img.addEventListener("load"' in dashboard
 
 
 def test_dashboard_uses_source_uri_task_manager_identity() -> None:
@@ -266,6 +273,7 @@ def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> N
         with client.websocket_connect(
             "/api/v1/broadcast/ws?wall=true&fullscreen_source=camera-07"
         ) as websocket:
+            hub.publish_passthrough(packet([], "camera-07"))
             received: dict[str, tuple[dict, bytes]] = {}
             for _ in known_sources:
                 payload = websocket.receive_bytes()
@@ -292,6 +300,81 @@ def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> N
     assert cv2.imdecode(
         np.frombuffer(wall_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
     ).shape == (90, 160, 3)
+
+
+def test_fullscreen_subscription_skips_cached_wall_only_frame() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+        async_render=False,
+    )
+    wall_subscriber_id, wall_queue = hub.subscribe(wall=True)
+    hub.publish_passthrough(packet([], "camera-07"))
+    cached = wall_queue.get_nowait()
+    assert isinstance(cached, EncodedBroadcastFrame)
+    assert (cached.frame_width, cached.frame_height) == (160, 90)
+
+    fullscreen_subscriber_id, fullscreen_queue = hub.subscribe(
+        wall=True,
+        fullscreen_source="camera-07",
+    )
+    assert fullscreen_queue.empty()
+
+    next_packet = packet([], "camera-07")
+    hub.publish_passthrough(next_packet)
+    fullscreen = fullscreen_queue.get_nowait()
+
+    assert isinstance(fullscreen, EncodedBroadcastFrame)
+    assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
+    hub.unsubscribe(fullscreen_subscriber_id)
+    hub.unsubscribe(wall_subscriber_id)
+
+
+def test_source_only_fullscreen_subscription_skips_cached_wall_only_frame() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=160,
+        wall_max_height=160,
+        async_render=False,
+    )
+    wall_subscriber_id, wall_queue = hub.subscribe_source_only(wall=True)
+    hub.publish_source_only(packet([], "camera-07"))
+    cached = wall_queue.get_nowait()
+    assert isinstance(cached, EncodedBroadcastFrame)
+    assert (cached.frame_width, cached.frame_height) == (160, 90)
+
+    fullscreen_subscriber_id, fullscreen_queue = hub.subscribe_source_only(
+        wall=True,
+        fullscreen_source="camera-07",
+    )
+    assert fullscreen_queue.empty()
+
+    next_packet = packet([], "camera-07")
+    hub.publish_source_only(next_packet)
+    fullscreen = fullscreen_queue.get_nowait()
+
+    assert isinstance(fullscreen, EncodedBroadcastFrame)
+    assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
+    hub.unsubscribe_source_only(fullscreen_subscriber_id)
+    hub.unsubscribe_source_only(wall_subscriber_id)
+
+
+def test_source_only_broadcast_never_replaces_new_frame_with_stale_frame() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    subscriber_id, target = hub.subscribe_source_only(wall=True)
+    newest = replace(packet([], "camera-07"), frame_index=20)
+    stale = replace(packet([], "camera-07"), frame_index=19)
+
+    hub.publish_source_only(newest)
+    delivered = target.get_nowait()
+    hub.publish_source_only(stale)
+
+    assert isinstance(delivered, EncodedBroadcastFrame)
+    assert delivered.frame_index == 20
+    assert target.empty()
+    assert hub._source_only_latest["camera-07"].frame_index == 20
+    hub.unsubscribe_source_only(subscriber_id)
 
 
 def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
@@ -470,6 +553,44 @@ def test_face_overlay_is_retained_briefly_for_intermediate_frames() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert hub.status()["face_overlay_cache_hits"] == 1
+
+
+def test_fire_overlay_is_retained_briefly_for_intermediate_frames() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        async_render=False,
+        face_overlay_ttl_ms=500,
+    )
+    fire_packet = packet(["fire_smoke"])
+    hub.publish_result(
+        fire_packet,
+        result(
+            TaskName.FIRE_SMOKE,
+            {
+                "tracks": [
+                    {
+                        "label": "fire",
+                        "confidence": 0.9,
+                        "bbox": [30, 40, 120, 130],
+                    }
+                ]
+            },
+        ),
+    )
+    next_packet = replace(
+        fire_packet,
+        round_sequence=2,
+        frame_index=13,
+        captured_monotonic=time.monotonic(),
+    )
+
+    hub.publish_passthrough(next_packet)
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.frame_index == 13
+    assert encoded.tasks == ("fire_smoke",)
+    assert hub.status()["overlay_cache_hits"] == 1
 
 
 # ── Polygon drawing tests ────────────────────────────────────────────
