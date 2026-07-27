@@ -102,8 +102,10 @@ def get_personnel_store() -> Any:
     return get_runtime().personnel_store
 
 
-def _get_current_user_id(current_user: dict) -> int | None:
-    return current_user.get("id")
+def _get_current_user_id(current_user: Any) -> int | None:
+    if isinstance(current_user, dict):
+        return current_user.get("id")
+    return getattr(current_user, "id", None)
 
 
 def _choose_reference_image(

@@ -5,16 +5,20 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.api.detection_logs import DetectionLogUpdate, _calculate_old_person_access
+from app.api.detection_logs import DetectionLogUpdate, _calculate_old_person_access, _get_current_user_id
 
 
 def test_person_patch_requires_identity_and_trims_person() -> None:
-    update = DetectionLogUpdate(person=" 0311344119 ", confidence=0.8)
+    update = DetectionLogUpdate(person=" 0311344119 ")
     assert update.person == "0311344119"
-    assert update.confidence == 0.8
 
     with pytest.raises(ValidationError):
-        DetectionLogUpdate(confidence=0.8)
+        DetectionLogUpdate(person="   ")
+
+
+def test_person_patch_reads_user_id_from_dict_or_user_record() -> None:
+    assert _get_current_user_id({"id": 7}) == 7
+    assert _get_current_user_id(type("UserRecord", (), {"id": 8})()) == 8
 
 
 @pytest.mark.parametrize(
