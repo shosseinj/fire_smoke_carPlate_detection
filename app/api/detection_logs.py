@@ -51,6 +51,44 @@ class DetectionLogUpdate(BaseModel):
 
 router = APIRouter(prefix="/api/v1/logs", tags=["Detection Logs"])
 
+
+class DetectionLogResponse(BaseModel):
+    id: int
+    person: str | None = None
+    confidence: float | None = None
+    detection_time: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    face_image_url: str | None = None
+    face_thumbnail: str | None = None
+    body_image_url: str | None = None
+    body_thumbnail: str | None = None
+    snapshot_image_url: str | None = None
+    snapshot_thumbnail: str | None = None
+    video_url: str | None = None
+    face_video_url: str | None = None
+    unknown_faces_path: str | None = None
+    log_type: str | None = None
+    ref_img_id: int | str | None = None
+    full_name: str | None = None
+    room_id: int | None = None
+    access_granted: bool | None = None
+    counts_for_attendance: bool = True
+    created_by: int | None = None
+    updated_by: int | None = None
+    created_by_username: str | None = None
+    updated_by_username: str | None = None
+    room_name: str | None = None
+    camera_name: str | None = None
+    section_name: str | None = None
+    building_name: str | None = None
+    fname: str | None = None
+    lname: str | None = None
+    personnel_id: int | None = None
+    camera_id: str | int | None = None
+    section_id: int | None = None
+    building_id: int | None = None
+
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
@@ -229,7 +267,7 @@ def _build_response(
     room_name, camera_name, section_name, building_name = _resolve_names(
         record.room_id, record.camera_id
     )
-    return legacy_detection_response(
+    response = legacy_detection_response(
         record,
         full_name=full_name,
         room_name=room_name,
@@ -240,6 +278,18 @@ def _build_response(
         updated_by_username=u_user,
         include_detail=include_detail,
     )
+    response["detection_time"] = response.get("detection_time_jalali")
+    response["created_at"] = response.get("created_at_jalali")
+    response["updated_at"] = response.get("updated_at_jalali")
+    for field in (
+        "detection_time_utc", "detection_time_local", "detection_time_jalali",
+        "created_at_utc", "created_at_local", "created_at_jalali",
+        "updated_at_utc", "updated_at_local", "updated_at_jalali",
+        "face_image", "body_image", "snapshot_image", "reference_image",
+        "import_source_parts",
+    ):
+        response.pop(field, None)
+    return response
 
 
 def _delete_media_files(record: DetectionLogRecord) -> None:
@@ -291,7 +341,7 @@ def _period_to_utc_range(
 # ── Static routes (before /{log_id}) ──────────────────────────────────
 
 
-@router.post("/log")
+@router.post("/log", response_model=DetectionLogResponse)
 def create_detection_log(
     body: dict[str, Any],
     current_user: dict = Depends(require_role("operator")),
@@ -359,7 +409,7 @@ def create_detection_log(
     return _build_response(record, include_detail=True)
 
 
-@router.get("/filter")
+@router.get("/filter", response_model=list[DetectionLogResponse])
 def filter_logs(
     period: str = Query("all"),
     from_date_jalali: str | None = Query(None),
@@ -899,7 +949,7 @@ def generate_fake_detections(
 # ── Parameterized routes ──────────────────────────────────────────────
 
 
-@router.get("/{log_id}")
+@router.get("/{log_id}", response_model=DetectionLogResponse)
 def get_log(
     log_id: int,
     _: dict = Depends(require_role("operator")),
@@ -911,7 +961,7 @@ def get_log(
     return _build_response(record, include_detail=True)
 
 
-@router.patch("/{log_id}/person")
+@router.patch("/{log_id}/person", response_model=DetectionLogResponse)
 def patch_log_person(
     log_id: int,
     update_data: DetectionLogUpdate,

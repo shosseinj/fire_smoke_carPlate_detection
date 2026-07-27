@@ -518,25 +518,25 @@ def assign_source_to_room(
     }
 
 
-@rooms_router.patch("/{room_id}/assign-camera/{cam_id}", response_model=RoomResponse)
-def assign_camera_to_room(
-    room_id: int,
-    cam_id: int,
-    runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
-):
-    store = _store(runtime)
-    if not store.get_room(room_id):
-        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
-    try:
-        room = store.update_room(room_id=room_id, cam_id=cam_id)
-    except ValueError as exc:
-        code = 404 if "not found" in str(exc).lower() else 422
-        raise HTTPException(status_code=code, detail=str(exc)) from exc
-    if room is None:
-        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
-    runtime._refresh_all_source_zones()
-    return _room_response(room, store)
+# @rooms_router.patch("/{room_id}/assign-camera/{cam_id}", response_model=RoomResponse)
+# def assign_camera_to_room(
+#     room_id: int,
+#     cam_id: int,
+#     runtime: Runtime = Depends(get_runtime),
+#     _: UserRecord = Depends(require_role("admin")),
+# ):
+#     store = _store(runtime)
+#     if not store.get_room(room_id):
+#         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+#     try:
+#         room = store.update_room(room_id=room_id, cam_id=cam_id)
+#     except ValueError as exc:
+#         code = 404 if "not found" in str(exc).lower() else 422
+#         raise HTTPException(status_code=code, detail=str(exc)) from exc
+#     if room is None:
+#         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+#     runtime._refresh_all_source_zones()
+#     return _room_response(room, store)
 
 
 @sections_router.delete("/{section_id}")
