@@ -147,8 +147,12 @@ class Runtime:
         if plate is not None and hasattr(plate.processor, "settings"):
             plate.processor.settings = replace(plate.processor.settings, detector_confidence=current.plate_confidence, detector_iou=current.plate_iou, vehicle_confidence=current.vehicle_confidence, vehicle_iou=current.vehicle_iou)
         face = workers.get(TaskName.FACE_RECOGNITION)
-        if face is not None and hasattr(face.processor, "settings"):
-            face.processor.settings = replace(face.processor.settings, human_confidence=current.face_human_confidence, face_confidence=current.face_detection_confidence, recognition_threshold=current.face_recognition_threshold)
+        if face is not None and hasattr(face.processor, "update_runtime_thresholds"):
+            face.processor.update_runtime_thresholds(
+                human_confidence=current.face_human_confidence,
+                face_confidence=current.face_detection_confidence,
+                recognition_threshold=current.face_recognition_threshold,
+            )
         if self.video_ingestor is not None:
             for name in ("target_fps", "preview_fps", "rtsp_reconnect_seconds"):
                 source = {"target_fps": "video_ingest_fps", "preview_fps": "video_preview_fps", "rtsp_reconnect_seconds": "rtsp_reconnect_seconds"}[name]
@@ -414,6 +418,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             max_abs_pitch=app_settings.face_max_abs_pitch,
             max_abs_roll=app_settings.face_max_abs_roll,
             require_landmarks=app_settings.face_require_landmarks,
+            human_pose_enabled=app_settings.face_human_pose_enabled,
+            human_pose_min_keypoints=app_settings.face_human_pose_min_keypoints,
+            human_pose_keypoint_confidence=app_settings.face_human_pose_keypoint_confidence,
+            recognition_quality_weight=app_settings.face_recognition_quality_weight,
         ),
     )
     face_quality_policy = face_quality_settings.get()
@@ -593,6 +601,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_abs_pitch=face_quality_policy.max_abs_pitch,
                 max_abs_roll=face_quality_policy.max_abs_roll,
                 require_landmarks=face_quality_policy.require_landmarks,
+                human_pose_enabled=face_quality_policy.human_pose_enabled,
+                human_pose_min_keypoints=face_quality_policy.human_pose_min_keypoints,
+                human_pose_keypoint_confidence=face_quality_policy.human_pose_keypoint_confidence,
+                recognition_quality_weight=face_quality_policy.recognition_quality_weight,
                 tracker_high_threshold=app_settings.face_tracker_high_threshold,
                 tracker_low_threshold=app_settings.face_tracker_low_threshold,
                 tracker_new_threshold=app_settings.face_tracker_new_threshold,
@@ -607,6 +619,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 qdrant_api_key=app_settings.face_qdrant_api_key,
             ),
             database=database,
+            settings_provider=source_settings.resolve,
         )
     else:
         raise ValueError("PROCESSOR_MODE must be 'real' or 'mock'")

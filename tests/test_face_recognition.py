@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ class FakeDetector:
     def __init__(self, *, face: bool) -> None:
         self.face = face
         self.enabled = True
+        self.pose_enabled = True
         self.landmarks = np.asarray(
             [[38, 38], [62, 38], [50, 50], [41, 63], [59, 63]],
             dtype=np.float32,
@@ -68,10 +70,35 @@ class FakeDetector:
                     for index in range(face_count)
                 ]
             )
+            pose_points = np.stack(
+                [
+                    np.asarray(
+                        [
+                            [35, 18], [65, 18], [30, 30], [70, 30],
+                            [25, 48], [75, 48], [32, 65], [68, 65],
+                            [38, 82], [62, 82], [35, 100], [65, 100],
+                            [25, 112], [75, 112], [20, 115], [80, 115],
+                            [50, 40],
+                        ],
+                        dtype=np.float32,
+                    )
+                    + np.asarray([0, 128 * index], dtype=np.float32)
+                    for index in range(face_count)
+                ]
+            )
             results.append(
                 SimpleNamespace(
                     boxes=boxes,
-                    keypoints=SimpleNamespace(xy=landmarks) if self.face else None,
+                    keypoints=(
+                        SimpleNamespace(xy=landmarks)
+                        if self.face
+                        else SimpleNamespace(
+                            xy=pose_points,
+                            conf=np.full(pose_points.shape[:2], 0.95, dtype=np.float32),
+                        )
+                        if self.pose_enabled
+                        else None
+                    ),
                 )
             )
         return results
@@ -231,6 +258,110 @@ def test_batches_across_sources_and_stabilizes_per_track(tmp_path: Path) -> None
     assert all(item.data["faces"][0]["track_id"] == 1 for item in second)
     assert all(item.data["recognized_count"] == 1 for item in second)
     assert all(item.data["humans"][0]["person"] == "Alice" for item in second)
+
+
+def test_pose_checker_rejects_human_detector_false_positive(tmp_path: Path) -> None:
+    processor, human, face, embedder, store = build_processor(tmp_path)
+    human.pose_enabled = False
+
+    output = processor.process_batch([packet("cam-a", 1)])[0]
+
+    assert output.data["humans"] == []
+    assert output.data["faces"] == []
+    assert output.data["human_filter"]["rejected_count"] == 1
+    assert output.data["human_filter"]["rejections"][0]["reason"] == (
+        "insufficient_keypoints"
+    )
+    assert face.calls == []
+    assert embedder.batch_sizes == []
+    assert store.search_batch_sizes == []
+    assert processor.status()["human_filter"]["rejected"] == 1
+
+
+def test_pose_checker_can_be_disabled_for_detection_only_models(tmp_path: Path) -> None:
+    processor, human, _face, _embedder, _store = build_processor(tmp_path)
+    human.pose_enabled = False
+    processor.update_quality_settings({"human_pose_enabled": False})
+
+    output = processor.process_batch([packet("cam-a", 1)])[0]
+
+    assert len(output.data["humans"]) == 1
+    assert output.data["human_filter"]["enabled"] is False
+
+
+def test_pose_checker_rejects_missing_or_low_keypoint_confidence(tmp_path: Path) -> None:
+    processor, _human, _face, _embedder, _store = build_processor(tmp_path)
+    result = SimpleNamespace(
+        boxes=SimpleNamespace(
+            xyxy=np.asarray([[5, 5, 100, 115]], dtype=np.float32),
+            conf=np.asarray([0.95], dtype=np.float32),
+            cls=np.asarray([0], dtype=np.float32),
+        ),
+        keypoints=SimpleNamespace(
+            xy=np.ones((1, 17, 2), dtype=np.float32),
+            conf=np.zeros((1, 17), dtype=np.float32),
+        ),
+    )
+
+    accepted, rejected = processor._human_boxes(result)
+
+    assert accepted == []
+    assert rejected[0]["human_pose_keypoint_count"] == 0
+
+    result.keypoints = SimpleNamespace(xy=np.ones((1, 17, 2), dtype=np.float32))
+    accepted, rejected = processor._human_boxes(result)
+    assert accepted == []
+    assert rejected[0]["reason"] == "insufficient_keypoints"
+
+
+def test_source_thresholds_are_applied_before_face_processing(tmp_path: Path) -> None:
+    processor, _human, face, embedder, store = build_processor(tmp_path)
+    processor._settings_provider = lambda _source: {
+        "face_human_confidence": 0.99,
+        "face_detection_confidence": 0.50,
+        "face_recognition_threshold": 0.45,
+    }
+
+    output = processor.process_batch([packet("cam-a", 1)])[0]
+
+    assert output.data["humans"] == []
+    assert face.calls == []
+    assert embedder.batch_sizes == []
+    assert store.search_batch_sizes == []
+
+
+def test_quality_weight_is_applied_to_recognition_score(tmp_path: Path) -> None:
+    processor, _human, _face, _embedder, _store = build_processor(tmp_path)
+    processor.update_quality_settings(
+        {
+            "quality_threshold": 0.0,
+            "blur_threshold": 0.0,
+            "recognition_quality_weight": 1.0,
+        }
+    )
+
+    output = processor.process_batch([packet("cam-a", 1)])[0]
+    face_result = output.data["faces"][0]
+
+    assert face_result["quality_valid"] is True
+    assert face_result["quality_adjusted_score"] == pytest.approx(
+        0.91 * face_result["quality_score"], abs=1e-5
+    )
+    assert face_result["raw_recognition_score"] == pytest.approx(0.91)
+
+
+def test_quality_adjusted_match_below_threshold_is_not_admitted(tmp_path: Path) -> None:
+    processor, _human, _face, _embedder, store = build_processor(tmp_path)
+    store.search_batch = lambda embeddings, threshold: [
+        FaceMatch("Alice", 0.91, "reference-1") for _ in embeddings
+    ]
+    processor.settings = replace(processor.settings, recognition_threshold=0.99)
+
+    face_result = processor.process_batch([packet("cam-a", 1)])[0].data["faces"][0]
+
+    assert face_result["person"] == "Unknown"
+    assert face_result["recognition_admitted"] is False
+    assert face_result["raw_person"] == "Unknown"
 
 
 def test_human_keeps_track_identity_when_face_is_no_longer_visible(tmp_path: Path) -> None:

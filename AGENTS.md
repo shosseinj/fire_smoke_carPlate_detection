@@ -75,6 +75,13 @@ background writer so database and snapshot I/O do not block plate inference.
 Face recognition quality is emitted per face (`quality_score`, metrics, validity),
 while each tracked human accumulates `best_face_quality`; human history persistence
 must bind PostgreSQL boolean CASE parameters as booleans, not integer `0/1` values.
+The face pipeline consumes keypoints from the configured YOLO pose human model before
+ByteTrack and face-ROI inference. `human_pose_enabled` defaults to true, requires at
+least four keypoints at the configured confidence floor, and exposes rejection counts
+in face results/status; disable it only for a detector model that cannot emit pose
+keypoints. Valid face matches use `recognition_quality_weight` to reduce the raw vector
+similarity by face quality before track stabilization, while invalid-quality faces are
+excluded from face overlays and human-log face evidence.
 
 When ByteTrack expires a source track, face recognition emits one additive
 `disappeared_humans` entry with the last stable identity. The runtime finalizes that

@@ -23,6 +23,10 @@ class FaceQualitySettingsPatch(BaseModel):
     max_abs_pitch: float | None = Field(default=None, gt=0.0, le=90.0)
     max_abs_roll: float | None = Field(default=None, gt=0.0, le=90.0)
     require_landmarks: bool | None = None
+    human_pose_enabled: bool | None = None
+    human_pose_min_keypoints: int | None = Field(default=None, ge=1, le=17)
+    human_pose_keypoint_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    recognition_quality_weight: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 def get_runtime() -> Runtime:
