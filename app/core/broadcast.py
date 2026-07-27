@@ -84,6 +84,8 @@ class AnnotatedBroadcastHub:
         face_overlay_ttl_ms: float = 250.0,
         async_render: bool = True,
         draw_zones: bool = True,
+        source_only_render_threads: int = 4,
+        render_threads: int = 2,
     ) -> None:
         self._enabled = enabled
         self.draw_zones = draw_zones
@@ -94,6 +96,10 @@ class AnnotatedBroadcastHub:
         self.pending_frames_per_source = max(2, pending_frames_per_source)
         self.face_overlay_ttl_seconds = max(0.0, float(face_overlay_ttl_ms) / 1000.0)
         self._async_render = async_render
+        self._source_only_render_thread_count = max(
+            1, min(int(source_only_render_threads), 16)
+        )
+        self._render_thread_count = max(1, min(int(render_threads), 8))
         self._condition = threading.Condition(threading.RLock())
         self._pending: dict[
             str, OrderedDict[int, PendingAnnotatedFrame]
@@ -133,8 +139,8 @@ class AnnotatedBroadcastHub:
             policy="latest_per_source",
             capacity=256,
         )
-        self._render_thread: threading.Thread | None = None
-        self._source_only_render_thread: threading.Thread | None = None
+        self._render_threads: list[threading.Thread] = []
+        self._source_only_render_threads: list[threading.Thread] = []
         self._stop_render = threading.Event()
         self._stop_source_only_render = threading.Event()
         if self._async_render:
@@ -142,15 +148,19 @@ class AnnotatedBroadcastHub:
             self._start_source_only_render_thread()
 
     def _start_render_thread(self) -> None:
-        if self._render_thread is not None and self._render_thread.is_alive():
+        if any(thread.is_alive() for thread in self._render_threads):
             return
         self._stop_render.clear()
-        self._render_thread = threading.Thread(
-            target=self._render_loop,
-            name="broadcast-renderer",
-            daemon=True,
-        )
-        self._render_thread.start()
+        self._render_threads = [
+            threading.Thread(
+                target=self._render_loop,
+                name=f"broadcast-renderer-{index + 1}",
+                daemon=True,
+            )
+            for index in range(self._render_thread_count)
+        ]
+        for render_thread in self._render_threads:
+            render_thread.start()
 
     def _render_loop(self) -> None:
         while not self._stop_render.is_set():
@@ -274,10 +284,10 @@ class AnnotatedBroadcastHub:
         self._stop_render.set()
         self._stop_source_only_render.set()
         self._source_only_render_buffer.close()
-        if self._render_thread is not None:
-            self._render_thread.join(timeout=2.0)
-        if self._source_only_render_thread is not None:
-            self._source_only_render_thread.join(timeout=2.0)
+        for render_thread in self._render_threads:
+            render_thread.join(timeout=2.0)
+        for render_thread in self._source_only_render_threads:
+            render_thread.join(timeout=2.0)
         self.set_enabled(False)
 
     def publish_source_change(self, change: SourceChange) -> None:
@@ -1032,18 +1042,19 @@ class AnnotatedBroadcastHub:
             self._condition.notify_all()
 
     def _start_source_only_render_thread(self) -> None:
-        if (
-            self._source_only_render_thread is not None
-            and self._source_only_render_thread.is_alive()
-        ):
+        if any(thread.is_alive() for thread in self._source_only_render_threads):
             return
         self._stop_source_only_render.clear()
-        self._source_only_render_thread = threading.Thread(
-            target=self._source_only_render_loop,
-            name="source-only-broadcast-renderer",
-            daemon=True,
-        )
-        self._source_only_render_thread.start()
+        self._source_only_render_threads = [
+            threading.Thread(
+                target=self._source_only_render_loop,
+                name=f"source-only-broadcast-renderer-{index + 1}",
+                daemon=True,
+            )
+            for index in range(self._source_only_render_thread_count)
+        ]
+        for render_thread in self._source_only_render_threads:
+            render_thread.start()
 
     def _source_only_render_loop(self) -> None:
         while not self._stop_source_only_render.is_set():
@@ -1194,8 +1205,13 @@ class AnnotatedBroadcastHub:
                 "source_only_render_queue_depth": source_only_buffer.queue_depth,
                 "source_only_queue_policy": source_only_buffer.policy,
                 "source_only_render_threads": int(
-                    self._source_only_render_thread is not None
-                    and self._source_only_render_thread.is_alive()
+                    sum(
+                        thread.is_alive()
+                        for thread in self._source_only_render_threads
+                    )
+                ),
+                "render_threads": int(
+                    sum(thread.is_alive() for thread in self._render_threads)
                 ),
                 "websocket_subscribers": len(self._subscribers),
                 "source_only_websocket_subscribers": len(self._source_only_subscribers),

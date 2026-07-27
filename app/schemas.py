@@ -151,6 +151,12 @@ class BulkSourceUpdateItem(BaseModel):
         return value
 
 
+class BulkSourceCreate(BaseModel):
+    """Bulk source creation request: a list of sources to create in one call."""
+
+    sources: list[SourceCreate] = Field(min_length=1, max_length=200)
+
+
 class TaskAssignment(BaseModel):
     source_ids: list[str] = Field(min_length=1)
     tasks: set[TaskName]

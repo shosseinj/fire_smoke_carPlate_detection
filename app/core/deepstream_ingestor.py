@@ -20,7 +20,6 @@ from app.core.source_registry import (
     SourceRegistry,
     canonical_source_type,
 )
-from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
 LOGGER = logging.getLogger(__name__)
@@ -57,7 +56,6 @@ class DeepStreamSourceState:
     sink_handler_id: int
     frame_width: int
     frame_height: int
-    preserve_source_resolution: bool
     delivery_target_fps: float | None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
@@ -118,7 +116,10 @@ class DeepStreamIngestor:
         self.router = router
         self.project_root = project_root
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
-        self._gpu_resize_available = self._detect_gpu_resize()
+        # NOTE: GPU resize is now handled by the nvvideoconvert capsfilter
+        # in the GStreamer pipeline.  The _gpu_resize_available flag is kept
+        # only for status/diagnostics.
+        self._gpu_resize_available = False
         self.loop = bool(loop)
         self.rtsp_enabled = bool(rtsp_enabled)
         self.skip_taskless_sources = bool(skip_taskless_sources)
@@ -154,34 +155,6 @@ class DeepStreamIngestor:
         self._open_failures = 0
         self._reconnects = 0
         self._last_error: str | None = None
-
-    def _detect_gpu_resize(self) -> bool:
-        if not self.gpu_resize_enabled:
-            return False
-        try:
-            return bool(
-                hasattr(cv2, "cuda")
-                and hasattr(cv2.cuda, "GpuMat")
-                and hasattr(cv2.cuda, "resize")
-                and cv2.cuda.getCudaEnabledDeviceCount() > 0
-            )
-        except Exception:
-            return False
-
-    def _resize_frame(self, frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-        if self._gpu_resize_available:
-            try:
-                gpu_frame = cv2.cuda.GpuMat()
-                gpu_frame.upload(frame)
-                return cv2.cuda.resize(
-                    gpu_frame,
-                    size,
-                    interpolation=cv2.INTER_AREA,
-                ).download()
-            except Exception:
-                self._gpu_resize_available = False
-                LOGGER.warning("GPU resize failed; using CPU fallback", exc_info=True)
-        return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
 
     @staticmethod
     def is_supported_source(record: SourceRecord) -> bool:
@@ -313,7 +286,7 @@ class DeepStreamIngestor:
                 detail = f"{detail} ({debug})"
             self._mark_failed(source_id, detail)
         elif message.type == Gst.MessageType.EOS:
-            if self.loop:
+            if self._should_loop_source(source_id):
                 with self._lock:
                     if source_id not in self._failed_sources:
                         self._loop_counts[source_id] = (
@@ -349,6 +322,11 @@ class DeepStreamIngestor:
                 VideoFileIngestor.redact_uri(source_id),
                 safe_warning,
             )
+
+    def _should_loop_source(self, source_id: str) -> bool:
+        """Resolve the live per-source loop policy, falling back to runtime default."""
+        record = self.registry.get(source_id)
+        return self.loop if record is None else bool(record.loop)
 
     def _on_new_sample(self, sink: Any, source_id: str) -> Any:
         Gst, _ = self._require_runtime()
@@ -430,7 +408,11 @@ class DeepStreamIngestor:
         height: int,
         pixel_format: str,
     ) -> np.ndarray:
-        """Normalize the GPU-converted BGRx/BGR appsink buffer for processors."""
+        """Normalize the GPU-converted BGRx/BGR appsink buffer for processors.
+
+        Optimized to avoid redundant copies when the row stride matches the
+        packed width (no padding).
+        """
         channels = {"BGR": 3, "BGRx": 4}.get(pixel_format)
         if width <= 0 or height <= 0 or channels is None:
             raise ValueError(f"Unsupported DeepStream sample format: {pixel_format}")
@@ -443,7 +425,12 @@ class DeepStreamIngestor:
         flat = np.frombuffer(payload, dtype=np.uint8)
         rows = flat[: row_stride * height].reshape(height, row_stride)[:, :packed_width]
         if channels == 4:
+            # BGRx → BGR: slicing creates a non-contiguous view, copy is needed
             return rows.reshape(height, width, 4)[:, :, :3].copy()
+        if row_stride == packed_width:
+            # No padding — the frombuffer + reshape is already contiguous
+            return rows.reshape(height, width, 3)
+        # Has row padding — need to strip it
         return rows.reshape(height, width, 3).copy()
 
     def _next_frame_index_locked(self, source_id: str) -> int:
@@ -515,12 +502,14 @@ class DeepStreamIngestor:
             queue.set_property("max-size-bytes", 0)
             queue.set_property("max-size-time", 0)
             pacer.set_property("sync", not is_rtsp)
-            preserve_source_resolution = TaskName.FACE_RECOGNITION in record.tasks
-            bgrx_caps_value = "video/x-raw,format=BGRx"
-            if not preserve_source_resolution:
-                bgrx_caps_value += (
-                    f",width={record.frame_width},height={record.frame_height}"
-                )
+            # Always resize on GPU via nvvideoconvert capsfilter to
+            # frame_width x frame_height (default 640x640).  This avoids
+            # CPU-side resize in _submit_latest_round and eliminates
+            # per-frame GPU↔CPU copy for resize.
+            bgrx_caps_value = (
+                f"video/x-raw,format=BGRx,"
+                f"width={record.frame_width},height={record.frame_height}"
+            )
             bgrx_caps.set_property(
                 "caps",
                 Gst.Caps.from_string(bgrx_caps_value),
@@ -573,7 +562,6 @@ class DeepStreamIngestor:
                 sink_handler_id=sink_handler_id,
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
-                preserve_source_resolution=preserve_source_resolution,
                 delivery_target_fps=record.fps,
                 loop_count=self._loop_counts.get(record.source_uri, 0),
             )
@@ -733,8 +721,6 @@ class DeepStreamIngestor:
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
                 or state.frame_height != record.frame_height
-                or getattr(state, "preserve_source_resolution", False)
-                != (TaskName.FACE_RECOGNITION in record.tasks)
             ):
                 self._close_source(record.source_uri)
                 state = None
@@ -764,19 +750,10 @@ class DeepStreamIngestor:
                 if state.latest_frame is not None
                 and state.latest_version > state.submitted_version
             ]
+            # Frames are already at frame_width x frame_height from the
+            # GPU capsfilter — no CPU resize needed.
             source_frames = [state.latest_frame for state in selected]
-            frames = [
-                (
-                    frame
-                    if frame.shape[1] == state.frame_width
-                    and frame.shape[0] == state.frame_height
-                    else self._resize_frame(
-                        frame,
-                        (state.frame_width, state.frame_height),
-                    )
-                )
-                for state, frame in zip(selected, source_frames)
-            ]
+            frames = source_frames
             source_ids = [state.source_id for state in selected]
             frame_indexes = [state.frame_index for state in selected]
             source_times = [state.source_time_seconds for state in selected]
@@ -910,7 +887,6 @@ class DeepStreamIngestor:
                         "frame_height": state.frame_height,
                         "source_frame_width": state.source_frame_width,
                         "source_frame_height": state.source_frame_height,
-                        "preserve_source_resolution": state.preserve_source_resolution,
                         "configured_fps": state.delivery_target_fps,
                         "fps_mode": (
                             "override"

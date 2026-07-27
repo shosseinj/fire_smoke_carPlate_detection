@@ -8,7 +8,7 @@ from app.core.media_preview import preview_stream_path
 from app.core.source_registry import SourceRecord
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
-from app.schemas import BulkSourceUpdateItem, SourceCreate, SourceResponse, SourceUpdate, TaskAssignment
+from app.schemas import BulkSourceCreate, BulkSourceUpdateItem, SourceCreate, SourceResponse, SourceUpdate, TaskAssignment
 
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
 
@@ -158,6 +158,47 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
     # Save per-source confidence overrides if provided
     _save_source_overrides(payload, record, runtime)
     return _response(record, runtime)
+
+
+@router.post("/bulk", response_model=list[SourceResponse], status_code=status.HTTP_201_CREATED)
+def bulk_create_sources(
+    payload: BulkSourceCreate,
+    runtime: Runtime = Depends(get_runtime),
+) -> list[SourceResponse]:
+    """Create multiple sources in one request."""
+    # Validate room_ids before any writes
+    for item in payload.sources:
+        if item.room_id is not None and runtime.location_store.get_room(item.room_id) is None:
+            raise HTTPException(status_code=404, detail=f"Room not found: {item.room_id}")
+    results: list[SourceResponse] = []
+    for item in payload.sources:
+        try:
+            record = runtime.registry.create(
+                SourceRecord(
+                    source_uri=item.source_uri,
+                    name=item.name,
+                    enabled=item.enabled,
+                    tasks=set(item.tasks),
+                    frame_width=item.frame_width,
+                    frame_height=item.frame_height,
+                    source_type=item.source_type,
+                    room_id=item.room_id,
+                    metadata=dict(item.metadata),
+                    fps=item.fps,
+                    loop=item.loop,
+                    draw_human=item.draw_human,
+                    draw_zone=item.draw_zone,
+                    draw_fire=item.draw_fire,
+                    draw_smoke=item.draw_smoke,
+                    draw_vehicle=item.draw_vehicle,
+                    draw_plate=item.draw_plate,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _save_source_overrides(item, record, runtime)
+        results.append(_response(record, runtime))
+    return results
 
 
 @router.get("/enabled/ids")

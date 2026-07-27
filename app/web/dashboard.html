@@ -986,6 +986,7 @@
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
         const parameters = new URLSearchParams();
         parameters.set("wall", "true");
+        if (sourceOnlyWall) parameters.set("batch", "true");
         if (!useJpegFallback) {
           parameters.set("metadata_only", "true");
         }
@@ -1005,6 +1006,20 @@
               if (headerLength <= 0 || headerLength + 4 >= view.byteLength) return;
               const headerBytes = new Uint8Array(event.data, 4, headerLength);
               const header = JSON.parse(new TextDecoder().decode(headerBytes));
+              if (header.type === "source_frame_batch") {
+                let offset = 4 + headerLength;
+                for (let index = 0; index < header.count; index += 1) {
+                  if (offset + 4 > view.byteLength) break;
+                  const recordLength = view.getUint32(offset, false);
+                  offset += 4;
+                  if (recordLength <= 0 || offset + recordLength > view.byteLength) break;
+                  socket.dispatchEvent(new MessageEvent("source-frame-record", {
+                    data: event.data.slice(offset, offset + recordLength),
+                  }));
+                  offset += recordLength;
+                }
+                return;
+              }
               if (!header.source_id) return;
 
               // Update frame stats
@@ -1015,12 +1030,19 @@
                 && stats.frameIndex !== null
                 && incomingFrameIndex < stats.frameIndex
               ) return;
-              const now = performance.now();
-              stats.arrivals.push(now);
-              stats.total += 1;
-              stats.lastArrival = now;
-              stats.frameIndex = incomingFrameIndex;
-              sessionReceivedFrames += 1;
+              const isNewSourceFrame = (
+                incomingFrameIndex === null
+                || stats.frameIndex === null
+                || incomingFrameIndex > stats.frameIndex
+              );
+              if (isNewSourceFrame) {
+                const now = performance.now();
+                stats.arrivals.push(now);
+                stats.total += 1;
+                stats.lastArrival = now;
+                sessionReceivedFrames += 1;
+              }
+              if (incomingFrameIndex !== null) stats.frameIndex = incomingFrameIndex;
 
               // Update resolution badge
               const elements = metricElements.get(header.source_id);
@@ -1076,6 +1098,10 @@
             // Ignore keepalives or extensions unknown to this dashboard version.
           }
         });
+        socket.addEventListener("source-frame-record", (event) => {
+          if (broadcastSocket !== socket) return;
+          socket.dispatchEvent(new MessageEvent("message", { data: event.data }));
+        });
         socket.addEventListener("close", () => {
           if (broadcastSocket !== socket) return;
           broadcastSocket = null;
@@ -1099,6 +1125,11 @@
       function reconnectBroadcastSocket() {
         if (!broadcasting) return;
         disconnectBroadcastSocket();
+        for (const stats of frameStats.values()) {
+          stats.arrivals = [];
+          stats.lastArrival = 0;
+          stats.frameIndex = null;
+        }
         connectBroadcastSocket();
       }
 
@@ -1130,8 +1161,9 @@
           if (img) img.style.display = "block";
           status.textContent = "Waiting for source frames…";
           status.classList.remove("hidden");
-          // WebRTC preview is an optional enhancement when available
-          if (previewAvailable) {
+          // JPEG and WebRTC are alternative wall transports. Do not decode
+          // both for every tile while the JPEG wall covers the video element.
+          if (previewAvailable && !useJpegFallback) {
             video.style.display = "";
             if (source) openPreview(source);
           } else {
@@ -1141,7 +1173,8 @@
         }
         if (broadcasting) {
           connectBroadcastSocket();
-          connectResultSocket();
+          if (useJpegFallback) disconnectResultSocket();
+          else connectResultSocket();
         } else {
           disconnectBroadcastSocket();
           disconnectResultSocket();

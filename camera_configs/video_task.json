@@ -70,5 +70,94 @@
     "metadata": {
       "additionalProp1": {}
     }
+  },
+
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/1.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/2.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/3.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/4.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/5.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/6.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/7.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
+  },
+  {
+    "name": "Fire and plate Camera",
+    "source_uri": "./data/new/8.mp4",
+    "frame_width": 640,
+    "frame_height": 640,
+    "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
+    "metadata": {
+      "additionalProp1": {}
+    }
   }
 ]

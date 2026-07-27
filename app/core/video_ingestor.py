@@ -65,6 +65,7 @@ class VideoFileIngestor:
         loop: bool = True,
         source_type_filter: str = RTSP,
         max_sources: int = 256,
+        gpu_resize_enabled: bool = True,
         rtsp_transport: str = "tcp",
         rtsp_open_timeout_ms: int = 20000,
         rtsp_read_timeout_ms: int = 10000,
@@ -79,6 +80,9 @@ class VideoFileIngestor:
         self.registry = registry
         self.router = router
         self.project_root = project_root
+        self.gpu_resize_enabled = bool(gpu_resize_enabled)
+        # Detect GPU resize capability at startup (OpenCV CUDA fallback)
+        self._gpu_resize_available = VideoFileIngestor._detect_gpu_resize()
         self.loop = loop
         self.rtsp_transport = (
             rtsp_transport.strip().lower()
@@ -114,6 +118,14 @@ class VideoFileIngestor:
         self._open_failures = 0
         self._reconnects = 0
         self._last_error: str | None = None
+
+    @staticmethod
+    def _detect_gpu_resize() -> bool:
+        """Check whether OpenCV was built with CUDA for GPU-accelerated resize."""
+        try:
+            return cv2.cuda.getCudaEnabledDeviceCount() > 0
+        except Exception:
+            return False
 
     @staticmethod
     def is_rtsp_uri(source_uri: str) -> bool:
@@ -293,11 +305,26 @@ class VideoFileIngestor:
             source_frame.shape[1] != state.frame_width
             or source_frame.shape[0] != state.frame_height
         ):
-            frame = cv2.resize(
-                source_frame,
-                (state.frame_width, state.frame_height),
-                interpolation=cv2.INTER_AREA,
-            )
+            # Use GPU resize when available for better performance
+            if self._gpu_resize_available:
+                try:
+                    gpu_frame = cv2.cuda.GpuMat()
+                    gpu_frame.upload(source_frame)
+                    frame = cv2.cuda.resize(
+                        gpu_frame,
+                        (state.frame_width, state.frame_height),
+                        interpolation=cv2.INTER_AREA,
+                    ).download()
+                except Exception:
+                    self._gpu_resize_available = False
+                    LOGGER.warning("GPU resize failed; using CPU fallback", exc_info=True)
+            if frame is source_frame:
+                # CPU resize fallback
+                frame = cv2.resize(
+                    source_frame,
+                    (state.frame_width, state.frame_height),
+                    interpolation=cv2.INTER_AREA,
+                )
         frame_index = state.frame_index
         state.submitted_frames += 1
         period = 1.0 / max(state.effective_fps, 0.1)
