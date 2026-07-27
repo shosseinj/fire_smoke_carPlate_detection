@@ -102,10 +102,7 @@ class TaskRouter:
                 source_time_seconds=(source_times_seconds[index] if source_times_seconds is not None else None),
                 metadata=packet_metadata,
             )
-            if (
-                self.source_only_callback is not None
-                and not packet_metadata.get("source_only_published", False)
-            ):
+            if self.source_only_callback is not None:
                 self.source_only_callback(packet)
             if self.play_only_callback is not None:
                 self.play_only_callback(packet)
