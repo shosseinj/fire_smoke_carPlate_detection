@@ -129,6 +129,19 @@ class CarPlateResponse(CarPlateBase):
     deleted_at_utc: Optional[datetime] = None
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
+
+    @model_validator(mode="after")
+    def _populate_jalali(self) -> CarPlateResponse:
+        from app.core.jalali_utils import utc_iso_to_jalali_datetime
+        if self.created_at_utc is not None:
+            iso_str = self.created_at_utc.isoformat() if hasattr(self.created_at_utc, "isoformat") else str(self.created_at_utc)
+            self.created_at_jalali = utc_iso_to_jalali_datetime(iso_str) or ""
+        if self.updated_at_utc is not None:
+            iso_str = self.updated_at_utc.isoformat() if hasattr(self.updated_at_utc, "isoformat") else str(self.updated_at_utc)
+            self.updated_at_jalali = utc_iso_to_jalali_datetime(iso_str)
+        return self
 
     @computed_field
     @property

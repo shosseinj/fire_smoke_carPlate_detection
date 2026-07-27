@@ -46,6 +46,8 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     last_login: Optional[datetime] = None
+    created_at_jalali: str = ""
+    last_login_jalali: str | None = None
 
 
 class AuthError(BaseModel):

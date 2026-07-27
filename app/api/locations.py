@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.location_store import LocationStore
 from app.runtime import Runtime
 
@@ -58,6 +59,8 @@ class BuildingResponse(BaseModel):
     is_active: bool = True
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     sections: list[SectionMinimal] = []
 
 
@@ -100,6 +103,8 @@ class SectionResponse(BaseModel):
     building_id: int
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     building_name: str = ""
     section_full_name: str = ""
     cameras: list[CameraMinimal] = []
@@ -138,6 +143,8 @@ class RoomResponse(BaseModel):
     polygon_points: list[list[float]] | None = None
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
 
 
 class PersonnelAccessEntry(BaseModel):
@@ -185,6 +192,8 @@ def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
         is_active=True,
         created_at=b.created_at_utc,
         updated_at=b.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(b.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(b.updated_at_utc),
         sections=sections,
     )
 
@@ -204,6 +213,8 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
         building_id=s.building_id or 0,
         created_at=s.created_at_utc,
         updated_at=s.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(s.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(s.updated_at_utc),
         building_name=bld_name,
         section_full_name=full_name,
     )
@@ -222,6 +233,8 @@ def _room_response(r) -> RoomResponse:
         polygon_points=_polygon_to_list(r.polygon_json),
         created_at=r.created_at_utc,
         updated_at=r.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(r.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(r.updated_at_utc),
     )
 
 

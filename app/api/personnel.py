@@ -85,6 +85,7 @@ class SimplePersonnelResponse(BaseModel):
     shift_name: Optional[str] = None
     degree: Optional[str] = None
     created_at: datetime
+    created_at_jalali: str = ""
 
 
 class PersonnelImageResponse(BaseModel):
@@ -98,6 +99,7 @@ class PersonnelImageResponse(BaseModel):
 # ── Converters ───────────────────────────────────────────────────
 
 def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
     return SimplePersonnelResponse(
         id=p.id,
         fname=p.fname,
@@ -108,6 +110,7 @@ def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePerson
         shift_name=store._resolve_shift_name(p.shift_id),
         degree=p.degree,
         created_at=p.created_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(p.created_at_utc) or "",
     )
 
 

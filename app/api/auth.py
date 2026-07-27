@@ -48,6 +48,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
 
 def _user_to_response(user: UserRecord) -> UserResponse:
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -57,6 +58,8 @@ def _user_to_response(user: UserRecord) -> UserResponse:
         is_active=user.is_active,
         created_at=_parse_utc(user.created_at_utc) or datetime.now(timezone.utc),
         last_login=_parse_utc(user.last_login_utc),
+        created_at_jalali=utc_iso_to_jalali_datetime(user.created_at_utc) or "",
+        last_login_jalali=utc_iso_to_jalali_datetime(user.last_login_utc),
     )
 
 

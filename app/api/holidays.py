@@ -27,7 +27,7 @@ def _record_to_response(
     updated_by_username: str | None = None,
 ) -> HolidayResponse:
     parsed_date = date.fromisoformat(record.date_value) if isinstance(record.date_value, str) else record.date_value
-    from app.core.jalali_utils import parse_jalali_date
+    from app.core.jalali_utils import parse_jalali_date, utc_iso_to_jalali_datetime
     from app.core.legacy_service import format_jalali
     return HolidayResponse(
         id=record.id,
@@ -39,6 +39,8 @@ def _record_to_response(
         is_active=record.is_active,
         created_at=record.created_at_utc,
         updated_at=record.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(record.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(record.updated_at_utc),
         created_by=record.created_by,
         updated_by=record.updated_by,
         created_by_username=created_by_username,

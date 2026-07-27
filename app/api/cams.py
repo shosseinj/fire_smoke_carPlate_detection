@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
 from app.core.cam_store import CamRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.runtime import Runtime
 
 router = APIRouter(prefix="/api/v1/cams", tags=["Cameras"])
@@ -70,6 +71,8 @@ class CamResponse(CamBase):
     id: int
     created_at_utc: str
     updated_at_utc: str
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
 
 
 class CamListResponse(BaseModel):
@@ -109,6 +112,8 @@ def _response(record: CamRecord) -> CamResponse:
         url=record.url,
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(record.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(record.updated_at_utc),
     )
 
 

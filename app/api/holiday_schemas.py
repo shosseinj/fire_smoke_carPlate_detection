@@ -37,6 +37,8 @@ class HolidayResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
     created_by_username: Optional[str] = None
