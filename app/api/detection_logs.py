@@ -572,7 +572,8 @@ def import_excel_template(
     wb = openpyxl.Workbook()
 
     ws = wb.active
-    ws.title = "ورود اطلاعات"
+    ws.title = "ورود لاگ‌ها"
+    ws.sheet_view.rightToLeft = True
     headers = [
         "کد ملی", "سال", "ماه", "روز", "ساعت", "دقیقه",
         "شناسه اتاق", "دسترسی مجاز", "لحاظ در حضور و غیاب",
@@ -586,7 +587,7 @@ def import_excel_template(
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     ws.append(["0012345678", 1403, 6, 15, 8, 30, "", "1", "1"])
 
-    ws_guide = wb.create_sheet("راهنما", 0)
+    ws_guide = wb.create_sheet("راهنما")
     guide_lines = [
         "راهنمای واردسازی لاگ‌های تشخیص",
         "",
@@ -610,6 +611,9 @@ def import_excel_template(
         ws_guide.cell(row=i, column=1, value=line)
     ws_guide.column_dimensions["A"].width = 60
     ws_guide.protection.sheet = True
+    ws_guide.protection.set_password("readonly")
+    wb.security.lockStructure = True
+    wb.security.set_workbook_password("readonly")
 
     buf = io.BytesIO()
     wb.save(buf)
