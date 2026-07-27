@@ -58,6 +58,23 @@ class DetectionLogUpdate(BaseModel):
 
 router = APIRouter(prefix="/api/v1/logs", tags=["Detection Logs"])
 
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _excel_text(value: Any) -> str:
+    return "" if value is None else str(value).strip().translate(_PERSIAN_DIGITS).replace("\u200c", " ").lower()
+
+
+def _excel_bool(value: Any, default: bool) -> bool:
+    text = _excel_text(value)
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "y", "بله", "بلی"}:
+        return True
+    if text in {"0", "false", "no", "n", "خیر", "نه"}:
+        return False
+    raise ValueError("invalid boolean value")
+
 _detection_log_store: DetectionLogStore | None = None
 
 
@@ -654,20 +671,20 @@ def import_excel(
         if not row or all(v is None for v in row):
             continue
         try:
-            national_code = str(row[0]).strip() if row[0] is not None else ""
-            jalali_year = int(row[1]) if row[1] is not None else None
-            jalali_month = int(row[2]) if row[2] is not None else None
-            jalali_day = int(row[3]) if row[3] is not None else None
-            hour = int(row[4]) if row[4] is not None else 0
-            minute = int(row[5]) if row[5] is not None else 0
-            room_id = int(row[6]) if row[6] is not None else None
-            access_granted = bool(int(row[7])) if row[7] is not None else False
-            counts_for_attendance = bool(int(row[8])) if row[8] is not None else True
+            national_code = _excel_text(row[0]).replace(" ", "")
+            year = int(_excel_text(row[1])) if row[1] is not None else None
+            month = int(_excel_text(row[2])) if row[2] is not None else None
+            day = int(_excel_text(row[3])) if row[3] is not None else None
+            hour = int(_excel_text(row[4])) if row[4] is not None else 0
+            minute = int(_excel_text(row[5])) if row[5] is not None else 0
+            room_id = int(_excel_text(row[6])) if row[6] not in (None, "") else None
+            explicit_access = _excel_bool(row[7], True) if len(row) > 7 else None
+            counts_for_attendance = _excel_bool(row[8], True) if len(row) > 8 else True
         except (ValueError, TypeError, IndexError):
             failed += 1
             continue
 
-        if not national_code or jalali_year is None or jalali_month is None or jalali_day is None:
+        if not national_code or year is None or month is None or day is None:
             failed += 1
             continue
 
@@ -682,8 +699,11 @@ def import_excel(
             continue
 
         try:
-            j_dt = jdatetime.datetime(jalali_year, jalali_month, jalali_day, hour, minute)
-            g_dt = j_dt.togregorian()
+            if calendar == "gregorian":
+                g_dt = datetime(year, month, day, hour, minute)
+            else:
+                j_dt = jdatetime.datetime(year, month, day, hour, minute)
+                g_dt = j_dt.togregorian()
             detection_time = g_dt.replace(tzinfo=_get_tehran_tz()).astimezone(timezone.utc).isoformat()
         except (ValueError, TypeError):
             failed += 1
@@ -700,7 +720,7 @@ def import_excel(
                 skipped += 1
                 continue
 
-        access = calculate_access(personnel.id, room_id, ls)
+        access = explicit_access if explicit_access is not None else calculate_access(personnel.id, room_id, ls)
 
         try:
             store.create(
