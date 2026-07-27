@@ -131,7 +131,7 @@ def list_personnel(
     employee_type: str | None = Query(default=None),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_role("admin")),
 ) -> list:
     store = _store(runtime)
     records, _ = store.list(offset=skip, limit=limit, employee_type=employee_type, search=search)
@@ -164,7 +164,6 @@ def create_personnel(
 def search_personnel(
     national_code: str,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
 ) -> SimplePersonnelResponse | None:
     store = _store(runtime)
     record = store.get_by_national_code(national_code)
@@ -181,7 +180,6 @@ def search_personnel(
 @router.post("/with-images", summary="Create personnel with images (legacy)", status_code=status.HTTP_201_CREATED)
 async def create_personnel_with_images(
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
     fname: str = Form(...),
     lname: str = Form(...),
     national_code: str = Form(...),
@@ -312,7 +310,6 @@ def import_template(
 )
 async def upload_personnel_zip(
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
     file: UploadFile = File(...),
     skip_invalid_national_codes: bool = Form(default=True),
     enable_cropping: bool = Form(default=False),
@@ -358,7 +355,7 @@ async def upload_personnel_zip(
 def get_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_role("admin")),
 ) -> SimplePersonnelResponse:
     store = _store(runtime)
     record = store.get(personnel_id)
@@ -394,7 +391,7 @@ def update_personnel(
 def delete_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_role("superuser")),
 ) -> Response:
     store = _store(runtime)
     personnel = store.get(personnel_id)
@@ -424,7 +421,7 @@ def delete_personnel(
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_role("admin")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:

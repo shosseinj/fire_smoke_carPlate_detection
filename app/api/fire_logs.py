@@ -52,7 +52,6 @@ def list_fire_logs(
     detected_to: str | None = Query(default=None),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
-    _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
     return runtime.fire_smoke_logs.list(

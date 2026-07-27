@@ -308,7 +308,7 @@ def update_building(
 def delete_building(
     building_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_role("superuser")),
 ):
     store = _store(runtime)
     b = store.get_building(building_id)
@@ -490,7 +490,7 @@ def assign_camera_to_room(
 def delete_section(
     section_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_role("superuser")),
 ):
     store = _store(runtime)
     s = store.get_section(section_id)
@@ -679,7 +679,7 @@ def revoke_access(
 def remove_room(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_role("superuser")),
 ):
     r = _store(runtime).get_room(room_id)
     if not r:

@@ -684,7 +684,7 @@ docker run --rm -it `
   -e VIDEO_INGESTION_ENABLED=true `
   -e PROCESSOR_MODE=real `
   -v "${PWD}\:/workspace/" `
-  merged-video-ai-router:v9
+  merged-video-ai-router:v10-flat
 ```
 
 ```
@@ -695,7 +695,7 @@ docker compose up -d --force-recreate video-ai-router
 ```
 docker build `                                                                                          --add-host=host.docker.internal:host-gateway                                                                                         --no-cache `
   -f Dockerfile.deepstream `
-  -t merged-video-ai-router:v9 `
+  -t merged-video-ai-router:v10-flat `
   .
 ```
 
@@ -753,7 +753,7 @@ docker run --rm -it `
   --mount "type=bind,source=$($PWD.Path),target=/workspace" `
   -e VIDEO_INGEST_FPS=25 `
   -e VIDEO_PREVIEW_FPS=25 `
-  merged-video-ai-router:v9
+  merged-video-ai-router:v10-flat
 
   docker compose up -d qdrant
 ```
