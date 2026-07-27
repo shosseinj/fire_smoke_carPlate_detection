@@ -218,6 +218,14 @@ class Settings:
     face_max_abs_pitch: float = _env_float("FACE_MAX_ABS_PITCH", 55.0)
     face_max_abs_roll: float = _env_float("FACE_MAX_ABS_ROLL", 35.0)
     face_require_landmarks: bool = _env_bool("FACE_REQUIRE_LANDMARKS", True)
+    face_human_pose_enabled: bool = _env_bool("FACE_HUMAN_POSE_ENABLED", True)
+    face_human_pose_min_keypoints: int = _env_int("FACE_HUMAN_POSE_MIN_KEYPOINTS", 4)
+    face_human_pose_keypoint_confidence: float = _env_float(
+        "FACE_HUMAN_POSE_KEYPOINT_CONFIDENCE", 0.25
+    )
+    face_recognition_quality_weight: float = _env_float(
+        "FACE_RECOGNITION_QUALITY_WEIGHT", 0.5
+    )
     face_tracker_high_threshold: float = _env_float(
         "FACE_TRACKER_HIGH_THRESHOLD", 0.40
     )

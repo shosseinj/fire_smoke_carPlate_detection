@@ -469,6 +469,8 @@ class AnnotatedBroadcastHub:
                 )
         faces = result.data.get("faces", [])
         for face in faces:
+            if face.get("quality_valid") is not True:
+                continue
             box = self._bounded_box(face.get("bbox"), frame)
             if box is None:
                 continue

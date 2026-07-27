@@ -15,8 +15,11 @@ def test_face_quality_settings_are_validated_and_persistent(
             "quality_threshold": 0.72,
             "min_face_width": 48,
             "min_face_height": 56,
-            "max_abs_pitch": 68.0,
-            "require_landmarks": True,
+        "max_abs_pitch": 68.0,
+        "require_landmarks": True,
+        "human_pose_min_keypoints": 6,
+        "human_pose_keypoint_confidence": 0.35,
+        "recognition_quality_weight": 0.8,
         }
     )
 
@@ -24,6 +27,9 @@ def test_face_quality_settings_are_validated_and_persistent(
     assert updated.min_face_width == 48
     assert updated.min_face_height == 56
     assert updated.max_abs_pitch == 68.0
+    assert updated.human_pose_min_keypoints == 6
+    assert updated.human_pose_keypoint_confidence == 0.35
+    assert updated.recognition_quality_weight == 0.8
     reopened = FaceQualitySettingsStore(
         postgres_database,
         FaceQualityPolicy(quality_threshold=0.1, max_abs_pitch=10.0),

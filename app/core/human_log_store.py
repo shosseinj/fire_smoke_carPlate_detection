@@ -294,6 +294,8 @@ class HumanLogStore:
         session_id = str(result.data.get("tracking_session_id") or "unknown-session")
         faces_by_track: dict[int, dict[str, Any]] = {}
         for face in result.data.get("faces", []):
+            if face.get("quality_valid") is not True:
+                continue
             track_id = face.get("track_id")
             if track_id is None:
                 continue
