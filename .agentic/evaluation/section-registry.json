@@ -681,17 +681,18 @@
       "enabled": true,
       "critical": false,
       "runtime_required": false,
-      "owner_paths": ["app/api/locations.py", "app/core/location_store.py"],
+      "owner_paths": ["app/api/locations.py", "app/core/location_store.py", "app/database.py", "alembic/versions/20260727_0028_room_patch_fields.py"],
       "dependencies": ["configuration"],
       "consumers": ["user-interface"],
       "commands": [
         "python -m pytest tests/test_locations.py -q",
         "python -m pytest tests/test_crud_api.py -q -k \"TestLocationsCrud\"",
-        "python -m py_compile app/api/locations.py"
+        "python -m py_compile app/api/locations.py app/core/location_store.py",
+        "python -m pytest tests/test_room_patch_contract.py -q"
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Building, section, room CRUD. Polygon matching, room access grants."
+      "notes": "Building, section, room CRUD. Room PATCH accepts only polygon_points, room_number, room_type, description, and is_active; polygon matching and room access grants remain covered."
     },
     {
       "id": "api-shifts",

@@ -51,7 +51,10 @@ class RoomRecord:
     section_id: int | None
     cam_id: int | None
     name: str
+    room_number: str | None
+    room_type: str | None
     description: str | None
+    is_active: bool
     polygon_json: str | None
     created_at_utc: str
     updated_at_utc: str
@@ -388,7 +391,10 @@ class LocationStore:
             section_id=row["section_id"],
             cam_id=row["cam_id"],
             name=row["name"],
+            room_number=row["room_number"],
+            room_type=row["room_type"],
             description=row["description"],
+            is_active=bool(row["is_active"]),
             polygon_json=row["polygon_json"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
@@ -401,7 +407,10 @@ class LocationStore:
         name: str,
         section_id: int | None = None,
         cam_id: int | None = None,
+        room_number: str | None = None,
+        room_type: str | None = None,
         description: str | None = None,
+        is_active: bool = True,
         polygon_json: str | None = None,
         created_by: int | None = None,
     ) -> RoomRecord:
@@ -436,9 +445,9 @@ class LocationStore:
                     raise ValueError(f"Section not found: {section_id}")
 
             cursor = conn.execute(
-                "INSERT INTO rooms (section_id, cam_id, name, description, polygon_json, created_at_utc, updated_at_utc, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (effective_section_id, cam_id, name, description, polygon_json, now, now, created_by),
+                "INSERT INTO rooms (section_id, cam_id, name, room_number, room_type, description, is_active, polygon_json, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (effective_section_id, cam_id, name, room_number, room_type, description, int(is_active), polygon_json, now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (cursor.lastrowid,)
@@ -460,8 +469,11 @@ class LocationStore:
         name: str | None = None,
         section_id: int | None = None,
         cam_id: int | None | object = _UNSET,
-        description: str | None = None,
-        polygon_json: str | None = None,
+        room_number: str | None | object = _UNSET,
+        room_type: str | None | object = _UNSET,
+        description: str | None | object = _UNSET,
+        is_active: bool | None = None,
+        polygon_json: str | None | object = _UNSET,
         updated_by: int | None = None,
     ) -> RoomRecord | None:
         with self._lock, self._connection() as conn:
@@ -503,17 +515,20 @@ class LocationStore:
                         )
                 new_section_id = section_id
 
-            new_description = description if description is not None else existing["description"]
-            new_polygon = polygon_json if polygon_json is not None else existing["polygon_json"]
-            if polygon_json is not None:
+            new_description = existing["description"] if description is _UNSET else description
+            new_room_number = existing["room_number"] if room_number is _UNSET else room_number
+            new_room_type = existing["room_type"] if room_type is _UNSET else room_type
+            new_is_active = int(is_active) if is_active is not None else existing["is_active"]
+            new_polygon = existing["polygon_json"] if polygon_json is _UNSET else polygon_json
+            if polygon_json is not _UNSET and polygon_json is not None:
                 points = parse_polygon(polygon_json)
                 if len(points) < 3:
                     raise ValueError("Polygon must have at least 3 vertices")
             now = self._now()
             conn.execute(
-                "UPDATE rooms SET name=?, section_id=?, cam_id=?, description=?, polygon_json=?, "
+                "UPDATE rooms SET name=?, section_id=?, cam_id=?, room_number=?, room_type=?, description=?, is_active=?, polygon_json=?, "
                 "updated_at_utc=?, updated_by=? WHERE id=?",
-                (new_name, new_section_id, new_cam_id, new_description, new_polygon, now, updated_by, room_id),
+                (new_name, new_section_id, new_cam_id, new_room_number, new_room_type, new_description, new_is_active, new_polygon, now, updated_by, room_id),
             )
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (room_id,)

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
@@ -124,13 +124,22 @@ class RoomCreate(BaseModel):
     room_type: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
     camera_id: int = Field(ge=1)
+    is_active: bool = True
     polygon_points: list[list[float]] | None = None
 
 
 class RoomUpdate(BaseModel):
-    room_name: str | None = Field(default=None, min_length=1, max_length=500)
+    model_config = ConfigDict(extra="forbid")
+
+    room_number: str | None = Field(default=None, max_length=50)
+    room_type: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
+    is_active: bool | None = None
     polygon_points: list[list[float]] | None = None
+
+
+class LegacyRoomUpdate(RoomUpdate):
+    room_name: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class RoomResponse(BaseModel):
@@ -248,11 +257,11 @@ def _room_response(r, store: LocationStore | None = None) -> RoomResponse:
         c, u = _resolve_audit_briefs(r, store)
     return RoomResponse(
         id=r.id,
-        room_number=None,
         room_name=r.name,
-        room_type=None,
+        room_number=r.room_number,
+        room_type=r.room_type,
         description=r.description,
-        is_active=True,
+        is_active=r.is_active,
         camera_id=r.cam_id,
         section_id=r.section_id,
         polygon_points=_polygon_to_list(r.polygon_json),
@@ -638,7 +647,10 @@ def create_new_room(
         r = _store(runtime).create_room(
             name=payload.room_name,
             cam_id=payload.camera_id,
+            room_number=payload.room_number,
+            room_type=payload.room_type,
             description=payload.description,
+            is_active=payload.is_active,
             polygon_json=polygon_json,
             created_by=current_user.id,
         )
@@ -647,12 +659,11 @@ def create_new_room(
     return _room_response(r, _store(runtime))
 
 
-@rooms_router.put("/{room_id}", response_model=RoomResponse)
-def update_room_info(
+def _update_room(
     room_id: int,
-    payload: RoomUpdate,
-    runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    payload: RoomUpdate | LegacyRoomUpdate,
+    runtime: Runtime,
+    current_user: UserRecord,
 ):
     if payload.polygon_points is not None and len(payload.polygon_points) < 3:
         raise HTTPException(status_code=400, detail="چندضلعی باید حداقل ۳ نقطه داشته باشد")
@@ -661,12 +672,18 @@ def update_room_info(
     if not existing:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     changes: dict[str, Any] = {}
-    if payload.room_name is not None:
+    if getattr(payload, "room_name", None) is not None:
         changes["name"] = payload.room_name
-    if payload.description is not None:
+    if "room_number" in payload.model_fields_set:
+        changes["room_number"] = payload.room_number
+    if "room_type" in payload.model_fields_set:
+        changes["room_type"] = payload.room_type
+    if "description" in payload.model_fields_set:
         changes["description"] = payload.description
-    if payload.polygon_points is not None:
-        changes["polygon_json"] = json.dumps(payload.polygon_points)
+    if payload.is_active is not None:
+        changes["is_active"] = payload.is_active
+    if "polygon_points" in payload.model_fields_set:
+        changes["polygon_json"] = json.dumps(payload.polygon_points) if payload.polygon_points is not None else None
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
     changes["updated_by"] = current_user.id
@@ -678,6 +695,26 @@ def update_room_info(
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     runtime._refresh_all_source_zones()
     return _room_response(r, store)
+
+
+@rooms_router.patch("/{room_id}", response_model=RoomResponse)
+def patch_room(
+    room_id: int,
+    payload: RoomUpdate,
+    runtime: Runtime = Depends(get_runtime),
+    current_user: UserRecord = Depends(require_role("admin")),
+):
+    return _update_room(room_id, payload, runtime, current_user)
+
+
+@rooms_router.put("/{room_id}", response_model=RoomResponse)
+def update_room_info(
+    room_id: int,
+    payload: LegacyRoomUpdate,
+    runtime: Runtime = Depends(get_runtime),
+    current_user: UserRecord = Depends(require_role("admin")),
+):
+    return _update_room(room_id, payload, runtime, current_user)
 
 
 @rooms_router.post("/{room_id}/grant/{personnel_id}")

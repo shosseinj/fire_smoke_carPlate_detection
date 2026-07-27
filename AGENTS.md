@@ -242,6 +242,13 @@ no longer visible. Expiry finalization also upgrades an existing idempotent
 | `/rooms/{id}/matches` | GET | List all polygon matches for a room |
 | `/rooms/{id}/entry-exits` | GET | List only entry/exit transitions (filters by transition_type) |
 
+Room updates use `PATCH /rooms/{id}` for the narrowly scoped mutable fields
+`polygon_points`, `room_number`, `room_type`, `description`, and `is_active`.
+The request rejects unknown fields; polygon updates still require at least three
+points. The legacy `PUT /rooms/{id}` remains available for existing clients and
+also accepts the historical `room_name` field. The room fields are persisted in
+the `rooms` table by migration `20260727_0028`.
+
 The `polygon_points` field in room create/update accepts `[[x,y], [x,y], ...]` with at least 3 points.
 
 ### Polygon drawing on dashboard frames
