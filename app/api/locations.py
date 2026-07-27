@@ -128,11 +128,8 @@ class RoomCreate(BaseModel):
 
 
 class RoomUpdate(BaseModel):
-    room_number: str | None = Field(default=None, max_length=50)
     room_name: str | None = Field(default=None, min_length=1, max_length=500)
-    room_type: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
-    camera_id: int | None = Field(default=None, ge=1)
     polygon_points: list[list[float]] | None = None
 
 
@@ -666,10 +663,6 @@ def update_room_info(
     changes: dict[str, Any] = {}
     if payload.room_name is not None:
         changes["name"] = payload.room_name
-    if "camera_id" in payload.model_fields_set:
-        if payload.camera_id is None:
-            raise HTTPException(status_code=422, detail="camera_id cannot be null")
-        changes["cam_id"] = payload.camera_id
     if payload.description is not None:
         changes["description"] = payload.description
     if payload.polygon_points is not None:
