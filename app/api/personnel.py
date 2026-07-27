@@ -283,7 +283,12 @@ async def import_excel(
     if not raw:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
     try:
-        result = await run_in_threadpool(store.import_from_excel, raw)
+        result = await run_in_threadpool(
+            store.import_from_excel,
+            raw,
+            update_existing=update_existing,
+            skip_invalid_rows=skip_invalid_rows,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     total = result["created"] + result["skipped"] + len(result["errors"])

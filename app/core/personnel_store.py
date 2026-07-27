@@ -693,34 +693,36 @@ class PersonnelStore:
 
     def generate_import_template(self) -> bytes:
         import openpyxl
-        from openpyxl.styles import Font, Alignment
+        from openpyxl.styles import Alignment, Font, PatternFill, Protection
         wb = openpyxl.Workbook()
 
         ws = wb.active
-        ws.title = "ورود اطلاعات"
+        ws.title = "ورود اطلاعات پرسنل"
+        ws.sheet_view.rightToLeft = True
         headers = [
             "نام", "نام خانوادگی",
-            "کد ملی", "نوع استخدام",
-            "مدرک تحصیلی",
+            "کد ملی", "نوع کارمند (کد)", "دپارتمان (شناسه)",
+            "شیفت کاری (شناسه)", "مدرک تحصیلی",
         ]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="right")
-        col_widths = [16, 20, 16, 16, 16]
+        col_widths = [16, 20, 16, 18, 18, 18, 20]
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
-        ws.append(["مثال", "کاربر", "0012345678", "employee", "Bachelor"])
 
-        ws_guide = wb.create_sheet("راهنما", 0)
+        ws_guide = wb.create_sheet("راهنما")
         guide_lines = [
             "راهنمای واردسازی پرسنل", "",
             "ستون‌ها:",
             "A: نام (اجباری)",
             "B: نام خانوادگی (اجباری)",
             "C: کد ملی ۱۰ رقمی (اجباری، دارای جمع کنترلی)",
-            "D: نوع استخدام (contractor/customer/guest/employee/unknown)",
-            "E: مدرک تحصیلی (بیسواد/زیر دیپلم/دیپلم/فوق دیپلم/لیسانس/فوق لیسانس/دکتری)",
+            "D: نوع کارمند (کد 1 پیمانکار، 2 مشتری، 3 مهمان، 4 کارمند، 5 نامشخص)",
+            "E: شناسه دپارتمان (اختیاری)",
+            "F: شناسه شیفت کاری (اختیاری)",
+            "G: مدرک تحصیلی (کد 1 تا 8 یا مقدار فارسی)",
             "", "توجه:",
             "- ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
             "- ردیف‌های خالی رد می‌شوند",
@@ -730,13 +732,23 @@ class PersonnelStore:
             ws_guide.cell(row=i, column=1, value=line)
         ws_guide.column_dimensions["A"].width = 60
         ws_guide.protection.sheet = True
+        ws_guide.protection.set_password("readonly")
+        ws.protection.sheet = False
+        wb.security.lockStructure = True
+        wb.security.set_workbook_password("readonly")
 
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
         return buf.getvalue()
 
-    def import_from_excel(self, data: bytes) -> dict[str, Any]:
+    def import_from_excel(
+        self,
+        data: bytes,
+        *,
+        update_existing: bool = False,
+        skip_invalid_rows: bool = True,
+    ) -> dict[str, Any]:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data))
         ws = wb.active
@@ -746,6 +758,19 @@ class PersonnelStore:
         created = 0
         skipped = 0
         errors: list[dict[str, Any]] = []
+        employee_types = {
+            "1": "contractor", "2": "customer", "3": "guest",
+            "4": "employee", "5": "unknown",
+            "contractor": "contractor", "customer": "customer",
+            "guest": "guest", "employee": "employee", "unknown": "unknown",
+            "پیمانکار": "contractor", "مشتری": "customer", "مهمان": "guest",
+            "کارمند": "employee", "نامشخص": "unknown",
+        }
+        degrees = {
+            "1": "illiterate", "2": "below_diploma", "3": "diploma",
+            "4": "associate", "5": "bachelor", "6": "master",
+            "7": "doctorate", "8": "unknown",
+        }
         for row_idx, row in enumerate(rows_iter, start=2):
             if not row or all(cell is None for cell in row):
                 continue
@@ -753,25 +778,35 @@ class PersonnelStore:
                 fname = str(row[0]).strip() if row[0] is not None else ""
                 lname = str(row[1]).strip() if row[1] is not None else ""
                 national_code = str(row[2]).strip() if row[2] is not None else ""
-                employee_type = str(row[3]).strip().lower() if row[3] is not None else "unknown"
-                degree = str(row[4]).strip() if len(row) > 4 and row[4] is not None else None
+                employee_key = str(row[3]).strip().lower() if len(row) > 3 and row[3] is not None else "5"
+                employee_type = employee_types.get(employee_key)
+                if employee_type is None:
+                    raise ValueError("Invalid employee type code")
+                department_id = int(row[4]) if len(row) > 4 and row[4] not in (None, "") else None
+                shift_id = int(row[5]) if len(row) > 5 and row[5] not in (None, "") else None
+                degree_key = str(row[6]).strip() if len(row) > 6 and row[6] is not None else None
+                degree = degrees.get(degree_key, degree_key)
                 if not fname or not lname or not national_code:
                     skipped += 1
                     errors.append({"row": row_idx, "error": "Missing required fields (fname, lname, national_code)"})
                     continue
-                self.create(
-                    fname=fname,
-                    lname=lname,
-                    national_code=national_code,
-                    employee_type=employee_type,
-                    degree=degree,
-                )
+                existing = self.get_by_national_code(national_code)
+                if existing is not None:
+                    if not update_existing:
+                        skipped += 1
+                        errors.append({"row": row_idx, "error": "Personnel already exists"})
+                        continue
+                    self.update(existing.id, fname, lname, national_code, employee_type, degree, shift_id, department_id)
+                else:
+                    self.create(fname, lname, national_code, employee_type, degree, shift_id, department_id)
                 created += 1
             except ValueError as exc:
-                skipped += 1
+                if skip_invalid_rows:
+                    skipped += 1
                 errors.append({"row": row_idx, "error": str(exc)})
             except Exception as exc:
-                skipped += 1
+                if skip_invalid_rows:
+                    skipped += 1
                 errors.append({"row": row_idx, "error": f"{type(exc).__name__}: {exc}"})
         return {"created": created, "skipped": skipped, "errors": errors}
 
