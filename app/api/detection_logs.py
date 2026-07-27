@@ -455,7 +455,6 @@ def monthly_summary(
     shift_id: int | None = Query(None),
     include_daily_rows: bool = Query(False),
     move_days: int = Query(10),
-    _: dict = Depends(require_role("operator")),
 ) -> list[dict]:
     utc_start, utc_end = jalali_month_utc_range(jalali_year, jalali_month)
     store = get_detection_log_store()

@@ -264,7 +264,7 @@ def update_cam(
 def delete_cam(
     cam_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_role("superuser")),
 ) -> Response:
     try:
         deleted = runtime.cam_store.delete(cam_id)

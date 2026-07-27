@@ -153,7 +153,13 @@ def _decode_token(token: str, expected_type: str) -> dict[str, Any] | None:
 
 
 def decode_access_token(token: str) -> dict[str, Any] | None:
-    return _decode_token(token, "access")
+    payload = _decode_token(token, "access")
+    if payload is None:
+        return None
+    if get_auth_store().is_token_revoked(token_revocation_id(token, payload)):
+        LOGGER.warning("Access token has been revoked")
+        return None
+    return payload
 
 
 def token_revocation_id(token: str, payload: dict[str, Any]) -> str:
@@ -172,6 +178,21 @@ def decode_refresh_token(token: str) -> dict[str, Any] | None:
         LOGGER.warning("Refresh token has been revoked")
         return None
     return payload
+
+
+def revoke_access_token(token: str) -> bool:
+    """Persistently revoke a valid access token; repeated calls remain idempotent."""
+    payload = _decode_token(token, "access")
+    if payload is None:
+        return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    get_auth_store().revoke_token(token_revocation_id(token, payload), expires_at)
+    return True
 
 
 def revoke_refresh_token(token: str) -> bool:
@@ -248,7 +269,7 @@ def get_current_user(
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="توکن نامعتبر یا منقضی شده است",
+            detail="ابتدا وارد حساب کاربری خود شوید!",
             headers={"WWW-Authenticate": "Bearer"},
         )
     user = resolve_user_from_payload(payload)

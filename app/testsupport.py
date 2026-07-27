@@ -118,10 +118,10 @@ def setup_crud_context(tmp_path: Path) -> CrudTestContext:
 
     admin_token = _get_token(client, AUTH_USER, AUTH_PASS)
     operator_token = _create_user_and_get_token(
-        client, admin_token, "operator_crud", "operator123", "operator"
+        client, admin_token, "operator_crud", "Operator1!", "operator"
     )
     viewer_token = _create_user_and_get_token(
-        client, admin_token, "viewer_crud", "viewer1234", "viewer"
+        client, admin_token, "viewer_crud", "Viewer123!", "viewer"
     )
 
     return CrudTestContext(
@@ -155,7 +155,13 @@ def _create_user_and_get_token(
 ) -> str:
     resp = client.post(
         "/api/v1/auth/create-user",
-        json={"username": username, "password": password, "role": role},
+        json={
+            "username": username,
+            "password": password,
+            "role": role,
+            "email": f"{username}@test.local",
+            "confirm_password": password,
+        },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     if resp.status_code not in (200, 201):
