@@ -13,7 +13,14 @@ from urllib.parse import urlsplit, urlunsplit
 import cv2
 
 from app.core.router import TaskRouter
-from app.core.source_registry import RTSP, STATIC_VIDEO, SOURCE_TYPES, SourceRecord, SourceRegistry
+from app.core.source_registry import (
+    RTSP,
+    STATIC_VIDEO,
+    SOURCE_TYPES,
+    SourceRecord,
+    SourceRegistry,
+    canonical_source_type,
+)
 
 LOGGER = logging.getLogger(__name__)
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".webm"}
@@ -301,7 +308,10 @@ class VideoFileIngestor:
             for record in self.registry.list()
             if record.enabled
             and self.is_video_source(record)
-            and record.source_type == self.source_type_filter
+            and canonical_source_type(
+                record.source_uri,
+                record.source_type,
+            ) == self.source_type_filter
         ]
         # Enforce max_sources cap: only open the first max_sources
         if len(records) > self.max_sources:

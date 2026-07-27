@@ -24,6 +24,15 @@ STATIC_VIDEO = "static_video"
 SOURCE_TYPES = frozenset({RTSP, STATIC_VIDEO})
 
 
+def canonical_source_type(source_uri: str, source_type: str | None) -> str:
+    normalized_uri = source_uri.strip().lower()
+    if normalized_uri.startswith(("rtsp://", "rtsps://")):
+        return RTSP
+    if source_type in SOURCE_TYPES:
+        return source_type
+    return RTSP
+
+
 @dataclass(slots=True)
 class SourceRecord:
     id: int | None = None
@@ -57,9 +66,10 @@ class SourceRecord:
         source_uri = value.get("source_uri", value.get("camera_id", value.get("source_id")))
         if source_uri is None:
             raise ValueError("Source record requires source_uri")
-        source_type = value.get("source_type", RTSP)
-        if source_type not in SOURCE_TYPES:
-            source_type = RTSP
+        source_type = canonical_source_type(
+            str(source_uri),
+            value.get("source_type", RTSP),
+        )
         return cls(
             id=value.get("id"),
             source_uri=str(source_uri),
@@ -158,8 +168,10 @@ class SourceRegistry:
             raise ValueError("frame_width must be between 16 and 4096")
         if not 16 <= value.frame_height <= 4096:
             raise ValueError("frame_height must be between 16 and 4096")
-        if value.source_type not in SOURCE_TYPES:
-            value.source_type = RTSP
+        value.source_type = canonical_source_type(
+            value.source_uri,
+            value.source_type,
+        )
         return value
 
     @staticmethod
@@ -173,7 +185,10 @@ class SourceRegistry:
             tasks={TaskName(item) for item in json.loads(row["tasks_json"])},
             frame_width=int(row["frame_width"]),
             frame_height=int(row["frame_height"]),
-            source_type=str(row["source_type"]) if row["source_type"] else RTSP,
+            source_type=canonical_source_type(
+                str(row["source_uri"]),
+                str(row["source_type"]) if row["source_type"] else RTSP,
+            ),
             room_id=int(row["room_id"]) if row["room_id"] is not None else None,
             metadata=metadata,
             fps=float(row["fps"]) if row["fps"] is not None else None,

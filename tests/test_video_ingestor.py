@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
-from app.core.source_registry import SourceRecord, SourceRegistry
+from app.core.source_registry import STATIC_VIDEO, SourceRecord, SourceRegistry
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
@@ -218,6 +220,43 @@ def test_deepstream_accepts_rtsp_and_local_sources_without_metadata(
     assert "example.mp4" in ingestor._resolve_uri(local.source_uri or "")
 
 
+def test_rtsp_uri_overrides_stale_static_video_classification(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
+    record = registry.create(
+        SourceRecord(
+            name="Misclassified RTSP",
+            source_uri="rtsp://user:password@192.0.2.10:554/live",
+            source_type=STATIC_VIDEO,
+        )
+    )
+
+    assert record.source_type == "rtsp"
+    assert registry.require(record.source_uri).source_type == "rtsp"
+
+    deepstream = DeepStreamIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    static_ingestor = VideoFileIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_type_filter=STATIC_VIDEO,
+        capture_factory=lambda _: (_ for _ in ()).throw(
+            AssertionError("Static ingestor must not open an RTSP URI")
+        ),
+    )
+
+    assert [item.source_uri for item in deepstream._active_records()] == [
+        record.source_uri
+    ]
+    assert static_ingestor.process_once()["received_frames"] == 0
+    static_ingestor.close()
+
+
 def test_deepstream_static_only_mode_excludes_rtsp_before_open(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
@@ -260,6 +299,64 @@ def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
     assert ingestor._next_frame_index_locked("camera-loop") == 1
     # A replacement Gst pipeline uses the same per-camera sequence.
     assert ingestor._next_frame_index_locked("camera-loop") == 2
+
+
+def test_deepstream_failed_source_disposal_does_not_block_healthy_source(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    ingestor = DeepStreamIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    healthy = SimpleNamespace(source_id="healthy")
+    failed = SimpleNamespace(source_id="failed")
+    ingestor._states = {"healthy": healthy, "failed": failed}  # type: ignore[assignment]
+    disposal_started = threading.Event()
+    allow_disposal = threading.Event()
+
+    def blocking_disposal(_: object) -> None:
+        disposal_started.set()
+        allow_disposal.wait(timeout=2.0)
+
+    ingestor._dispose_state = blocking_disposal  # type: ignore[method-assign]
+
+    started = time.monotonic()
+    ingestor._close_source("failed")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.25
+    assert disposal_started.wait(timeout=0.5)
+    assert ingestor._states == {"healthy": healthy}
+    assert ingestor._closing_sources == {"failed"}
+
+    allow_disposal.set()
+    ingestor._join_close_threads(timeout=1.0)
+    assert ingestor._closing_sources == set()
+
+
+def test_deepstream_failure_status_redacts_rtsp_credentials(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    ingestor = DeepStreamIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    source_uri = "rtsp://user:password@192.0.2.10:554/live"
+    state = SimpleNamespace(
+        source_uri=source_uri,
+        display_uri="rtsp://***:***@192.0.2.10:554/live",
+        last_error=None,
+    )
+    ingestor._states[source_uri] = state  # type: ignore[assignment]
+
+    ingestor._mark_failed(source_uri, f"connection failed for {source_uri}")
+
+    assert "password" not in str(ingestor._last_error)
+    assert "password" not in str(state.last_error)
+    assert "***:***@" in str(ingestor._last_error)
+    assert "password" not in ingestor._safe_element_name(source_uri)
 
 
 def test_deepstream_decodes_gpu_converted_bgrx_without_cpu_videoconvert() -> None:

@@ -756,6 +756,15 @@ docker run --rm -it `
   merged-video-ai-router:v9
 
   docker compose up -d qdrant
+  docker pull minio/minio
+
+  docker run -p 9000:9000 `
+  -p 9001:9001 `
+  -e MINIO_ROOT_USER="minioadmin" `
+  -e MINIO_ROOT_PASSWORD="minioadmin" `
+  -v C:\minio\data:/data `
+  -v C:\minio\config:/root/.minio `
+  minio/minio server /data --console-address
 ```
 
 ```
