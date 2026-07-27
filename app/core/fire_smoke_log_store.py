@@ -191,6 +191,18 @@ class FireSmokeLogStore:
         return any(item.get("label") in {"fire", "smoke"} for item in items)
 
     @staticmethod
+    def _hazard_type(fire: dict[str, Any], smoke: dict[str, Any]) -> str | None:
+        fire_count = int(fire.get("positive_count", 0))
+        smoke_count = int(smoke.get("positive_count", 0))
+        if fire_count and smoke_count:
+            return "fire_smoke"
+        if fire_count:
+            return "fire"
+        if smoke_count:
+            return "smoke"
+        return None
+
+    @staticmethod
     def _annotate_frame(frame: Any, result: TaskResult) -> Any:
         for track in result.data.get("tracks", []):
             if track.get("label") not in {"fire", "smoke"}:
@@ -294,6 +306,7 @@ class FireSmokeLogStore:
             result.processed_at_utc,
             incident_id,
             result.data["severity"],
+            self._hazard_type(fire, smoke),
             int(fire.get("positive_count", 0)),
             int(smoke.get("positive_count", 0)),
             float(fire.get("max_confidence", 0.0)),
@@ -308,10 +321,10 @@ class FireSmokeLogStore:
                 connection.execute(
                     """
                     INSERT INTO fire_smoke_logs (
-                        camera, time, incident_id, severity, fire_count, smoke_count,
+                        camera, time, incident_id, severity, hazard_type, fire_count, smoke_count,
                         fire_confidence, smoke_confidence, window_seconds,
                         snapshot_url, video_url, details_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -319,7 +332,7 @@ class FireSmokeLogStore:
                 connection.execute(
                     """
                     UPDATE fire_smoke_logs
-                    SET camera = ?, time = ?, incident_id = ?, severity = ?,
+                    SET camera = ?, time = ?, incident_id = ?, severity = ?, hazard_type = ?,
                         fire_count = ?, smoke_count = ?, fire_confidence = ?,
                         smoke_confidence = ?, window_seconds = ?, snapshot_url = ?,
                         video_url = ?, details_json = ?
@@ -369,8 +382,8 @@ class FireSmokeLogStore:
             clauses.append("severity = ?")
             parameters.append(severity.strip().lower())
         if hazard_type:
-            clauses.append("details_json LIKE ?")
-            parameters.append(f'%"hazard_type": "{hazard_type.strip()}"%')
+            clauses.append("hazard_type = ?")
+            parameters.append(hazard_type.strip().lower())
         if detected_from:
             clauses.append("time >= ?")
             parameters.append(detected_from)
@@ -382,11 +395,24 @@ class FireSmokeLogStore:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, camera, time, incident_id, severity, fire_count, "
-                "smoke_count, fire_confidence, smoke_confidence, window_seconds, "
-                f"snapshot_url, video_url FROM fire_smoke_logs{where} ORDER BY id DESC LIMIT ?",
+                "smoke_count, fire_confidence, smoke_confidence, window_seconds, hazard_type, "
+                f"snapshot_url, video_url, details_json FROM fire_smoke_logs{where} ORDER BY id DESC LIMIT ?",
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._response_row(row) for row in rows]
+
+    @staticmethod
+    def _response_row(row: Row) -> dict[str, Any]:
+        value = dict(row)
+        raw_details = value.pop("details_json", "{}")
+        value["camera_id"] = value.pop("camera", None)
+        value["detection_time"] = value.pop("time", None)
+        try:
+            details = json.loads(raw_details) if isinstance(raw_details, str) else raw_details
+        except (TypeError, json.JSONDecodeError):
+            details = {}
+        value["details"] = details if isinstance(details, dict) else {}
+        return value
 
     def count(self) -> int:
         with self._lock, self._connect() as connection:
@@ -397,22 +423,24 @@ class FireSmokeLogStore:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT id, camera, time, incident_id, severity, fire_count, smoke_count, "
-                "fire_confidence, smoke_confidence, window_seconds, snapshot_url, video_url "
-                "FROM fire_smoke_logs WHERE id = ?",
+                "fire_confidence, smoke_confidence, window_seconds, hazard_type, snapshot_url, video_url, "
+                "details_json FROM fire_smoke_logs WHERE id = ?",
                 (log_id,),
             ).fetchone()
-        return dict(row) if row else None
+        return self._response_row(row) if row else None
 
     def create_manual(self, values: dict[str, Any]) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO fire_smoke_logs (camera, time, severity, fire_count, smoke_count, "
+                "INSERT INTO fire_smoke_logs (camera, time, severity, hazard_type, fire_count, smoke_count, "
                 "fire_confidence, smoke_confidence, window_seconds, snapshot_url, video_url, details_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
                 (
                     str(values["camera_id"]), values["detection_time"].isoformat(), values["severity"],
+                    values.get("hazard_type"),
                     int(values.get("fire_count", 0)), int(values.get("smoke_count", 0)),
-                    float(values.get("confidence") or 0.0), float(values.get("confidence") or 0.0),
+                    float(values.get("fire_confidence") or 0.0),
+                    float(values.get("smoke_confidence") or 0.0),
                     0.0, values.get("snapshot_url") or "", values.get("video_url") or "", "{}",
                 ),
             )
@@ -423,6 +451,8 @@ class FireSmokeLogStore:
     def update_manual(self, log_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         mapping = {
             "camera_id": "camera", "detection_time": "time", "severity": "severity",
+            "hazard_type": "hazard_type",
+            "fire_confidence": "fire_confidence", "smoke_confidence": "smoke_confidence",
             "snapshot_url": "snapshot_url", "video_url": "video_url",
         }
         updates = [(mapping[key], value.isoformat() if isinstance(value, datetime) else value) for key, value in values.items() if key in mapping]

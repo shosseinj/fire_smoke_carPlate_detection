@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
-from app.core.auth import require_role
+from app.core.auth import get_current_user, require_role
 from app.core.auth_store import UserRecord
+from app.api.fire_logs import (
+    FireLogResponse,
+    HazardType,
+    Severity,
+    _date_range_values,
+    _protected_media_response,
+)
 from app.fire_core.policy import FireSmokePolicyConfig
 from app.runtime import Runtime
 
@@ -32,18 +40,31 @@ class FireSmokeSettingsUpdate(BaseModel):
         return self
 
 
-@router.get("/fire-smoke-logs")
+@router.get("/fire-smoke-logs", response_model=list[FireLogResponse])
 def list_fire_smoke_logs(
     camera_id: str | None = None,
-    severity: str | None = Query(default=None, pattern="^(low|medium|high)$"),
-    limit: int = Query(default=100, ge=1, le=1000),
+    severity: Severity | None = Query(default=None),
+    hazard_type: HazardType | None = Query(default=None),
+    detected_from: datetime | None = Query(default=None),
+    detected_to: datetime | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
-    return runtime.fire_smoke_logs.list(
+    try:
+        detected_from_value, detected_to_value = _date_range_values(detected_from, detected_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rows = runtime.fire_smoke_logs.list(
         camera=camera_id,
         severity=severity,
-        limit=limit,
-    )
+        hazard_type=hazard_type,
+        detected_from=detected_from_value,
+        detected_to=detected_to_value,
+        limit=skip + limit,
+    )[skip:]
+    return [_protected_media_response(row) for row in rows]
 
 
 @router.get("/fire-smoke/settings", summary="خواندن تنظیمات تشخیص حریق و دود")
