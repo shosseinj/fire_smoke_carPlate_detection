@@ -14,3 +14,11 @@ def test_general_settings_operational_patch_rejects_fire_thresholds() -> None:
                 "smoke_confidence": 0.34,
             }
         )
+
+
+@pytest.mark.parametrize("field", ["video_ingest_fps", "video_preview_fps"])
+def test_general_settings_operational_patch_rejects_legacy_fps_fields(
+    field: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        OperationalSettingsPatch.model_validate({field: 25})

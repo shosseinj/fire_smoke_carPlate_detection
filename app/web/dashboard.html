@@ -790,10 +790,16 @@
         if (!video) return;
         const now = performance.now();
         const stats = statsFor(header.source_id);
+        const incomingFrameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+        if (
+          incomingFrameIndex !== null
+          && stats.frameIndex !== null
+          && incomingFrameIndex < stats.frameIndex
+        ) return;
         stats.arrivals.push(now);
         stats.total += 1;
         stats.lastArrival = now;
-        stats.frameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+        stats.frameIndex = incomingFrameIndex;
         const elements = metricElements.get(header.source_id);
         if (elements && Number.isFinite(header.frame_width) && Number.isFinite(header.frame_height)) {
           const profile = header.render_profile === "full" ? "Full" : "Wall";
@@ -1003,11 +1009,17 @@
 
               // Update frame stats
               const stats = statsFor(header.source_id);
+              const incomingFrameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+              if (
+                incomingFrameIndex !== null
+                && stats.frameIndex !== null
+                && incomingFrameIndex < stats.frameIndex
+              ) return;
               const now = performance.now();
               stats.arrivals.push(now);
               stats.total += 1;
               stats.lastArrival = now;
-              stats.frameIndex = Number.isFinite(header.frame_index) ? header.frame_index : null;
+              stats.frameIndex = incomingFrameIndex;
               sessionReceivedFrames += 1;
 
               // Update resolution badge
@@ -1025,8 +1037,17 @@
                 const img = document.querySelector(`img[data-jpeg-for="${selector}"]`);
                 if (img) {
                   const prev = jpegBlobUrls.get(header.source_id);
-                  if (prev) URL.revokeObjectURL(prev.url);
                   jpegBlobUrls.set(header.source_id, { url });
+                  img.addEventListener("load", () => {
+                    if (prev && prev.url !== url) URL.revokeObjectURL(prev.url);
+                  }, { once: true });
+                  img.addEventListener("error", () => {
+                    if (prev && prev.url !== url) URL.revokeObjectURL(prev.url);
+                    if (jpegBlobUrls.get(header.source_id)?.url === url) {
+                      jpegBlobUrls.delete(header.source_id);
+                    }
+                    URL.revokeObjectURL(url);
+                  }, { once: true });
                   img.src = url;
                   // Hide status overlay when first frame arrives
                   const status = document.querySelector(`[data-status-for="${selector}"]`);

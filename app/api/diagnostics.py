@@ -29,12 +29,30 @@ def get_runtime() -> Runtime:
 
 def _fps_snapshot(runtime: Runtime) -> dict[str, Any]:
     router_status = runtime.router.status()
+    video_status = (
+        runtime.video_ingestor.status()
+        if runtime.video_ingestor is not None
+        else {"enabled": False, "running": False, "sources": {}}
+    )
+    if runtime.static_video_ingestor is not None:
+        static_status = runtime.static_video_ingestor.status()
+        video_status = {
+            **video_status,
+            "backend": (
+                f"{video_status.get('backend', 'disabled')}+"
+                f"{static_status.get('backend', 'disabled')}_static"
+            ),
+            "sources": {
+                **video_status.get("sources", {}),
+                **static_status.get("sources", {}),
+            },
+            "frames_submitted": (
+                int(video_status.get("frames_submitted") or 0)
+                + int(static_status.get("frames_submitted") or 0)
+            ),
+        }
     return {
-        "video_ingestor": (
-            runtime.video_ingestor.status()
-            if runtime.video_ingestor is not None
-            else {"enabled": False, "running": False, "sources": {}}
-        ),
+        "video_ingestor": video_status,
         "workers": router_status["workers"],
         "broadcast": runtime.broadcast.status(),
     }
@@ -45,7 +63,7 @@ def _fps_snapshot(runtime: Runtime) -> dict[str, Any]:
     summary="Measure FPS and identify the limiting stage",
     description=(
         "Samples cumulative ingestion, worker, and broadcast counters over a bounded "
-        "window. It reports configured caps, source starvation, task backpressure, "
+        "window. It reports per-source FPS overrides, source starvation, task backpressure, "
         "processor failures, and delivered resolution bandwidth without exposing URIs."
     ),
 )
@@ -54,7 +72,7 @@ async def fps_diagnostics(
     expected_fps: Annotated[float | None, Query(gt=0.0, le=240.0)] = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    desired_fps = float(expected_fps or runtime.settings.video_preview_fps)
+    desired_fps = float(expected_fps or 25.0)
     camera_tasks = {
         camera.source_uri: tuple(sorted(task.value for task in camera.tasks))
         for camera in runtime.registry.list()

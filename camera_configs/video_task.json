@@ -21,6 +21,7 @@
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {}
   },
   {
@@ -29,6 +30,7 @@
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {}
   },
   {
@@ -37,30 +39,34 @@
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {}
   },
   {
     "name": "Workshop Camera",
-    "source_uri": "./data/2.mp4",
+    "source_uri": "./data/12.mp4",
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {}
   },
   {
     "name": "Mixed Camera 1",
-    "source_uri": "./data/3.mp4",
+    "source_uri": "./data/13.mp4",
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {}
   },
   {
     "name": "Fire and plate Camera",
-    "source_uri": "./data/4.mp4",
+    "source_uri": "./data/14.mp4",
     "frame_width": 640,
     "frame_height": 640,
     "source_type": "static_video",
+    "tasks": ["fire_smoke", "plate_recognition", "face_recognition"],
     "metadata": {
       "additionalProp1": {}
     }

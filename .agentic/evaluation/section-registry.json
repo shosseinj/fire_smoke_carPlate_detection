@@ -46,7 +46,7 @@
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern. Compose defaults AI ingest to 25 FPS; VIDEO_INGEST_FPS remains an explicit runtime override. Fire severity confidence floors are independently configurable from detector admission thresholds."
+      "notes": "Settings dataclass with ~100 env vars. Frozen/slots pattern. FPS delivery control is owned only by the nullable sources.fps column; NULL preserves native pacing. Fire severity confidence floors are independently configurable from detector admission thresholds."
     },
     {
       "id": "frame-pipeline",

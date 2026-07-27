@@ -80,3 +80,17 @@ def test_preview_failure_is_scheduled_only_in_independent_publisher(
     assert publisher._failed == {"camera-01"}
     assert publisher._retry_after["camera-01"] > 0
     assert "private" not in publisher.status()["last_error"]
+
+
+def test_preview_failure_redacts_source_credentials(tmp_path: Path) -> None:
+    publisher = MediaPreviewPublisher(
+        registry=EmptyRegistry(),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        reconnect_seconds=3,
+    )
+    source_uri = "rtsp://user:secret@192.0.2.10:554/live"
+
+    publisher._fail(source_uri, f"could not open {source_uri}")
+
+    assert "secret" not in str(publisher._last_error)
+    assert "secret" not in publisher._safe_name(source_uri)

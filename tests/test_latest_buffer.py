@@ -50,3 +50,13 @@ def test_lossless_fifo_preserves_every_frame_in_order() -> None:
     assert stats.queue_depth == 0
     assert stats.stale_replaced == 0
     buffer.close()
+
+
+def test_clear_discards_pending_latest_frames_for_all_sources() -> None:
+    buffer = LatestPerSourceBuffer()
+    assert buffer.put(packet("camera-01", 1))
+    assert buffer.put(packet("camera-02", 1))
+
+    assert buffer.clear() == 2
+    assert buffer.stats().pending_sources == 0
+    buffer.close()
