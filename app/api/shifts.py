@@ -147,7 +147,7 @@ def _weekday_payload(body: BaseModel) -> dict[str, bool]:
 
 # Keep this registration order aligned with old/backend/app/routers/shifts.py.
 @router.get("/")
-def get_all_shifts(_: dict = Depends(require_role("admin"))) -> list[dict[str, Any]]:
+def get_all_shifts(_: dict = Depends(require_role("operator"))) -> list[dict[str, Any]]:
     store = get_shift_store()
     records, _ = store.list(offset=0, limit=10000, search=None)
     records.sort(key=lambda record: record.shift_name)
@@ -155,14 +155,14 @@ def get_all_shifts(_: dict = Depends(require_role("admin"))) -> list[dict[str, A
 
 
 @router.get("/statistics")
-def get_shift_statistics(_: dict = Depends(require_role("admin"))) -> dict[str, Any]:
+def get_shift_statistics(_: dict = Depends(require_role("operator"))) -> dict[str, Any]:
     return get_shift_store().statistics()
 
 
 @router.get("/{shift_id}")
 def get_shift_by_id(
     shift_id: int,
-    _: dict = Depends(require_role("admin")),
+    _: dict = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     store = get_shift_store()
     record = store.get(shift_id)
@@ -284,7 +284,7 @@ def assign_personnel_to_shift(
 @router.delete("/assign/{personnel_id}", include_in_schema=False)
 def remove_personnel_shift(
     personnel_id: int,
-    _: dict = Depends(require_role("admin")),
+    _: dict = Depends(require_role("superuser")),
 ) -> dict[str, Any]:
     return {"removed": get_shift_store().remove_personnel_shift(personnel_id)}
 

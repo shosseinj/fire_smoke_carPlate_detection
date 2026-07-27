@@ -132,10 +132,10 @@ class HolidayStore:
                 )
             cursor = conn.execute(
                 "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, "
-                "is_active, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                "is_active, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (name, normalized_date, description, holiday_type, 1 if every_year else 0,
-                 now, now),
+                 now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (cursor.lastrowid,)
@@ -200,9 +200,9 @@ class HolidayStore:
             now = _now()
             conn.execute(
                 "UPDATE holidays SET name=?, date_value=?, description=?, holiday_type=?, "
-                "every_year=?, is_active=?, updated_at_utc=? WHERE id=?",
+                "every_year=?, is_active=?, updated_at_utc=?, updated_by=? WHERE id=?",
                 (new_name, new_date, new_desc, new_type, new_every, 1 if new_active else 0,
-                 now, holiday_id),
+                 now, updated_by, holiday_id),
             )
             row = conn.execute(
                 "SELECT * FROM holidays WHERE id = ?", (holiday_id,)

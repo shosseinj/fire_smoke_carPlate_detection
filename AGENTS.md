@@ -981,6 +981,20 @@ Response models that expose `created_at` / `updated_at` as UTC ISO strings can a
 
 **Pattern**: Add the Jalali fields alongside the existing UTC fields in the Pydantic response model, then populate them in the response builder using the helper. Existing `created_at`/`updated_at` fields are preserved for backward compatibility. Currently implemented on all response models: BuildingResponse, SectionResponse, RoomResponse, CamResponse, HolidayResponse, UserResponse, SimplePersonnelResponse, CarPlateResponse, and PersonnelRequest dict responses.
 
+## API audit fields (`created_by` / `updated_by`)
+
+Response models for admin tables (buildings, sections, rooms, cam, personnel, holidays) include `created_by: UserBrief | None` and `updated_by: UserBrief | None` fields.
+
+**Pattern:**
+- **DB**: Only the user `id` (INT, FK → `users.id ON DELETE SET NULL`) is stored via `_user_audit_columns()` helper.
+- **`UserBrief`** (`app.core.common_schemas`): Pydantic model with `id: int` + `full_name: str`. Resolved at response-build time via `resolve_user_brief(user_id, db_conn)`.
+- **Store `create()`**: Accepts `created_by: int | None = None`, included in `INSERT`.
+- **Store `update()`**: Accepts `updated_by: int | None = None`, included in `UPDATE`.
+- **API handlers**: Pass `current_user.id` (from `require_role` dependency) to store create/update.
+- **Response builders**: Resolve `UserBrief` using a helper like `_resolve_audit_briefs()` or `resolve_user_brief()` with a fresh DB connection.
+
+Implemented on: BuildingResponse, SectionResponse, RoomResponse, CamResponse, SimplePersonnelResponse, HolidayResponse.
+
 ## Context efficiency
 
 Use specialized subagents and on-demand skills. Keep the main context focused on decisions, interfaces, evidence, and unresolved risks. Do not send the entire repository to every subagent. Work one coherent feature or option group at a time.

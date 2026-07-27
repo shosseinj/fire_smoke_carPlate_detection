@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.core.common_schemas import UserBrief
+
 
 HolidayType = str
 
@@ -39,7 +41,5 @@ class HolidayResponse(BaseModel):
     updated_at: datetime
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
-    created_by: Optional[int] = None
-    updated_by: Optional[int] = None
-    created_by_username: Optional[str] = None
-    updated_by_username: Optional[str] = None
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
