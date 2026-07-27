@@ -640,6 +640,8 @@ class QdrantFaceStore:
                     requests=requests,
                 )
             except Exception:
+                if self.client.collection_exists(self.collection):
+                    raise
                 self._ensure_collection()
                 responses = self.client.query_batch_points(
                     collection_name=self.collection,
@@ -689,7 +691,6 @@ class QdrantFaceStore:
         offset = None
         remaining = max(1, min(int(limit), 10000))
         with self.lock:
-            self._ensure_collection()
             while remaining > 0:
                 records, offset = self.client.scroll(
                     collection_name=self.collection,
@@ -718,7 +719,6 @@ class QdrantFaceStore:
         )
         query_filter = self.models.Filter(must=[condition])
         with self.lock:
-            self._ensure_collection()
             count = int(
                 self.client.count(
                     collection_name=self.collection,
@@ -737,7 +737,6 @@ class QdrantFaceStore:
         if not point_ids:
             return 0
         with self.lock:
-            self._ensure_collection()
             self.client.delete(
                 collection_name=self.collection,
                 points_selector=point_ids,
@@ -747,7 +746,6 @@ class QdrantFaceStore:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
-            self._ensure_collection()
             count = int(self.client.count(collection_name=self.collection).count)
         return {"mode": self.mode, "collection": self.collection, "points": count}
 

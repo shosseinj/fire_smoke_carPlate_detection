@@ -444,6 +444,58 @@ def test_qdrant_store_recreates_collection_before_enrollment(
     assert store.client.upsert_calls[0]["collection_name"] == "faces"
 
 
+def test_qdrant_store_tolerates_concurrent_collection_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RacingQdrantClient:
+        def __init__(self, **_kwargs: object) -> None:
+            self.collection_exists_value = False
+            self.create_calls = 0
+            self.upsert_calls = 0
+
+        def collection_exists(self, _collection: str) -> bool:
+            return self.collection_exists_value
+
+        def create_collection(self, **_kwargs: object) -> None:
+            self.create_calls += 1
+            self.collection_exists_value = True
+            raise RuntimeError("collection already exists")
+
+        def upsert(self, **_kwargs: object) -> None:
+            self.upsert_calls += 1
+
+    fake_models = SimpleNamespace(
+        Distance=SimpleNamespace(COSINE="cosine"),
+        VectorParams=lambda **kwargs: kwargs,
+        PointStruct=lambda **kwargs: kwargs,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "qdrant_client",
+        SimpleNamespace(QdrantClient=RacingQdrantClient, models=fake_models),
+    )
+
+    store = QdrantFaceStore(
+        FaceRecognitionSettings(
+            human_model_path=tmp_path / "human.engine",
+            face_model_path=tmp_path / "face.engine",
+            embedding_model_path=tmp_path / "arcface.engine",
+            vector_size=3,
+            qdrant_url="http://qdrant:6333",
+            qdrant_collection="faces",
+        )
+    )
+    store.enroll(
+        "1234567891",
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+        "42",
+    )
+
+    assert store.client.create_calls == 1
+    assert store.client.upsert_calls == 1
+
+
 def test_postgresql_vector_store_is_persistent_and_uses_cosine(
     postgres_database: Database,
 ) -> None:
