@@ -20,7 +20,8 @@ services:
     image: qdrant/qdrant:v1.18.3
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6333:6333"
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
     healthcheck:
@@ -157,12 +158,7 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      - ./app:/workspace/app:ro
-      - ./alembic:/workspace/alembic:ro
-      - ./alembic.ini:/workspace/alembic.ini:ro
-      - ./data:/workspace/data
-      - ./weights:/workspace/weights:ro
-      - ./saved_media:/workspace/saved_media
+      - .:/workspace
     shm_size: "2gb"
     depends_on:
       qdrant:
