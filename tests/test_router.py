@@ -167,6 +167,30 @@ def test_enabled_camera_with_tasks_is_broadcast_before_worker_result() -> None:
     assert router.status()["play_only_frames"] == 0
 
 
+def test_router_does_not_duplicate_source_only_frame_published_by_ingestor() -> None:
+    source_only_packets = []
+    source = SimpleNamespace(enabled=True, tasks=set())
+    registry = SimpleNamespace(
+        get=lambda source_id: source if source_id == "camera-01" else None,
+        enabled_source_ids=lambda: ["camera-01"],
+    )
+    router = TaskRouter(
+        registry=registry,
+        workers={},
+        result_store=ResultStore(10),
+        source_only_callback=source_only_packets.append,
+    )
+
+    router.submit_round(
+        frames=[np.zeros((16, 16, 3), dtype=np.uint8)],
+        source_ids=["camera-01"],
+        round_sequence=5,
+        metadata=[{"source_only_published": True}],
+    )
+
+    assert source_only_packets == []
+
+
 def test_fifty_sources_can_be_routed_without_global_camera_limit(source_registry: SourceRegistry) -> None:
     registry = source_registry
     for index in range(1, 51):

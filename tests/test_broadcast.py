@@ -12,7 +12,12 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.broadcast import get_runtime, router as broadcast_router
+from app.api.broadcast import (
+    _source_frame_batch_payload,
+    _source_frame_payload,
+    get_runtime,
+    router as broadcast_router,
+)
 from app.core.broadcast import (
     AnnotatedBroadcastHub,
     EncodedBroadcastFrame,
@@ -236,6 +241,33 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert "event.data instanceof ArrayBuffer" in dashboard
     assert "incomingFrameIndex < stats.frameIndex" in dashboard
     assert 'img.addEventListener("load"' in dashboard
+    assert 'parameters.set("batch", "true")' in dashboard
+    assert 'header.type === "source_frame_batch"' in dashboard
+    assert "previewAvailable && !useJpegFallback" in dashboard
+
+
+def test_source_frame_batch_envelope_contains_complete_frame_records() -> None:
+    frame = EncodedBroadcastFrame(
+        version=1,
+        source_id="camera-07",
+        frame_index=9,
+        jpeg=b"full",
+        wall_jpeg=b"wall",
+        frame_width=640,
+        frame_height=640,
+        wall_width=240,
+        wall_height=240,
+        tasks=(),
+        updated_monotonic=time.monotonic(),
+    )
+    record = _source_frame_payload(frame, wall=True, fullscreen_source=None)
+    payload = _source_frame_batch_payload([record, record])
+    outer_header_length = struct.unpack("!I", payload[:4])[0]
+    outer_header = json.loads(payload[4 : 4 + outer_header_length])
+    assert outer_header == {"type": "source_frame_batch", "count": 2}
+    offset = 4 + outer_header_length
+    first_record_length = struct.unpack("!I", payload[offset : offset + 4])[0]
+    assert payload[offset + 4 : offset + 4 + first_record_length] == record
 
 
 def test_dashboard_uses_source_uri_task_manager_identity() -> None:

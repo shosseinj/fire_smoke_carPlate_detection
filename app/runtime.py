@@ -872,6 +872,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             print('\n\n\n\ningest video with deepstream\n\n')
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
+                source_only_callback=broadcast.publish_source_only,
                 source_type_filter="rtsp",
                 loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
@@ -899,6 +900,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             # the task workers can batch it.
             static_video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
+                source_only_callback=broadcast.publish_source_only,
                 source_type_filter="static_video",
                 max_sources=operational.static_video_source_count,
                 loop=False,

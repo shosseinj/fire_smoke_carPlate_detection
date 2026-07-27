@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app.core.broadcast import AnnotatedBroadcastHub, BroadcastControlEvent
+from app.core.broadcast import (
+    AnnotatedBroadcastHub,
+    BroadcastControlEvent,
+    EncodedBroadcastFrame,
+)
 from app.runtime import Runtime
 from app.core.recent_detection_service import build_recent_detections_message
 
@@ -150,6 +154,7 @@ async def source_video_wall_websocket(
     websocket: WebSocket,
     wall: bool = True,
     fullscreen_source: str | None = None,
+    batch: bool = False,
     runtime: Runtime = Depends(get_runtime),
 ) -> None:
     """Stream source frames without AI overlays or result dependencies."""
@@ -177,28 +182,92 @@ async def source_video_wall_websocket(
                     break
                 if fullscreen_source is not None and frame.source_id != fullscreen_source:
                     continue
-                jpeg, width, height, profile = frame.rendition(
-                    full_resolution=not wall or frame.source_id == fullscreen_source
-                )
-                header = {
-                    "type": "source_frame",
-                    "source_id": frame.source_id,
-                    "frame_index": frame.frame_index,
-                    "frame_width": width,
-                    "frame_height": height,
-                    "render_profile": profile,
-                    "ai_processed": False,
-                }
-                encoded_header = json.dumps(header, separators=(",", ":")).encode()
-                await websocket.send_bytes(
-                    struct.pack("!I", len(encoded_header)) + encoded_header + jpeg
-                )
+                frames = [frame]
+                if batch:
+                    # Briefly coalesce independently rendered cameras so one
+                    # ASGI/WebSocket send carries a useful wall sweep. This is
+                    # bounded well below one 15 FPS frame interval.
+                    await asyncio.sleep(0.005)
+                    while len(frames) < 64:
+                        try:
+                            candidate = target.get_nowait()
+                        except queue.Empty:
+                            break
+                        if candidate is None:
+                            target.task_done()
+                            break
+                        if (
+                            fullscreen_source is None
+                            or candidate.source_id == fullscreen_source
+                        ):
+                            frames.append(candidate)
+                        else:
+                            target.task_done()
+                    dequeued_count = len(frames)
+                    latest_by_source = {
+                        item.source_id: item
+                        for item in frames
+                    }
+                    frames = list(latest_by_source.values())
+                    records = [
+                        _source_frame_payload(
+                            item,
+                            wall=wall,
+                            fullscreen_source=fullscreen_source,
+                        )
+                        for item in frames
+                    ]
+                    await websocket.send_bytes(_source_frame_batch_payload(records))
+                    for _ in range(dequeued_count - 1):
+                        target.task_done()
+                else:
+                    await websocket.send_bytes(
+                        _source_frame_payload(
+                            frame,
+                            wall=wall,
+                            fullscreen_source=fullscreen_source,
+                        )
+                    )
             finally:
                 target.task_done()
     except WebSocketDisconnect:
         pass
     finally:
         runtime.broadcast.unsubscribe_source_only(subscriber_id)
+
+
+def _source_frame_payload(
+    frame: EncodedBroadcastFrame,
+    *,
+    wall: bool,
+    fullscreen_source: str | None,
+) -> bytes:
+    jpeg, width, height, profile = frame.rendition(
+        full_resolution=not wall or frame.source_id == fullscreen_source
+    )
+    header = {
+        "type": "source_frame",
+        "source_id": frame.source_id,
+        "frame_index": frame.frame_index,
+        "frame_width": width,
+        "frame_height": height,
+        "render_profile": profile,
+        "ai_processed": False,
+    }
+    encoded_header = json.dumps(header, separators=(",", ":")).encode()
+    return struct.pack("!I", len(encoded_header)) + encoded_header + jpeg
+
+
+def _source_frame_batch_payload(records: list[bytes]) -> bytes:
+    header = json.dumps(
+        {"type": "source_frame_batch", "count": len(records)},
+        separators=(",", ":"),
+    ).encode()
+    payload = bytearray(struct.pack("!I", len(header)) + header)
+    for record in records:
+        payload.extend(struct.pack("!I", len(record)))
+        payload.extend(record)
+    return bytes(payload)
 
 
 def _mjpeg_stream(hub: AnnotatedBroadcastHub, source_id: str) -> Iterator[bytes]:

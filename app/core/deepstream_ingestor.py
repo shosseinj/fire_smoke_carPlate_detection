@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from app.core.source_registry import (
     SourceRegistry,
     canonical_source_type,
 )
+from app.core.types import FramePacket
 from app.core.video_ingestor import VideoFileIngestor
 
 LOGGER = logging.getLogger(__name__)
@@ -106,6 +108,7 @@ class DeepStreamIngestor:
         rtsp_reconnect_seconds: float = 3.0,
         rtsp_stall_timeout_seconds: int = 30,
         skip_taskless_sources: bool = True,
+        source_only_callback: Callable[[FramePacket], None] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
@@ -123,6 +126,7 @@ class DeepStreamIngestor:
         self.loop = bool(loop)
         self.rtsp_enabled = bool(rtsp_enabled)
         self.skip_taskless_sources = bool(skip_taskless_sources)
+        self.source_only_callback = source_only_callback
         self.rtsp_transport = (
             rtsp_transport.strip().lower()
             if rtsp_transport.strip().lower() in {"tcp", "udp"}
@@ -398,6 +402,36 @@ class DeepStreamIngestor:
             state.received_frames += 1
             state.last_frame_monotonic = now
             state.last_error = None
+            frame_index = state.frame_index
+            display_uri = state.display_uri
+            source_type = state.source_type
+        source_only_callback = getattr(self, "source_only_callback", None)
+        if source_only_callback is not None:
+            try:
+                source_only_callback(
+                    FramePacket(
+                        source_id=source_id,
+                        frame=frame,
+                        round_sequence=frame_index,
+                        frame_index=frame_index,
+                        captured_monotonic=now,
+                        captured_at_utc=datetime.now(timezone.utc).isoformat(),
+                        source_time_seconds=source_time,
+                        metadata={
+                            "source_uri": display_uri,
+                            "source_type": source_type,
+                            "frame_width": width,
+                            "frame_height": height,
+                            "source_only_published": True,
+                        },
+                    )
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Source-only wall submission failed: source=%s frame=%s",
+                    display_uri,
+                    frame_index,
+                )
         return Gst.FlowReturn.OK
 
     @staticmethod
@@ -767,6 +801,9 @@ class DeepStreamIngestor:
                     "source_frame_height": state.source_frame_height,
                     "source_frame": source_frame,
                     "ingest_backend": "deepstream",
+                    "source_only_published": (
+                        getattr(self, "source_only_callback", None) is not None
+                    ),
                 }
                 for state, source_frame in zip(selected, source_frames)
             ]
