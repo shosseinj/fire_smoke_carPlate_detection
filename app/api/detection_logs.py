@@ -37,22 +37,15 @@ from app.core.recent_detection_service import (
 
 
 class DetectionLogUpdate(BaseModel):
-    """Request body for PATCH /{log_id}/person.
+    """Request body for PATCH /{log_id}/person."""
 
-    ``personnel_id`` is the preferred input. The legacy ``person`` field is
-    still accepted as a national code or ``fname lname`` pair.
-    """
-
-    person: str | None = None
-    personnel_id: int | None = Field(default=None, gt=0)
-    confidence: float | None = None
+    person: str
 
     @model_validator(mode="after")
-    def _require_person_or_personnel_id(self) -> DetectionLogUpdate:
-        if self.person is not None:
-            self.person = self.person.strip()
-        if not self.person and self.personnel_id is None:
-            raise ValueError("شخص یا شناسه پرسنل باید ارسال شود")
+    def _require_person(self) -> DetectionLogUpdate:
+        self.person = self.person.strip()
+        if not self.person:
+            raise ValueError("شخص باید ارسال شود")
         return self
 
 
@@ -922,13 +915,7 @@ def patch_log_person(
     update_data: DetectionLogUpdate,
     current_user: dict = Depends(require_role("admin")),
 ) -> dict:
-    """Reassign a detection log and recalculate access - Admin only.
-
-    ``personnel_id`` is the preferred input. The legacy ``person`` field is
-    still accepted (national code or ``fname lname``). When the resolved
-    personnel changes, ``ref_img_id`` is replaced with one of the new
-    personnel's images (primary first, then the lowest image id).
-    """
+    """Assign a detection log to a national code or mark it unknown."""
     store = get_detection_log_store()
     record = store.get(log_id)
     if record is None:
@@ -937,50 +924,30 @@ def patch_log_person(
     # ── Resolve current / new personnel ──────────────────────────────
     personnel_store = get_personnel_store()
 
-    def _find_personnel_by_identity(identity: str | None):
-        if not identity:
-            return None
-        identity = identity.strip()
-        if identity.isdigit():
-            return personnel_store.get_by_national_code(identity)
-        name_parts = identity.split(" ", 1)
-        if len(name_parts) == 2:
-            return personnel_store.get_by_name(name_parts[0], name_parts[1])
-        return None
-
-    old_personnel_id = record.personnel_id
-    if record.ref_img_id:
-        try:
-            reference_image = personnel_store.get_image(int(record.ref_img_id))
-        except (TypeError, ValueError):
-            reference_image = None
-        if reference_image is not None:
-            old_personnel_id = reference_image.personnel_id
-    if old_personnel_id is None:
-        existing_personnel = _find_personnel_by_identity(record.person)
-        if existing_personnel is not None:
-            old_personnel_id = existing_personnel.id
-
-    if update_data.personnel_id is not None:
-        personnel = personnel_store.get(update_data.personnel_id)
-        if personnel is None:
-            raise HTTPException(404, "پرسنل جدید یافت نشد")
-        person = personnel.national_code
+    person = update_data.person.strip()
+    if person.casefold() == "unknown":
+        personnel = None
+        new_personnel_id = None
+        new_ref_img_id = None
+        confidence = 0.0
     else:
-        person = update_data.person.strip()
-        personnel = _find_personnel_by_identity(person)
-
-    new_personnel_id = personnel.id if personnel else None
-    new_ref_img_id = record.ref_img_id
-    if new_personnel_id is not None and new_personnel_id != old_personnel_id:
-        images = personnel_store.list_images(new_personnel_id)
-        selected_image = _choose_reference_image(images)
-        if selected_image is None:
-            raise HTTPException(
-                status_code=400,
-                detail="پرسنل جدید هیچ تصویر ثبت‌شده‌ای برای تصویر مرجع ندارد",
-            )
-        new_ref_img_id = str(selected_image.id)
+        personnel = personnel_store.get_by_national_code(person)
+        if personnel is None:
+            raise HTTPException(status_code=404, detail="کد ملی واردشده در سیستم یافت نشد")
+        person = personnel.national_code
+        new_personnel_id = personnel.id
+        current_personnel_id = record.personnel_id
+        if current_personnel_id is None and record.person:
+            current = personnel_store.get_by_national_code(record.person)
+            current_personnel_id = current.id if current is not None else None
+        new_ref_img_id = record.ref_img_id
+        if new_personnel_id != current_personnel_id:
+            new_ref_img_id = None
+            images = personnel_store.list_images(new_personnel_id)
+            selected_image = _choose_reference_image(images)
+            if selected_image is not None:
+                new_ref_img_id = str(selected_image.id)
+        confidence = 1.0
 
     # ── Recalculate access ───────────────────────────────────────────
     location_store = get_location_store()
@@ -997,10 +964,9 @@ def patch_log_person(
         "personnel_id": new_personnel_id,
         "access_granted": access_granted,
         "ref_img_id": new_ref_img_id,
+        "confidence": confidence,
         "updated_by": _get_current_user_id(current_user),
     }
-    if update_data.confidence is not None:
-        kwargs["confidence"] = update_data.confidence
 
     updated = store.update(log_id, **kwargs)
     if updated is None:
