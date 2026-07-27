@@ -105,6 +105,20 @@ def local_date_range_bounds_utc(
     return utc_start, utc_end
 
 
+def utc_iso_to_jalali_datetime(utc_iso: str | None) -> str | None:
+    """Convert a UTC ISO string (e.g. '2026-07-27T12:00:00Z') to a Jalali datetime string.
+
+    Returns ``None`` when the input is ``None`` or unparseable.
+    """
+    if not utc_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(utc_iso.replace("Z", "+00:00"))
+        return jalali_datetime_string(dt)
+    except (ValueError, TypeError):
+        return None
+
+
 def jalali_datetime_string(utc_dt: datetime, tz_name: str = "Asia/Tehran") -> str:
     from zoneinfo import ZoneInfo
     local_dt = utc_dt.astimezone(ZoneInfo(tz_name))

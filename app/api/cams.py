@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
 from app.core.cam_store import CamRecord
+from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.runtime import Runtime
 
 router = APIRouter(prefix="/api/v1/cams", tags=["Cameras"])
@@ -70,6 +72,10 @@ class CamResponse(CamBase):
     id: int
     created_at_utc: str
     updated_at_utc: str
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
 
 
 class CamListResponse(BaseModel):
@@ -97,7 +103,11 @@ class CamHealthCheckResponse(BaseModel):
     snapshot: str | None = None
 
 
-def _response(record: CamRecord) -> CamResponse:
+def _response(record: CamRecord, db=None) -> CamResponse:
+    c = u = None
+    if db is not None:
+        c = resolve_user_brief(record.created_by, db)
+        u = resolve_user_brief(record.updated_by, db)
     return CamResponse(
         id=record.id,
         camera_name=record.camera_name,
@@ -109,6 +119,10 @@ def _response(record: CamRecord) -> CamResponse:
         url=record.url,
         created_at_utc=record.created_at_utc,
         updated_at_utc=record.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(record.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(record.updated_at_utc),
+        created_by=c,
+        updated_by=u,
     )
 
 
@@ -180,10 +194,10 @@ def check_cam_health(
 def create_cam(
     payload: CamCreate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ) -> CamResponse:
     try:
-        record = runtime.cam_store.create(**payload.model_dump())
+        record = runtime.cam_store.create(**payload.model_dump(), created_by=current_user.id)
     except ValueError as exc:
         detail = str(exc)
         code = (
@@ -192,7 +206,8 @@ def create_cam(
             else status.HTTP_409_CONFLICT
         )
         raise HTTPException(status_code=code, detail=detail) from exc
-    return _response(record)
+    with runtime.cam_store.database.connection() as conn:
+        return _response(record, conn)
 
 
 @router.get("", response_model=CamListResponse)
@@ -213,8 +228,10 @@ def list_cams(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with runtime.cam_store.database.connection() as conn:
+        items = [_response(record, conn) for record in records]
     return CamListResponse(
-        items=[_response(record) for record in records],
+        items=items,
         total=total,
         skip=skip,
         limit=limit,
@@ -230,7 +247,8 @@ def get_cam(
     record = runtime.cam_store.get(cam_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Cam not found")
-    return _response(record)
+    with runtime.cam_store.database.connection() as conn:
+        return _response(record, conn)
 
 
 @router.patch("/{cam_id}", response_model=CamResponse)
@@ -238,13 +256,14 @@ def update_cam(
     cam_id: int,
     payload: CamUpdate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ) -> CamResponse:
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
     if any(value is None for value in changes.values()):
         raise HTTPException(status_code=422, detail="Cam fields cannot be null")
+    changes["updated_by"] = current_user.id
     try:
         record = runtime.cam_store.update(cam_id, **changes)
     except ValueError as exc:
@@ -257,7 +276,8 @@ def update_cam(
         raise HTTPException(status_code=code, detail=detail) from exc
     if record is None:
         raise HTTPException(status_code=404, detail="Cam not found")
-    return _response(record)
+    with runtime.cam_store.database.connection() as conn:
+        return _response(record, conn)
 
 
 @router.delete("/{cam_id}", status_code=status.HTTP_204_NO_CONTENT)

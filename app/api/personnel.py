@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_role
+from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -85,6 +86,9 @@ class SimplePersonnelResponse(BaseModel):
     shift_name: Optional[str] = None
     degree: Optional[str] = None
     created_at: datetime
+    created_at_jalali: str = ""
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
 
 
 class PersonnelImageResponse(BaseModel):
@@ -98,6 +102,12 @@ class PersonnelImageResponse(BaseModel):
 # ── Converters ───────────────────────────────────────────────────
 
 def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
+    c = u = None
+    if p.created_by is not None or p.updated_by is not None:
+        with store.database.connection() as conn:
+            c = resolve_user_brief(p.created_by, conn)
+            u = resolve_user_brief(p.updated_by, conn)
     return SimplePersonnelResponse(
         id=p.id,
         fname=p.fname,
@@ -108,6 +118,9 @@ def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePerson
         shift_name=store._resolve_shift_name(p.shift_id),
         degree=p.degree,
         created_at=p.created_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(p.created_at_utc) or "",
+        created_by=c,
+        updated_by=u,
     )
 
 
@@ -142,7 +155,7 @@ def list_personnel(
 def create_personnel(
     payload: PersonnelCreateRequest,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ) -> SimplePersonnelResponse:
     store = _store(runtime)
     try:
@@ -154,6 +167,7 @@ def create_personnel(
             degree=payload.degree,
             shift_id=payload.shift_id,
             department_id=payload.department_id,
+            created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
@@ -369,12 +383,13 @@ def update_personnel(
     personnel_id: int,
     payload: PersonnelUpdateRequest,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ) -> SimplePersonnelResponse:
     store = _store(runtime)
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No fields to update")
+    changes["updated_by"] = current_user.id
     try:
         record = store.update(
             personnel_id=personnel_id,

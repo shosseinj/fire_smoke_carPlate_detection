@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
+from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.location_store import LocationStore
 from app.runtime import Runtime
 
@@ -58,6 +60,10 @@ class BuildingResponse(BaseModel):
     is_active: bool = True
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
     sections: list[SectionMinimal] = []
 
 
@@ -100,6 +106,10 @@ class SectionResponse(BaseModel):
     building_id: int
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
     building_name: str = ""
     section_full_name: str = ""
     cameras: list[CameraMinimal] = []
@@ -138,6 +148,10 @@ class RoomResponse(BaseModel):
     polygon_points: list[list[float]] | None = None
     created_at: str
     updated_at: str | None = None
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
+    created_by: UserBrief | None = None
+    updated_by: UserBrief | None = None
 
 
 class PersonnelAccessEntry(BaseModel):
@@ -173,10 +187,23 @@ def _polygon_to_list(polygon_json: str | None) -> list[list[float]] | None:
     return None
 
 
+def _resolve_audit_briefs(record, store: LocationStore):
+    """Resolve ``created_by`` and ``updated_by`` to ``UserBrief`` using the store's database."""
+    c = u = None
+    if hasattr(record, "created_by") and record.created_by is not None:
+        with store.database.connection() as conn:
+            c = resolve_user_brief(record.created_by, conn)
+    if hasattr(record, "updated_by") and record.updated_by is not None:
+        with store.database.connection() as conn:
+            u = resolve_user_brief(record.updated_by, conn)
+    return c, u
+
+
 def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
     if sections is None:
         sec_rows, _ = store.list_sections(building_id=b.id, limit=1000)
         sections = [SectionMinimal(id=s.id, section_name=s.name) for s in sec_rows]
+    c, u = _resolve_audit_briefs(b, store)
     return BuildingResponse(
         id=b.id,
         name=b.name,
@@ -185,6 +212,10 @@ def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
         is_active=True,
         created_at=b.created_at_utc,
         updated_at=b.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(b.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(b.updated_at_utc),
+        created_by=c,
+        updated_by=u,
         sections=sections,
     )
 
@@ -195,6 +226,7 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
         bld = store.get_building(s.building_id)
         bld_name = bld.name if bld else ""
     full_name = f"{bld_name} - {s.name}" if bld_name else s.name
+    c, u = _resolve_audit_briefs(s, store)
     return SectionResponse(
         id=s.id,
         section_name=s.name,
@@ -204,12 +236,19 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
         building_id=s.building_id or 0,
         created_at=s.created_at_utc,
         updated_at=s.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(s.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(s.updated_at_utc),
+        created_by=c,
+        updated_by=u,
         building_name=bld_name,
         section_full_name=full_name,
     )
 
 
-def _room_response(r) -> RoomResponse:
+def _room_response(r, store: LocationStore | None = None) -> RoomResponse:
+    c = u = None
+    if store is not None:
+        c, u = _resolve_audit_briefs(r, store)
     return RoomResponse(
         id=r.id,
         room_number=None,
@@ -222,6 +261,10 @@ def _room_response(r) -> RoomResponse:
         polygon_points=_polygon_to_list(r.polygon_json),
         created_at=r.created_at_utc,
         updated_at=r.updated_at_utc,
+        created_at_jalali=utc_iso_to_jalali_datetime(r.created_at_utc) or "",
+        updated_at_jalali=utc_iso_to_jalali_datetime(r.updated_at_utc),
+        created_by=c,
+        updated_by=u,
     )
 
 
@@ -265,13 +308,14 @@ def get_building(
 def create_building(
     payload: BuildingCreate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     try:
         b = _store(runtime).create_building(
             name=payload.name,
             address=payload.address,
             description=payload.description,
+            created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -283,7 +327,7 @@ def update_building(
     building_id: int,
     payload: BuildingUpdate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     changes: dict[str, Any] = {}
     if payload.name is not None:
@@ -294,6 +338,7 @@ def update_building(
         changes["description"] = payload.description
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
+    changes["updated_by"] = current_user.id
     store = _store(runtime)
     try:
         b = store.update_building(building_id=building_id, **changes)
@@ -388,7 +433,7 @@ def get_section_cameras(
 def create_section(
     payload: SectionCreate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     store = _store(runtime)
     bld = store.database.connection().execute(
@@ -401,6 +446,7 @@ def create_section(
             name=payload.section_name,
             building_id=payload.building_id,
             description=payload.description,
+            created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -412,7 +458,7 @@ def update_section(
     section_id: int,
     payload: SectionUpdate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     store = _store(runtime)
     s = store.get_section(section_id)
@@ -433,6 +479,7 @@ def update_section(
         changes["description"] = payload.description
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
+    changes["updated_by"] = current_user.id
     try:
         s = store.update_section(section_id=section_id, **changes)
     except ValueError as exc:
@@ -483,7 +530,7 @@ def assign_camera_to_room(
     if room is None:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     runtime._refresh_all_source_zones()
-    return _room_response(room)
+    return _room_response(room, store)
 
 
 @sections_router.delete("/{section_id}")
@@ -528,7 +575,8 @@ def list_rooms(
     records, _ = _store(runtime).list_rooms(
         offset=skip, limit=limit, cam_id=camera_id
     )
-    return [_room_response(r) for r in records]
+    store = _store(runtime)
+    return [_room_response(r, store) for r in records]
 
 
 @rooms_router.get("/check-access/{personnel_id}/{room_id}")
@@ -552,7 +600,7 @@ def get_room_by_id(
     r = _store(runtime).get_room(room_id)
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
-    return _room_response(r)
+    return _room_response(r, _store(runtime))
 
 
 @rooms_router.get("/{room_id}/personnel")
@@ -575,15 +623,16 @@ def get_personnel_rooms_list(
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("operator")),
 ):
-    rooms = _store(runtime).list_personnel_rooms(personnel_id)
-    return [_room_response(r) for r in rooms]
+    store = _store(runtime)
+    rooms = store.list_personnel_rooms(personnel_id)
+    return [_room_response(r, store) for r in rooms]
 
 
 @rooms_router.post("/", response_model=RoomResponse)
 def create_new_room(
     payload: RoomCreate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     if payload.polygon_points and len(payload.polygon_points) < 3:
         raise HTTPException(status_code=400, detail="چندضلعی باید حداقل ۳ نقطه داشته باشد")
@@ -594,10 +643,11 @@ def create_new_room(
             cam_id=payload.camera_id,
             description=payload.description,
             polygon_json=polygon_json,
+            created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return _room_response(r)
+    return _room_response(r, _store(runtime))
 
 
 @rooms_router.put("/{room_id}", response_model=RoomResponse)
@@ -605,7 +655,7 @@ def update_room_info(
     room_id: int,
     payload: RoomUpdate,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_role("admin")),
 ):
     if payload.polygon_points is not None and len(payload.polygon_points) < 3:
         raise HTTPException(status_code=400, detail="چندضلعی باید حداقل ۳ نقطه داشته باشد")
@@ -626,6 +676,7 @@ def update_room_info(
         changes["polygon_json"] = json.dumps(payload.polygon_points)
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
+    changes["updated_by"] = current_user.id
     try:
         r = store.update_room(room_id=room_id, **changes)
     except ValueError as exc:
@@ -633,7 +684,7 @@ def update_room_info(
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     runtime._refresh_all_source_zones()
-    return _room_response(r)
+    return _room_response(r, store)
 
 
 @rooms_router.post("/{room_id}/grant/{personnel_id}")
