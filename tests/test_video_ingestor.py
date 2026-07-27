@@ -93,6 +93,30 @@ class FakeElement:
         self.connections.append((signal, callback))
 
 
+def test_deepstream_uses_live_per_source_loop_setting(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    source_registry.create(
+        SourceRecord(
+            source_uri="data/loop.mp4",
+            name="loop",
+            source_type=STATIC_VIDEO,
+            loop=True,
+        )
+    )
+    ingestor = DeepStreamIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        loop=False,
+    )
+
+    assert ingestor._should_loop_source("data/loop.mp4") is True
+    source_registry.update("data/loop.mp4", loop=False)
+    assert ingestor._should_loop_source("data/loop.mp4") is False
+    assert ingestor._should_loop_source("missing.mp4") is False
+
+
 def test_video_files_are_sampled_as_one_camera_round(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
@@ -398,24 +422,23 @@ def test_deepstream_decodes_gpu_converted_bgrx_without_cpu_videoconvert() -> Non
     assert frame.tolist() == [[[10, 20, 30], [40, 50, 60]]]
 
 
-def test_deepstream_resize_keeps_cpu_fallback_contract(tmp_path: Path) -> None:
+def test_deepstream_gpu_resize_always_active(tmp_path: Path) -> None:
+    """GPU resize is now handled by the nvvideoconvert capsfilter."""
     ingestor = DeepStreamIngestor(
         registry=None,  # type: ignore[arg-type]
         router=None,  # type: ignore[arg-type]
         project_root=tmp_path,
-        gpu_resize_enabled=False,
+        gpu_resize_enabled=True,
     )
-    frame = np.zeros((4, 8, 3), dtype=np.uint8)
-
-    resized = ingestor._resize_frame(frame, (4, 2))
-
-    assert resized.shape == (2, 4, 3)
+    # Resize is now handled by capsfilter, not by a CPU/GPU fallback method
+    assert ingestor.status()["gpu_resize_enabled"] is True
     assert ingestor.status()["gpu_resize_active"] is False
 
 
 def test_deepstream_submits_640_inference_view_with_native_source_frame(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:
+    """After capsfilter resize, both frame and source_frame are at the target size."""
     registry = source_registry
     registry.create(
         SourceRecord(
@@ -432,7 +455,9 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
         router=router,  # type: ignore[arg-type]
         project_root=tmp_path,
     )
-    source_frame = np.full((1080, 2048, 3), 31, dtype=np.uint8)
+    # The GPU capsfilter now resizes all frames to frame_width x frame_height,
+    # so the source_frame from state.latest_frame is already at the target size.
+    source_frame = np.full((640, 640, 3), 31, dtype=np.uint8)
     ingestor._states["data/face.mp4"] = SimpleNamespace(
         latest_frame=source_frame,
         latest_version=1,
@@ -444,8 +469,8 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
         source_time_seconds=1.5,
         display_uri="data/face.mp4",
         source_type="video_file",
-        source_frame_width=2048,
-        source_frame_height=1080,
+        source_frame_width=640,
+        source_frame_height=640,
         submitted_frames=0,
     )
 
@@ -454,8 +479,8 @@ def test_deepstream_submits_640_inference_view_with_native_source_frame(
     call = router.calls[0]
     assert call["frames"][0].shape == (640, 640, 3)
     assert call["metadata"][0]["source_frame"] is source_frame
-    assert call["metadata"][0]["source_frame_width"] == 2048
-    assert call["metadata"][0]["source_frame_height"] == 1080
+    assert call["metadata"][0]["source_frame_width"] == 640
+    assert call["metadata"][0]["source_frame_height"] == 640
 
 
 def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(

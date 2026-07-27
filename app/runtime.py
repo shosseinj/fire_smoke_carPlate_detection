@@ -397,6 +397,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         wall_jpeg_quality=operational.broadcast_wall_jpeg_quality,
         wall_max_width=operational.broadcast_wall_max_width,
         wall_max_height=operational.broadcast_wall_max_height,
+        source_only_render_threads=app_settings.broadcast_source_only_render_threads,
+        render_threads=app_settings.broadcast_render_threads,
         face_overlay_ttl_ms=app_settings.broadcast_face_overlay_ttl_ms,
         draw_zones=general_record.draw_zones,
     )
@@ -863,7 +865,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "router": router,
             "project_root": project_root,
             "gpu_resize_enabled": app_settings.gpu_resize_enabled,
-            "loop": operational.video_loop,
             "rtsp_transport": operational.rtsp_transport,
             "rtsp_reconnect_seconds": operational.rtsp_reconnect_seconds,
         }
@@ -872,6 +873,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 source_type_filter="rtsp",
+                loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
@@ -884,20 +886,38 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             video_ingestor = VideoFileIngestor(
                 **common_ingestor_settings,
                 source_type_filter="rtsp",
+                loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
                 rtsp_open_timeout_ms=operational.rtsp_open_timeout_ms,
                 rtsp_read_timeout_ms=operational.rtsp_read_timeout_ms,
             )
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
-        # Always create a static-video ingestor (OpenCV-based, no DeepStream needed)
-        static_video_ingestor = StaticVideoFileIngestor(
-            registry=registry,
-            router=router,
-            project_root=project_root,
-            loop=False,
-            max_sources=operational.static_video_source_count,
-        )
+        if app_settings.video_ingest_backend == "deepstream":
+            # Keep static files on the GPU decode/convert path as well. The
+            # OpenCV fallback copies and resizes every frame on the CPU before
+            # the task workers can batch it.
+            static_video_ingestor = DeepStreamIngestor(
+                **common_ingestor_settings,
+                source_type_filter="static_video",
+                max_sources=operational.static_video_source_count,
+                loop=False,
+                rtsp_enabled=False,
+                rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
+                rtsp_stall_timeout_seconds=(
+                    operational.deepstream_rtsp_stall_timeout_seconds
+                ),
+                skip_taskless_sources=app_settings.skip_taskless_sources,
+            )
+        else:
+            static_video_ingestor = StaticVideoFileIngestor(
+                registry=registry,
+                router=router,
+                project_root=project_root,
+                loop=False,
+                max_sources=operational.static_video_source_count,
+                gpu_resize_enabled=app_settings.gpu_resize_enabled,
+            )
     media_preview = MediaPreviewPublisher(
         registry=registry,
         project_root=project_root,

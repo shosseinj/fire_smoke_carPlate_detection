@@ -88,10 +88,10 @@ class Settings:
     model_export_timeout_seconds: int = _env_int("MODEL_EXPORT_TIMEOUT_SECONDS", 300)
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
-    video_ingest_backend: str = 'deepstream' #os.getenv("VIDEO_INGEST_BACKEND", "deepstream").strip().lower()
+    video_ingest_backend: str = os.getenv(
+        "VIDEO_INGEST_BACKEND", "deepstream"
+    ).strip().lower()
     video_loop: bool = _env_bool("VIDEO_LOOP", True)
-    rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 256)
-    static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 256)
     gpu_resize_enabled: bool = _env_bool("GPU_RESIZE_ENABLED", True)
     rtsp_transport: str = os.getenv("RTSP_TRANSPORT", "tcp")
     rtsp_ingestion_enabled: bool = _env_bool("RTSP_INGESTION_ENABLED", True)
@@ -107,6 +107,10 @@ class Settings:
     broadcast_wall_jpeg_quality: int = _env_int("BROADCAST_WALL_JPEG_QUALITY", 70)
     broadcast_wall_max_width: int = _env_int("BROADCAST_WALL_MAX_WIDTH", 320)
     broadcast_wall_max_height: int = _env_int("BROADCAST_WALL_MAX_HEIGHT", 320)
+    broadcast_source_only_render_threads: int = _env_int(
+        "BROADCAST_SOURCE_ONLY_RENDER_THREADS", 4
+    )
+    broadcast_render_threads: int = _env_int("BROADCAST_RENDER_THREADS", 2)
     broadcast_face_overlay_ttl_ms: float = _env_float(
         "BROADCAST_FACE_OVERLAY_TTL_MS", 750.0
     )
@@ -131,11 +135,11 @@ class Settings:
 
     fire_model_path: Path = _path(
         "FIRE_SMOKE_MODEL_PATH",
-        "weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b8_trt107.engine",
+        "weights/fire_smoke/linux_trt10/best_nano_111_dynamic_b26_trt107.engine",
     )
     fire_device: str = os.getenv("FIRE_SMOKE_DEVICE", "0")
-    fire_batch_size: int = _env_int("FIRE_SMOKE_BATCH_SIZE", 8)
-    fire_max_wait_ms: float = _env_float("FIRE_SMOKE_MAX_WAIT_MS", 50.0)
+    fire_batch_size: int = _env_int("FIRE_BATCH_SIZE", 26)
+    fire_max_wait_ms: float = _env_float("FIRE_MAX_WAIT_MS", 60.0)
     fire_imgsz: int = _env_int("FIRE_SMOKE_IMGSZ", 640)
     fire_engine_fixed_batch: int = _env_int("FIRE_SMOKE_ENGINE_FIXED_BATCH", 0)
     fire_confidence: float = _env_float("FIRE_CONFIDENCE", 0.30)
@@ -149,21 +153,21 @@ class Settings:
 
     plate_detector_weights: Path = _path(
         "PLATE_DETECTOR_WEIGHTS",
-        "weights/plate_detector/model_dynamic_b8_trt107.engine",
+        "weights/plate_detector/model_dynamic_b26_trt107.engine",
     )
     vehicle_detector_weights: Path = _path(
         "VEHICLE_DETECTOR_WEIGHTS",
-        "weights/vehicle_detector/yolo11n_dynamic_b8_trt107.engine",
+        "weights/vehicle_detector/yolo11n_dynamic_b26_trt107.engine",
     )
     plate_recognizer_dir: Path = _path("PLATE_RECOGNIZER_DIR", "weights/plate_recognizer")
     plate_device: str = os.getenv("PLATE_DEVICE", "0")
-    plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 8)
-    plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 50.0)
+    plate_batch_size: int = _env_int("PLATE_BATCH_SIZE", 26)
+    plate_max_wait_ms: float = _env_float("PLATE_MAX_WAIT_MS", 60.0)
     plate_log_queue_size: int = _env_int("PLATE_LOG_QUEUE_SIZE", 128)
     plate_imgsz: int = _env_int("PLATE_IMGSZ", 640)
     plate_confidence: float = _env_float("PLATE_CONFIDENCE", 0.30)
     plate_iou: float = _env_float("PLATE_IOU", 0.45)
-    plate_crop_batch_size: int = _env_int("PLATE_CROP_BATCH_SIZE", 16)
+    plate_crop_batch_size: int = _env_int("PLATE_CROP_BATCH_SIZE", 26)
     plate_class_ids: tuple[int, ...] = _env_int_tuple("PLATE_CLASS_IDS", (0,))
     vehicle_confidence: float = _env_float("VEHICLE_CONFIDENCE", 0.35)
     vehicle_iou: float = _env_float("VEHICLE_IOU", 0.45)
@@ -183,19 +187,19 @@ class Settings:
 
     face_human_model_path: Path = _path(
         "FACE_HUMAN_MODEL",
-        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b8_trt107.engine",
+        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b26_trt107.engine",
     )
     face_detector_model_path: Path = _path(
         "FACE_DETECTOR_MODEL",
-        "weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b8_trt107.engine",
+        "weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b26_trt107.engine",
     )
     face_embedding_model_path: Path = _path(
         "FACE_EMBEDDING_MODEL",
         "weights/face_recognition/linux_trt10/arcface_dynamic_b64_trt107.engine",
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
-    face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)
-    face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 50.0)
+    face_batch_size: int = _env_int("FACE_BATCH_SIZE", 26)
+    face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 60.0)
     face_human_imgsz: int = _env_int("FACE_HUMAN_IMGSZ", 640)
     face_detector_imgsz: int = _env_int("FACE_DETECTOR_IMGSZ", 640)
     face_human_engine_fixed_batch: int = _env_int("FACE_HUMAN_ENGINE_FIXED_BATCH", 0)
@@ -267,9 +271,13 @@ class Settings:
     # Performance tuning
     worker_threads: int = _env_int("WORKER_THREADS", 1)
     task_queue_policy: str = os.getenv("TASK_QUEUE_POLICY", "latest_per_source").strip().lower()
-    task_queue_capacity: int = _env_int("TASK_QUEUE_CAPACITY", 256)
-    task_queue_block_timeout_ms: float = _env_float("TASK_QUEUE_BLOCK_TIMEOUT_MS", 1000.0)
+    task_queue_capacity: int = _env_int("TASK_QUEUE_CAPACITY", 512)
+    task_queue_block_timeout_ms: float = _env_float("TASK_QUEUE_BLOCK_TIMEOUT_MS", 500.0)
     skip_taskless_sources: bool = _env_bool("SKIP_TASKLESS_SOURCES", False)
+
+    # Ingestion tuning
+    rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 512)
+    static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 256)
 
     # Authentication / JWT. Current names take precedence; legacy names are fallbacks.
     jwt_secret_key: str = str(

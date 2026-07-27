@@ -88,7 +88,7 @@
         "per_source_reconnects", "per_source_health", "backend"
       ],
       "acceptance": {},
-      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent. Inference-view resize uses OpenCV CUDA when available and preserves a CPU fallback. Upstream latest-frame/leaky behavior still limits live losslessness."
+      "notes": "DeepStream tests require Docker container with NVIDIA GPU. OpenCV fallback testable on any platform. DeepStream uses nvvideoconvert to BGRx directly into appsink; the CPU videoconvert stage is intentionally absent. All frames are resized to frame_width x frame_height (default 640x640) at the GPU capsfilter level, eliminating CPU-side resize. The _decode_cpu_sample path skips .copy() when row stride matches packed width (no padding). Upstream latest-frame/leaky behavior still limits live losslessness."
     },
     {
       "id": "source-registry",
@@ -284,7 +284,7 @@
       ],
       "metrics": [],
       "acceptance": {},
-      "notes": "Operates on same SQLite camera rows. Backward-compatible alias."
+      "notes": "Operates on same SQLite camera rows. Backward-compatible alias. POST /bulk enables creating up to 200 sources in one request."
     },
     {
       "id": "api-models",

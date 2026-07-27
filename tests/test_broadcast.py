@@ -828,3 +828,17 @@ def test_source_draw_vehicle_and_plate_can_disable_each_box_type() -> None:
     enabled_vehicle_region = float(enabled_image[70:160, 140:160].mean())
     disabled_vehicle_region = float(disabled_image[70:160, 140:160].mean())
     assert enabled_vehicle_region > disabled_vehicle_region + 2.0
+
+
+def test_source_only_renderer_uses_configured_bounded_worker_pool() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        source_only_render_threads=3,
+        render_threads=2,
+    )
+    try:
+        state = hub.status()
+        assert state["source_only_render_threads"] == 3
+        assert state["render_threads"] == 2
+    finally:
+        hub.close()

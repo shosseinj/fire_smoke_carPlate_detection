@@ -95,7 +95,9 @@ class LatestPerSourceBuffer:
             self._accepted_by_source[packet.source_id] = (
                 self._accepted_by_source.get(packet.source_id, 0) + 1
             )
-            self._condition.notify()
+            # Wake all worker threads so they can pull available frames
+            # concurrently instead of serialising on one thread.
+            self._condition.notify_all()
             return True
 
     def _record_accepted(self, packet: FramePacket) -> None:
