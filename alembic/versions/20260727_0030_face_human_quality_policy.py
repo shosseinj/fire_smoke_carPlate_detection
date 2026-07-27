@@ -1,7 +1,7 @@
 """Add human pose and quality-weighted recognition policy settings.
 
 Revision ID: 20260727_0030
-Revises: 20260727_0027
+Revises: 20260727_0028
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260727_0030"
-down_revision = "20260727_0027"
+down_revision = "20260727_0028"
 branch_labels = None
 depends_on = None
 
