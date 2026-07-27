@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -57,7 +58,8 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     preserve_source_resolution: bool
-    delivery_target_fps: float
+    delivery_target_fps: float | None
+    next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
@@ -79,6 +81,8 @@ class DeepStreamSourceState:
 class DeepStreamIngestor:
     """Uses DeepStream/NVDEC for file and RTSP decoding, then feeds the router."""
 
+    SCHEDULER_MAX_FPS = 240.0
+
     REQUIRED_ELEMENTS = (
         "nvurisrcbin",
         "nvvideoconvert",
@@ -94,8 +98,6 @@ class DeepStreamIngestor:
         registry: SourceRegistry,
         router: TaskRouter,
         project_root: Path,
-        target_fps: float = 5.0,
-        preview_fps: float = 25.0,
         gpu_resize_enabled: bool = True,
         loop: bool = True,
         source_type_filter: str = RTSP,
@@ -115,8 +117,6 @@ class DeepStreamIngestor:
         self.registry = registry
         self.router = router
         self.project_root = project_root
-        self.target_fps = max(0.1, float(target_fps))
-        self.preview_fps = max(0.1, float(preview_fps))
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         self._gpu_resize_available = self._detect_gpu_resize()
         self.loop = bool(loop)
@@ -362,10 +362,30 @@ class DeepStreamIngestor:
             if state is None or state.sink is not sink:
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
-            minimum_interval = 1.0 / state.delivery_target_fps
-            if now - state.last_frame_monotonic < minimum_interval:
-                state.rate_limited_frames += 1
-                return Gst.FlowReturn.OK
+            if state.delivery_target_fps is not None:
+                period = 1.0 / state.delivery_target_fps
+                tolerance = min(0.004, period * 0.10)
+                if (
+                    state.next_frame_due_monotonic > 0.0
+                    and now + tolerance < state.next_frame_due_monotonic
+                ):
+                    state.rate_limited_frames += 1
+                    return Gst.FlowReturn.OK
+                if state.next_frame_due_monotonic <= 0.0:
+                    state.next_frame_due_monotonic = now + period
+                else:
+                    periods = max(
+                        1,
+                        math.floor(
+                            max(
+                                0.0,
+                                now - state.next_frame_due_monotonic,
+                            )
+                            / period
+                        )
+                        + 1,
+                    )
+                    state.next_frame_due_monotonic += periods * period
 
         try:
             caps = sample.get_caps()
@@ -554,9 +574,7 @@ class DeepStreamIngestor:
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
                 preserve_source_resolution=preserve_source_resolution,
-                delivery_target_fps=(
-                    self.target_fps if record.tasks else self.preview_fps
-                ),
+                delivery_target_fps=record.fps,
                 loop_count=self._loop_counts.get(record.source_uri, 0),
             )
             with self._lock:
@@ -708,9 +726,9 @@ class DeepStreamIngestor:
                 retry_after = self._retry_after.get(record.source_uri, 0.0)
                 closing = record.source_uri in self._closing_sources
                 if state is not None:
-                    state.delivery_target_fps = (
-                        self.target_fps if record.tasks else self.preview_fps
-                    )
+                    if state.delivery_target_fps != record.fps:
+                        state.next_frame_due_monotonic = 0.0
+                    state.delivery_target_fps = record.fps
             if state is not None and (
                 state.source_uri != record.source_uri
                 or state.frame_width != record.frame_width
@@ -806,7 +824,7 @@ class DeepStreamIngestor:
 
     def _run(self) -> None:
         self._started.set()
-        submit_interval = 1.0 / max(self.target_fps, self.preview_fps)
+        submit_interval = 1.0 / self.SCHEDULER_MAX_FPS
         next_sync = 0.0
         next_submit = 0.0
         registry_revision = -1
@@ -870,8 +888,7 @@ class DeepStreamIngestor:
                 "source_type_filter": self.source_type_filter,
                 "max_sources": self.max_sources,
                 "running": self._thread is not None and self._thread.is_alive(),
-                "target_fps": self.target_fps,
-                "preview_fps": self.preview_fps,
+                "fps_control": "sources.fps",
                 "gpu_resize_enabled": self.gpu_resize_enabled,
                 "gpu_resize_active": self._gpu_resize_available,
                 "loop": self.loop,
@@ -894,6 +911,12 @@ class DeepStreamIngestor:
                         "source_frame_width": state.source_frame_width,
                         "source_frame_height": state.source_frame_height,
                         "preserve_source_resolution": state.preserve_source_resolution,
+                        "configured_fps": state.delivery_target_fps,
+                        "fps_mode": (
+                            "override"
+                            if state.delivery_target_fps is not None
+                            else "native"
+                        ),
                         "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
                         "rate_limited_frames": state.rate_limited_frames,

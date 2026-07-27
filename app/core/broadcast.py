@@ -12,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.core.latest_buffer import LatestPerSourceBuffer
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.source_registry import SourceChange
 
@@ -117,15 +118,21 @@ class AnnotatedBroadcastHub:
         self._full_encoded_bytes = 0
         self._wall_encoded_bytes = 0
         self._face_overlay_cache_hits = 0
+        self._overlay_cache_hits = 0
         self._latest_face_results: dict[str, tuple[float, TaskResult]] = {}
+        self._latest_nonface_results: dict[
+            str,
+            dict[TaskName, tuple[float, TaskResult]],
+        ] = defaultdict(dict)
         self._source_zones: dict[str, list[list[list[float]]]] = {}
         self._source_draw_settings: dict[str, SourceDrawSettings] = {}
         self._render_queue: queue.Queue[
             tuple[str, int, PendingAnnotatedFrame]
         ] = queue.Queue(maxsize=64)
-        self._source_only_render_queue: queue.Queue[
-            tuple[str, int, np.ndarray]
-        ] = queue.Queue(maxsize=64)
+        self._source_only_render_buffer = LatestPerSourceBuffer(
+            policy="latest_per_source",
+            capacity=256,
+        )
         self._render_thread: threading.Thread | None = None
         self._source_only_render_thread: threading.Thread | None = None
         self._stop_render = threading.Event()
@@ -165,7 +172,15 @@ class AnnotatedBroadcastHub:
         rendered = self._render(source_id, frame_index, pending)
         if rendered is None:
             return
-        jpeg, wall_jpeg, width, height, wall_width, wall_height = rendered
+        (
+            jpeg,
+            wall_jpeg,
+            width,
+            height,
+            wall_width,
+            wall_height,
+            rendered_tasks,
+        ) = rendered
         with self._condition:
             latest = self._latest.get(source_id)
             if latest is not None and frame_index < latest.frame_index:
@@ -182,7 +197,7 @@ class AnnotatedBroadcastHub:
                 frame_height=height,
                 wall_width=wall_width,
                 wall_height=wall_height,
-                tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
+                tasks=rendered_tasks,
                 updated_monotonic=time.monotonic(),
             )
             self._latest[source_id] = encoded_frame
@@ -207,9 +222,12 @@ class AnnotatedBroadcastHub:
         with self._condition:
             self._enabled = bool(enabled)
             if not self._enabled:
+                self._source_only_dropped += self._source_only_render_buffer.clear()
                 self._pending.clear()
                 self._latest.clear()
                 self._source_only_latest.clear()
+                self._latest_face_results.clear()
+                self._latest_nonface_results.clear()
                 for target in [
                     *self._subscribers.values(),
                     *self._source_only_subscribers.values(),
@@ -255,6 +273,7 @@ class AnnotatedBroadcastHub:
         """Stop the render thread and clean up resources."""
         self._stop_render.set()
         self._stop_source_only_render.set()
+        self._source_only_render_buffer.close()
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
         if self._source_only_render_thread is not None:
@@ -301,6 +320,7 @@ class AnnotatedBroadcastHub:
                 self._pending.pop(source_id, None)
                 self._latest.pop(source_id, None)
                 self._latest_face_results.pop(source_id, None)
+                self._latest_nonface_results.pop(source_id, None)
                 if change.record is None or source_id == previous_source_uri:
                     self._source_zones.pop(source_id, None)
                     self._source_draw_settings.pop(source_id, None)
@@ -521,15 +541,16 @@ class AnnotatedBroadcastHub:
         source_id: str,
         frame_index: int,
         pending: PendingAnnotatedFrame,
-    ) -> tuple[bytes, bytes, int, int, int, int] | None:
-        # Use in-place operations to reduce frame copies
-        frame = pending.frame
+    ) -> tuple[bytes, bytes, int, int, int, int, tuple[str, ...]] | None:
+        with self._condition:
+            frame = pending.frame.copy()
+            expected_tasks = set(pending.expected_tasks)
+            results = dict(pending.results)
         height, width = frame.shape[:2]
         statuses: list[str] = []
         draw_settings = self._draw_settings(source_id)
-        results = dict(pending.results)
         if (
-            TaskName.FACE_RECOGNITION in pending.expected_tasks
+            TaskName.FACE_RECOGNITION in expected_tasks
             and TaskName.FACE_RECOGNITION not in results
             and self.face_overlay_ttl_seconds > 0
         ):
@@ -544,6 +565,25 @@ class AnnotatedBroadcastHub:
                     results[TaskName.FACE_RECOGNITION] = cached_result
                     with self._condition:
                         self._face_overlay_cache_hits += 1
+                        self._overlay_cache_hits += 1
+        with self._condition:
+            cached_nonface = dict(
+                self._latest_nonface_results.get(source_id, {})
+            )
+        for task in expected_tasks.difference(results):
+            if task == TaskName.FACE_RECOGNITION:
+                continue
+            cached = cached_nonface.get(task)
+            if cached is None:
+                continue
+            cached_at, cached_result = cached
+            if (
+                cached_result.frame_index <= frame_index
+                and time.monotonic() - cached_at <= self.face_overlay_ttl_seconds
+            ):
+                results[task] = cached_result
+                with self._condition:
+                    self._overlay_cache_hits += 1
         for task, result in sorted(results.items(), key=lambda item: item[0].value):
             if task == TaskName.FIRE_SMOKE:
                 statuses.append(self._draw_fire_smoke(frame, result, draw_settings))
@@ -562,9 +602,9 @@ class AnnotatedBroadcastHub:
         task_text = (
             " + ".join(
                 TASK_LABELS[task]
-                for task in sorted(pending.expected_tasks, key=lambda item: item.value)
+                for task in sorted(expected_tasks, key=lambda item: item.value)
             )
-            if pending.expected_tasks
+            if expected_tasks
             else "PLAY ONLY"
         )
 
@@ -578,7 +618,15 @@ class AnnotatedBroadcastHub:
 
         title = f"{source_id.upper()} | FRAME {frame_index}"
         tasks_line = f"AI TASKS: {task_text}"
-        status_line = " | ".join(statuses) if statuses else "LIVE VIEW - AI DISABLED"
+        status_line = (
+            " | ".join(statuses)
+            if statuses
+            else (
+                "LIVE VIEW - AI PENDING"
+                if expected_tasks
+                else "LIVE VIEW - AI DISABLED"
+            )
+        )
         cv2.putText(
             frame,
             title,
@@ -667,6 +715,7 @@ class AnnotatedBroadcastHub:
             full_height,
             wall_width,
             wall_height,
+            tuple(sorted(task.value for task in results)),
         )
 
     def publish_result(self, packet: FramePacket, result: TaskResult) -> None:
@@ -690,6 +739,11 @@ class AnnotatedBroadcastHub:
             pending.results[result.task] = result
             if result.task == TaskName.FACE_RECOGNITION:
                 self._latest_face_results[packet.source_id] = (time.monotonic(), result)
+            else:
+                self._latest_nonface_results[packet.source_id][result.task] = (
+                    time.monotonic(),
+                    result,
+                )
 
             while len(source_pending) > self.pending_frames_per_source:
                 source_pending.popitem(last=False)
@@ -721,7 +775,15 @@ class AnnotatedBroadcastHub:
                 source_pending.pop(packet.frame_index, None)
             if rendered is None:
                 return
-            jpeg, wall_jpeg, width, height, wall_width, wall_height = rendered
+            (
+                jpeg,
+                wall_jpeg,
+                width,
+                height,
+                wall_width,
+                wall_height,
+                rendered_tasks,
+            ) = rendered
             latest = self._latest.get(packet.source_id)
             if latest is not None and packet.frame_index < latest.frame_index:
                 return
@@ -737,7 +799,7 @@ class AnnotatedBroadcastHub:
                 frame_height=height,
                 wall_width=wall_width,
                 wall_height=wall_height,
-                tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
+                tasks=rendered_tasks,
                 updated_monotonic=time.monotonic(),
             )
             self._latest[packet.source_id] = encoded_frame
@@ -764,7 +826,7 @@ class AnnotatedBroadcastHub:
                 return
             if self._source_only_subscribers and not self._subscribers:
                 return
-            expected: set[TaskName] = set()
+            expected = self._configured_tasks(packet)
             source_pending = self._pending[packet.source_id]
             pending = source_pending.get(packet.frame_index)
             if pending is None:
@@ -793,7 +855,15 @@ class AnnotatedBroadcastHub:
             rendered = self._render(packet.source_id, packet.frame_index, pending)
             if rendered is None:
                 return
-            jpeg, wall_jpeg, width, height, wall_width, wall_height = rendered
+            (
+                jpeg,
+                wall_jpeg,
+                width,
+                height,
+                wall_width,
+                wall_height,
+                rendered_tasks,
+            ) = rendered
             latest = self._latest.get(packet.source_id)
             if latest is not None and packet.frame_index < latest.frame_index:
                 return
@@ -809,7 +879,7 @@ class AnnotatedBroadcastHub:
                 frame_height=height,
                 wall_width=wall_width,
                 wall_height=wall_height,
-                tasks=tuple(sorted(task.value for task in pending.expected_tasks)),
+                tasks=rendered_tasks,
                 updated_monotonic=time.monotonic(),
             )
             self._latest[packet.source_id] = encoded_frame
@@ -834,16 +904,8 @@ class AnnotatedBroadcastHub:
                     return
                 if self._subscribers and not self._source_only_subscribers:
                     return
-            item = (packet.source_id, packet.frame_index, packet.frame)
-            try:
-                self._source_only_render_queue.put_nowait(item)
-            except queue.Full:
-                try:
-                    self._source_only_render_queue.get_nowait()
-                    self._source_only_render_queue.task_done()
-                    self._source_only_render_queue.put_nowait(item)
-                except (queue.Empty, queue.Full):
-                    self._source_only_dropped += 1
+            if not self._source_only_render_buffer.put(packet):
+                self._source_only_dropped += 1
             return
         with self._condition:
             if self._subscribers and not self._source_only_subscribers:
@@ -853,50 +915,94 @@ class AnnotatedBroadcastHub:
     def _render_source_only(
         self, source_id: str, frame_index: int, frame: np.ndarray
     ) -> None:
+        height, width = frame.shape[:2]
         with self._condition:
             if not self._enabled:
                 return
-            height, width = frame.shape[:2]
             need_full = not self._source_only_profiles or any(
                 not wall or fullscreen_source == source_id
                 for wall, fullscreen_source in self._source_only_profiles.values()
             )
-            scale = min(
-                1.0,
-                self.wall_max_width / max(width, 1),
-                self.wall_max_height / max(height, 1),
-            )
-            wall_width = max(1, min(width, int(round(width * scale))))
-            wall_height = max(1, min(height, int(round(height * scale))))
-            if wall_width == width and wall_height == height:
-                wall_frame = frame
-            else:
-                wall_frame = cv2.resize(
-                    frame,
-                    (wall_width, wall_height),
-                    interpolation=cv2.INTER_LINEAR,
+            latest = self._source_only_latest.get(source_id)
+            if latest is not None and (
+                frame_index < latest.frame_index
+                or (
+                    frame_index == latest.frame_index
+                    and (
+                        not need_full
+                        or (
+                            latest.frame_width == width
+                            and latest.frame_height == height
+                        )
+                    )
                 )
-            wall_ok, wall_jpeg = cv2.imencode(
-                ".jpg", wall_frame,
-                [cv2.IMWRITE_JPEG_QUALITY, self.wall_jpeg_quality],
-            )
-            if not wall_ok:
-                self._encode_failures += 1
+            ):
                 return
-            wall_bytes = wall_jpeg.tobytes()
-            full_width = wall_width
-            full_height = wall_height
-            full_bytes = wall_bytes
-            if need_full and (wall_width != width or wall_height != height):
-                full_ok, full_jpeg = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
-                )
-                if not full_ok:
+            wall_max_width = self.wall_max_width
+            wall_max_height = self.wall_max_height
+            wall_jpeg_quality = self.wall_jpeg_quality
+            jpeg_quality = self.jpeg_quality
+
+        scale = min(
+            1.0,
+            wall_max_width / max(width, 1),
+            wall_max_height / max(height, 1),
+        )
+        wall_width = max(1, min(width, int(round(width * scale))))
+        wall_height = max(1, min(height, int(round(height * scale))))
+        if wall_width == width and wall_height == height:
+            wall_frame = frame
+        else:
+            wall_frame = cv2.resize(
+                frame,
+                (wall_width, wall_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        wall_ok, wall_jpeg = cv2.imencode(
+            ".jpg",
+            wall_frame,
+            [cv2.IMWRITE_JPEG_QUALITY, wall_jpeg_quality],
+        )
+        if not wall_ok:
+            with self._condition:
+                self._encode_failures += 1
+            return
+        wall_bytes = wall_jpeg.tobytes()
+        full_width = wall_width
+        full_height = wall_height
+        full_bytes = wall_bytes
+        if need_full and (wall_width != width or wall_height != height):
+            full_ok, full_jpeg = cv2.imencode(
+                ".jpg",
+                frame,
+                [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
+            )
+            if not full_ok:
+                with self._condition:
                     self._encode_failures += 1
-                    return
-                full_bytes = full_jpeg.tobytes()
-                full_width = width
-                full_height = height
+                return
+            full_bytes = full_jpeg.tobytes()
+            full_width = width
+            full_height = height
+
+        with self._condition:
+            if not self._enabled:
+                return
+            latest = self._source_only_latest.get(source_id)
+            if latest is not None and (
+                frame_index < latest.frame_index
+                or (
+                    frame_index == latest.frame_index
+                    and (
+                        not need_full
+                        or (
+                            latest.frame_width == width
+                            and latest.frame_height == height
+                        )
+                    )
+                )
+            ):
+                return
             self._source_only_version += 1
             self._source_only_rendered += 1
             encoded = EncodedBroadcastFrame(
@@ -941,22 +1047,25 @@ class AnnotatedBroadcastHub:
 
     def _source_only_render_loop(self) -> None:
         while not self._stop_source_only_render.is_set():
-            try:
-                source_id, frame_index, frame = self._source_only_render_queue.get(
-                    timeout=0.1
-                )
-            except queue.Empty:
+            packets = self._source_only_render_buffer.take_batch(
+                maximum=16,
+                max_wait_seconds=0.005,
+            )
+            if not packets:
                 continue
-            try:
-                self._render_source_only(source_id, frame_index, frame)
-            except Exception:
-                LOGGER.exception(
-                    "Source-only broadcast render failed: source=%s frame=%s",
-                    source_id,
-                    frame_index,
-                )
-            finally:
-                self._source_only_render_queue.task_done()
+            for packet in packets:
+                try:
+                    self._render_source_only(
+                        packet.source_id,
+                        packet.frame_index,
+                        packet.frame,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Source-only broadcast render failed: source=%s frame=%s",
+                        packet.source_id,
+                        packet.frame_index,
+                    )
 
     def subscribe_source_only(
         self,
@@ -1058,6 +1167,7 @@ class AnnotatedBroadcastHub:
     def status(self) -> dict[str, Any]:
         with self._condition:
             now = time.monotonic()
+            source_only_buffer = self._source_only_render_buffer.stats()
             return {
                 "enabled": self._enabled,
                 "rendered_frames": self._rendered_frames,
@@ -1070,10 +1180,19 @@ class AnnotatedBroadcastHub:
                 "wall_encoded_bytes": self._wall_encoded_bytes,
                 "face_overlay_ttl_ms": self.face_overlay_ttl_seconds * 1000.0,
                 "face_overlay_cache_hits": self._face_overlay_cache_hits,
+                "overlay_cache_hits": self._overlay_cache_hits,
                 "source_only_submitted": self._source_only_submitted,
                 "source_only_rendered": self._source_only_rendered,
-                "source_only_dropped": self._source_only_dropped,
-                "source_only_render_queue_depth": self._source_only_render_queue.qsize(),
+                "source_only_dropped": (
+                    self._source_only_dropped
+                    + source_only_buffer.stale_replaced
+                    + source_only_buffer.full_rejections
+                    + source_only_buffer.rejected_after_close
+                ),
+                "source_only_stale_replaced": source_only_buffer.stale_replaced,
+                "source_only_pending_sources": source_only_buffer.pending_sources,
+                "source_only_render_queue_depth": source_only_buffer.queue_depth,
+                "source_only_queue_policy": source_only_buffer.policy,
                 "source_only_render_threads": int(
                     self._source_only_render_thread is not None
                     and self._source_only_render_thread.is_alive()

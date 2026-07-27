@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
@@ -52,13 +53,15 @@ class VideoState:
 class VideoFileIngestor:
     """Reads local video files and RTSP cameras into synchronized AI rounds."""
 
+    UNKNOWN_SOURCE_FPS = 30.0
+    SCHEDULER_MAX_FPS = 240.0
+
     def __init__(
         self,
         *,
         registry: SourceRegistry,
         router: TaskRouter,
         project_root: Path,
-        target_fps: float = 5.0,
         loop: bool = True,
         source_type_filter: str = RTSP,
         max_sources: int = 256,
@@ -76,7 +79,6 @@ class VideoFileIngestor:
         self.registry = registry
         self.router = router
         self.project_root = project_root
-        self.target_fps = max(0.1, target_fps)
         self.loop = loop
         self.rtsp_transport = (
             rtsp_transport.strip().lower()
@@ -214,7 +216,7 @@ class VideoFileIngestor:
             return None
         self._retry_after.pop(record.source_uri, None)
         source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        effective_fps = self._effective_fps(record, source_fps=source_fps, is_live=is_live)
+        effective_fps = self._effective_fps(record, source_fps=source_fps)
         stride = 1
         if not is_live and source_fps > 0.0 and effective_fps > 0.0 and effective_fps < source_fps:
             stride = max(1, round(source_fps / effective_fps))
@@ -232,12 +234,17 @@ class VideoFileIngestor:
             loop=record.loop,
         )
 
-    def _effective_fps(self, record: SourceRecord, *, source_fps: float, is_live: bool) -> float:
+    def _effective_fps(
+        self,
+        record: SourceRecord,
+        *,
+        source_fps: float,
+    ) -> float:
         if record.fps is not None and record.fps > 0:
             return float(record.fps)
-        if not is_live and source_fps > 0.0:
+        if source_fps > 0.0:
             return float(source_fps)
-        return self.target_fps
+        return self.UNKNOWN_SOURCE_FPS
 
     def _release(self, source_id: str) -> None:
         state = self._states.pop(source_id, None)
@@ -293,9 +300,19 @@ class VideoFileIngestor:
             )
         frame_index = state.frame_index
         state.submitted_frames += 1
-        state.next_frame_due_monotonic = now_monotonic + (
-            1.0 / max(state.effective_fps, 0.1)
-        )
+        period = 1.0 / max(state.effective_fps, 0.1)
+        previous_deadline = state.next_frame_due_monotonic
+        if previous_deadline <= 0.0:
+            state.next_frame_due_monotonic = now_monotonic + period
+        else:
+            periods = max(
+                1,
+                math.floor(
+                    max(0.0, now_monotonic - previous_deadline) / period
+                )
+                + 1,
+            )
+            state.next_frame_due_monotonic = previous_deadline + periods * period
         return record, state, frame, source_frame, source_time, frame_index
 
     def process_once(self) -> dict[str, int]:
@@ -425,11 +442,9 @@ class VideoFileIngestor:
             except Exception as exc:
                 self._last_error = str(exc)
                 LOGGER.exception("Video ingestion round failed")
-            with self._state_lock:
-                active_fps = max(
-                    [self.target_fps, *(state.effective_fps for state in self._states.values())]
-                )
-            remaining = (1.0 / max(active_fps, 0.1)) - (time.monotonic() - started)
+            remaining = (
+                1.0 / self.SCHEDULER_MAX_FPS
+            ) - (time.monotonic() - started)
             if remaining > 0:
                 self._stop.wait(remaining)
 
@@ -455,6 +470,10 @@ class VideoFileIngestor:
         with self._state_lock:
             return self._status_unlocked()
 
+    def _configured_fps(self, source_id: str) -> float | None:
+        record = self.registry.get(source_id)
+        return record.fps if record is not None else None
+
     def _status_unlocked(self) -> dict[str, Any]:
         return {
             "enabled": True,
@@ -462,7 +481,7 @@ class VideoFileIngestor:
             "source_type_filter": self.source_type_filter,
             "max_sources": self.max_sources,
             "running": self._thread is not None and self._thread.is_alive(),
-            "target_fps": self.target_fps,
+            "fps_control": "sources.fps",
             "read_workers": self.read_workers,
             "loop": self.loop,
             "rounds_submitted": self._rounds_submitted,
@@ -475,6 +494,14 @@ class VideoFileIngestor:
                     "source_uri": state.display_uri,
                     "source_type": "rtsp" if state.is_live else "video_file",
                     "source_fps": state.fps,
+                    "native_fps": state.fps or None,
+                    "configured_fps": self._configured_fps(source_id),
+                    "fps_mode": (
+                        "override"
+                        if self._configured_fps(source_id) is not None
+                        else "native"
+                    ),
+                    "delivery_target_fps": self._configured_fps(source_id),
                     "effective_fps": state.effective_fps,
                     "stride": state.stride,
                     "frame_width": state.frame_width,
@@ -482,6 +509,8 @@ class VideoFileIngestor:
                     "source_frame_width": state.source_frame_width,
                     "source_frame_height": state.source_frame_height,
                     "frame_index": state.frame_index,
+                    "decoded_samples": state.submitted_frames,
+                    "received_frames": state.submitted_frames,
                     "submitted_frames": state.submitted_frames,
                     "loop_count": state.loop_count,
                     "read_failures": state.read_failures,
@@ -495,8 +524,8 @@ class VideoFileIngestor:
 class StaticVideoFileIngestor(VideoFileIngestor):
     """Ingestor for static (pre-recorded) video files.
 
-    Defaults to source_type_filter=static_video, loop=False, and a
-    higher target_fps for faster playback.
+    Source pacing comes only from ``sources.fps``; NULL preserves the file's
+    native FPS.
     """
 
     def __init__(
@@ -505,9 +534,8 @@ class StaticVideoFileIngestor(VideoFileIngestor):
         registry: SourceRegistry,
         router: TaskRouter,
         project_root: Path,
-        target_fps: float = 30.0,
         loop: bool = False,
-        max_sources: int = 16,
+        max_sources: int = 256,
         source_type_filter: str = STATIC_VIDEO,
         **kwargs: Any,
     ) -> None:
@@ -515,10 +543,9 @@ class StaticVideoFileIngestor(VideoFileIngestor):
             registry=registry,
             router=router,
             project_root=project_root,
-            target_fps=target_fps,
             loop=loop,
             max_sources=max_sources,
             source_type_filter=source_type_filter,
-            read_workers=min(8, max_sources),
+            read_workers=min(32, max_sources),
             **kwargs,
         )

@@ -127,7 +127,6 @@ def test_video_files_are_sampled_as_one_camera_round(
         registry=registry,
         router=router,  # type: ignore[arg-type]
         project_root=tmp_path,
-        target_fps=5.0,
         capture_factory=FakeCapture,
     )
 
@@ -172,7 +171,6 @@ def test_video_file_uses_explicit_source_fps_override_for_slowdown(
         registry=registry,
         router=router,  # type: ignore[arg-type]
         project_root=tmp_path,
-        target_fps=30.0,
         capture_factory=FakeCapture,
     )
 
@@ -183,6 +181,36 @@ def test_video_file_uses_explicit_source_fps_override_for_slowdown(
     assert status["source_fps"] == 10.0
     assert status["effective_fps"] == 5.0
     assert status["stride"] == 2
+    ingestor.close()
+
+
+def test_video_file_source_fps_override_can_accelerate_playback(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    registry = source_registry
+    registry.create(
+        SourceRecord(
+            name="Fast file",
+            source_uri="data/fast.mp4",
+            source_type=STATIC_VIDEO,
+            fps=20.0,
+        )
+    )
+    ingestor = VideoFileIngestor(
+        registry=registry,
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_type_filter=STATIC_VIDEO,
+        capture_factory=FakeCapture,
+    )
+
+    assert ingestor.process_once()["received_frames"] == 1
+    status = ingestor.status()["sources"]["data/fast.mp4"]
+    assert status["native_fps"] == 10.0
+    assert status["configured_fps"] == 20.0
+    assert status["effective_fps"] == 20.0
+    assert status["fps_mode"] == "override"
+    assert status["stride"] == 1
     ingestor.close()
 
 
@@ -438,22 +466,18 @@ def test_deepstream_uses_stable_numeric_source_ids_and_separate_stall_timeout(
         registry=registry,
         router=RecordingRouter(registry),  # type: ignore[arg-type]
         project_root=tmp_path,
-        target_fps=5,
-        preview_fps=25,
         rtsp_reconnect_seconds=3,
         rtsp_stall_timeout_seconds=30,
     )
 
     assert ingestor.rtsp_reconnect_seconds == 3
     assert ingestor.rtsp_stall_timeout_seconds == 30
-    assert ingestor.target_fps == 5
-    assert ingestor.preview_fps == 25
     assert ingestor._gst_source_id("camera-03") == 3
     assert ingestor._gst_source_id("camera-03") == 3
     assert ingestor._gst_source_id("warehouse") == 0
     assert ingestor._gst_source_id("video-03") == 1
     assert ingestor.status()["rtsp_stall_timeout_seconds"] == 30
-    assert ingestor.status()["preview_fps"] == 25
+    assert ingestor.status()["fps_control"] == "sources.fps"
 
 
 def test_deepstream_skips_unused_audio_during_decoder_autoplug(
@@ -498,6 +522,8 @@ def test_deepstream_applies_source_enable_and_task_changes_without_restart(
             source_uri=record.source_uri,
             frame_width=record.frame_width,
             frame_height=record.frame_height,
+            delivery_target_fps=record.fps,
+            next_frame_due_monotonic=0.0,
         )
 
     def close_source(source_id: str) -> None:
@@ -519,10 +545,16 @@ def test_deepstream_applies_source_enable_and_task_changes_without_restart(
     assert opened == [(source_uri, source_uri)]
 
     ingestor._sync_sources()
-    assert ingestor._states[source_uri].delivery_target_fps == 5.0
+    assert ingestor._states[source_uri].delivery_target_fps is None
+    registry.update(source_uri, fps=40.0)
+    ingestor._sync_sources()
+    assert ingestor._states[source_uri].delivery_target_fps == 40.0
     registry.update(source_uri, tasks=set())
     ingestor._sync_sources()
-    assert ingestor._states[source_uri].delivery_target_fps == 25.0
+    assert ingestor._states[source_uri].delivery_target_fps == 40.0
+    registry.update(source_uri, fps=None)
+    ingestor._sync_sources()
+    assert ingestor._states[source_uri].delivery_target_fps is None
     assert closed == []
 
     registry.update(source_uri, enabled=False)

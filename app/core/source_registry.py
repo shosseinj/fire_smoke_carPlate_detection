@@ -138,6 +138,7 @@ class SourceRegistry:
                 ORDER BY COALESCE(created_at_utc, updated_at_utc), source_uri
                 """
             ).fetchall()
+            self._connection.commit()
             self._records = {
                 str(row["source_uri"]): self._row_to_record(row) for row in rows
             }
@@ -422,8 +423,10 @@ class SourceRegistry:
                 INSERT INTO sources (
                     id, source_uri, name, enabled, tasks_json,
                     frame_width, frame_height, room_id, source_type,
-                    metadata_json, loop, created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
+                    draw_smoke, draw_vehicle, draw_plate,
+                    created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -434,7 +437,14 @@ class SourceRegistry:
                     room_id = excluded.room_id,
                     source_type = excluded.source_type,
                     metadata_json = excluded.metadata_json,
+                    fps = excluded.fps,
                     loop = excluded.loop,
+                    draw_human = excluded.draw_human,
+                    draw_zone = excluded.draw_zone,
+                    draw_fire = excluded.draw_fire,
+                    draw_smoke = excluded.draw_smoke,
+                    draw_vehicle = excluded.draw_vehicle,
+                    draw_plate = excluded.draw_plate,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),

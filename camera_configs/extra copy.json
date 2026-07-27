@@ -12,7 +12,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -45,7 +44,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -78,7 +76,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -109,7 +106,6 @@
     "source_type": "static_video",
     "room_id": 11,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -140,7 +136,6 @@
     "source_type": "static_video",
     "room_id": 12,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -173,7 +168,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -204,7 +198,6 @@
     "source_type": "static_video",
     "room_id": 8,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -235,7 +228,6 @@
     "source_type": "static_video",
     "room_id": 9,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -266,7 +258,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -299,7 +290,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -330,7 +320,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -361,7 +350,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -392,7 +380,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -423,7 +410,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -454,7 +440,6 @@
     "source_type": "static_video",
     "room_id": null,
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,

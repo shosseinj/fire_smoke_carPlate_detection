@@ -10,7 +10,11 @@ from app.database import Database, get_database
 from app.core.auth import initialize_auth_store
 from app.core.general_settings_store import GeneralSettingsStore
 from app.core.source_settings_store import SourceSettingsStore
-from app.core.operational_settings import OperationalSettings, CAMERA_SETTINGS_METADATA_KEY
+from app.core.operational_settings import (
+    CAMERA_SETTINGS_METADATA_KEY,
+    LEGACY_FPS_FIELDS,
+    OperationalSettings,
+)
 from app.core.result_store import ResultStore
 from app.core.broadcast import AnnotatedBroadcastHub, SourceDrawSettings
 from app.core.plate_log_store import PlateLogStore
@@ -116,6 +120,8 @@ class Runtime:
         force = gs.force
         camera = self.registry.require(camera_id)
         overrides = dict(camera.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {})
+        for field in LEGACY_FPS_FIELDS:
+            overrides.pop(field, None)
         if force:
             from app.core.settings_policy import resolve_all_camera_settings
             return resolve_all_camera_settings(overrides, general, force=True)
@@ -124,6 +130,8 @@ class Runtime:
     def update_camera_overrides(self, camera_id: str, changes: dict[str, object]) -> dict[str, object]:
         camera = self.registry.require(camera_id)
         current = dict(camera.metadata.get(CAMERA_SETTINGS_METADATA_KEY) or {})
+        for field in LEGACY_FPS_FIELDS:
+            current.pop(field, None)
         candidate = self.operational_settings().updated({**current, **{k: v for k, v in changes.items() if v is not None}})
         for key, value in changes.items():
             if value is None:
@@ -154,17 +162,17 @@ class Runtime:
                 recognition_threshold=current.face_recognition_threshold,
             )
         if self.video_ingestor is not None:
-            for name in ("target_fps", "preview_fps", "rtsp_reconnect_seconds"):
-                source = {"target_fps": "video_ingest_fps", "preview_fps": "video_preview_fps", "rtsp_reconnect_seconds": "rtsp_reconnect_seconds"}[name]
-                if hasattr(self.video_ingestor, name):
-                    setattr(self.video_ingestor, name, getattr(current, source))
+            if hasattr(self.video_ingestor, "rtsp_reconnect_seconds"):
+                setattr(
+                    self.video_ingestor,
+                    "rtsp_reconnect_seconds",
+                    current.rtsp_reconnect_seconds,
+                )
             if hasattr(self.video_ingestor, "max_sources"):
                 setattr(self.video_ingestor, "max_sources", current.rtsp_source_count)
         if self.static_video_ingestor is not None:
             if hasattr(self.static_video_ingestor, "max_sources"):
                 setattr(self.static_video_ingestor, "max_sources", current.static_video_source_count)
-            if hasattr(self.static_video_ingestor, "target_fps"):
-                setattr(self.static_video_ingestor, "target_fps", current.video_ingest_fps)
         self.broadcast.set_enabled(current.broadcast_enabled)
         self.broadcast.jpeg_quality = current.broadcast_jpeg_quality
         self.broadcast.wall_jpeg_quality = current.broadcast_wall_jpeg_quality
@@ -845,7 +853,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         result_store=results,
         play_only_callback=broadcast.publish_passthrough,
         source_only_callback=broadcast.publish_source_only,
-        bypass_workers_callback=broadcast.source_only_exclusive,
     )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
@@ -855,7 +862,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "registry": registry,
             "router": router,
             "project_root": project_root,
-            "target_fps": operational.video_ingest_fps,
             "gpu_resize_enabled": app_settings.gpu_resize_enabled,
             "loop": operational.video_loop,
             "rtsp_transport": operational.rtsp_transport,
@@ -869,7 +875,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_sources=operational.rtsp_source_count,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
-                preview_fps=operational.video_preview_fps,
                 rtsp_stall_timeout_seconds=(
                     operational.deepstream_rtsp_stall_timeout_seconds
                 ),
@@ -890,7 +895,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             registry=registry,
             router=router,
             project_root=project_root,
-            target_fps=30.0,
             loop=False,
             max_sources=operational.static_video_source_count,
         )

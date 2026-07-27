@@ -154,8 +154,10 @@ All configuration is via environment variables (see `.env.example` for the full 
 | ---------------------- | ------------ | ---------------------------------------- |
 | `PROCESSOR_MODE`       | `real`       | `real` or `mock` (mock runs without GPU) |
 | `VIDEO_INGEST_BACKEND` | `deepstream` | `deepstream` or `opencv`                 |
-| `VIDEO_INGEST_FPS`     | `5`          | Target ingestion FPS                     |
 | `VIDEO_LOOP`           | `true`       | Loop video files                         |
+
+Frame delivery uses native source pacing when `sources.fps` is `NULL`; set that
+column to a positive value for a per-source override.
 
 ### Model Fallback
 

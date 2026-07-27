@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import struct
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -233,6 +234,8 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'header.render_profile || "Annotated"' in dashboard
     assert "if (broadcastSocket !== socket) return;" in dashboard
     assert "event.data instanceof ArrayBuffer" in dashboard
+    assert "incomingFrameIndex < stats.frameIndex" in dashboard
+    assert 'img.addEventListener("load"' in dashboard
 
 
 def test_dashboard_uses_source_uri_task_manager_identity() -> None:
@@ -355,6 +358,23 @@ def test_source_only_fullscreen_subscription_skips_cached_wall_only_frame() -> N
     assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
     hub.unsubscribe_source_only(fullscreen_subscriber_id)
     hub.unsubscribe_source_only(wall_subscriber_id)
+
+
+def test_source_only_broadcast_never_replaces_new_frame_with_stale_frame() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    subscriber_id, target = hub.subscribe_source_only(wall=True)
+    newest = replace(packet([], "camera-07"), frame_index=20)
+    stale = replace(packet([], "camera-07"), frame_index=19)
+
+    hub.publish_source_only(newest)
+    delivered = target.get_nowait()
+    hub.publish_source_only(stale)
+
+    assert isinstance(delivered, EncodedBroadcastFrame)
+    assert delivered.frame_index == 20
+    assert target.empty()
+    assert hub._source_only_latest["camera-07"].frame_index == 20
+    hub.unsubscribe_source_only(subscriber_id)
 
 
 def test_websocket_keeps_default_full_resolution_for_existing_clients() -> None:
@@ -533,6 +553,44 @@ def test_face_overlay_is_retained_briefly_for_intermediate_frames() -> None:
     encoded = hub.latest("camera-07")
     assert encoded is not None
     assert hub.status()["face_overlay_cache_hits"] == 1
+
+
+def test_fire_overlay_is_retained_briefly_for_intermediate_frames() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        async_render=False,
+        face_overlay_ttl_ms=500,
+    )
+    fire_packet = packet(["fire_smoke"])
+    hub.publish_result(
+        fire_packet,
+        result(
+            TaskName.FIRE_SMOKE,
+            {
+                "tracks": [
+                    {
+                        "label": "fire",
+                        "confidence": 0.9,
+                        "bbox": [30, 40, 120, 130],
+                    }
+                ]
+            },
+        ),
+    )
+    next_packet = replace(
+        fire_packet,
+        round_sequence=2,
+        frame_index=13,
+        captured_monotonic=time.monotonic(),
+    )
+
+    hub.publish_passthrough(next_packet)
+
+    encoded = hub.latest("camera-07")
+    assert encoded is not None
+    assert encoded.frame_index == 13
+    assert encoded.tasks == ("fire_smoke",)
+    assert hub.status()["overlay_cache_hits"] == 1
 
 
 # ── Polygon drawing tests ────────────────────────────────────────────

@@ -12,7 +12,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -43,7 +42,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -74,7 +72,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -103,7 +100,6 @@
     "source_type": "static_video",
 
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -132,7 +128,6 @@
     "source_type": "static_video",
 
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -163,7 +158,6 @@
     "metadata": {
       "additionalProp1": {}
     },
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -192,7 +186,6 @@
     "source_type": "static_video",
 
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,
@@ -221,7 +214,6 @@
     "source_type": "static_video",
 
     "metadata": {},
-    "fps": null,
     "loop": true,
     "draw_human": true,
     "draw_zone": true,

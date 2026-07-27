@@ -44,8 +44,6 @@ class FireSmokePolicyPatch(BaseModel):
 class OperationalSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    video_ingest_fps: float | None = Field(default=None, gt=0, le=240)
-    video_preview_fps: float | None = Field(default=None, gt=0, le=240)
     video_loop: bool | None = None
     rtsp_transport: str | None = None
     rtsp_open_timeout_ms: int | None = Field(default=None, gt=0)
