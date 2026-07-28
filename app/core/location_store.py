@@ -523,7 +523,7 @@ class LocationStore:
             if polygon_json is not _UNSET and polygon_json is not None:
                 points = parse_polygon(polygon_json)
                 if len(points) < 3:
-raise ValueError("چندضلعی باید حداقل ۳ رأس داشته باشد")
+                    raise ValueError("چندضلعی باید حداقل ۳ رأس داشته باشد")
             now = self._now()
             conn.execute(
                 "UPDATE rooms SET name=?, section_id=?, cam_id=?, room_number=?, room_type=?, description=?, is_active=?, polygon_json=?, "
