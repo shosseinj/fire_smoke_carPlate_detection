@@ -55,3 +55,17 @@ Retry 3: Repeated with the second allowlisted RTSP source; it failed in the same
 Current diagnosis: The remaining crash is a native rtspsrc negotiation or environment failure shared by at least two cameras; evidence does not implicate decoder, parser, AI, JPEG encoding, OpenCV, OOM, or one uniquely bad source.
 Manual next step: Reproduce each redacted RTSP source with gst-launch in the same image, collect a native core or gdb backtrace, and compare GStreamer rtspsrc/plugin versions before changing decoder, queues, worker count, or encoder threads.
 ================================================================================
+Timestamp UTC: 2026-07-28T08:34:02.2156796Z
+Agent: Codex GPT-5
+Task: Isolate every RTSP source in a supervised child process
+Status: FAILED_AFTER_3_RETRIES
+Changed files: app/api/diagnostics.py, app/core/deepstream_ingestor.py, app/core/rtsp_process_supervisor.py, app/runtime.py, tests/test_api.py, tests/test_rtsp_process_supervisor.py
+Baseline: Both selected RTSP sources previously crashed the monolithic service during native rtspsrc negotiation.
+Failed command: Two-source Docker stability sampling through GET /health for at least 60 seconds with DEEPSTREAM_MAX_ACTIVE_SOURCES=2.
+Final error: The parent API/container remained running, but both selected RTSP children repeatedly exited with signal code -6 and neither produced a frontend frame, so a healthy-camera 60-second frame-continuity result could not be established.
+Retry 1: Built per-source spawn children and observed independent processes; a misplaced callback wrapper produced NameError and was corrected.
+Retry 2: Repeated live validation; a shared multiprocessing queue allowed a dead child to block health status, so queues were separated per child and status locking was bounded.
+Retry 3: Repeated with exactly two RTSP children for 70 seconds; child PIDs restarted independently with backoff while the parent stayed running, but both cameras exited with -6 and last_frame_time remained empty.
+Current diagnosis: Crash containment works, but neither of the two available selected RTSP sources is healthy in the current native GStreamer environment; the requested healthy-versus-faulty comparison cannot be proven from these sources.
+Manual next step: Supply or identify one RTSP source known to deliver frames in this container, then rerun the same 60-second two-child sampler without changing decoder, worker, frontend, AI, or Static configuration.
+================================================================================

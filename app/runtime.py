@@ -55,6 +55,7 @@ from app.processors.mock import MockProcessor
 from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 from app.processors.ultralytics_loader import preload_model_dependencies
 from app.core.raw_stream_router import RawStreamRouter
+from app.core.rtsp_process_supervisor import RtspProcessSupervisor
 from app.core.frontend_frame_worker import FrontendFrameWorker
 from app.core.stream_demand import StreamDemandController
 LOGGER = logging.getLogger("uvicorn.error")
@@ -98,7 +99,7 @@ class Runtime:
     static_video_store: StaticVideoStore
     general_settings: GeneralSettingsStore
     source_settings: SourceSettingsStore
-    video_ingestor: DeepStreamIngestor | None = None
+    video_ingestor: RtspProcessSupervisor | DeepStreamIngestor | None = None
     static_video_ingestor: DeepStreamIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
     frontend_frame_worker: FrontendFrameWorker | None = None
@@ -968,10 +969,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 clip_buffer_enabled=app_settings.raw_clip_buffer_enabled,
             )
 
-            video_ingestor = DeepStreamIngestor(
+            video_ingestor = RtspProcessSupervisor(
                 **common_ingestor_settings,
                 raw_stream_router=raw_stream_router,
-                source_type_filter=RTSP,
                 loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,

@@ -560,10 +560,14 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
         )
     )
     try:
-        assert isinstance(runtime.video_ingestor, DeepStreamIngestor)
+        from app.core.rtsp_process_supervisor import RtspProcessSupervisor
+
+        assert isinstance(runtime.video_ingestor, RtspProcessSupervisor)
         assert isinstance(runtime.static_video_ingestor, DeepStreamIngestor)
-        assert runtime.video_ingestor.status()["backend"] == "deepstream"
-        assert runtime.video_ingestor.source_type_filter == "rtsp"
+        assert (
+            runtime.video_ingestor.status()["backend"]
+            == "deepstream-process-isolated"
+        )
         assert runtime.static_video_ingestor.source_type_filter == "static_video"
         assert runtime.video_ingestor.demand_controller is runtime.stream_demand
         assert (

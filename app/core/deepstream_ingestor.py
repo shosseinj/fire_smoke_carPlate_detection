@@ -616,6 +616,12 @@ class DeepStreamIngestor:
         pad: Any,
         context: dict[str, Any],
     ) -> None:
+        with _GST_LIFECYCLE_LOCK:
+            self._on_rtsp_pad_added_locked(pad, context)
+
+    def _on_rtsp_pad_added_locked(
+        self, pad: Any, context: dict[str, Any]
+    ) -> None:
         Gst, _ = self._require_runtime()
 
         caps = pad.get_current_caps() or pad.query_caps(None)
@@ -740,12 +746,6 @@ class DeepStreamIngestor:
         generation: int | None = None,
     ) -> Any:
         """Deliver one original-resolution decoded frame to the frontend."""
-        with _GST_LIFECYCLE_LOCK:
-            self._on_rtsp_pad_added_locked(pad, context)
-
-    def _on_rtsp_pad_added_locked(
-        self, pad: Any, context: dict[str, Any]
-    ) -> None:
         Gst, _ = self._require_runtime()
         if generation is None:
             with self._lock:
