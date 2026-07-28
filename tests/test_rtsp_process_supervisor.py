@@ -4,7 +4,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.core.rtsp_process_supervisor import RtspProcessSupervisor
+import numpy as np
+
+from app.core.rtsp_process_supervisor import (
+    RtspProcessSupervisor,
+    _IpcFrontend,
+)
 from app.core.source_registry import RTSP, SourceRecord
 
 
@@ -92,6 +97,20 @@ class Sink:
 
     def submit_round(self, **_kwargs: Any) -> dict[str, int]:
         return {"accepted_sources": 0}
+
+
+class CapturingSink(Sink):
+    def __init__(self) -> None:
+        self.frontend_payloads: list[dict[str, Any]] = []
+        self.router_payloads: list[dict[str, Any]] = []
+
+    def submit_frame(self, **kwargs: Any) -> bool:
+        self.frontend_payloads.append(kwargs)
+        return True
+
+    def submit_round(self, **kwargs: Any) -> dict[str, int]:
+        self.router_payloads.append(kwargs)
+        return {"accepted_sources": len(kwargs.get("source_ids", ()))}
 
 
 def build_supervisor(
@@ -268,3 +287,87 @@ def test_close_is_idempotent_and_stops_each_running_child(tmp_path: Path) -> Non
     assert all(process.terminate_calls == 1 for process in factory.created)
     assert all(process.kill_calls == 0 for process in factory.created)
     assert supervisor.status()["running"] is False
+
+
+def test_full_resolution_frame_uses_shared_memory_and_reaches_ai_unchanged(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    factory = FakeProcessFactory()
+    sink = CapturingSink()
+    source_id = "rtsp://camera-1/live"
+    supervisor = RtspProcessSupervisor(
+        registry=FakeRegistry(source_id),
+        router=sink,
+        project_root=tmp_path,
+        frontend_frame_worker=sink,
+        process_factory=factory,
+        monotonic=clock,
+        source_open_stagger_seconds=0.0,
+        video_only_mode=False,
+    )
+    supervisor.poll_once()
+    child = supervisor._children[source_id]
+    writer = _IpcFrontend(
+        child.events,
+        generation=child.generation,
+        shared_memory_names=child.shared_memory_names,
+        buffer_locks=child.buffer_locks,
+        active_buffer_index=child.active_buffer_index,
+        write_sequence=child.write_sequence,
+        read_sequence=child.read_sequence,
+        buffer_sequences=child.buffer_sequences,
+        frames_written=child.frames_written,
+        metadata_dropped=child.metadata_dropped,
+        overwritten_frames=child.overwritten_frames,
+        write_copy_ns=child.write_copy_ns,
+    )
+    frame = np.arange(2560 * 1440 * 3, dtype=np.uint8).reshape(1440, 2560, 3)
+    expected_checksum = int(frame.sum(dtype=np.uint64))
+    try:
+        assert writer.submit_frame(
+            source_id=source_id,
+            frame=frame,
+            frame_index=17,
+            source_time_seconds=1.25,
+            source_type=RTSP,
+            ingest_backend="deepstream",
+        )
+        kind, metadata = child.events.get(timeout=2.0)
+        assert kind == "shared_frame"
+        assert not any(
+            isinstance(value, np.ndarray) for value in metadata.values()
+        )
+        assert set(metadata) >= {
+            "source_id",
+            "generation",
+            "frame_index",
+            "pts_ns",
+            "width",
+            "height",
+            "channels",
+            "dtype",
+            "active_buffer_index",
+            "payload_size",
+        }
+
+        supervisor._forward_event(kind, metadata)
+        frontend_frame = sink.frontend_payloads[0]["frame"]
+        ai_frame = sink.router_payloads[0]["frames"][0]
+        assert frontend_frame.shape == (1440, 2560, 3)
+        assert frontend_frame.dtype == np.uint8
+        assert frontend_frame.flags.c_contiguous
+        assert frontend_frame.strides == frame.strides
+        assert int(frontend_frame.sum(dtype=np.uint64)) == expected_checksum
+        assert np.array_equal(frontend_frame, frame)
+        assert ai_frame is frontend_frame
+        assert ai_frame.shape == frame.shape
+        assert sink.router_payloads[0]["metadata"][0][
+            "source_frame_width"
+        ] == 2560
+        assert supervisor.status()["sources"][source_id][
+            "shared_memory_frames_read"
+        ] == 1
+    finally:
+        writer.close()
+        supervisor._stop_child(child)

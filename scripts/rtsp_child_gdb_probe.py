@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -32,6 +33,26 @@ def main() -> None:
         registry.close()
 
     context = mp.get_context("spawn")
+    prefix = (
+        "vai_rtsp_gdb_"
+        + hashlib.sha256(record.source_uri.encode()).hexdigest()[:16]
+    )
+    shared_transport = {
+        "generation": 1,
+        "shared_memory_names": (f"{prefix}_0", f"{prefix}_1"),
+        "buffer_locks": (context.Lock(), context.Lock()),
+        "active_buffer_index": context.Value("i", -1),
+        "write_sequence": context.Value("Q", 0),
+        "read_sequence": context.Value("Q", 0),
+        "buffer_sequences": (
+            context.Value("Q", 0),
+            context.Value("Q", 0),
+        ),
+        "frames_written": context.Value("Q", 0),
+        "metadata_dropped": context.Value("Q", 0),
+        "overwritten_frames": context.Value("Q", 0),
+        "write_copy_ns": context.Value("Q", 0),
+    }
     _rtsp_child_main(
         record.to_dict(),
         {
@@ -48,7 +69,9 @@ def main() -> None:
             "raw_enabled": False,
         },
         context.Queue(maxsize=8),
+        context.Queue(maxsize=32),
         context.Event(),
+        shared_transport,
     )
 
 

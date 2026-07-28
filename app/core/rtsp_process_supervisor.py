@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+from multiprocessing import resource_tracker, shared_memory
+import hashlib
 import logging
 import os
 import queue
@@ -9,6 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+import numpy as np
 
 from app.core.source_registry import RTSP, SourceRecord, canonical_source_type
 from app.core.video_ingestor import VideoFileIngestor
@@ -27,20 +31,173 @@ class _SingleSourceRegistry:
 
 
 class _IpcFrontend:
-    def __init__(self, events: Any) -> None:
+    """Write full-resolution frames to a per-child shared-memory double buffer."""
+
+    def __init__(
+        self,
+        events: Any,
+        *,
+        generation: int,
+        shared_memory_names: tuple[str, str],
+        buffer_locks: tuple[Any, Any],
+        active_buffer_index: Any,
+        write_sequence: Any,
+        read_sequence: Any,
+        buffer_sequences: tuple[Any, Any],
+        frames_written: Any,
+        metadata_dropped: Any,
+        overwritten_frames: Any,
+        write_copy_ns: Any,
+    ) -> None:
         self.events = events
+        self.generation = generation
+        self.shared_memory_names = shared_memory_names
+        self.buffer_locks = buffer_locks
+        self.active_buffer_index = active_buffer_index
+        self.write_sequence = write_sequence
+        self.read_sequence = read_sequence
+        self.buffer_sequences = buffer_sequences
+        self.frames_written = frames_written
+        self.metadata_dropped = metadata_dropped
+        self.overwritten_frames = overwritten_frames
+        self.write_copy_ns = write_copy_ns
+        self._segments: tuple[Any, Any] | None = None
+        self._payload_capacity = 0
+
+    @staticmethod
+    def _increment(counter: Any, value: int = 1) -> None:
+        with counter.get_lock():
+            counter.value += value
+
+    def _ensure_segments(self, payload_size: int) -> None:
+        if self._segments is not None:
+            if payload_size > self._payload_capacity:
+                raise ValueError(
+                    "RTSP frame size changed beyond shared-memory capacity: "
+                    f"{payload_size}>{self._payload_capacity}"
+                )
+            return
+        segments = []
+        try:
+            for name in self.shared_memory_names:
+                try:
+                    stale = shared_memory.SharedMemory(name=name, create=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    stale.close()
+                    stale.unlink()
+                segment = shared_memory.SharedMemory(
+                    name=name,
+                    create=True,
+                    size=payload_size,
+                )
+                # The parent supervisor owns unlink after both graceful exit
+                # and native crash. Prevent the child resource tracker from
+                # unlinking a segment while the parent is still reading it.
+                # Python's Windows resource_tracker startup imports the
+                # POSIX-only _posixsubprocess module in this host runtime.
+                # Windows also uses named mappings whose lifetime is governed
+                # by open handles, so the explicit unregister is only needed
+                # in the Linux production child.
+                if os.name == "posix":
+                    resource_tracker.unregister(segment._name, "shared_memory")
+                segments.append(segment)
+        except Exception:
+            for segment in segments:
+                segment.close()
+                try:
+                    segment.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+        self._segments = (segments[0], segments[1])
+        self._payload_capacity = payload_size
 
     def submit_frame(self, **payload: Any) -> bool:
-        return _put_latest(self.events, ("frontend", payload))
+        frame = payload.pop("frame")
+        if not isinstance(frame, np.ndarray):
+            raise TypeError("RTSP shared-memory transport requires a NumPy frame")
+        frame = np.ascontiguousarray(frame)
+        payload_size = int(frame.nbytes)
+        self._ensure_segments(payload_size)
+        assert self._segments is not None
+
+        with self.active_buffer_index.get_lock():
+            active = int(self.active_buffer_index.value)
+        target = 0 if active != 0 else 1
+        if not self.buffer_locks[target].acquire(block=False):
+            self._increment(self.overwritten_frames)
+            return False
+        try:
+            with self.write_sequence.get_lock():
+                sequence = int(self.write_sequence.value) + 1
+                self.write_sequence.value = sequence
+            with self.read_sequence.get_lock():
+                if sequence - int(self.read_sequence.value) > 1:
+                    self._increment(self.overwritten_frames)
+
+            started_ns = time.perf_counter_ns()
+            target_array = np.ndarray(
+                frame.shape,
+                dtype=frame.dtype,
+                buffer=self._segments[target].buf[:payload_size],
+            )
+            np.copyto(target_array, frame, casting="no")
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            self._increment(self.write_copy_ns, elapsed_ns)
+            with self.buffer_sequences[target].get_lock():
+                self.buffer_sequences[target].value = sequence
+            with self.active_buffer_index.get_lock():
+                self.active_buffer_index.value = target
+        finally:
+            self.buffer_locks[target].release()
+
+        self._increment(self.frames_written)
+        source_time_seconds = payload.get("source_time_seconds")
+        metadata = {
+            "source_id": payload["source_id"],
+            "generation": self.generation,
+            "frame_index": int(payload["frame_index"]),
+            "pts_ns": (
+                None
+                if source_time_seconds is None
+                else int(float(source_time_seconds) * 1_000_000_000)
+            ),
+            "source_time_seconds": source_time_seconds,
+            "source_type": payload["source_type"],
+            "ingest_backend": payload["ingest_backend"],
+            "width": int(frame.shape[1]),
+            "height": int(frame.shape[0]),
+            "channels": int(frame.shape[2]) if frame.ndim == 3 else 1,
+            "dtype": frame.dtype.str,
+            "active_buffer_index": target,
+            "payload_size": payload_size,
+            "sequence": sequence,
+        }
+        accepted, dropped = _put_latest_with_drop(
+            self.events,
+            ("shared_frame", metadata),
+        )
+        if dropped:
+            self._increment(self.metadata_dropped)
+        if not accepted:
+            return False
+        return True
+
+    def close(self) -> None:
+        if self._segments is None:
+            return
+        for segment in self._segments:
+            segment.close()
+        self._segments = None
 
 
 class _IpcRouter:
-    def __init__(self, events: Any) -> None:
-        self.events = events
-
     def submit_round(self, **payload: Any) -> dict[str, int]:
-        _put_latest(self.events, ("ai_round", payload))
-        return {"accepted_sources": len(payload.get("source_ids", ()))}
+        # The child never transports AI frames. The parent routes the exact
+        # full-resolution frame copied from shared memory.
+        return {"accepted_sources": 0}
 
 
 class _IpcRawRouter:
@@ -54,9 +211,17 @@ class _IpcRawRouter:
 
 
 def _put_latest(events: Any, item: tuple[str, Any]) -> bool:
+    accepted, _ = _put_latest_with_drop(events, item)
+    return accepted
+
+
+def _put_latest_with_drop(
+    events: Any,
+    item: tuple[str, Any],
+) -> tuple[bool, bool]:
     try:
         events.put_nowait(item)
-        return True
+        return True, False
     except queue.Full:
         try:
             events.get_nowait()
@@ -64,16 +229,18 @@ def _put_latest(events: Any, item: tuple[str, Any]) -> bool:
             pass
         try:
             events.put_nowait(item)
-            return True
+            return True, True
         except queue.Full:
-            return False
+            return False, True
 
 
 def _rtsp_child_main(
     record_value: dict[str, Any],
     settings: dict[str, Any],
     events: Any,
+    auxiliary_events: Any,
     stop_event: Any,
+    shared_transport: dict[str, Any],
 ) -> None:
     # rtspsrc uses GSocketClient, which otherwise loads libgiolibproxy and
     # libproxy for camera-LAN URIs. The image's libproxy path segfaults inside
@@ -90,9 +257,16 @@ def _rtsp_child_main(
     from app.core.deepstream_ingestor import DeepStreamIngestor
 
     record = SourceRecord.from_dict(record_value)
-    router = _IpcRouter(events)
-    frontend = _IpcFrontend(events)
-    raw_router = _IpcRawRouter(events) if settings.pop("raw_enabled") else None
+    # AI routing happens in the parent from the same original-resolution
+    # shared-memory frame. Never build/send the child's resized AI branch.
+    settings["video_only_mode"] = True
+    router = _IpcRouter()
+    frontend = _IpcFrontend(events, **shared_transport)
+    raw_router = (
+        _IpcRawRouter(auxiliary_events)
+        if settings.pop("raw_enabled")
+        else None
+    )
     ingestor = DeepStreamIngestor(
         registry=_SingleSourceRegistry(record),
         router=router,  # type: ignore[arg-type]
@@ -110,9 +284,10 @@ def _rtsp_child_main(
     try:
         ingestor.start()
         while not stop_event.wait(0.5):
-            _put_latest(events, ("status", ingestor.status()))
+            pass
     finally:
         ingestor.close()
+        frontend.close()
 
 
 @dataclass
@@ -121,6 +296,7 @@ class _Child:
     process: Any | None = None
     stop_event: Any | None = None
     events: Any | None = None
+    auxiliary_events: Any | None = None
     state: str = "restarting"
     exit_code: int | None = None
     restart_count: int = 0
@@ -129,6 +305,21 @@ class _Child:
     last_error: str | None = None
     last_frame_time: float | None = None
     last_started: float | None = None
+    generation: int = 0
+    shared_memory_names: tuple[str, str] | None = None
+    buffer_locks: tuple[Any, Any] | None = None
+    active_buffer_index: Any | None = None
+    write_sequence: Any | None = None
+    read_sequence: Any | None = None
+    buffer_sequences: tuple[Any, Any] | None = None
+    frames_written: Any | None = None
+    metadata_dropped: Any | None = None
+    overwritten_frames: Any | None = None
+    write_copy_ns: Any | None = None
+    shared_memory_frames_read: int = 0
+    read_copy_ns: int = 0
+    read_failures: int = 0
+    shared_segments: dict[str, Any] | None = None
 
 
 class RtspProcessSupervisor:
@@ -160,6 +351,7 @@ class RtspProcessSupervisor:
         self.frontend_frame_worker = frontend_frame_worker
         self.raw_stream_router = raw_stream_router
         self.demand_controller = demand_controller
+        self._video_only_mode = bool(child_settings.get("video_only_mode", False))
         self.max_sources = max_sources
         self.max_active_sources = max_active_sources
         self.source_allowlist = frozenset(source_allowlist or ())
@@ -229,12 +421,51 @@ class RtspProcessSupervisor:
         return result[: min(self.max_sources, self.max_active_sources)]
 
     def _start_child(self, child: _Child) -> None:
+        self._cleanup_shared_memory(child)
+        child.generation += 1
         child.stop_event = self._ctx.Event()
-        child.events = self._ctx.Queue(maxsize=8)
+        child.events = self._ctx.Queue(maxsize=2)
+        child.auxiliary_events = self._ctx.Queue(maxsize=2)
+        digest = hashlib.sha256(child.record.source_uri.encode()).hexdigest()[:16]
+        prefix = f"vai_rtsp_{os.getpid()}_{digest}_g{child.generation}"
+        child.shared_memory_names = (f"{prefix}_0", f"{prefix}_1")
+        child.buffer_locks = (self._ctx.Lock(), self._ctx.Lock())
+        child.active_buffer_index = self._ctx.Value("i", -1)
+        child.write_sequence = self._ctx.Value("Q", 0)
+        child.read_sequence = self._ctx.Value("Q", 0)
+        child.buffer_sequences = (
+            self._ctx.Value("Q", 0),
+            self._ctx.Value("Q", 0),
+        )
+        child.frames_written = self._ctx.Value("Q", 0)
+        child.metadata_dropped = self._ctx.Value("Q", 0)
+        child.overwritten_frames = self._ctx.Value("Q", 0)
+        child.write_copy_ns = self._ctx.Value("Q", 0)
+        child.shared_segments = {}
         settings = dict(self._child_settings)
+        shared_transport = {
+            "generation": child.generation,
+            "shared_memory_names": child.shared_memory_names,
+            "buffer_locks": child.buffer_locks,
+            "active_buffer_index": child.active_buffer_index,
+            "write_sequence": child.write_sequence,
+            "read_sequence": child.read_sequence,
+            "buffer_sequences": child.buffer_sequences,
+            "frames_written": child.frames_written,
+            "metadata_dropped": child.metadata_dropped,
+            "overwritten_frames": child.overwritten_frames,
+            "write_copy_ns": child.write_copy_ns,
+        }
         child.process = self._process_factory(
             target=_rtsp_child_main,
-            args=(child.record.to_dict(), settings, child.events, child.stop_event),
+            args=(
+                child.record.to_dict(),
+                settings,
+                child.events,
+                child.auxiliary_events,
+                child.stop_event,
+                shared_transport,
+            ),
             name=f"rtsp-{child.record.id or 'source'}",
             daemon=True,
         )
@@ -265,20 +496,147 @@ class RtspProcessSupervisor:
             child.events.cancel_join_thread()
             child.events.close()
             child.events = None
+        if child.auxiliary_events is not None:
+            child.auxiliary_events.cancel_join_thread()
+            child.auxiliary_events.close()
+            child.auxiliary_events = None
+        self._cleanup_shared_memory(child)
+
+    @staticmethod
+    def _counter_value(counter: Any | None) -> int:
+        if counter is None:
+            return 0
+        with counter.get_lock():
+            return int(counter.value)
+
+    @staticmethod
+    def _cleanup_shared_memory(child: _Child) -> None:
+        if child.shared_segments:
+            for segment in child.shared_segments.values():
+                try:
+                    segment.close()
+                except Exception:
+                    pass
+            child.shared_segments.clear()
+        for name in child.shared_memory_names or ():
+            try:
+                segment = shared_memory.SharedMemory(name=name, create=False)
+            except FileNotFoundError:
+                continue
+            try:
+                segment.close()
+                segment.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _read_shared_frame(
+        self,
+        child: _Child,
+        payload: dict[str, Any],
+    ) -> np.ndarray | None:
+        if (
+            payload.get("generation") != child.generation
+            or child.buffer_locks is None
+            or child.buffer_sequences is None
+            or child.read_sequence is None
+            or child.shared_memory_names is None
+        ):
+            return None
+        # The queue item is only a wake-up/shape descriptor. It may have been
+        # superseded while waiting in the bounded queue, so always select the
+        # latest fully published buffer rather than rejecting an older
+        # notification.
+        if child.active_buffer_index is None:
+            return None
+        with child.active_buffer_index.get_lock():
+            index = int(child.active_buffer_index.value)
+        if index not in (0, 1):
+            return None
+        lock = child.buffer_locks[index]
+        if not lock.acquire(block=False):
+            child.read_failures += 1
+            return None
+        try:
+            sequence = self._counter_value(child.buffer_sequences[index])
+            if sequence <= self._counter_value(child.read_sequence):
+                return None
+            name = child.shared_memory_names[index]
+            assert child.shared_segments is not None
+            segment = child.shared_segments.get(name)
+            if segment is None:
+                segment = shared_memory.SharedMemory(name=name, create=False)
+                child.shared_segments[name] = segment
+            dtype = np.dtype(str(payload["dtype"]))
+            height = int(payload["height"])
+            width = int(payload["width"])
+            channels = int(payload["channels"])
+            shape = (height, width) if channels == 1 else (height, width, channels)
+            expected_size = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
+            if expected_size != int(payload["payload_size"]):
+                child.read_failures += 1
+                return None
+            started_ns = time.perf_counter_ns()
+            frame = np.ndarray(
+                shape,
+                dtype=dtype,
+                buffer=segment.buf[:expected_size],
+            ).copy()
+            child.read_copy_ns += time.perf_counter_ns() - started_ns
+            child.shared_memory_frames_read += 1
+            with child.read_sequence.get_lock():
+                child.read_sequence.value = max(
+                    int(child.read_sequence.value),
+                    sequence,
+                )
+            return frame
+        except FileNotFoundError:
+            child.read_failures += 1
+            return None
+        finally:
+            lock.release()
 
     def _forward_event(self, kind: str, payload: Any) -> None:
-        if kind == "frontend":
-            self.frontend_frame_worker.submit_frame(**payload)
+        if kind == "shared_frame":
             source_id = payload["source_id"]
             with self._lock:
                 child = self._children.get(source_id)
-                if child is not None:
+                if child is None or payload.get("generation") != child.generation:
+                    return
+            frame = self._read_shared_frame(child, payload)
+            if frame is None:
+                return
+            frontend_payload = {
+                "source_id": source_id,
+                "frame": frame,
+                "frame_index": int(payload["frame_index"]),
+                "source_time_seconds": payload.get("source_time_seconds"),
+                "source_type": payload["source_type"],
+                "ingest_backend": payload["ingest_backend"],
+            }
+            self.frontend_frame_worker.submit_frame(**frontend_payload)
+            if not self._video_only_mode:
+                self.router.submit_round(
+                    frames=[frame],
+                    source_ids=[source_id],
+                    round_sequence=int(payload["frame_index"]),
+                    frame_indexes=[int(payload["frame_index"])],
+                    source_times_seconds=[payload.get("source_time_seconds")],
+                    metadata=[
+                        {
+                            "source_type": payload["source_type"],
+                            "ingest_backend": payload["ingest_backend"],
+                            "source_frame_width": int(payload["width"]),
+                            "source_frame_height": int(payload["height"]),
+                        }
+                    ],
+                )
+            with self._lock:
+                current = self._children.get(source_id)
+                if current is child:
                     child.last_frame_time = self._clock()
                     child.consecutive_exit_139 = 0
             return
-        if kind == "ai_round":
-            self.router.submit_round(**payload)
-        elif kind == "raw_packet" and self.raw_stream_router is not None:
+        if kind == "raw_packet" and self.raw_stream_router is not None:
             self.raw_stream_router.publish_packet(**payload)
 
     def poll_once(self) -> None:
@@ -316,21 +674,38 @@ class RtspProcessSupervisor:
                             now + self._source_start_stagger_seconds
                         )
         with self._lock:
-            event_queues = [
-                child.events
+            children = [
+                child
                 for child in self._children.values()
-                if child.events is not None and child.process is not None
+                if child.process is not None
             ]
-        for events in event_queues:
+        # Frame notifications are latency-sensitive and tiny. Service every
+        # source before draining the separate encoded-packet compatibility
+        # queues, otherwise a continuously-fed raw queue can starve later
+        # cameras.
+        for child in children:
+            events = child.events
+            if events is None:
+                continue
             while True:
                 try:
                     kind, payload = events.get_nowait()
                 except queue.Empty:
                     break
                 self._forward_event(kind, payload)
+        for child in children:
+            events = child.auxiliary_events
+            if events is None:
+                continue
+            for _ in range(1):
+                try:
+                    kind, payload = events.get_nowait()
+                except queue.Empty:
+                    break
+                self._forward_event(kind, payload)
 
-    @staticmethod
-    def _stop_child(child: _Child) -> None:
+    @classmethod
+    def _stop_child(cls, child: _Child) -> None:
         process = child.process
         if process is None:
             return
@@ -348,6 +723,11 @@ class RtspProcessSupervisor:
             child.events.cancel_join_thread()
             child.events.close()
             child.events = None
+        if child.auxiliary_events is not None:
+            child.auxiliary_events.cancel_join_thread()
+            child.auxiliary_events.close()
+            child.auxiliary_events = None
+        cls._cleanup_shared_memory(child)
         child.state = "stopped"
 
     def _run(self) -> None:
@@ -402,6 +782,8 @@ class RtspProcessSupervisor:
             sources = {}
             for source_id, child in self._children.items():
                 process = child.process
+                frames_written = self._counter_value(child.frames_written)
+                frames_read = child.shared_memory_frames_read
                 sources[VideoFileIngestor.redact_uri(source_id)] = {
                     "pid": process.pid if process is not None else None,
                     "state": child.state,
@@ -422,6 +804,27 @@ class RtspProcessSupervisor:
                         else None
                     ),
                     "consecutive_exit_139": child.consecutive_exit_139,
+                    "shared_memory_frames_written": frames_written,
+                    "shared_memory_frames_read": frames_read,
+                    "metadata_dropped": self._counter_value(
+                        child.metadata_dropped
+                    ),
+                    "overwritten_frames": self._counter_value(
+                        child.overwritten_frames
+                    ),
+                    "read_copy_ms": round(
+                        child.read_copy_ns / max(1, frames_read) / 1_000_000.0,
+                        3,
+                    ),
+                    "write_copy_ms": round(
+                        (
+                            self._counter_value(child.write_copy_ns)
+                            / max(1, frames_written)
+                            / 1_000_000.0
+                        ),
+                        3,
+                    ),
+                    "shared_memory_read_failures": child.read_failures,
                 }
             return {
                 "enabled": self.rtsp_enabled,
