@@ -40,11 +40,10 @@ from app.core.import_progress_store import ImportProgressStore
 from app.core.static_video_store import StaticVideoStore
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
-from app.core.source_registry import SourceChange, SourceRegistry
+from app.core.source_registry import RTSP, STATIC_VIDEO, SourceChange, SourceRegistry
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 from app.core.deepstream_ingestor import DeepStreamIngestor
-from app.core.video_ingestor import StaticVideoFileIngestor, VideoFileIngestor
 from app.processors.fire_smoke import FireSmokeProcessor, FireSmokeSettings
 from app.processors.base import BatchProcessor
 from app.processors.face_recognition import (
@@ -99,8 +98,8 @@ class Runtime:
     static_video_store: StaticVideoStore
     general_settings: GeneralSettingsStore
     source_settings: SourceSettingsStore
-    video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
-    static_video_ingestor: VideoFileIngestor | None = None
+    video_ingestor: DeepStreamIngestor | None = None
+    static_video_ingestor: DeepStreamIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
     frontend_frame_worker: FrontendFrameWorker | None = None
     stream_demand: StreamDemandController | None = None
@@ -368,6 +367,18 @@ class Runtime:
     def status(self) -> dict:
         value = self.router.status()
         value["video_only_mode"] = self.settings.video_only_mode
+        value["deepstream_limits"] = {
+            "max_active_sources": self.settings.deepstream_max_active_sources,
+            "source_open_stagger_seconds": (
+                self.settings.deepstream_source_open_stagger_seconds
+            ),
+            "source_allowlist_count": len(
+                self.settings.deepstream_source_allowlist
+            ),
+            "video_stream_demand_grace_seconds": (
+                self.settings.video_stream_demand_grace_seconds
+            ),
+        }
         value["stream_demand"] = (
             self.stream_demand.status()
             if self.stream_demand is not None
@@ -900,7 +911,11 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             location_observer=None,
         ),
     }
-    stream_demand = StreamDemandController()
+    stream_demand = StreamDemandController(
+        video_release_grace_seconds=(
+            app_settings.video_stream_demand_grace_seconds
+        )
+    )
     router = TaskRouter(
         registry=registry,
         workers=workers,
@@ -933,9 +948,18 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "gpu_resize_enabled": app_settings.gpu_resize_enabled,
             "rtsp_transport": operational.rtsp_transport,
             "rtsp_reconnect_seconds": operational.rtsp_reconnect_seconds,
+            "frontend_frame_worker": frontend_frame_worker,
+            "demand_controller": stream_demand,
+            "video_only_mode": app_settings.video_only_mode,
+            "max_active_sources": app_settings.deepstream_max_active_sources,
+            "source_open_stagger_seconds": (
+                app_settings.deepstream_source_open_stagger_seconds
+            ),
+            "source_allowlist": (
+                app_settings.deepstream_source_allowlist or None
+            ),
         }
         if app_settings.video_ingest_backend == "deepstream":
-            print('\n\n\n\ningest video with deepstream\n\n')
             raw_stream_router = RawStreamRouter(
                 project_root=project_root,
                 enabled=app_settings.raw_stream_enabled,
@@ -944,29 +968,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 clip_buffer_enabled=app_settings.raw_clip_buffer_enabled,
             )
 
-            
-            # video_ingestor = DeepStreamIngestor(
-            #     **common_ingestor_settings,
-            #     source_type_filter="rtsp",
-            #     loop=operational.video_loop,
-            #     max_sources=operational.rtsp_source_count,
-            #     rtsp_enabled=app_settings.rtsp_ingestion_enabled,
-            #     rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
-            #     rtsp_stall_timeout_seconds=(
-            #         operational.deepstream_rtsp_stall_timeout_seconds
-            #     ),
-            #     skip_taskless_sources=app_settings.skip_taskless_sources,
-            # )
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 raw_stream_router=raw_stream_router,
-                source_type_filter="rtsp",
+                source_type_filter=RTSP,
                 loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
-                # Original decoded frame path
-                frontend_frame_worker=frontend_frame_worker,
-                demand_controller=stream_demand,
-                video_only_mode=app_settings.video_only_mode,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
                 rtsp_stall_timeout_seconds=(
@@ -975,42 +982,23 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 skip_taskless_sources=app_settings.skip_taskless_sources,
             )
 
-            
-        # elif app_settings.video_ingest_backend == "opencv":
-        #     video_ingestor = VideoFileIngestor(
-        #         **common_ingestor_settings,
-        #         source_type_filter="rtsp",
-        #         loop=operational.video_loop,
-        #         max_sources=operational.rtsp_source_count,
-        #         rtsp_open_timeout_ms=operational.rtsp_open_timeout_ms,
-        #         rtsp_read_timeout_ms=operational.rtsp_read_timeout_ms,
-        #     )
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
      
         if app_settings.static_video_ingestion_enabled:
-            static_video_ingestor = StaticVideoFileIngestor(
-                registry=registry,
-                router=router,
-                project_root=project_root,
+            static_video_ingestor = DeepStreamIngestor(
+                **common_ingestor_settings,
+                raw_stream_router=raw_stream_router,
+                source_type_filter=STATIC_VIDEO,
                 loop=operational.video_loop,
                 max_sources=operational.static_video_source_count,
-                gpu_resize_enabled=app_settings.gpu_resize_enabled,
-                frontend_frame_worker=frontend_frame_worker,
-                demand_controller=stream_demand,
-                video_only_mode=app_settings.video_only_mode,
-                startup_delay_seconds=(
-                    app_settings.static_video_startup_delay_seconds
+                rtsp_enabled=False,
+                rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
+                rtsp_stall_timeout_seconds=(
+                    operational.deepstream_rtsp_stall_timeout_seconds
                 ),
+                skip_taskless_sources=app_settings.skip_taskless_sources,
             )
-            # static_video_ingestor = StaticVideoFileIngestor(
-            #     registry=registry,
-            #     router=router,
-            #     project_root=project_root,
-            #     loop=False,
-            #     max_sources=operational.static_video_source_count,
-            #     gpu_resize_enabled=app_settings.gpu_resize_enabled,
-            # )
     media_preview = MediaPreviewPublisher(
         registry=registry,
         project_root=project_root,

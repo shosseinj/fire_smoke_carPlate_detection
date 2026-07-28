@@ -41,3 +41,17 @@ Retry 3: Reran the remaining suite with per-test progress; the source CRUD webso
 Current diagnosis: The regression suite has a pre-existing undefined seed_path test defect plus a separate source CRUD websocket teardown hang; neither failure is in the focused RTSP routing, lifecycle, migration, FPS diagnostics, or preview tests.
 Manual next step: Define the missing seed_path fixture or local variable in tests/test_api.py, then isolate and fix the TestClient/runtime teardown hang in test_source_crud_emits_online_websocket_events_and_allows_renaming before rerunning the full PostgreSQL suite.
 ================================================================================
+Timestamp UTC: 2026-07-28T08:09:12.8795363Z
+Agent: Codex GPT-5
+Task: Replace production OpenCV ingest with on-demand DeepStream RTSP and Static pipelines
+Status: FAILED_AFTER_3_RETRIES
+Changed files: .env.example, app/api/broadcast.py, app/api/cams.py, app/api/diagnostics.py, app/api/static_videos.py, app/config.py, app/core/deepstream_ingestor.py, app/core/media_preview_publisher.py, app/core/raw_stream_router.py, app/core/stream_demand.py, app/main.py, app/runtime.py, docker-compose.yml, scripts/video_ws_probe.py, tests/test_api.py, tests/test_stream_demand.py, tests/test_video_ingestor.py
+Baseline: Full unit suite passed; no-subscriber Docker remained healthy with zero ingest and AI counters; one Static H264 source delivered 902 frames over 65 seconds and remained stable.
+Failed command: Isolated VIDEO_ONLY_MODE RTSP Docker runs with DEEPSTREAM_MAX_ACTIVE_SOURCES=1 and one allowlisted source, repeated for the first and second RTSP sources.
+Final error: Both isolated RTSP sources exited with code 139 and OOMKilled=false; the last messages were rtspsrc PROGRESS events before pad caps, parser, decoder, frontend mapping, or AI activity.
+Retry 1: Ran the first allowlisted RTSP source alone and confirmed native ExitCode 139 without Static ingest.
+Retry 2: Enabled pre-parse bus instrumentation and repeated the first source; the final events were rtspsrc PROGRESS with codec unset and no pad caps.
+Retry 3: Repeated with the second allowlisted RTSP source; it failed in the same pre-pad rtspsrc negotiation stage.
+Current diagnosis: The remaining crash is a native rtspsrc negotiation or environment failure shared by at least two cameras; evidence does not implicate decoder, parser, AI, JPEG encoding, OpenCV, OOM, or one uniquely bad source.
+Manual next step: Reproduce each redacted RTSP source with gst-launch in the same image, collect a native core or gdb backtrace, and compare GStreamer rtspsrc/plugin versions before changing decoder, queues, worker count, or encoder threads.
+================================================================================

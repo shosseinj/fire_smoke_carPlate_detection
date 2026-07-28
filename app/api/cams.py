@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
+import queue
+import time
 from typing import Literal
 
-import cv2
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
 
@@ -112,22 +113,6 @@ def _response(record: CamRecord) -> CamResponse:
     )
 
 
-def _open_capture(url: str):
-    source: str | int = url
-    if url.isdigit():
-        source = int(url)
-    elif url.lower().startswith("usb://") and url[6:].isdigit():
-        source = int(url[6:])
-
-    capture = cv2.VideoCapture()
-    if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-    if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
-    capture.open(source)
-    return capture
-
-
 @router.post(
     "/health-check",
     response_model=CamHealthCheckResponse,
@@ -135,45 +120,45 @@ def _open_capture(url: str):
 )
 def check_cam_health(
     payload: CamHealthCheckRequest,
+    runtime: Runtime = Depends(get_runtime),
 ) -> CamHealthCheckResponse:
-    capture = None
-    try:
-        capture = _open_capture(payload.url)
-        if not capture.isOpened():
-            return CamHealthCheckResponse(
-                status="unhealthy",
-                message="Unable to connect to the camera",
-                snapshot=None,
-            )
-        ok, frame = capture.read()
-        if not ok or frame is None:
-            return CamHealthCheckResponse(
-                status="unhealthy",
-                message="Connected, but no frame could be read",
-                snapshot=None,
-            )
-        encoded, buffer = cv2.imencode(".jpg", frame)
-        if not encoded:
-            return CamHealthCheckResponse(
-                status="unhealthy",
-                message="The frame could not be encoded as JPEG",
-                snapshot=None,
-            )
-        image_base64 = base64.b64encode(buffer).decode("ascii")
-        return CamHealthCheckResponse(
-            status="healthy",
-            message="Camera is reachable",
-            snapshot=f"data:image/jpeg;base64,{image_base64}",
-        )
-    except Exception as exc:
+    record = runtime.registry.get(payload.url)
+    if record is None or not record.enabled:
         return CamHealthCheckResponse(
             status="unhealthy",
-            message=f"Camera health check failed: {exc}",
+            message="Source is not registered or is disabled",
+            snapshot=None,
+        )
+    subscriber_id, target = runtime.broadcast.subscribe_source_only(
+        maximum_queue=8,
+        wall=False,
+        fullscreen_source=record.source_uri,
+    )
+    lease = runtime.stream_demand.acquire_video(record.source_uri)
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                frame = target.get(
+                    timeout=min(0.5, deadline - time.monotonic())
+                )
+            except queue.Empty:
+                continue
+            if frame is not None and frame.source_id == record.source_uri:
+                image_base64 = base64.b64encode(frame.jpeg).decode("ascii")
+                return CamHealthCheckResponse(
+                    status="healthy",
+                    message="Source produced a frame through DeepStream",
+                    snapshot=f"data:image/jpeg;base64,{image_base64}",
+                )
+        return CamHealthCheckResponse(
+            status="unhealthy",
+            message="No DeepStream frame arrived within the health-check timeout",
             snapshot=None,
         )
     finally:
-        if capture is not None:
-            capture.release()
+        runtime.broadcast.unsubscribe_source_only(subscriber_id)
+        lease.release()
 
 
 @router.post("", response_model=CamResponse, status_code=status.HTTP_201_CREATED)

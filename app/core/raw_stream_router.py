@@ -44,6 +44,8 @@ class RawStreamRouter:
 
         self._lock = threading.RLock()
         self._running = False
+        self._published_packets = 0
+        self._published_bytes = 0
 
     def start(self) -> None:
         if not self.enabled:
@@ -87,6 +89,9 @@ class RawStreamRouter:
             is_keyframe=is_keyframe,
             data=data,
         )
+        with self._lock:
+            self._published_packets += 1
+            self._published_bytes += len(data)
 
         if self.clip_buffer_enabled:
             self._publish_to_clip_buffer(packet)
@@ -117,4 +122,6 @@ class RawStreamRouter:
                 "recording_enabled": self.recording_enabled,
                 "relay_enabled": self.relay_enabled,
                 "clip_buffer_enabled": self.clip_buffer_enabled,
+                "published_packets": self._published_packets,
+                "published_bytes": self._published_bytes,
             }

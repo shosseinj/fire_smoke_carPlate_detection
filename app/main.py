@@ -195,6 +195,7 @@ def health() -> dict:
         "registered_sources": len(runtime.registry.list()),
         "router_started": status["started"],
         "video_only_mode": status["video_only_mode"],
+        "deepstream_limits": status["deepstream_limits"],
         "stream_demand": status["stream_demand"],
         "frontend_frame_worker": status["frontend_frame_worker"],
         "video_ingestor": status["video_ingestor"],

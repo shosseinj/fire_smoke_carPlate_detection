@@ -34,6 +34,13 @@ def _env_int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
+def _env_str_tuple(name: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value in {None, ""}:
+        return default
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 
 
 def _env_first(names: tuple[str, ...], default: str | None = None) -> str | None:
@@ -290,6 +297,18 @@ class Settings:
     # Ingestion tuning
     rtsp_source_count: int = _env_int("RTSP_SOURCE_COUNT", 512)
     static_video_source_count: int = _env_int("STATIC_VIDEO_SOURCE_COUNT", 256)
+    deepstream_max_active_sources: int = _env_int(
+        "DEEPSTREAM_MAX_ACTIVE_SOURCES", 32
+    )
+    deepstream_source_open_stagger_seconds: float = _env_float(
+        "DEEPSTREAM_SOURCE_OPEN_STAGGER_SECONDS", 5.0
+    )
+    deepstream_source_allowlist: tuple[str, ...] = _env_str_tuple(
+        "DEEPSTREAM_SOURCE_ALLOWLIST"
+    )
+    video_stream_demand_grace_seconds: float = _env_float(
+        "VIDEO_STREAM_DEMAND_GRACE_SECONDS", 2.0
+    )
 
     # Authentication / JWT. Current names take precedence; legacy names are fallbacks.
     jwt_secret_key: str = str(

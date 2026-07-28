@@ -561,7 +561,15 @@ def test_runtime_selects_deepstream_backend_without_loading_plugins(tmp_path: Pa
     )
     try:
         assert isinstance(runtime.video_ingestor, DeepStreamIngestor)
+        assert isinstance(runtime.static_video_ingestor, DeepStreamIngestor)
         assert runtime.video_ingestor.status()["backend"] == "deepstream"
+        assert runtime.video_ingestor.source_type_filter == "rtsp"
+        assert runtime.static_video_ingestor.source_type_filter == "static_video"
+        assert runtime.video_ingestor.demand_controller is runtime.stream_demand
+        assert (
+            runtime.static_video_ingestor.demand_controller
+            is runtime.stream_demand
+        )
     finally:
         runtime.close()
 

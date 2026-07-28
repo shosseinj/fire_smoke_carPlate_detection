@@ -453,7 +453,7 @@ class MediaPreviewPublisher:
                 "open_failures": self._open_failures,
                 "last_error": self._last_error,
                 "sources": {
-                    source_id: {
+                    VideoFileIngestor.redact_uri(source_id): {
                         "path": preview_stream_path(source_id),
                         "source_type": (
                             state.source_type
@@ -481,7 +481,13 @@ class MediaPreviewPublisher:
                             if state is None
                             else None
                         ),
-                        "last_error": self._last_errors.get(source_id),
+                        "last_error": (
+                            self._last_errors.get(source_id, "").replace(
+                                source_id,
+                                VideoFileIngestor.redact_uri(source_id),
+                            )
+                            or None
+                        ),
                     }
                     for source_id, record in configured.items()
                     for state in (self._states.get(source_id),)

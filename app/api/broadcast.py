@@ -212,7 +212,7 @@ async def source_video_wall_websocket(
         return
 
     demand_lease = (
-        runtime.stream_demand.acquire_video()
+        runtime.stream_demand.acquire_video(fullscreen_source)
         if getattr(runtime, "stream_demand", None) is not None
         else None
     )

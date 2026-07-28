@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import math
+import queue
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -16,14 +18,21 @@ from app.core.router import TaskRouter
 from app.core.stream_demand import DemandSnapshot, StreamDemandController
 from app.core.source_registry import (
     RTSP,
+    STATIC_VIDEO,
     SOURCE_TYPES,
     SourceRecord,
     SourceRegistry,
     canonical_source_type,
 )
-from app.core.video_ingestor import VIDEO_SOURCE_OPEN_LOCK, VideoFileIngestor
+from app.core.video_ingestor import VideoFileIngestor
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("uvicorn.error")
+
+# GStreamer/NVIDIA plugin construction and teardown are process-global native
+# operations.  Both runtime ingestors share this barrier so a dynamic-pad
+# callback cannot mutate a pipeline while either ingestor is disposing or
+# opening native objects.
+_GST_LIFECYCLE_LOCK = threading.RLock()
 
 
 def _load_gstreamer() -> tuple[Any, Any]:
@@ -56,7 +65,7 @@ class DeepStreamSourceState:
     video_valve: Any | None
     bus: Any
 
-    bus_handler_id: int
+    bus_handler_id: int | None
     source_pad_handler_id: int
     decoded_sink_handler_id: int
     raw_sink_handler_id: int | None
@@ -64,6 +73,9 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
+    encoded_sink: Any | None = None
+    encoded_sink_handler_id: int | None = None
+    generation: int = 0
     frontend_frame_index: int = -1
     frontend_next_frame_due_monotonic: float = 0.0
     frontend_rate_limited_frames: int = 0
@@ -90,6 +102,17 @@ class DeepStreamSourceState:
     warnings: int = 0
     source_frame_width: int = 0
     source_frame_height: int = 0
+    pipeline_state: str = "NULL"
+    pending_state: str = "VOID_PENDING"
+    last_bus_message: str | None = None
+    last_bus_element: str | None = None
+    last_bus_message_monotonic: float = 0.0
+    last_pad_caps: str | None = None
+    raw_encoded_packets: int = 0
+    position_seconds: float | None = None
+    duration_seconds: float | None = None
+    seek_failures: int = 0
+    paused_for_demand: bool = False
 
 
 class DeepStreamIngestor:
@@ -99,6 +122,9 @@ class DeepStreamIngestor:
 
     REQUIRED_ELEMENTS = (
         "rtspsrc",
+        "filesrc",
+        "qtdemux",
+        "matroskademux",
         "rtph264depay",
         "rtph265depay",
         "h264parse",
@@ -134,6 +160,10 @@ class DeepStreamIngestor:
         rtsp_stall_timeout_seconds: int = 30,
         skip_taskless_sources: bool = True,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
+        max_active_sources: int | None = None,
+        source_open_stagger_seconds: float = 0.5,
+        source_allowlist: tuple[str, ...] | None = None,
+        max_source_opens_per_sync: int = 1,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -165,6 +195,18 @@ class DeepStreamIngestor:
             0, int(rtsp_stall_timeout_seconds)
         )
         self.gst_loader = gst_loader
+        self.max_active_sources = (
+            self.max_sources
+            if max_active_sources is None
+            else max(1, int(max_active_sources))
+        )
+        self.source_open_stagger_seconds = max(
+            0.0, float(source_open_stagger_seconds)
+        )
+        self.source_allowlist = frozenset(source_allowlist or ())
+        self.max_source_opens_per_sync = max(
+            1, int(max_source_opens_per_sync)
+        )
 
         self._gst: Any | None = None
         self._glib: Any | None = None
@@ -175,6 +217,11 @@ class DeepStreamIngestor:
         self._states: dict[str, DeepStreamSourceState] = {}
         self._closing_sources: set[str] = set()
         self._close_threads: dict[str, threading.Thread] = {}
+        self._commands: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
+        self._owner_thread_id: int | None = None
+        self._generation_sequence = 0
+        self._next_source_open_monotonic = 0.0
+        self._bus_history: dict[str, deque[dict[str, Any]]] = {}
         self._retry_after: dict[str, float] = {}
         self._failed_sources: set[str] = set()
         self._frame_sequences: dict[str, int] = {}
@@ -192,12 +239,12 @@ class DeepStreamIngestor:
                 self._on_demand_changed
             )
 
-    def _video_required(self) -> bool:
+    def _video_required(self, source_id: str | None = None) -> bool:
         return (
             self.frontend_frame_worker is not None
             and (
                 self.demand_controller is None
-                or self.demand_controller.video_required()
+                or self.demand_controller.video_required(source_id)
             )
         )
 
@@ -211,28 +258,13 @@ class DeepStreamIngestor:
         )
 
     def _on_demand_changed(self, _snapshot: DemandSnapshot) -> None:
-        """Apply current demand to live branches without rebuilding pipelines."""
+        """Wake the owner thread; never mutate GStreamer from subscriber threads."""
         if (
             (self._video_required() or self._ai_required())
             and (self._thread is None or not self._thread.is_alive())
         ):
             self.start()
-        video_drop = not self._video_required()
-        ai_drop = not self._ai_required()
-        with self._lock:
-            valves = [
-                (state.video_valve, video_drop)
-                for state in self._states.values()
-            ] + [
-                (state.ai_valve, ai_drop)
-                for state in self._states.values()
-            ]
-        for valve, drop in valves:
-            if valve is not None:
-                try:
-                    valve.set_property("drop", drop)
-                except Exception:
-                    LOGGER.exception("Could not update DeepStream demand valve")
+        self._commands.put(("demand_changed", None))
 
     @staticmethod
     def is_supported_source(record: SourceRecord) -> bool:
@@ -297,6 +329,143 @@ class DeepStreamIngestor:
             raise RuntimeError(f"Required GStreamer element is unavailable: {factory}")
         return element
 
+    def _configure_nonblocking_queue(self, element: Any, buffers: int) -> None:
+        element.set_property("leaky", 2)
+        element.set_property("max-size-buffers", buffers)
+        element.set_property("max-size-bytes", 0)
+        element.set_property("max-size-time", 0)
+
+    def _build_decoded_output_branches(
+        self,
+        *,
+        pipeline: Any,
+        source_id: str,
+        safe_id: str,
+        decoder: Any,
+        generation: int,
+    ) -> dict[str, Any]:
+        """Attach common original-resolution frontend and optional AI branches."""
+        Gst, _ = self._require_runtime()
+        decoded_tee = self._make("tee", f"decoded_tee_{safe_id}_{generation}")
+        video_valve = self._make("valve", f"video_valve_{safe_id}_{generation}")
+        frontend_queue = self._make("queue", f"frontend_queue_{safe_id}_{generation}")
+        frontend_convert = self._make(
+            "nvvideoconvert", f"frontend_convert_{safe_id}_{generation}"
+        )
+        frontend_caps = self._make(
+            "capsfilter", f"frontend_caps_{safe_id}_{generation}"
+        )
+        frontend_sink = self._make(
+            "appsink", f"frontend_sink_{safe_id}_{generation}"
+        )
+        video_valve.set_property("drop", not self._video_required(source_id))
+        self._configure_nonblocking_queue(frontend_queue, 2)
+        frontend_caps.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw,format=BGRx")
+        )
+        record = self.registry.get(source_id)
+        static_source = bool(
+            record is not None
+            and canonical_source_type(
+                record.source_uri, record.source_type
+            )
+            == STATIC_VIDEO
+        )
+        for name, value in (
+            ("emit-signals", True),
+            ("sync", static_source),
+            ("max-buffers", 1),
+            ("drop", True),
+        ):
+            frontend_sink.set_property(name, value)
+        self._set_if_supported(frontend_sink, "enable-last-sample", False)
+
+        elements = [
+            decoded_tee,
+            video_valve,
+            frontend_queue,
+            frontend_convert,
+            frontend_caps,
+            frontend_sink,
+        ]
+        ai_valve = None
+        decoded_sink = None
+        decoded_sink_handler_id = 0
+        if not self.video_only_mode:
+            ai_valve = self._make("valve", f"ai_valve_{safe_id}_{generation}")
+            ai_queue = self._make("queue", f"ai_queue_{safe_id}_{generation}")
+            pacer = self._make("identity", f"ai_pacer_{safe_id}_{generation}")
+            gpu_convert = self._make(
+                "nvvideoconvert", f"ai_convert_{safe_id}_{generation}"
+            )
+            ai_caps = self._make("capsfilter", f"ai_caps_{safe_id}_{generation}")
+            decoded_sink = self._make(
+                "appsink", f"ai_sink_{safe_id}_{generation}"
+            )
+            ai_valve.set_property("drop", not self._ai_required())
+            self._configure_nonblocking_queue(ai_queue, 2)
+            pacer.set_property("sync", False)
+            ai_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    "video/x-raw,format=BGRx,width=640,height=640"
+                ),
+            )
+            for name, value in (
+                ("emit-signals", True),
+                ("sync", False),
+                ("max-buffers", 1),
+                ("drop", True),
+            ):
+                decoded_sink.set_property(name, value)
+            self._set_if_supported(decoded_sink, "enable-last-sample", False)
+            elements.extend(
+                [ai_valve, ai_queue, pacer, gpu_convert, ai_caps, decoded_sink]
+            )
+
+        for element in elements:
+            pipeline.add(element)
+        if not decoder.link(decoded_tee):
+            raise RuntimeError("Could not link NVDEC to decoded tee")
+        if not decoded_tee.link(video_valve):
+            raise RuntimeError("Could not link decoded tee to frontend valve")
+        if not video_valve.link(frontend_queue):
+            raise RuntimeError("Could not link frontend valve to queue")
+        if not frontend_queue.link(frontend_convert):
+            raise RuntimeError("Could not link frontend queue to converter")
+        if not frontend_convert.link(frontend_caps):
+            raise RuntimeError("Could not link frontend converter to BGRx caps")
+        if not frontend_caps.link(frontend_sink):
+            raise RuntimeError("Could not link frontend caps to appsink")
+        if ai_valve is not None and decoded_sink is not None:
+            if not decoded_tee.link(ai_valve):
+                raise RuntimeError("Could not link decoded tee to AI valve")
+            if not ai_valve.link(ai_queue):
+                raise RuntimeError("Could not link AI valve to queue")
+            if not ai_queue.link(pacer):
+                raise RuntimeError("Could not link AI queue to pacer")
+            if not pacer.link(gpu_convert):
+                raise RuntimeError("Could not link AI pacer to converter")
+            if not gpu_convert.link(ai_caps):
+                raise RuntimeError("Could not link AI converter to caps")
+            if not ai_caps.link(decoded_sink):
+                raise RuntimeError("Could not link AI caps to appsink")
+            decoded_sink_handler_id = decoded_sink.connect(
+                "new-sample", self._on_new_sample, source_id, generation
+            )
+        frontend_handler_id = frontend_sink.connect(
+            "new-sample", self._on_frontend_sample, source_id, generation
+        )
+        return {
+            "frontend_sink": frontend_sink,
+            "frontend_handler_id": frontend_handler_id,
+            "video_valve": video_valve,
+            "ai_valve": ai_valve,
+            "decoded_sink": decoded_sink,
+            "decoded_sink_handler_id": decoded_sink_handler_id,
+            "elements": elements,
+        }
+
     def _build_encoded_branches(
         self,
         *,
@@ -304,28 +473,29 @@ class DeepStreamIngestor:
         source_id: str,
         safe_id: str,
         codec: str,
-        decoded_sink: Any,
-        gpu_convert: Any,
-        bgrx_caps: Any,
-        pacer: Any,
-        ai_valve: Any,
+        generation: int,
+        rtp: bool,
     ) -> dict[str, Any]:
-        """Build one decode pipeline with two decoded branches.
-
-        Branch 1 keeps the decoded camera resolution and delivers BGR frames to
- 
-        """
+        """Build parser, optional encoded packet tee, NVDEC and decoded outputs."""
         Gst, _ = self._require_runtime()
 
         if codec == "h264":
-            depay = self._make("rtph264depay", f"h264_depay_{safe_id}")
-            parser = self._make("h264parse", f"h264_parser_{safe_id}")
+            depay = (
+                self._make("rtph264depay", f"h264_depay_{safe_id}_{generation}")
+                if rtp
+                else None
+            )
+            parser = self._make("h264parse", f"h264_parser_{safe_id}_{generation}")
             encoded_caps_value = (
                 "video/x-h264,stream-format=byte-stream,alignment=au"
             )
         elif codec == "h265":
-            depay = self._make("rtph265depay", f"h265_depay_{safe_id}")
-            parser = self._make("h265parse", f"h265_parser_{safe_id}")
+            depay = (
+                self._make("rtph265depay", f"h265_depay_{safe_id}_{generation}")
+                if rtp
+                else None
+            )
+            parser = self._make("h265parse", f"h265_parser_{safe_id}_{generation}")
             encoded_caps_value = (
                 "video/x-h265,stream-format=byte-stream,alignment=au"
             )
@@ -334,116 +504,109 @@ class DeepStreamIngestor:
 
         self._set_if_supported(parser, "config-interval", -1)
 
-        encoded_caps = self._make("capsfilter", f"encoded_caps_{safe_id}")
+        encoded_caps = self._make(
+            "capsfilter", f"encoded_caps_{safe_id}_{generation}"
+        )
         encoded_caps.set_property(
             "caps",
             Gst.Caps.from_string(encoded_caps_value),
         )
 
-        decode_queue = self._make("queue", f"decode_queue_{safe_id}")
-        decoder = self._make("nvv4l2decoder", f"decoder_{safe_id}")
-        decoded_tee = self._make("tee", f"decoded_tee_{safe_id}")
-
-        # Original-resolution decoded branch -> FrontendFrameWorker.
-        video_valve = self._make("valve", f"video_valve_{safe_id}")
-        video_valve.set_property("drop", not self._video_required())
-        raw_queue = self._make("queue", f"raw_queue_{safe_id}")
-        raw_convert = self._make("nvvideoconvert", f"raw_convert_{safe_id}")
-        raw_caps = self._make("capsfilter", f"raw_caps_{safe_id}")
-        raw_sink = self._make("appsink", f"raw_sink_{safe_id}")
-
-        raw_caps.set_property(
-            "caps",
-            Gst.Caps.from_string("video/x-raw,format=BGRx"),
-        )
-
-        # Queue configuration. Each branch is independent and may drop old frames.
-        for queue, max_buffers in (
-            (decode_queue, 4),
-            (raw_queue, 2),
+        decode_queue = self._make("queue", f"decode_queue_{safe_id}_{generation}")
+        decoder = self._make("nvv4l2decoder", f"decoder_{safe_id}_{generation}")
+        self._configure_nonblocking_queue(decode_queue, 4)
+        record = self.registry.get(source_id)
+        stream_pacer = None
+        if (
+            record is not None
+            and canonical_source_type(record.source_uri, record.source_type)
+            == STATIC_VIDEO
         ):
-            queue.set_property("leaky", 2)
-            queue.set_property("max-size-buffers", max_buffers)
-            queue.set_property("max-size-bytes", 0)
-            queue.set_property("max-size-time", 0)
-
-        raw_sink.set_property("emit-signals", True)
-        raw_sink.set_property("sync", False)
-        raw_sink.set_property("max-buffers", 1)
-        raw_sink.set_property("drop", True)
-        self._set_if_supported(raw_sink, "enable-last-sample", False)
-
-        elements = (
-            depay,
-            parser,
-            encoded_caps,
-            decode_queue,
-            decoder,
-            decoded_tee,
-            video_valve,
-            raw_queue,
-            raw_convert,
-            raw_caps,
-            raw_sink,
-        )
+            stream_pacer = self._make(
+                "identity", f"stream_pacer_{safe_id}_{generation}"
+            )
+            stream_pacer.set_property("sync", True)
+        elements = [parser, encoded_caps, decode_queue, decoder]
+        if stream_pacer is not None:
+            elements.insert(2, stream_pacer)
+        if depay is not None:
+            elements.insert(0, depay)
+        encoded_sink = None
+        encoded_handler_id = None
+        encoded_tee = None
+        if self.raw_stream_router is not None and self.raw_stream_router.enabled:
+            encoded_tee = self._make(
+                "tee", f"encoded_tee_{safe_id}_{generation}"
+            )
+            encoded_queue = self._make(
+                "queue", f"encoded_queue_{safe_id}_{generation}"
+            )
+            encoded_sink = self._make(
+                "appsink", f"encoded_sink_{safe_id}_{generation}"
+            )
+            self._configure_nonblocking_queue(encoded_queue, 8)
+            for name, value in (
+                ("emit-signals", True),
+                ("sync", False),
+                ("max-buffers", 8),
+                ("drop", True),
+            ):
+                encoded_sink.set_property(name, value)
+            elements.extend([encoded_tee, encoded_queue, encoded_sink])
         for element in elements:
             pipeline.add(element)
-
-        # RTP/encoded input -> one hardware decoder.
-        if not depay.link(parser):
+        if depay is not None and not depay.link(parser):
             raise RuntimeError("Could not link depayloader to parser")
         if not parser.link(encoded_caps):
             raise RuntimeError("Could not link parser to encoded caps")
-        if not encoded_caps.link(decode_queue):
-            raise RuntimeError("Could not link encoded caps to decode queue")
+        encoded_output = stream_pacer or encoded_caps
+        if stream_pacer is not None and not encoded_caps.link(stream_pacer):
+            raise RuntimeError("Could not link static parser caps to pacer")
+        if encoded_tee is None:
+            if not encoded_output.link(decode_queue):
+                raise RuntimeError("Could not link encoded caps to decode queue")
+        else:
+            if not encoded_output.link(encoded_tee):
+                raise RuntimeError("Could not link parser caps to encoded tee")
+            if not encoded_tee.link(decode_queue):
+                raise RuntimeError("Could not link encoded tee to decode queue")
+            if not encoded_tee.link(encoded_queue):
+                raise RuntimeError("Could not link encoded tee to packet queue")
+            if not encoded_queue.link(encoded_sink):
+                raise RuntimeError("Could not link encoded queue to appsink")
+            encoded_handler_id = encoded_sink.connect(
+                "new-sample",
+                self._on_encoded_sample,
+                source_id,
+                codec,
+                generation,
+            )
         if not decode_queue.link(decoder):
             raise RuntimeError("Could not link decode queue to NVDEC")
-        if not decoder.link(decoded_tee):
-            raise RuntimeError("Could not link NVDEC to decoded tee")
-
-        # Original-resolution decoded branch -> RawStreamRouter.
-        if not decoded_tee.link(video_valve):
-            raise RuntimeError("Could not link decoded tee to frontend valve")
-        if not video_valve.link(raw_queue):
-            raise RuntimeError("Could not link frontend valve to raw queue")
-        if not raw_queue.link(raw_convert):
-            raise RuntimeError("Could not link raw queue to raw converter")
-        if not raw_convert.link(raw_caps):
-            raise RuntimeError("Could not link raw converter to raw caps")
-        if not raw_caps.link(raw_sink):
-            raise RuntimeError("Could not link raw caps to raw appsink")
-
-        # AI branch -> resize caps -> decoded_sink -> TaskRouter.
-        if not decoded_tee.link(ai_valve):
-            raise RuntimeError("Could not link decoded tee to AI valve")
-        if not ai_valve.link(pacer):
-            raise RuntimeError("Could not link AI valve to AI pacer")
-        if not pacer.link(gpu_convert):
-            raise RuntimeError("Could not link AI pacer to nvvideoconvert")
-        if not gpu_convert.link(bgrx_caps):
-            raise RuntimeError("Could not link AI converter to 640x640 caps")
-        if not bgrx_caps.link(decoded_sink):
-            raise RuntimeError("Could not link AI caps to decoded appsink")
-
-        raw_handler_id = raw_sink.connect(
-            "new-sample",
-            self._on_raw_sample,
-            source_id,
+        outputs = self._build_decoded_output_branches(
+            pipeline=pipeline,
+            source_id=source_id,
+            safe_id=safe_id,
+            decoder=decoder,
+            generation=generation,
         )
-
-        # The elements are added while the parent pipeline is already running.
-        for element in elements:
+        all_elements = elements + outputs["elements"]
+        for element in all_elements:
             if not element.sync_state_with_parent():
                 raise RuntimeError(
                     f"Could not sync GStreamer element state: {element.get_name()}"
                 )
-
         return {
             "depay": depay,
-            "raw_sink": raw_sink,
-            "raw_handler_id": raw_handler_id,
-            "video_valve": video_valve,
-            "ai_valve": ai_valve,
+            "parser": parser,
+            "raw_sink": outputs["frontend_sink"],
+            "raw_handler_id": outputs["frontend_handler_id"],
+            "video_valve": outputs["video_valve"],
+            "ai_valve": outputs["ai_valve"],
+            "decoded_sink": outputs["decoded_sink"],
+            "decoded_sink_handler_id": outputs["decoded_sink_handler_id"],
+            "encoded_sink": encoded_sink,
+            "encoded_handler_id": encoded_handler_id,
             "codec": codec,
         }
 
@@ -457,6 +620,17 @@ class DeepStreamIngestor:
 
         caps = pad.get_current_caps() or pad.query_caps(None)
         if caps is None or caps.get_size() == 0:
+            return
+        caps_text = caps.to_string()
+        LOGGER.info(
+            "GST_PAD_CAPS source=%s source_type=rtsp generation=%s caps=%s",
+            VideoFileIngestor.redact_uri(context["source_id"]),
+            context["generation"],
+            caps_text,
+        )
+        if not self._callback_is_current(
+            context["source_id"], context["generation"]
+        ):
             return
 
         structure = caps.get_structure(0)
@@ -479,8 +653,10 @@ class DeepStreamIngestor:
             )
             return
 
-        if context["branch_created"]:
-            return
+        with self._lock:
+            if context["branch_created"]:
+                return
+            context["branch_created"] = True
 
         try:
             branch = self._build_encoded_branches(
@@ -488,11 +664,8 @@ class DeepStreamIngestor:
                 source_id=context["source_id"],
                 safe_id=context["safe_id"],
                 codec=codec,
-                decoded_sink=context["decoded_sink"],
-                gpu_convert=context["gpu_convert"],
-                bgrx_caps=context["bgrx_caps"],
-                pacer=context["pacer"],
-                ai_valve=context["ai_valve"],
+                generation=context["generation"],
+                rtp=True,
             )
 
             sink_pad = branch["depay"].get_static_pad("sink")
@@ -505,7 +678,6 @@ class DeepStreamIngestor:
                     f"Could not link RTSP pad to {codec} depayloader: {result}"
                 )
 
-            context["branch_created"] = True
             context["codec"] = codec
             context["raw_sink"] = branch["raw_sink"]
             context["raw_handler_id"] = branch["raw_handler_id"]
@@ -513,11 +685,19 @@ class DeepStreamIngestor:
 
             with self._lock:
                 state = self._states.get(context["source_id"])
-                if state is not None:
+                if state is not None and state.generation == context["generation"]:
                     state.codec = codec
                     state.raw_sink = branch["raw_sink"]
                     state.raw_sink_handler_id = branch["raw_handler_id"]
                     state.video_valve = branch["video_valve"]
+                    state.ai_valve = branch["ai_valve"]
+                    state.decoded_sink = branch["decoded_sink"]
+                    state.decoded_sink_handler_id = branch[
+                        "decoded_sink_handler_id"
+                    ]
+                    state.encoded_sink = branch["encoded_sink"]
+                    state.encoded_sink_handler_id = branch["encoded_handler_id"]
+                    state.last_pad_caps = caps_text
 
             LOGGER.info(
                 "DeepStream encoded branch ready source=%s codec=%s",
@@ -525,24 +705,61 @@ class DeepStreamIngestor:
                 codec,
             )
         except Exception as exc:
+            context["branch_created"] = False
             self._mark_failed(
                 context["source_id"],
                 f"Could not create encoded RTSP branch: "
                 f"{type(exc).__name__}: {exc}",
             )
 
-    def _on_raw_sample(
+    def _callback_is_current(
+        self,
+        source_id: str,
+        generation: int,
+        *,
+        bus: Any | None = None,
+        sink: Any | None = None,
+    ) -> bool:
+        with self._lock:
+            state = self._states.get(source_id)
+            return bool(
+                state is not None
+                and state.generation == generation
+                and (bus is None or state.bus is bus)
+                and (
+                    sink is None
+                    or state.raw_sink is sink
+                    or state.decoded_sink is sink
+                )
+            )
+
+    def _on_frontend_sample(
         self,
         sink: Any,
         source_id: str,
+        generation: int | None = None,
     ) -> Any:
-        """Deliver an original-resolution decoded BGR frame to RawStreamRouter."""
-        Gst, _ = self._require_runtime()
+        """Deliver one original-resolution decoded frame to the frontend."""
+        with _GST_LIFECYCLE_LOCK:
+            self._on_rtsp_pad_added_locked(pad, context)
 
+    def _on_rtsp_pad_added_locked(
+        self, pad: Any, context: dict[str, Any]
+    ) -> None:
+        Gst, _ = self._require_runtime()
+        if generation is None:
+            with self._lock:
+                current = self._states.get(source_id)
+                generation = 0 if current is None else current.generation
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
-        if not self._video_required():
+        if (
+            not self._video_required(source_id)
+            or not self._callback_is_current(
+                source_id, generation, sink=sink
+            )
+        ):
             return Gst.FlowReturn.OK
 
         try:
@@ -582,7 +799,7 @@ class DeepStreamIngestor:
             with self._lock:
                 state = self._states.get(source_id)
 
-                if state is None:
+                if state is None or state.generation != generation:
                     return Gst.FlowReturn.OK
 
                 now_monotonic = time.monotonic()
@@ -639,7 +856,7 @@ class DeepStreamIngestor:
                     frame=frame,
                     frame_index=frame_index,
                     source_time_seconds=source_time_seconds,
-                    source_type="rtsp",
+                    source_type=state.source_type,
                     ingest_backend="deepstream",
                 )
 
@@ -652,6 +869,48 @@ class DeepStreamIngestor:
             )
             return Gst.FlowReturn.ERROR
 
+        return Gst.FlowReturn.OK
+
+    # Compatibility alias for older tests/callers.
+    _on_raw_sample = _on_frontend_sample
+
+    def _on_encoded_sample(
+        self,
+        sink: Any,
+        source_id: str,
+        codec: str,
+        generation: int,
+    ) -> Any:
+        Gst, _ = self._require_runtime()
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        if not self._callback_is_current(source_id, generation):
+            return Gst.FlowReturn.OK
+        buffer = sample.get_buffer()
+        if buffer is None:
+            return Gst.FlowReturn.ERROR
+        payload = buffer.extract_dup(0, buffer.get_size())
+        flags = buffer.get_flags()
+        is_keyframe = not bool(flags & Gst.BufferFlags.DELTA_UNIT)
+        if self.raw_stream_router is not None:
+            self.raw_stream_router.publish_packet(
+                source_id=source_id,
+                codec=codec,
+                pts_ns=None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts),
+                dts_ns=None if buffer.dts == Gst.CLOCK_TIME_NONE else int(buffer.dts),
+                duration_ns=(
+                    None
+                    if buffer.duration == Gst.CLOCK_TIME_NONE
+                    else int(buffer.duration)
+                ),
+                is_keyframe=is_keyframe,
+                data=payload,
+            )
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is not None and state.generation == generation:
+                state.raw_encoded_packets += 1
         return Gst.FlowReturn.OK
 
     def _redact_error(self, source_id: str, message: str) -> str:
@@ -686,12 +945,106 @@ class DeepStreamIngestor:
         log = LOGGER.info if expected else LOGGER.error
         log("DeepStream source %s: %s", display_uri, safe_message)
 
-    def _on_bus_message(self, bus: Any, message: Any, source_id: str) -> None:
+    def _on_bus_message(
+        self,
+        bus: Any,
+        message: Any,
+        source_id: str,
+        generation: int | None = None,
+    ) -> None:
         Gst, _ = self._require_runtime()
+        if generation is None:
+            with self._lock:
+                current = self._states.get(source_id)
+                generation = 0 if current is None else current.generation
         with self._lock:
             state = self._states.get(source_id)
-            if state is None or state.bus is not bus:
+            if (
+                state is None
+                or state.generation != generation
+                or state.bus is not bus
+            ):
                 return
+            pipeline = state.pipeline
+            display_uri = state.display_uri
+            source_type = state.source_type
+            codec = state.codec
+        message_source = getattr(message, "src", None)
+        element_name = (
+            message_source.get_name()
+            if message_source is not None
+            else "<none>"
+        )
+        factory = "<none>"
+        if message_source is not None:
+            try:
+                factory_object = message_source.get_factory()
+                if factory_object is not None:
+                    factory = factory_object.get_name()
+            except Exception:
+                factory = "<unknown>"
+        type_numeric = int(message.type)
+        try:
+            type_name = Gst.MessageType.get_name(message.type)
+        except Exception:
+            type_name = str(message.type)
+        current_state = "UNKNOWN"
+        pending_state = "UNKNOWN"
+        try:
+            _, current, pending = pipeline.get_state(0)
+            current_state = current.value_nick
+            pending_state = pending.value_nick
+        except Exception:
+            pass
+        now_monotonic = time.monotonic()
+        event = {
+            "timestamp_monotonic": now_monotonic,
+            "message_type": type_name,
+            "message_type_numeric": type_numeric,
+            "element": element_name,
+            "factory": factory,
+            "pipeline_state": current_state,
+            "pending_state": pending_state,
+            "generation": generation,
+            "codec": codec,
+        }
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.generation != generation:
+                return
+            state.last_bus_message = type_name
+            state.last_bus_element = element_name
+            state.last_bus_message_monotonic = now_monotonic
+            state.pipeline_state = current_state
+            state.pending_state = pending_state
+            history = self._bus_history.setdefault(source_id, deque(maxlen=30))
+            history.append(event)
+        noisy_state_change = (
+            message.type == Gst.MessageType.STATE_CHANGED
+            and message_source is not pipeline
+            and factory
+            not in {"nvv4l2decoder", "rtspsrc", "qtdemux", "matroskademux"}
+        )
+        if not noisy_state_change:
+            LOGGER.info(
+                "GST_BUS_MESSAGE_BEGIN source=%s source_type=%s pipeline=%s "
+                "message_type=%s message_type_name=%s element=%s factory=%s "
+                "pipeline_state=%s pending_state=%s monotonic=%.6f thread=%s "
+                "codec=%s generation=%s",
+                display_uri,
+                source_type,
+                pipeline.get_name(),
+                type_numeric,
+                type_name,
+                element_name,
+                factory,
+                current_state,
+                pending_state,
+                now_monotonic,
+                threading.current_thread().name,
+                codec,
+                generation,
+            )
         if message.type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
             detail = str(error)
@@ -700,20 +1053,11 @@ class DeepStreamIngestor:
             self._mark_failed(source_id, detail)
         elif message.type == Gst.MessageType.EOS:
             if self._should_loop_source(source_id):
-                with self._lock:
-                    if source_id not in self._failed_sources:
-                        self._loop_counts[source_id] = (
-                            self._loop_counts.get(source_id, 0) + 1
-                        )
                 LOGGER.info(
-                    "DeepStream file reached EOS; restarting cleanly: %s",
+                    "DeepStream file reached EOS; seek scheduled: %s",
                     VideoFileIngestor.redact_uri(source_id),
                 )
-                self._mark_failed(
-                    source_id,
-                    "End of stream; source restart scheduled",
-                    expected=True,
-                )
+                self._commands.put(("seek_loop", (source_id, generation)))
             else:
                 LOGGER.info(
                     "DeepStream file reached EOS: %s",
@@ -723,8 +1067,12 @@ class DeepStreamIngestor:
                     self._failed_sources.add(source_id)
                     self._retry_after[source_id] = float("inf")
         elif message.type == Gst.MessageType.WARNING:
-            warning, _ = message.parse_warning()
+            warning, debug = message.parse_warning()
             safe_warning = self._redact_error(source_id, str(warning))
+            if debug:
+                safe_warning = (
+                    f"{safe_warning} ({self._redact_error(source_id, debug)})"
+                )
             with self._lock:
                 state = self._states.get(source_id)
                 if state is not None:
@@ -741,8 +1089,14 @@ class DeepStreamIngestor:
         record = self.registry.get(source_id)
         return self.loop if record is None else bool(record.loop)
 
-    def _on_new_sample(self, sink: Any, source_id: str) -> Any:
+    def _on_new_sample(
+        self, sink: Any, source_id: str, generation: int | None = None
+    ) -> Any:
         Gst, _ = self._require_runtime()
+        if generation is None:
+            with self._lock:
+                current = self._states.get(source_id)
+                generation = 0 if current is None else current.generation
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
@@ -752,7 +1106,11 @@ class DeepStreamIngestor:
         now = time.monotonic()
         with self._lock:
             state = self._states.get(source_id)
-            if state is None or state.decoded_sink is not sink:
+            if (
+                state is None
+                or state.generation != generation
+                or state.decoded_sink is not sink
+            ):
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
             if state.delivery_target_fps is not None:
@@ -854,7 +1212,7 @@ class DeepStreamIngestor:
         self._frame_sequences[source_id] = next_frame_index
         return next_frame_index
 
-    def _open_source(self, record: SourceRecord) -> None:
+    def _legacy_open_source(self, record: SourceRecord) -> None:
         Gst, _ = self._require_runtime()
         assert record.source_uri is not None
 
@@ -995,6 +1353,7 @@ class DeepStreamIngestor:
                 source=source,
                 decoded_sink=decoded_sink,
                 raw_sink=None,
+                encoded_sink=None,
                 ai_valve=ai_valve,
                 video_valve=None,
                 bus=bus,
@@ -1002,6 +1361,8 @@ class DeepStreamIngestor:
                 source_pad_handler_id=source_pad_handler_id,
                 decoded_sink_handler_id=decoded_sink_handler_id,
                 raw_sink_handler_id=None,
+                encoded_sink_handler_id=None,
+                generation=0,
                 frame_width=640,
                 frame_height=640,
                 delivery_target_fps=record.fps,
@@ -1033,6 +1394,252 @@ class DeepStreamIngestor:
                     pass
             raise
 
+    def _next_generation(self) -> int:
+        with self._lock:
+            self._generation_sequence += 1
+            return self._generation_sequence
+
+    def _new_pipeline_state(
+        self,
+        *,
+        record: SourceRecord,
+        pipeline: Any,
+        source: Any,
+        source_pad_handler_id: int,
+        generation: int,
+    ) -> DeepStreamSourceState:
+        bus = pipeline.get_bus()
+        return DeepStreamSourceState(
+            source_id=record.source_uri,
+            source_uri=record.source_uri,
+            display_uri=VideoFileIngestor.redact_uri(record.source_uri),
+            source_type=canonical_source_type(
+                record.source_uri, record.source_type
+            ),
+            pipeline=pipeline,
+            source=source,
+            decoded_sink=None,
+            raw_sink=None,
+            encoded_sink=None,
+            ai_valve=None,
+            video_valve=None,
+            bus=bus,
+            bus_handler_id=None,
+            source_pad_handler_id=source_pad_handler_id,
+            decoded_sink_handler_id=0,
+            raw_sink_handler_id=None,
+            encoded_sink_handler_id=None,
+            generation=generation,
+            frame_width=640,
+            frame_height=640,
+            delivery_target_fps=record.fps,
+        )
+
+    def _open_source(self, record: SourceRecord) -> None:
+        source_type = canonical_source_type(
+            record.source_uri, record.source_type
+        )
+        if source_type == RTSP:
+            self._open_rtsp_source(record)
+            return
+        if source_type == STATIC_VIDEO:
+            self._open_static_source(record)
+            return
+        raise ValueError(f"Unsupported DeepStream source type: {source_type}")
+
+    def _open_rtsp_source(self, record: SourceRecord) -> None:
+        with _GST_LIFECYCLE_LOCK:
+            self._open_rtsp_source_locked(record)
+
+    def _open_rtsp_source_locked(self, record: SourceRecord) -> None:
+        Gst, _ = self._require_runtime()
+        generation = self._next_generation()
+        safe_id = self._safe_element_name(record.source_uri)
+        pipeline = Gst.Pipeline.new(f"rtsp_pipeline_{safe_id}_{generation}")
+        if pipeline is None:
+            raise RuntimeError("Could not create RTSP GStreamer pipeline")
+        source = self._make("rtspsrc", f"rtsp_source_{safe_id}_{generation}")
+        source.set_property("location", record.source_uri)
+        self._set_if_supported(source, "latency", self.rtsp_latency_ms)
+        self._set_if_supported(source, "drop-on-latency", True)
+        self._set_if_supported(
+            source, "protocols", 4 if self.rtsp_transport == "tcp" else 3
+        )
+        timeout_us = int(self.rtsp_stall_timeout_seconds * 1_000_000)
+        if timeout_us > 0:
+            self._set_if_supported(source, "timeout", timeout_us)
+            self._set_if_supported(source, "tcp-timeout", timeout_us)
+        pipeline.add(source)
+        context = {
+            "pipeline": pipeline,
+            "source_id": record.source_uri,
+            "safe_id": safe_id,
+            "generation": generation,
+            "branch_created": False,
+            "codec": None,
+            "raw_sink": None,
+            "raw_handler_id": None,
+            "video_valve": None,
+        }
+        source_pad_handler_id = source.connect(
+            "pad-added", self._on_rtsp_pad_added, context
+        )
+        state = self._new_pipeline_state(
+            record=record,
+            pipeline=pipeline,
+            source=source,
+            source_pad_handler_id=source_pad_handler_id,
+            generation=generation,
+        )
+        with self._lock:
+            self._states[record.source_uri] = state
+        result = pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            with self._lock:
+                self._states.pop(record.source_uri, None)
+            self._dispose_state(state)
+            raise RuntimeError("RTSP pipeline refused PLAYING")
+        state.pipeline_state = "PLAYING"
+        with self._lock:
+            self._retry_after.pop(record.source_uri, None)
+
+    def _on_static_demux_pad_added(
+        self, _: Any, pad: Any, context: dict[str, Any]
+    ) -> None:
+        with _GST_LIFECYCLE_LOCK:
+            self._on_static_demux_pad_added_locked(pad, context)
+
+    def _on_static_demux_pad_added_locked(
+        self, pad: Any, context: dict[str, Any]
+    ) -> None:
+        Gst, _ = self._require_runtime()
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        if caps is None or caps.get_size() == 0:
+            return
+        caps_text = caps.to_string()
+        LOGGER.info(
+            "GST_PAD_CAPS source=%s source_type=static_video generation=%s caps=%s",
+            context["display_uri"],
+            context["generation"],
+            caps_text,
+        )
+        if not self._callback_is_current(
+            context["source_id"], context["generation"]
+        ):
+            return
+        structure_name = caps.get_structure(0).get_name()
+        if structure_name == "video/x-h264":
+            codec = "h264"
+        elif structure_name in {"video/x-h265", "video/x-hevc"}:
+            codec = "h265"
+        else:
+            return
+        with self._lock:
+            if context["branch_created"]:
+                return
+            context["branch_created"] = True
+        try:
+            branch = self._build_encoded_branches(
+                pipeline=context["pipeline"],
+                source_id=context["source_id"],
+                safe_id=context["safe_id"],
+                codec=codec,
+                generation=context["generation"],
+                rtp=False,
+            )
+            parser_sink = branch["parser"].get_static_pad("sink")
+            if parser_sink is None:
+                raise RuntimeError("Static parser sink pad unavailable")
+            result = pad.link(parser_sink)
+            if result != Gst.PadLinkReturn.OK:
+                raise RuntimeError(
+                    f"Could not link static demux pad caps={caps_text}: {result}"
+                )
+            with self._lock:
+                state = self._states.get(context["source_id"])
+                if state is None or state.generation != context["generation"]:
+                    return
+                state.codec = codec
+                state.raw_sink = branch["raw_sink"]
+                state.raw_sink_handler_id = branch["raw_handler_id"]
+                state.video_valve = branch["video_valve"]
+                state.ai_valve = branch["ai_valve"]
+                state.decoded_sink = branch["decoded_sink"]
+                state.decoded_sink_handler_id = branch[
+                    "decoded_sink_handler_id"
+                ]
+                state.encoded_sink = branch["encoded_sink"]
+                state.encoded_sink_handler_id = branch["encoded_handler_id"]
+                state.last_pad_caps = caps_text
+        except Exception as exc:
+            context["branch_created"] = False
+            self._mark_failed(
+                context["source_id"],
+                f"Could not build static encoded branch: "
+                f"{type(exc).__name__}: {exc}",
+            )
+
+    def _open_static_source(self, record: SourceRecord) -> None:
+        with _GST_LIFECYCLE_LOCK:
+            self._open_static_source_locked(record)
+
+    def _open_static_source_locked(self, record: SourceRecord) -> None:
+        Gst, _ = self._require_runtime()
+        generation = self._next_generation()
+        safe_id = self._safe_element_name(record.source_uri)
+        resolved = Path(record.source_uri).expanduser()
+        if not resolved.is_absolute():
+            resolved = self.project_root / resolved
+        resolved = resolved.resolve()
+        suffix = resolved.suffix.lower()
+        if suffix in {".mp4", ".mov", ".m4v"}:
+            demux_factory = "qtdemux"
+        elif suffix in {".mkv", ".webm"}:
+            demux_factory = "matroskademux"
+        else:
+            raise ValueError(
+                f"Unsupported controlled static container: {suffix or '<none>'}"
+            )
+        pipeline = Gst.Pipeline.new(f"static_pipeline_{safe_id}_{generation}")
+        if pipeline is None:
+            raise RuntimeError("Could not create static GStreamer pipeline")
+        source = self._make("filesrc", f"file_source_{safe_id}_{generation}")
+        demux = self._make(demux_factory, f"demux_{safe_id}_{generation}")
+        source.set_property("location", str(resolved))
+        pipeline.add(source)
+        pipeline.add(demux)
+        if not source.link(demux):
+            raise RuntimeError(f"Could not link filesrc to {demux_factory}")
+        context = {
+            "pipeline": pipeline,
+            "source_id": record.source_uri,
+            "display_uri": record.source_uri,
+            "safe_id": safe_id,
+            "generation": generation,
+            "branch_created": False,
+        }
+        source_pad_handler_id = demux.connect(
+            "pad-added", self._on_static_demux_pad_added, context
+        )
+        state = self._new_pipeline_state(
+            record=record,
+            pipeline=pipeline,
+            source=demux,
+            source_pad_handler_id=source_pad_handler_id,
+            generation=generation,
+        )
+        with self._lock:
+            self._states[record.source_uri] = state
+        result = pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            with self._lock:
+                self._states.pop(record.source_uri, None)
+            self._dispose_state(state)
+            raise RuntimeError("Static pipeline refused PLAYING")
+        state.pipeline_state = "PLAYING"
+        with self._lock:
+            self._retry_after.pop(record.source_uri, None)
+
     def _dispose_state(
         self,
         state: DeepStreamSourceState,
@@ -1052,6 +1659,10 @@ class DeepStreamIngestor:
                 state.raw_sink_handler_id,
             ),
             (
+                state.encoded_sink,
+                state.encoded_sink_handler_id,
+            ),
+            (
                 state.source,
                 state.source_pad_handler_id,
             ),
@@ -1069,65 +1680,151 @@ class DeepStreamIngestor:
             except Exception:
                 pass
 
-        try:
-            state.bus.remove_signal_watch()
-        except Exception:
-            pass
+        if state.bus_handler_id is not None:
+            try:
+                state.bus.remove_signal_watch()
+            except Exception:
+                pass
 
         state.pipeline.set_state(Gst.State.NULL)
         try:
-            state.pipeline.get_state(5 * Gst.SECOND)
+            state.pipeline.get_state(1 * Gst.SECOND)
         except Exception:
-            LOGGER.debug(
-                "GStreamer NULL-state wait failed for %s",
-                state.source_id,
+            LOGGER.warning(
+                "GStreamer NULL-state wait timed out source=%s generation=%s",
+                state.display_uri,
+                state.generation,
             )
 
     def _schedule_state_disposal(self, state: DeepStreamSourceState) -> None:
-        source_id = state.source_id
-        with self._lock:
-            if source_id in self._closing_sources:
-                return
-            self._closing_sources.add(source_id)
+        if threading.get_ident() == self._owner_thread_id:
+            self._dispose_state(state)
+            with self._lock:
+                self._closing_sources.discard(state.source_id)
+            return
+        self._commands.put(("dispose_state", state))
 
-        def dispose() -> None:
+    def _close_source(self, source_id: str) -> None:
+        if (
+            self._owner_thread_id is not None
+            and threading.get_ident() != self._owner_thread_id
+        ):
+            self._commands.put(("close_source", source_id))
+            return
+        self._close_source_owner(source_id)
+
+    def _close_source_owner(self, source_id: str) -> None:
+        with _GST_LIFECYCLE_LOCK:
+            with self._lock:
+                state = self._states.pop(source_id, None)
+                if state is not None:
+                    self._closing_sources.add(source_id)
+            if state is None:
+                return
             try:
                 self._dispose_state(state)
             finally:
                 with self._lock:
                     self._closing_sources.discard(source_id)
-                    current = self._close_threads.get(source_id)
-                    if current is threading.current_thread():
-                        self._close_threads.pop(source_id, None)
-
-        thread = threading.Thread(
-            target=dispose,
-            name="deepstream-source-disposer",
-            daemon=True,
-        )
-        with self._lock:
-            self._close_threads[source_id] = thread
-        thread.start()
-
-    def _close_source(self, source_id: str) -> None:
-        with self._lock:
-            state = self._states.pop(source_id, None)
-        if state is None:
-            return
-        self._schedule_state_disposal(state)
 
     def _join_close_threads(self, timeout: float) -> None:
-        deadline = time.monotonic() + max(0.0, timeout)
-        while True:
+        return
+
+    def _apply_demand_state(self) -> None:
+        Gst, _ = self._require_runtime()
+        with self._lock:
+            states = list(self._states.values())
+        for state in states:
+            video_required = self._video_required(state.source_id)
+            if state.video_valve is not None:
+                state.video_valve.set_property("drop", not video_required)
+            if state.ai_valve is not None:
+                state.ai_valve.set_property("drop", not self._ai_required())
+            if state.source_type == STATIC_VIDEO:
+                target = Gst.State.PLAYING if video_required or self._ai_required() else Gst.State.PAUSED
+                if (
+                    target == Gst.State.PAUSED
+                    and not state.paused_for_demand
+                ):
+                    state.pipeline.set_state(target)
+                    state.paused_for_demand = True
+                    state.pipeline_state = "PAUSED"
+                elif target == Gst.State.PLAYING and state.paused_for_demand:
+                    state.pipeline.set_state(target)
+                    state.paused_for_demand = False
+                    state.pipeline_state = "PLAYING"
+
+    def _seek_static_loop(self, source_id: str, generation: int) -> None:
+        Gst, _ = self._require_runtime()
+        with self._lock:
+            state = self._states.get(source_id)
+        if (
+            state is None
+            or state.generation != generation
+            or state.source_type != STATIC_VIDEO
+        ):
+            return
+        ok = state.pipeline.seek_simple(
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+            0,
+        )
+        if ok:
             with self._lock:
-                threads = list(self._close_threads.values())
-            if not threads:
+                self._loop_counts[source_id] = (
+                    self._loop_counts.get(source_id, 0) + 1
+                )
+            state.pipeline.set_state(
+                Gst.State.PLAYING
+                if self._video_required(source_id) or self._ai_required()
+                else Gst.State.PAUSED
+            )
+        else:
+            state.seek_failures += 1
+            self._mark_failed(
+                source_id,
+                "Static EOS seek failed; controlled restart scheduled",
+                expected=True,
+            )
+
+    def _process_commands(self) -> None:
+        while True:
+            try:
+                command, payload = self._commands.get_nowait()
+            except queue.Empty:
                 return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            for thread in threads:
-                thread.join(timeout=min(remaining, 0.25))
+            if command == "demand_changed":
+                self._apply_demand_state()
+            elif command == "close_source":
+                self._close_source_owner(str(payload))
+            elif command == "dispose_state":
+                self._dispose_state(payload)
+            elif command == "seek_loop":
+                source_id, generation = payload
+                self._seek_static_loop(source_id, generation)
+
+    def _update_static_positions(self) -> None:
+        Gst, _ = self._require_runtime()
+        with self._lock:
+            states = [
+                state
+                for state in self._states.values()
+                if state.source_type == STATIC_VIDEO
+            ]
+        for state in states:
+            try:
+                ok_position, position = state.pipeline.query_position(
+                    Gst.Format.TIME
+                )
+                ok_duration, duration = state.pipeline.query_duration(
+                    Gst.Format.TIME
+                )
+                if ok_position:
+                    state.position_seconds = float(position) / float(Gst.SECOND)
+                if ok_duration:
+                    state.duration_seconds = float(duration) / float(Gst.SECOND)
+            except Exception:
+                continue
 
     def _active_records(self) -> list[SourceRecord]:
         # Keep source pipelines fully closed when neither frontend nor AI has
@@ -1147,16 +1844,27 @@ class DeepStreamIngestor:
                 self.rtsp_enabled
                 or not VideoFileIngestor.is_rtsp_uri(record.source_uri or "")
             )
+            and (
+                not self.source_allowlist
+                or record.source_uri in self.source_allowlist
+                or VideoFileIngestor.redact_uri(record.source_uri)
+                in self.source_allowlist
+            )
+            and (
+                self._ai_required()
+                or self._video_required(record.source_uri)
+            )
         ]
         # Enforce max_sources cap
-        if len(records) > self.max_sources:
+        active_limit = min(self.max_sources, self.max_active_sources)
+        if len(records) > active_limit:
             LOGGER.warning(
                 "source_type=%s sources=%d exceeds max_sources=%d; capping",
                 self.source_type_filter,
                 len(records),
-                self.max_sources,
+                active_limit,
             )
-            records = records[: self.max_sources]
+            records = records[:active_limit]
         return records
 
     def _sync_sources(self) -> None:
@@ -1170,6 +1878,14 @@ class DeepStreamIngestor:
             self._reconnects += 1
             self._close_source(source_id)
         for source_id in current_ids - set(by_id):
+            with self._lock:
+                existing = self._states.get(source_id)
+            if (
+                existing is not None
+                and existing.source_type == STATIC_VIDEO
+                and self.registry.get(source_id) is not None
+            ):
+                continue
             self._close_source(source_id)
             with self._lock:
                 self._retry_after.pop(source_id, None)
@@ -1187,6 +1903,7 @@ class DeepStreamIngestor:
                 self._loop_counts.pop(source_id, None)
                 self._gst_source_ids.pop(source_id, None)
 
+        opens_remaining = self.max_source_opens_per_sync
         for record in records:
             with self._lock:
                 state = self._states.get(record.source_uri)
@@ -1203,9 +1920,18 @@ class DeepStreamIngestor:
                 closing = True
             if state is not None or closing or retry_after > time.monotonic():
                 continue
+            now = time.monotonic()
+            if (
+                opens_remaining <= 0
+                or now < self._next_source_open_monotonic
+            ):
+                continue
+            opens_remaining -= 1
             try:
-                with VIDEO_SOURCE_OPEN_LOCK:
-                    self._open_source(record)
+                self._open_source(record)
+                self._next_source_open_monotonic = (
+                    time.monotonic() + self.source_open_stagger_seconds
+                )
             except Exception as exc:
                 self._open_failures += 1
                 safe_uri = VideoFileIngestor.redact_uri(record.source_uri or "")
@@ -1277,13 +2003,24 @@ class DeepStreamIngestor:
             self._frames_submitted += len(frames)
             self._last_error = None
 
-    def _iterate_glib(self) -> None:
-        _, GLib = self._require_runtime()
-        context = GLib.MainContext.default()
-        while context.pending():
-            context.iteration(False)
+    def _poll_bus_messages(self) -> None:
+        """Poll every source bus on the owner thread; no GLib signal callbacks."""
+        with self._lock:
+            states = list(self._states.values())
+        for state in states:
+            while True:
+                message = state.bus.pop()
+                if message is None:
+                    break
+                self._on_bus_message(
+                    state.bus,
+                    message,
+                    state.source_id,
+                    state.generation,
+                )
 
     def _run(self) -> None:
+        self._owner_thread_id = threading.get_ident()
         self._started.set()
         submit_interval = 1.0 / self.SCHEDULER_MAX_FPS
         next_sync = 0.0
@@ -1292,10 +2029,13 @@ class DeepStreamIngestor:
         while not self._stop.is_set():
             now = time.monotonic()
             try:
-                self._iterate_glib()
+                self._poll_bus_messages()
+                self._process_commands()
                 current_revision = self.registry.revision
                 if current_revision != registry_revision or now >= next_sync:
                     self._sync_sources()
+                    self._apply_demand_state()
+                    self._update_static_positions()
                     registry_revision = self.registry.revision
                     next_sync = now + 1.0
                 if now >= next_submit:
@@ -1309,8 +2049,8 @@ class DeepStreamIngestor:
         with self._lock:
             source_ids = list(self._states)
         for source_id in source_ids:
-            self._close_source(source_id)
-        self._join_close_threads(timeout=10.0)
+            self._close_source_owner(source_id)
+        self._owner_thread_id = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -1339,6 +2079,12 @@ class DeepStreamIngestor:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=10.0)
+            if self._thread.is_alive():
+                LOGGER.warning(
+                    "DeepStream owner thread did not stop within timeout "
+                    "source_type=%s",
+                    self.source_type_filter,
+                )
         if self._demand_unsubscribe is not None:
             self._demand_unsubscribe()
             self._demand_unsubscribe = None
@@ -1351,6 +2097,19 @@ class DeepStreamIngestor:
                 "backend": "deepstream",
                 "source_type_filter": self.source_type_filter,
                 "max_sources": self.max_sources,
+                "max_active_sources": self.max_active_sources,
+                "max_source_opens_per_sync": self.max_source_opens_per_sync,
+                "source_open_stagger_seconds": self.source_open_stagger_seconds,
+                "source_allowlist_count": len(self.source_allowlist),
+                "active_source_count": len(self._states),
+                "pending_source_opens": max(
+                    0,
+                    (
+                        len(self._active_records()) - len(self._states)
+                        if self.registry is not None
+                        else 0
+                    ),
+                ),
                 "running": self._thread is not None and self._thread.is_alive(),
                 "fps_control": "sources.fps",
                 "gpu_resize_enabled": self.gpu_resize_enabled,
@@ -1370,7 +2129,7 @@ class DeepStreamIngestor:
                 "closing_sources": len(self._closing_sources),
                 "last_error": self._last_error,
                 "sources": {
-                    source_id: {
+                    state.display_uri: {
                         "source_uri": state.display_uri,
                         "source_type": state.source_type,
                         "frame_width": state.frame_width,
@@ -1388,6 +2147,7 @@ class DeepStreamIngestor:
                         "codec": state.codec,
                         "raw_samples": state.raw_samples,
                         "raw_bytes": state.raw_bytes,
+                        "raw_encoded_packets": state.raw_encoded_packets,
                         "last_raw_packet_age_seconds": (
                             round(
                                 now
@@ -1410,6 +2170,31 @@ class DeepStreamIngestor:
                             round(now - state.last_frame_monotonic, 3)
                             if state.last_frame_monotonic > 0
                             else None
+                        ),
+                        "frontend_samples": state.raw_samples,
+                        "frontend_frame_age_seconds": (
+                            round(now - state.last_raw_packet_monotonic, 3)
+                            if state.last_raw_packet_monotonic > 0
+                            else None
+                        ),
+                        "pipeline_state": state.pipeline_state,
+                        "pending_state": state.pending_state,
+                        "source_generation": state.generation,
+                        "last_bus_message": state.last_bus_message,
+                        "last_bus_element": state.last_bus_element,
+                        "last_bus_message_age_seconds": (
+                            round(now - state.last_bus_message_monotonic, 3)
+                            if state.last_bus_message_monotonic > 0
+                            else None
+                        ),
+                        "last_pad_caps": state.last_pad_caps,
+                        "position_seconds": state.position_seconds,
+                        "duration_seconds": state.duration_seconds,
+                        "loop_count": self._loop_counts.get(source_id, 0),
+                        "seek_failures": state.seek_failures,
+                        "paused_for_demand": state.paused_for_demand,
+                        "recent_bus_messages": list(
+                            self._bus_history.get(source_id, ())
                         ),
                         "warnings": state.warnings,
                         "last_error": state.last_error,

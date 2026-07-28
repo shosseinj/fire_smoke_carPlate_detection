@@ -121,7 +121,7 @@ async def create_static_video(
 
     The file is saved to the media store, a ``static_videos`` record is
     created, and a corresponding camera source is registered so the
-    ``StaticVideoFileIngestor`` can pick it up.
+    the static ``DeepStreamIngestor`` can pick it up.
     """
     upload = await _save_upload(file, runtime)
     source_uri = upload["source_uri"]

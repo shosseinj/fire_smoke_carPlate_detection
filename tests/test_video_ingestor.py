@@ -353,6 +353,66 @@ def test_deepstream_frame_index_remains_monotonic_across_file_reopen(
     assert ingestor._next_frame_index_locked("camera-loop") == 2
 
 
+def test_deepstream_sync_opens_at_most_one_source_and_honors_allowlist(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    allowed = (
+        "rtsp://example.test/one",
+        "rtsp://example.test/two",
+    )
+    for source_uri in (*allowed, "rtsp://example.test/blocked"):
+        source_registry.create(
+            SourceRecord(source_uri=source_uri, source_type="rtsp")
+        )
+    ingestor = DeepStreamIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_allowlist=allowed,
+        source_open_stagger_seconds=0,
+        max_source_opens_per_sync=1,
+    )
+    opened: list[str] = []
+
+    def open_source(record: SourceRecord) -> None:
+        opened.append(record.source_uri)
+        ingestor._states[record.source_uri] = SimpleNamespace(
+            source_uri=record.source_uri,
+            frame_width=record.frame_width,
+            frame_height=record.frame_height,
+            delivery_target_fps=record.fps,
+            next_frame_due_monotonic=0.0,
+            frontend_next_frame_due_monotonic=0.0,
+        )
+
+    ingestor._open_source = open_source  # type: ignore[method-assign]
+    ingestor._sync_sources()
+    assert opened == [allowed[0]]
+    ingestor._sync_sources()
+    assert opened == list(allowed)
+
+
+def test_deepstream_stale_generation_is_rejected(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    ingestor = DeepStreamIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+    bus = object()
+    sink = object()
+    ingestor._states["camera"] = SimpleNamespace(
+        generation=4,
+        bus=bus,
+        raw_sink=sink,
+        decoded_sink=None,
+    )
+    assert ingestor._callback_is_current("camera", 3) is False
+    assert ingestor._callback_is_current("camera", 4, bus=bus) is True
+    assert ingestor._callback_is_current("camera", 4, sink=sink) is True
+
+
 def test_deepstream_failed_source_disposal_does_not_block_healthy_source(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:

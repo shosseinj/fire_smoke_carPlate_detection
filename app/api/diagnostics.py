@@ -118,6 +118,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
             "revision": runtime.registry.revision,
         },
         "video_only_mode": runtime.settings.video_only_mode,
+        "deepstream_limits": status.get("deepstream_limits"),
         "stream_demand": status.get("stream_demand"),
         "deepstream": status["video_ingestor"],
         "model_configuration": {
