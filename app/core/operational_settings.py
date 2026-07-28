@@ -42,7 +42,7 @@ class OperationalSettings:
     def updated(self, changes: dict[str, Any]) -> "OperationalSettings":
         unknown = set(changes) - set(self.__dataclass_fields__)
         if unknown:
-            raise ValueError(f"Unknown operational settings: {', '.join(sorted(unknown))}")
+            raise ValueError(f"تنظیمات عملیاتی نامعتبر: {', '.join(sorted(unknown))}")
         candidate = replace(self, **changes)
         candidate.validate()
         return candidate

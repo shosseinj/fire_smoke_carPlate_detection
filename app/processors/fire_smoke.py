@@ -303,7 +303,7 @@ class FireSmokeProcessor(BatchProcessor):
             fixed_batch = self.settings.engine_fixed_batch
             if self._active_model_path.suffix.lower() == ".engine" and fixed_batch:
                 if real_count > fixed_batch:
-                    raise ValueError(f"Fire/smoke engine accepts at most {fixed_batch} frames")
+                    raise ValueError(f"موتور تشخیص آتش/دود حداکثر {fixed_batch} فریم را می‌پذیرد")
                 template = frames[0]
                 while len(source) < fixed_batch:
                     source.append(np.zeros_like(template))

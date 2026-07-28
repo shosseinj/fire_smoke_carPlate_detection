@@ -101,16 +101,16 @@ def validate_timezone(tz_name: str) -> str:
 def validate_clock_time(t: str) -> str:
     """Validate HH:MM format. Reject 24:00 on legacy routes."""
     if t == "24:00":
-        raise ValueError("Invalid time format. Use HH:MM")
+        raise ValueError("فرمت زمان نامعتبر. از HH:MM استفاده کنید")
     parts = t.split(":")
     if len(parts) != 2:
-        raise ValueError("Invalid time format. Use HH:MM")
+        raise ValueError("فرمت زمان نامعتبر. از HH:MM استفاده کنید")
     try:
         h, m = int(parts[0]), int(parts[1])
     except ValueError:
-        raise ValueError("Invalid time format. Use HH:MM")
+        raise ValueError("فرمت زمان نامعتبر. از HH:MM استفاده کنید")
     if not (0 <= h <= 23) or not (0 <= m <= 59):
-        raise ValueError("Invalid time format. Use HH:MM")
+        raise ValueError("فرمت زمان نامعتبر. از HH:MM استفاده کنید")
     return t
 
 

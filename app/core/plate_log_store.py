@@ -172,7 +172,7 @@ class PlateLogStore:
         video_url = f"/media/plate_videos/{video_path.name}"
 
         if packet.frame is None or packet.frame.size == 0:
-            raise ValueError("Snapshot frame is empty")
+            raise ValueError("فریم تصویر خالی است")
 
         # Copy prevents changing the original frame.
         snapshot_frame = packet.frame.copy()

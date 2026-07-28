@@ -65,15 +65,15 @@ class ProjectInfoResponse(BaseModel):
     def _validate_current_release(self) -> ProjectInfoResponse:
         versions = [r.version for r in self.releases]
         if len(versions) != len(set(versions)):
-            raise ValueError("release versions must be unique")
+            raise ValueError("نسخه‌های انتشار باید یکتا باشند")
 
         matching = [r for r in self.releases if r.version == self.project.current_version]
         if len(matching) != 1:
-            raise ValueError("current_version must match exactly one release")
+            raise ValueError("current_version باید دقیقاً با یک release مطابقت داشته باشد")
         if matching[0].status != "current":
-            raise ValueError("the release matching current_version must have status=current")
+            raise ValueError("release منطبق با current_version باید status=current داشته باشد")
         if sum(1 for r in self.releases if r.status == "current") != 1:
-            raise ValueError("exactly one release must have status=current")
+            raise ValueError("دقیقاً یک release باید status=current داشته باشد")
         return self
 
 

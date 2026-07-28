@@ -163,7 +163,7 @@ def calculate_time(
         s = validate_jalali_date(start_date_str)
         e = validate_jalali_date(end_date_str) if end_date_str else s
         if e < s:
-            raise ValueError("end_date cannot be earlier than start_date")
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -294,7 +294,7 @@ def create_request(
         s = validate_jalali_date(start_date_str)
         e = validate_jalali_date(end_date_str) if end_date_str else s
         if e < s:
-            raise ValueError("end_date cannot be earlier than start_date")
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

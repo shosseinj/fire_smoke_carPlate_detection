@@ -162,17 +162,17 @@ class ShiftStore:
                   max_minutes_delay: int, max_minutes_early: int,
                   max_overtime_hours: float, weekday_flags: dict[str, bool]) -> None:
         if not name.strip():
-            raise ValueError("Shift name is required")
+            raise ValueError("نام شیفت الزامی است")
         if shift_type not in VALID_SHIFT_TYPES:
             raise ValueError(f"Invalid shift type: {shift_type!r}. Must be one of: {sorted(VALID_SHIFT_TYPES)}")
         _validate_time(start_time)
         _validate_time(end_time)
         if max_minutes_delay < 0:
-            raise ValueError("max_minutes_delay must be nonnegative")
+            raise ValueError("حداکثر دقیقه تأخیر باید غیرمنفی باشد")
         if max_minutes_early < 0:
-            raise ValueError("max_minutes_early must be nonnegative")
+            raise ValueError("حداکثر دقیقه زودآمدی باید غیرمنفی باشد")
         if max_overtime_hours < 0:
-            raise ValueError("max_overtime_hours must be nonnegative")
+            raise ValueError("حداکثر ساعت اضافه‌کاری باید غیرمنفی باشد")
 
     def create(
         self,

@@ -137,7 +137,7 @@ def _image_to_base64_response(img: PersonnelImageRecord, store: PersonnelStore) 
 # ── Personnel CRUD ──────────────────────────────────────────────────
 
 
-@router.get("/", summary="List all personnel records")
+@router.get("/", summary="دریافت لیست همه پرسنل")
 def list_personnel(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
@@ -151,7 +151,7 @@ def list_personnel(
     return [_personnel_simple(r, store) for r in records]
 
 
-@router.post("/", summary="Create a new personnel record", status_code=status.HTTP_201_CREATED)
+@router.post("/", summary="ایجاد پرسنل جدید", status_code=status.HTTP_201_CREATED)
 def create_personnel(
     payload: PersonnelCreateRequest,
     runtime: Runtime = Depends(get_runtime),
@@ -174,7 +174,7 @@ def create_personnel(
     return _personnel_simple(record, store)
 
 
-@router.get("/search/{national_code}", summary="Search personnel by national code")
+@router.get("/search/{national_code}", summary="جستجوی پرسنل با کد ملی")
 def search_personnel(
     national_code: str,
     runtime: Runtime = Depends(get_runtime),
@@ -191,7 +191,7 @@ def search_personnel(
 # FastAPI matching static names like "import-template" as personnel_id
 
 
-@router.post("/with-images", summary="Create personnel with images (legacy)", status_code=status.HTTP_201_CREATED)
+@router.post("/with-images", summary="ایجاد پرسنل با تصاویر", status_code=status.HTTP_201_CREATED)
 async def create_personnel_with_images(
     runtime: Runtime = Depends(get_runtime),
     fname: str = Form(...),
@@ -202,7 +202,7 @@ async def create_personnel_with_images(
     departmen_id: int | None = Form(default=None),
     department_id: int | None = Form(default=None),
     images: list[UploadFile] = File(
-        description="JPEG, PNG, or BMP image files",
+        description="تصاویر JPEG، PNG یا BMP",
         media_type="image/*",
         json_schema_extra={
             "items": {
@@ -236,7 +236,7 @@ async def create_personnel_with_images(
     for img_file in images:
         raw = await img_file.read()
         if not raw:
-            errors.append(f"{img_file.filename}: empty file")
+            errors.append(f"{img_file.filename}: فایل خالی است")
             continue
         validation = validate_uploaded_image(raw, img_file.filename or "image.jpg", img_file.content_type)
         if not validation.valid:
@@ -265,7 +265,7 @@ async def create_personnel_with_images(
 
     if not saved_images and not errors:
         store.delete(person.id)
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="All images failed processing")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="همه تصاویر پردازش نشدند")
 
     imgs = [_image_to_base64_response(img, store).model_dump() for img in saved_images]
     primary_img = next((img for img in saved_images if img.is_primary), None)
@@ -279,7 +279,7 @@ async def create_personnel_with_images(
 
 @router.post(
     "/import-excel",
-    summary="Import personnel records from an Excel file",
+    summary="ورود اطلاعات پرسنل از فایل اکسل",
 )
 async def import_excel(
     runtime: Runtime = Depends(get_runtime),
@@ -291,7 +291,7 @@ async def import_excel(
     store = _store(runtime)
     raw = await file.read()
     if not raw:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="فایل خالی است")
     try:
         result = await run_in_threadpool(
             store.import_from_excel,
@@ -334,7 +334,7 @@ async def import_excel(
 
 @router.get(
     "/import-template",
-    summary="Download an Excel import template",
+    summary="دانلود قالب اکسل ورود اطلاعات",
 )
 def import_template(
     runtime: Runtime = Depends(get_runtime),
@@ -350,7 +350,7 @@ def import_template(
 
 @router.post(
     "/upload-personnel-zip",
-    summary="Upload a ZIP file with personnel data and images",
+    summary="آپلود فایل ZIP حاوی اطلاعات پرسنل و تصاویر",
 )
 async def upload_personnel_zip(
     runtime: Runtime = Depends(get_runtime),
@@ -361,7 +361,7 @@ async def upload_personnel_zip(
     store = _store(runtime)
     raw = await file.read()
     if not raw:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Empty file")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="فایل خالی است")
     try:
         fp = _face_processor(runtime)
         result = await run_in_threadpool(store.upload_personnel_zip, raw, fp, enable_cropping)
@@ -380,10 +380,10 @@ async def upload_personnel_zip(
         "success": len(result.get("errors", [])) == 0,
         "filename": file.filename or "file.zip",
         "message": (
-            f"Processed {summary['total_images_in_zip']} images: "
-            f"{summary['total_images_saved']} saved, "
-            f"{summary['qdrant_enrolled_count']} enrolled in Qdrant, "
-            f"{summary['total_failed']} failed"
+            f"تعداد {summary['total_images_in_zip']} تصویر پردازش شد: "
+            f"{summary['total_images_saved']} ذخیره شد، "
+            f"{summary['qdrant_enrolled_count']} در Qdrant ثبت شد، "
+            f"{summary['total_failed']} ناموفق"
         ),
         "summary": summary,
         "details": result.get("image_details", []),
@@ -395,7 +395,7 @@ async def upload_personnel_zip(
 # NOTE: /{personnel_id} routes must be defined AFTER all static paths
 
 
-@router.get("/{personnel_id}", summary="Get a personnel record by ID")
+@router.get("/{personnel_id}", summary="دریافت یک پرسنل با شناسه")
 def get_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
@@ -404,11 +404,11 @@ def get_personnel(
     store = _store(runtime)
     record = store.get(personnel_id)
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return _personnel_simple(record, store)
 
 
-@router.put("/{personnel_id}", summary="Update a personnel record")
+@router.put("/{personnel_id}", summary="به‌روزرسانی یک پرسنل")
 def update_personnel(
     personnel_id: int,
     payload: PersonnelUpdateRequest,
@@ -418,7 +418,7 @@ def update_personnel(
     store = _store(runtime)
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No fields to update")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     changes["updated_by"] = current_user.id
     try:
         record = store.update(
@@ -428,11 +428,11 @@ def update_personnel(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return _personnel_simple(record, store)
 
 
-@router.delete("/{personnel_id}", summary="Delete a personnel record", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{personnel_id}", summary="حذف یک پرسنل", status_code=status.HTTP_204_NO_CONTENT)
 def delete_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
@@ -441,7 +441,7 @@ def delete_personnel(
     store = _store(runtime)
     personnel = store.get(personnel_id)
     if personnel is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     images = store.list_images(personnel_id)
     embedding_ids = [img.embedding_id for img in images if img.embedding_id]
     if embedding_ids:
@@ -452,7 +452,7 @@ def delete_personnel(
             processor.delete_person(f"{personnel.fname} {personnel.lname}")
     deleted = store.delete(personnel_id)
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -461,7 +461,7 @@ def delete_personnel(
 
 @router.get(
     "/{personnel_id}/images",
-    summary="List all images for a personnel record",
+    summary="دریافت همه تصاویر یک پرسنل",
 )
 def list_personnel_images(
     personnel_id: int,
@@ -470,14 +470,14 @@ def list_personnel_images(
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     images = store.list_images(personnel_id)
     return [_image_to_base64_response(img, store) for img in images]
 
 
 @router.post(
     "/{personnel_id}/images",
-    summary="Upload face image(s) for a personnel record",
+    summary="آپلود تصاویر چهره برای یک پرسنل",
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_personnel_images(
@@ -485,7 +485,7 @@ async def upload_personnel_images(
     files: Annotated[
         list[UploadFile] | None,
         File(
-            description="JPEG, PNG, or BMP image files",
+            description="تصاویر JPEG، PNG یا BMP",
             media_type="image/*",
             json_schema_extra={
                 "items": {
@@ -504,14 +504,14 @@ async def upload_personnel_images(
     store = _store(runtime)
     person = store.get(personnel_id)
     if person is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
 
     upload_files: list[UploadFile] = []
     if files is not None:
         upload_files = files if isinstance(files, list) else [files]
 
     if not upload_files:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No files provided")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="هیچ فایلی ارسال نشده است")
 
     face_processor = _face_processor(runtime)
     processor = _image_processor(runtime)
@@ -525,7 +525,7 @@ async def upload_personnel_images(
     for img_file in upload_files:
         raw = await img_file.read()
         if not raw:
-            results.append({"success": False, "failure_code": "empty_file", "failure_message": "File is empty", "image": None})
+            results.append({"success": False, "failure_code": "empty_file", "failure_message": "فایل خالی است", "image": None})
             continue
 
         validation = validate_uploaded_image(raw, img_file.filename or "image.jpg", img_file.content_type)

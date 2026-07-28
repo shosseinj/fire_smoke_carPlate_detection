@@ -62,7 +62,7 @@ def list_personnel_images(
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,         detail="پرسنل یافت نشد")
     images = store.list_images(personnel_id)
     return [_image_response(img, store) for img in images]
 
@@ -83,7 +83,7 @@ async def upload_personnel_images(
     store = _store(runtime)
     person = store.get(personnel_id)
     if person is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personnel not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,         detail="پرسنل یافت نشد")
 
     processor = _image_processor(runtime)
     saved_images: list[PersonnelImageRecord] = []
@@ -117,7 +117,7 @@ async def upload_personnel_images(
             store._delete_storage_file(storage_key)
 
     if not saved_images:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="All images failed processing")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="همه تصاویر پردازش نشدند")
 
     return [_image_response(img, store) for img in saved_images]
 
@@ -134,5 +134,5 @@ def delete_personnel_image(
 ) -> Response:
     deleted = _store(runtime).delete_image(image_id)
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="تصویر یافت نشد")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

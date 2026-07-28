@@ -276,7 +276,7 @@ def restart_camera_pipeline(
 ) -> dict[str, Any]:
     ingestor = runtime.video_ingestor
     if not isinstance(ingestor, DeepStreamIngestor):
-        raise HTTPException(status_code=409, detail="DeepStream ingestion is not active")
+        raise HTTPException(status_code=409, detail="ورودی DeepStream فعال نیست")
     if not ingestor.restart_source(camera_id):
-        raise HTTPException(status_code=404, detail="Enabled video camera not found")
+        raise HTTPException(status_code=404, detail="دوربین فعالی یافت نشد")
     return {"camera_id": camera_id, "restart_scheduled": True}

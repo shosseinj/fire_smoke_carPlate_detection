@@ -119,7 +119,7 @@ class SourceSettingsStore:
         self._ensure_default()
         unknown = set(changes) - set(SOURCE_FIELDS)
         if unknown:
-            raise ValueError(f"Unknown source setting(s): {sorted(unknown)}")
+            raise ValueError(f"تنظیمات منبع نامعتبر: {sorted(unknown)}")
         now = _utc_now()
         with self._lock, self._connect() as conn:
             set_parts = ", ".join(f"{f} = ?" for f in changes)
@@ -175,7 +175,7 @@ class SourceSettingsStore:
             raise ValueError("Use set_default() for global defaults")
         unknown = set(overrides) - set(SOURCE_FIELDS)
         if unknown:
-            raise ValueError(f"Unknown source setting(s): {sorted(unknown)}")
+            raise ValueError(f"تنظیمات منبع نامعتبر: {sorted(unknown)}")
         now = _utc_now()
         with self._lock, self._connect() as conn:
             existing = self.get(source_uri)

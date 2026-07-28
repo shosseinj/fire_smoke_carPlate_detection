@@ -183,11 +183,11 @@ class RequestStore:
         if request_type not in VALID_REQUEST_TYPES:
             raise ValueError(f"Invalid request type: {request_type!r}")
         if not start_date or not end_date:
-            raise ValueError("start_date and end_date are required")
+            raise ValueError("تاریخ شروع و پایان الزامی است")
         s = self._normalize_date(start_date)
         e = self._normalize_date(end_date)
         if s > e:
-            raise ValueError("start_date must not be after end_date")
+            raise ValueError("تاریخ شروع نباید بعد از تاریخ پایان باشد")
         st = self._parse_time(start_time)
         et = self._parse_time(end_time)
         if status not in VALID_REQUEST_STATUSES:

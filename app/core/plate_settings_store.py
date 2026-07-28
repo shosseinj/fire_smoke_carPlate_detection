@@ -32,13 +32,13 @@ class PlateDetectionPolicy:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be between 0 and 1")
         if not 1 <= int(self.min_vehicle_width_pixels) <= 4096:
-            raise ValueError("min_vehicle_width_pixels must be between 1 and 4096")
+            raise ValueError("حداقل عرض خودرو باید بین 1 و 4096 باشد")
         if not 1 <= int(self.min_vehicle_height_pixels) <= 4096:
-            raise ValueError("min_vehicle_height_pixels must be between 1 and 4096")
+            raise ValueError("حداقل ارتفاع خودرو باید بین 1 و 4096 باشد")
         if not 0.0 <= float(self.min_vehicle_area_ratio) <= 1.0:
-            raise ValueError("min_vehicle_area_ratio must be between 0 and 1")
+            raise ValueError("حداقل نسبت مساحت خودرو باید بین 0 و 1 باشد")
         if not 0.0 <= float(self.vehicle_crop_padding_ratio) <= 0.5:
-            raise ValueError("vehicle_crop_padding_ratio must be between 0 and 0.5")
+            raise ValueError("نسبت حاشیه برش خودرو باید بین 0 و 0.5 باشد")
         return PlateDetectionPolicy(
             vehicle_confidence=float(self.vehicle_confidence),
             plate_confidence=float(self.plate_confidence),
@@ -165,7 +165,7 @@ class PlateSettingsStore:
     def update_camera(self, camera_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         unknown = set(changes) - set(self.FIELDS)
         if unknown:
-            raise ValueError(f"Unknown plate setting(s): {sorted(unknown)}")
+            raise ValueError(f"تنظیمات پلاک نامعتبر: {sorted(unknown)}")
         with self._lock:
             overrides = dict(self._camera_overrides.get(camera_id, {}))
             for field, value in changes.items():

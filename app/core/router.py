@@ -65,14 +65,14 @@ class TaskRouter:
         captured_at_utc: str | None = None,
     ) -> dict[str, int]:
         if len(frames) != len(source_ids):
-            raise ValueError("frames and source_ids must have equal lengths")
+            raise ValueError("تعداد فریم‌ها و source_ids باید برابر باشد")
         count = len(frames)
         if frame_indexes is not None and len(frame_indexes) != count:
-            raise ValueError("frame_indexes length does not match frames")
+            raise ValueError("طول frame_indexes با فریم‌ها مطابقت ندارد")
         if source_times_seconds is not None and len(source_times_seconds) != count:
-            raise ValueError("source_times_seconds length does not match frames")
+            raise ValueError("طول source_times_seconds با فریم‌ها مطابقت ندارد")
         if metadata is not None and len(metadata) != count:
-            raise ValueError("metadata length does not match frames")
+            raise ValueError("طول metadata با فریم‌ها مطابقت ندارد")
 
         now_monotonic = captured_monotonic if captured_monotonic is not None else time.monotonic()
         now_utc = captured_at_utc or datetime.now(timezone.utc).isoformat()

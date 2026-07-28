@@ -69,7 +69,7 @@ def get_auth_store() -> AuthStore:
 def hash_password(password: str) -> str:
     encoded = password.encode("utf-8")
     if len(encoded) > 72:
-        raise ValueError("Password exceeds bcrypt's 72-byte limit")
+        raise ValueError("رمز عبور از محدودیت ۷۲ بایت bcrypt بیشتر است")
     return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode("utf-8")
 
 

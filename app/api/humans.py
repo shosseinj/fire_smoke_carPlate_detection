@@ -41,7 +41,7 @@ def active(runtime: Runtime = Depends(get_runtime)) -> dict:
     if not isinstance(processor, FaceRecognitionProcessor):
         raise HTTPException(
             status_code=503,
-            detail="Live human tracks are unavailable while PROCESSOR_MODE=mock",
+            detail="ردیابی افراد زنده در حالت PROCESSOR_MODE=mock غیرفعال است",
         )
     items = processor.active_tracks()
     return {"items": items, "count": len(items)}

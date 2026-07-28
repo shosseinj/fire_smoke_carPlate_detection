@@ -116,7 +116,7 @@ class HolidayStore:
     ) -> HolidayRecord:
         name = name.strip()
         if not name:
-            raise ValueError("Holiday name is required")
+            raise ValueError("نام تعطیلی الزامی است")
         if holiday_type not in VALID_HOLIDAY_TYPES:
             raise ValueError(f"Invalid holiday type: {holiday_type!r}")
         normalized_date = self._validate_date_str(date_value)
@@ -170,7 +170,7 @@ class HolidayStore:
                 return None
             new_name = name.strip() if name else existing["name"]
             if name is not None and not new_name:
-                raise ValueError("Holiday name cannot be blank")
+                raise ValueError("نام تعطیلی نمی‌تواند خالی باشد")
             new_date = self._validate_date_str(date_value) if date_value is not None else existing["date_value"]
             new_desc = description if description is not None else existing["description"]
             new_type = holiday_type if holiday_type is not None else existing["holiday_type"]

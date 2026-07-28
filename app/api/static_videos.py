@@ -62,7 +62,7 @@ async def _save_upload(
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Uploaded file is empty",
+            detail="فایل آپلود شده خالی است",
         )
 
     max_bytes = runtime.settings.max_upload_bytes_per_image * 200  # ~2 GB
@@ -165,7 +165,7 @@ async def update_static_video(
     if current is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Static video not found",
+            detail="ویدئوی ایستا یافت نشد",
         )
 
     changes: dict[str, Any] = {}
@@ -229,7 +229,7 @@ def delete_static_video(
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Static video not found",
+            detail="ویدئوی ایستا یافت نشد",
         )
 
     # Deregister the camera source from the ingestor

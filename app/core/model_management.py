@@ -74,15 +74,15 @@ class ModelSelectionConfig:
 
     def validated(self) -> "ModelSelectionConfig":
         if self.preferred_format not in MODEL_FORMATS:
-            raise ValueError("preferred_format must be engine, onnx, or pt")
+            raise ValueError("فرمت ترجیحی باید engine، onnx یا pt باشد")
         if not 32 <= int(self.export_imgsz) <= 4096:
-            raise ValueError("export_imgsz must be between 32 and 4096")
+            raise ValueError("اندازه تصویر خروجی باید بین 32 و 4096 باشد")
         if not 1 <= int(self.export_batch_size) <= 128:
-            raise ValueError("export_batch_size must be between 1 and 128")
+            raise ValueError("سایز بatch خروجی باید بین 1 و 128 باشد")
         if not 0.25 <= float(self.export_workspace_gb) <= 128.0:
-            raise ValueError("export_workspace_gb must be between 0.25 and 128")
+            raise ValueError("فضای کاری خروجی باید بین 0.25 و 128 گیگابایت باشد")
         if not 30 <= int(self.export_timeout_seconds) <= 7200:
-            raise ValueError("export_timeout_seconds must be between 30 and 7200")
+            raise ValueError("زمان انتظار خروجی باید بین 30 و 7200 ثانیه باشد")
         return ModelSelectionConfig(
             fire_smoke_model=str(self.fire_smoke_model),
             vehicle_detector_model=str(self.vehicle_detector_model),
@@ -131,14 +131,14 @@ class ModelManager:
         try:
             return resolved.relative_to(self.model_root).as_posix()
         except ValueError as exc:
-            raise ValueError("Model path must stay inside MODEL_ROOT_PATH") from exc
+            raise ValueError("مسیر مدل باید داخل MODEL_ROOT_PATH باشد") from exc
 
     def resolve_path(self, value: str) -> Path:
         candidate = (self.model_root / value).resolve()
         try:
             candidate.relative_to(self.model_root)
         except ValueError as exc:
-            raise ValueError("Model path must stay inside MODEL_ROOT_PATH") from exc
+            raise ValueError("مسیر مدل باید داخل MODEL_ROOT_PATH باشد") from exc
         return candidate
 
     def _initialize(self, default: ModelSelectionConfig) -> None:
@@ -206,7 +206,7 @@ class ModelManager:
         except ValueError as exc:
             raise ValueError(f"{role} model must be inside {expected}") from exc
         if not path.is_file():
-            raise ValueError(f"Selected model does not exist: {value}")
+            raise ValueError(f"مدل انتخابی وجود ندارد: {value}")
         return path
 
     def _validate_selected_models(self, config: ModelSelectionConfig) -> None:
@@ -271,9 +271,9 @@ class ModelManager:
         model_format: str | None = None,
     ) -> list[dict[str, Any]]:
         if role is not None and role not in MODEL_ROLE_DIRECTORIES:
-            raise ValueError(f"Unknown model role: {role}")
+            raise ValueError(f"نقش مدل نامعتبر: {role}")
         if model_format is not None and model_format not in MODEL_FORMATS:
-            raise ValueError(f"Unknown model format: {model_format}")
+            raise ValueError(f"فرمت مدل نامعتبر: {model_format}")
         items: list[dict[str, Any]] = []
         roles = [role] if role else list(MODEL_ROLE_DIRECTORIES)
         selected = asdict(self._config)
@@ -341,7 +341,7 @@ class ModelManager:
         allowed = set(asdict(self._config))
         unknown = set(changes) - allowed
         if unknown:
-            raise ValueError(f"Unknown model setting(s): {sorted(unknown)}")
+            raise ValueError(f"تنظیمات مدل نامعتبر: {sorted(unknown)}")
         with self._lock:
             candidate = replace(self._config, **changes).validated()
             for role, field in self.ROLE_FIELDS.items():
@@ -494,12 +494,12 @@ class ModelConversionManager:
         """Store an uploaded PT safely below the selected detector role."""
 
         if role not in MODEL_ROLE_DIRECTORIES:
-            raise ValueError(f"Unknown model role: {role}")
+            raise ValueError(f"نقش مدل نامعتبر: {role}")
         if not uploaded_filename:
-            raise ValueError("A .pt model file is required")
+            raise ValueError("فایل مدل .pt الزامی است")
         clean_filename = Path(uploaded_filename.replace("\\", "/")).name
         if Path(clean_filename).suffix.lower() != ".pt":
-            raise ValueError("Only .pt model uploads are accepted")
+            raise ValueError("فقط آپلود فایل .pt پذیرفته می‌شود")
         stem = (output_name or Path(clean_filename).stem).strip()
         if (
             not stem
@@ -534,7 +534,7 @@ class ModelConversionManager:
             with temporary.open("wb") as destination:
                 shutil.copyfileobj(source, destination, length=1024 * 1024)
             if temporary.stat().st_size <= 0:
-                raise ValueError("The uploaded .pt file is empty")
+                raise ValueError("فایل .pt آپلود شده خالی است")
             temporary.replace(target)
         finally:
             temporary.unlink(missing_ok=True)
@@ -558,10 +558,10 @@ class ModelConversionManager:
     ) -> dict[str, Any]:
         source = self.models.resolve_path(source_model)
         if not source.is_file() or source.suffix.lower() != ".pt":
-            raise ValueError("source_model must be an existing .pt file in the model catalog")
+            raise ValueError("source_model باید یک فایل .pt موجود در کاتالوگ مدل باشد")
         role = source.relative_to(self.models.model_root).parts[0]
         if role not in MODEL_ROLE_DIRECTORIES.values():
-            raise ValueError("Only detector models can be exported")
+            raise ValueError("فقط مدل‌های تشخیص (detector) قابل خروجی‌گیری هستند")
         output = (
             self.models.resolve_path(output_directory)
             if output_directory

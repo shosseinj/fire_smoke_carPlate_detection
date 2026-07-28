@@ -62,20 +62,20 @@ def parse_jalali_date(s: str) -> date:
     # Support YYYY-MM-DD and YYYY/M/D formats
     match = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", s)
     if not match:
-        raise ValueError(f"Invalid Jalali date format: {s!r}")
+        raise ValueError(f"فرمت تاریخ شمسی نامعتبر: {s!r}")
     j_year = int(match.group(1))
     j_month = int(match.group(2))
     j_day = int(match.group(3))
     # Validate Jalali date range
     if not (1 <= j_month <= 12):
-        raise ValueError(f"Jalali month out of range: {j_month}")
+        raise ValueError(f"ماه شمسی خارج از محدوده: {j_month}")
     if not (1 <= j_day <= 31):
-        raise ValueError(f"Jalali day out of range: {j_day}")
+        raise ValueError(f"روز شمسی خارج از محدوده: {j_day}")
     try:
         j_date = jdatetime.date(j_year, j_month, j_day)
         return j_date.togregorian()
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"Invalid Jalali date {s!r}: {exc}")
+        raise ValueError(f"تاریخ شمسی نامعتبر {s!r}: {exc}")
 
 
 def gregorian_to_jalali(g_date: date) -> tuple[int, int, int]:
@@ -99,7 +99,7 @@ def local_date_range_bounds_utc(
     if tz is None:
         tz = _get_tehran_tz()
     if end_date < start_date:
-        raise ValueError("end_date must not be before start_date")
+        raise ValueError("تاریخ پایان نباید قبل از تاریخ شروع باشد")
     utc_start, _ = local_day_utc_range(start_date, tz)
     _, utc_end = local_day_utc_range(end_date, tz)
     return utc_start, utc_end

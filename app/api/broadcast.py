@@ -70,7 +70,7 @@ async def annotated_broadcast_websocket(
 ) -> None:
     await websocket.accept()
     if not runtime.broadcast.enabled:
-        await websocket.close(code=1013, reason="Frontend broadcasting is disabled")
+        await websocket.close(code=1013, reason="پخش frontend غیرفعال است")
         return
     if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
         await websocket.close(code=1008, reason="Fullscreen source not found")
@@ -290,9 +290,9 @@ def annotated_stream(
     runtime: Runtime = Depends(get_runtime),
 ) -> StreamingResponse:
     if runtime.registry.get(source_id) is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="منبع یافت نشد")
     if not runtime.broadcast.enabled:
-        raise HTTPException(status_code=503, detail="Frontend broadcasting is disabled")
+        raise HTTPException(status_code=503, detail="پخش frontend غیرفعال است")
     return StreamingResponse(
         _mjpeg_stream(runtime.broadcast, source_id),
         media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
@@ -310,12 +310,12 @@ def annotated_snapshot(
     runtime: Runtime = Depends(get_runtime),
 ) -> Response:
     if not runtime.broadcast.enabled:
-        raise HTTPException(status_code=503, detail="Frontend broadcasting is disabled")
+        raise HTTPException(status_code=503, detail="پخش frontend غیرفعال است")
     frame = runtime.broadcast.latest(source_id)
     if frame is None:
         if runtime.registry.get(source_id) is None:
-            raise HTTPException(status_code=404, detail="Source not found")
-        raise HTTPException(status_code=404, detail="No processed frame is available yet")
+            raise HTTPException(status_code=404, detail="منبع یافت نشد")
+        raise HTTPException(status_code=404, detail="هنوز فریمی پردازش نشده است")
     return Response(
         content=frame.jpeg,
         media_type="image/jpeg",

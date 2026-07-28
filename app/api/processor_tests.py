@@ -61,27 +61,27 @@ def _build_packets(frames: list[np.ndarray], task: TaskName) -> list[FramePacket
 def _face_processor(runtime: Runtime) -> FaceRecognitionProcessor:
     proc = runtime.face_processor
     if not isinstance(proc, FaceRecognitionProcessor):
-        raise HTTPException(status_code=400, detail="Face processor is not available (mock mode?)")
+        raise HTTPException(status_code=400, detail="پردازشگر چهره در دسترس نیست (حالت mock?)")
     return proc
 
 
 def _fire_processor(runtime: Runtime) -> FireSmokeProcessor:
     worker = runtime.router.workers.get(TaskName.FIRE_SMOKE)
     if worker is None:
-        raise HTTPException(status_code=400, detail="Fire/smoke worker is not available")
+        raise HTTPException(status_code=400, detail="کارگر تشخیص آتش/دود در دسترس نیست")
     proc = worker.processor
     if not isinstance(proc, FireSmokeProcessor):
-        raise HTTPException(status_code=400, detail="Fire/smoke processor is not available (mock mode?)")
+        raise HTTPException(status_code=400, detail="پردازشگر آتش/دود در دسترس نیست (حالت mock?)")
     return proc
 
 
 def _plate_processor(runtime: Runtime) -> PlateRecognitionProcessor:
     worker = runtime.router.workers.get(TaskName.PLATE_RECOGNITION)
     if worker is None:
-        raise HTTPException(status_code=400, detail="Plate worker is not available")
+        raise HTTPException(status_code=400, detail="کارگر تشخیص پلاک در دسترس نیست")
     proc = worker.processor
     if not isinstance(proc, PlateRecognitionProcessor):
-        raise HTTPException(status_code=400, detail="Plate processor is not available (mock mode?)")
+        raise HTTPException(status_code=400, detail="پردازشگر پلاک در دسترس نیست (حالت mock?)")
     return proc
 
 

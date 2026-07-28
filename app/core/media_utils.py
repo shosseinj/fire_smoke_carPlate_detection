@@ -10,10 +10,10 @@ import numpy as np
 def save_video_frames(frames: Sequence[np.ndarray], path: Path, fps: float = 1.0) -> None:
     """Save a bounded sequence of frames as a playable MP4 artifact."""
     if not frames:
-        raise ValueError("Video frames are empty")
+        raise ValueError("فریم‌های ویدئو خالی هستند")
     first = frames[0]
     if first is None or first.size == 0:
-        raise ValueError("Video frame is empty")
+        raise ValueError("فریم ویدئو خالی است")
     path.parent.mkdir(parents=True, exist_ok=True)
     height, width = first.shape[:2]
     writer = cv2.VideoWriter(
@@ -29,7 +29,7 @@ def save_video_frames(frames: Sequence[np.ndarray], path: Path, fps: float = 1.0
     try:
         for frame in frames:
             if frame is None or frame.size == 0 or frame.shape[:2] != (height, width):
-                raise ValueError("Video frames must have the same non-empty dimensions")
+                raise ValueError("فریم‌های ویدئو باید ابعاد یکسان و غیرخالی داشته باشند")
             writer.write(frame)
     except Exception:
         writer.release()

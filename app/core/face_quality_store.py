@@ -26,23 +26,23 @@ class FaceQualityPolicy:
 
     def validated(self) -> "FaceQualityPolicy":
         if not 0.0 <= self.quality_threshold <= 1.0:
-            raise ValueError("quality_threshold must be between 0 and 1")
+            raise ValueError("آستانه کیفیت باید بین 0 و 1 باشد")
         if self.blur_threshold < 0:
-            raise ValueError("blur_threshold must be non-negative")
+            raise ValueError("آستانه تاری باید غیرمنفی باشد")
         for name in ("min_face_width", "min_face_height"):
             if not 1 <= int(getattr(self, name)) <= 4096:
                 raise ValueError(f"{name} must be between 1 and 4096")
         if self.min_eye_distance < 0:
-            raise ValueError("min_eye_distance must be non-negative")
+            raise ValueError("حداقل فاصله چشم باید غیرمنفی باشد")
         for name in ("max_abs_yaw", "max_abs_pitch", "max_abs_roll"):
             if not 0 < float(getattr(self, name)) <= 90:
                 raise ValueError(f"{name} must be greater than 0 and at most 90")
         if not 1 <= int(self.human_pose_min_keypoints) <= 17:
-            raise ValueError("human_pose_min_keypoints must be between 1 and 17")
+            raise ValueError("حداقل نقاط کلیدی وضعیت بدن باید بین 1 و 17 باشد")
         if not 0.0 <= float(self.human_pose_keypoint_confidence) <= 1.0:
-            raise ValueError("human_pose_keypoint_confidence must be between 0 and 1")
+            raise ValueError("اطمینان نقاط کلیدی وضعیت بدن باید بین 0 و 1 باشد")
         if not 0.0 <= float(self.recognition_quality_weight) <= 1.0:
-            raise ValueError("recognition_quality_weight must be between 0 and 1")
+            raise ValueError("وزن کیفیت تشخیص باید بین 0 و 1 باشد")
         return self
 
 
@@ -114,7 +114,7 @@ class FaceQualitySettingsStore:
         current = self.get()
         unexpected = set(changes) - set(asdict(current))
         if unexpected:
-            raise ValueError(f"Unsupported face quality settings: {sorted(unexpected)}")
+            raise ValueError(f"تنظیمات کیفیت چهره پشتیبانی نشده: {sorted(unexpected)}")
         updated = replace(current, **changes).validated()
         values = asdict(updated)
         with self._lock, self._connect() as connection:

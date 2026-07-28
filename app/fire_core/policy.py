@@ -14,9 +14,9 @@ class FireSmokePolicyConfig:
 
     def validated(self) -> "FireSmokePolicyConfig":
         if not 0.25 <= float(self.window_seconds) <= 300.0:
-            raise ValueError("window_seconds must be between 0.25 and 300")
+            raise ValueError("window_seconds باید بین 0.25 و 300 باشد")
         if not 1 <= int(self.low_count) < int(self.medium_count) < int(self.high_count):
-            raise ValueError("counts must satisfy 1 <= low_count < medium_count < high_count")
+            raise ValueError("تعدادها باید 1 <= low_count < medium_count < high_count باشند")
         return FireSmokePolicyConfig(
             window_seconds=float(self.window_seconds),
             low_count=int(self.low_count),

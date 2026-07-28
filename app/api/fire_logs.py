@@ -40,7 +40,7 @@ class FireLogResponse(BaseModel):
 def _require_camera_id(value: str) -> str:
     value = value.strip()
     if not value:
-        raise ValueError("camera_id must not be empty")
+        raise ValueError("شناسه دوربین نمی‌تواند خالی باشد")
     return value
 
 
@@ -53,7 +53,7 @@ def _date_range_values(
     if detected_to is not None and detected_to.tzinfo is None:
         detected_to = detected_to.replace(tzinfo=timezone.utc)
     if detected_from is not None and detected_to is not None and detected_from > detected_to:
-        raise ValueError("detected_from must not be later than detected_to")
+        raise ValueError("تاریخ شروع نباید بعد از تاریخ پایان باشد")
     return (
         detected_from.isoformat() if detected_from is not None else None,
         detected_to.isoformat() if detected_to is not None else None,
@@ -86,7 +86,7 @@ class FireLogCreate(BaseModel):
     @model_validator(mode="after")
     def require_confidence(self) -> "FireLogCreate":
         if self.fire_confidence is None and self.smoke_confidence is None:
-            raise ValueError("at least one confidence value is required")
+            raise ValueError("حداقل یک مقدار اطمینان الزامی است")
         return self
 
 

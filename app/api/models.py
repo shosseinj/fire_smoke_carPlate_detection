@@ -133,7 +133,7 @@ def download_model_artifact(
         not artifact.is_file()
         or artifact.suffix.lower().lstrip(".") not in {"pt", "onnx", "engine"}
     ):
-        raise HTTPException(status_code=404, detail="Model artifact not found")
+        raise HTTPException(status_code=404, detail="فایل مدل یافت نشد")
     return FileResponse(
         artifact,
         filename=artifact.name,
@@ -298,4 +298,4 @@ def get_model_conversion(
     try:
         return runtime.model_conversions.get(job_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Conversion job not found") from exc
+        raise HTTPException(status_code=404, detail="وظیفه تبدیل یافت نشد") from exc

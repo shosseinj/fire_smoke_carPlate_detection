@@ -65,7 +65,7 @@ class SourceRecord:
     def from_dict(cls, value: dict[str, Any]) -> "SourceRecord":
         source_uri = value.get("source_uri", value.get("camera_id", value.get("source_id")))
         if source_uri is None:
-            raise ValueError("Source record requires source_uri")
+            raise ValueError("رکورد منبع نیازمند source_uri است")
         source_type = canonical_source_type(
             str(source_uri),
             value.get("source_type", RTSP),
@@ -155,20 +155,20 @@ class SourceRegistry:
         value.source_uri = value.source_uri.strip()
         value.name = value.name.strip()
         if not value.source_uri:
-            raise ValueError("source_uri cannot be blank")
+            raise ValueError("source_uri نمی‌تواند خالی باشد")
         if not value.name:
-            raise ValueError("name cannot be blank")
+            raise ValueError("نام نمی‌تواند خالی باشد")
         value.tasks = {TaskName(task) for task in value.tasks}
         value.metadata = dict(value.metadata)
         value.fps = float(value.fps) if value.fps is not None else None
         value.frame_width = int(value.frame_width)
         value.frame_height = int(value.frame_height)
         if value.fps is not None and not 0 < value.fps <= 240:
-            raise ValueError("fps must be between 0 and 240")
+            raise ValueError("fps باید بین 0 و 240 باشد")
         if not 16 <= value.frame_width <= 4096:
-            raise ValueError("frame_width must be between 16 and 4096")
+            raise ValueError("عرض فریم باید بین 16 و 4096 باشد")
         if not 16 <= value.frame_height <= 4096:
-            raise ValueError("frame_height must be between 16 and 4096")
+            raise ValueError("ارتفاع فریم باید بین 16 و 4096 باشد")
         value.source_type = canonical_source_type(
             value.source_uri,
             value.source_type,
@@ -486,7 +486,7 @@ class SourceRegistry:
             if source_uri_new is not None:
                 source_uri_new = source_uri_new.strip()
                 if not source_uri_new:
-                    raise ValueError("source_uri cannot be blank")
+                    raise ValueError("source_uri نمی‌تواند خالی باشد")
                 if source_uri_new != old_source_uri and (
                     source_uri_new in self._records
                     or self._connection.execute(

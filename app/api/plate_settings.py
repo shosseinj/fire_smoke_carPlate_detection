@@ -67,7 +67,7 @@ def update_general_plate_settings(
 
 def _require_camera(runtime: Runtime, camera_id: str) -> None:
     if runtime.registry.get(camera_id) is None:
-        raise HTTPException(status_code=404, detail="Camera not found")
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
 
 
 @router.get(

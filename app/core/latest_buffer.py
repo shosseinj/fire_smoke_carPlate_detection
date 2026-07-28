@@ -38,7 +38,7 @@ class LatestPerSourceBuffer:
         block_timeout_seconds: float = 1.0,
     ) -> None:
         if policy not in {"latest_per_source", "lossless_fifo"}:
-            raise ValueError("policy must be latest_per_source or lossless_fifo")
+            raise ValueError("خط مشی باید latest_per_source یا lossless_fifo باشد")
         self._condition = threading.Condition()
         self._policy = policy
         self._capacity = max(1, int(capacity))

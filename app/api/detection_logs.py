@@ -104,7 +104,7 @@ def _excel_bool(value: Any, default: bool) -> bool:
         return True
     if text in {"0", "false", "no", "n", "خیر", "نه"}:
         return False
-    raise ValueError("invalid boolean value")
+    raise ValueError("مقدار بولی نامعتبر است")
 
 _detection_log_store: DetectionLogStore | None = None
 

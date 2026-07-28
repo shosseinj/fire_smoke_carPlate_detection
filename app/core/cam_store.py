@@ -66,21 +66,21 @@ class CamStore:
         normalized_source_type = source_type.strip().lower()
 
         if not name:
-            raise ValueError("camera_name cannot be blank")
+            raise ValueError("نام دوربین نمی‌تواند خالی باشد")
         if not source_url:
-            raise ValueError("url cannot be blank")
+            raise ValueError("آدرس نمی‌تواند خالی باشد")
         if camera_number < 1:
-            raise ValueError("camera_number must be greater than zero")
+            raise ValueError("شماره دوربین باید بزرگتر از صفر باشد")
         if width < 1:
-            raise ValueError("width must be greater than zero")
+            raise ValueError("عرض باید بزرگتر از صفر باشد")
         if high < 1:
-            raise ValueError("high must be greater than zero")
+            raise ValueError("ارتفاع باید بزرگتر از صفر باشد")
         if normalized_source_type not in CAM_SOURCE_TYPES:
             raise ValueError(
-                f"source_type must be one of {sorted(CAM_SOURCE_TYPES)}"
+                f"نوع منبع باید یکی از {sorted(CAM_SOURCE_TYPES)} باشد"
             )
         if section_id < 1:
-            raise ValueError("section_id must be greater than zero")
+            raise ValueError("شناسه بخش باید بزرگتر از صفر باشد")
 
         return {
             "camera_name": name,
@@ -98,7 +98,7 @@ class CamStore:
             "SELECT id FROM sections WHERE id = ?", (section_id,)
         ).fetchone()
         if section is None:
-            raise ValueError(f"Section not found: {section_id}")
+            raise ValueError(f"بخش با شناسه {section_id} یافت نشد")
 
     def create(
         self,
@@ -150,7 +150,7 @@ class CamStore:
                 return self._row_to_record(row)
         except IntegrityError as exc:
             raise ValueError(
-                "camera_number must be unique within the selected section"
+                "شماره دوربین باید در بخش انتخابی یکتا باشد"
             ) from exc
 
     def get(self, cam_id: int) -> CamRecord | None:
@@ -177,7 +177,7 @@ class CamStore:
             normalized = source_type.strip().lower()
             if normalized not in CAM_SOURCE_TYPES:
                 raise ValueError(
-                    f"source_type must be one of {sorted(CAM_SOURCE_TYPES)}"
+                    f"نوع منبع باید یکی از {sorted(CAM_SOURCE_TYPES)} باشد"
                 )
             clauses.append("source_type = ?")
             params.append(normalized)
@@ -217,9 +217,9 @@ class CamStore:
         }
         unknown = set(changes) - allowed
         if unknown:
-            raise ValueError(f"Unsupported cam fields: {sorted(unknown)}")
+            raise ValueError(f"فیلدهای دوربین پشتیبانی نمی‌شوند: {sorted(unknown)}")
         if not changes:
-            raise ValueError("No fields to update")
+            raise ValueError("هیچ فیلدی برای به‌روزرسانی وارد نشده است")
 
         try:
             with self._lock, self.database.connection() as conn:
@@ -270,7 +270,7 @@ class CamStore:
                 return self._row_to_record(row) if row is not None else None
         except IntegrityError as exc:
             raise ValueError(
-                "camera_number must be unique within the selected section"
+                "شماره دوربین باید در بخش انتخابی یکتا باشد"
             ) from exc
 
     def delete(self, cam_id: int) -> bool:
@@ -286,7 +286,7 @@ class CamStore:
             room_count = int(room_count_row[0]) if room_count_row else 0
             if room_count:
                 raise ValueError(
-                    f"Cam cannot be deleted because it is assigned to {room_count} room(s)"
+                    f"دوربین به {room_count} اتاق اختصاص دارد و قابل حذف نیست"
                 )
             cursor = conn.execute("DELETE FROM cam WHERE id = ?", (cam_id,))
             return cursor.rowcount > 0

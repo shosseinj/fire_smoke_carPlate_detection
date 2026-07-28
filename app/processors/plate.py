@@ -416,7 +416,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                 return_scores=True,
             )
             if not isinstance(outputs, (list, tuple)) or len(outputs) != len(crops):
-                raise ValueError("Recognizer did not return one result per crop")
+                raise ValueError("تشخیص‌دهنده برای هر برش یک نتیجه برنگرداند")
         except Exception:
             outputs = []
             for crop in rgb:

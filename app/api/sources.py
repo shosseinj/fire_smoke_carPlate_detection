@@ -94,7 +94,7 @@ def get_preview_config(
             or parsed.query
             or parsed.fragment
         ):
-            raise HTTPException(status_code=500, detail="Invalid public preview URL")
+            raise HTTPException(status_code=500, detail="آدرس پیش‌نمایش عمومی نامعتبر است")
         whep_base_url = configured_base
     else:
         hostname = request.url.hostname or "127.0.0.1"
@@ -130,7 +130,7 @@ def get_preview_config(
 @router.post("", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)
 def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
     if payload.room_id is not None and runtime.location_store.get_room(payload.room_id) is None:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     try:
         record = runtime.registry.create(
             SourceRecord(
@@ -169,7 +169,7 @@ def bulk_create_sources(
     # Validate room_ids before any writes
     for item in payload.sources:
         if item.room_id is not None and runtime.location_store.get_room(item.room_id) is None:
-            raise HTTPException(status_code=404, detail=f"Room not found: {item.room_id}")
+            raise HTTPException(status_code=404, detail=f"اتاق با شناسه {item.room_id} یافت نشد")
     results: list[SourceResponse] = []
     for item in payload.sources:
         try:
@@ -213,16 +213,16 @@ def bulk_update_sources(
 ) -> list[SourceResponse]:
     """Update multiple sources in one request, each identified by database id."""
     if not payload:
-        raise HTTPException(status_code=400, detail="Empty update list")
+        raise HTTPException(status_code=400, detail="لیست به‌روزرسانی خالی است")
     # Validate room_ids before any writes
     for item in payload:
         if item.room_id is not None and runtime.location_store.get_room(item.room_id) is None:
-            raise HTTPException(status_code=404, detail=f"Room not found: {item.room_id}")
+            raise HTTPException(status_code=404, detail=f"اتاق با شناسه {item.room_id} یافت نشد")
     results: list[SourceResponse] = []
     for item in payload:
         record = runtime.registry.get_by_id(item.id)
         if record is None:
-            raise HTTPException(status_code=404, detail=f"Source not found: id={item.id}")
+            raise HTTPException(status_code=404, detail=f"منبع با شناسه {item.id} یافت نشد")
         values = item.model_dump(exclude_unset=True)
         values.pop("id", None)
         new_source_uri = values.pop("source_uri", None)
@@ -236,7 +236,7 @@ def bulk_update_sources(
                 record = runtime.registry.rename(record.source_uri, new_source_uri)
             record = runtime.registry.update(record.source_uri, **registry_values)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"Source not found: id={item.id}") from exc
+            raise HTTPException(status_code=404, detail=f"منبع با شناسه {item.id} یافت نشد") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         _save_source_overrides(item, record, runtime)
@@ -248,7 +248,7 @@ def bulk_update_sources(
 def get_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceResponse:
     record = _resolve_source_record(runtime, id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="منبع یافت نشد")
     return _response(record, runtime)
 
 
@@ -260,10 +260,10 @@ def update_source(
 ) -> SourceResponse:
     values = payload.model_dump(exclude_unset=True)
     if values.get("room_id") is not None and runtime.location_store.get_room(values["room_id"]) is None:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise HTTPException(status_code=404, detail="اتاق یافت نشد")
     record = _resolve_source_record(runtime, id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="منبع یافت نشد")
     new_source_uri = values.pop("source_uri", None)
     registry_values = {
         key: value
@@ -275,7 +275,7 @@ def update_source(
             record = runtime.registry.rename(record.source_uri, new_source_uri)
         record = runtime.registry.update(record.source_uri, **registry_values)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Source not found") from exc
+        raise HTTPException(status_code=404, detail="منبع یافت نشد") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Save per-source confidence overrides if any were provided
@@ -291,7 +291,7 @@ def enable_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceRes
             raise KeyError(id)
         return _response(runtime.registry.update(record.source_uri, enabled=True), runtime)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Source not found") from exc
+        raise HTTPException(status_code=404, detail="منبع یافت نشد") from exc
 
 
 @router.post("/{id:path}/disable", response_model=SourceResponse)
@@ -302,7 +302,7 @@ def disable_source(id: str, runtime: Runtime = Depends(get_runtime)) -> SourceRe
             raise KeyError(id)
         return _response(runtime.registry.update(record.source_uri, enabled=False), runtime)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Source not found") from exc
+        raise HTTPException(status_code=404, detail="منبع یافت نشد") from exc
 
 
 @router.put("/bulk/task-assignment", response_model=list[SourceResponse])
@@ -332,5 +332,5 @@ def bulk_task_assignment(
 def delete_source(id: str, runtime: Runtime = Depends(get_runtime)) -> Response:
     record = _resolve_source_record(runtime, id)
     if record is None or not runtime.registry.delete(record.source_uri):
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="منبع یافت نشد")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

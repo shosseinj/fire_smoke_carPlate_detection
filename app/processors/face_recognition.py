@@ -587,7 +587,7 @@ class QdrantFaceStore:
 
     def __init__(self, settings: FaceRecognitionSettings) -> None:
         if not settings.qdrant_url:
-            raise ValueError("FACE_QDRANT_URL is required for the Qdrant backend")
+            raise ValueError("FACE_QDRANT_URL برای backend Qdrant الزامی است")
         try:
             from qdrant_client import QdrantClient, models
         except ImportError as exc:
@@ -980,7 +980,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                         max_batch=self.settings.embedding_batch_size,
                     )
                 else:
-                    raise ValueError("FACE_EMBEDDING_MODEL must be .engine or .onnx")
+                    raise ValueError("FACE_EMBEDDING_MODEL باید .engine یا .onnx باشد")
             if self._vector_store is None:
                 if self.settings.qdrant_url:
                     try:
@@ -2238,7 +2238,7 @@ class FaceRecognitionProcessor(BatchProcessor):
     ) -> dict[str, Any]:
         person = person.strip()
         if not person:
-            raise ValueError("person cannot be blank")
+            raise ValueError("نام شخص نمی‌تواند خالی باشد")
         self._ensure_dependencies()
         assert self._face_detector is not None
         assert self._embedder is not None
@@ -2348,7 +2348,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         allowed = set(self.quality_settings())
         unexpected = set(values) - allowed
         if unexpected:
-            raise ValueError(f"Unsupported face quality settings: {sorted(unexpected)}")
+            raise ValueError(f"تنظیمات کیفیت چهره پشتیبانی نشده: {sorted(unexpected)}")
         with self._load_lock:
             self.settings = replace(self.settings, **values)
         return self.quality_settings()

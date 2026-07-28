@@ -40,7 +40,7 @@ class CamBase(BaseModel):
     def strip_text(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("value cannot be blank")
+            raise ValueError("مقدار نمی‌تواند خالی باشد")
         return value
 
 
@@ -64,7 +64,7 @@ class CamUpdate(BaseModel):
             return None
         value = value.strip()
         if not value:
-            raise ValueError("value cannot be blank")
+            raise ValueError("مقدار نمی‌تواند خالی باشد")
         return value
 
 
@@ -93,7 +93,7 @@ class CamHealthCheckRequest(BaseModel):
     def strip_url(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("url cannot be blank")
+            raise ValueError("آدرس نمی‌تواند خالی باشد")
         return value
 
 
@@ -246,7 +246,7 @@ def get_cam(
 ) -> CamResponse:
     record = runtime.cam_store.get(cam_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Cam not found")
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
     with runtime.cam_store.database.connection() as conn:
         return _response(record, conn)
 
@@ -260,9 +260,9 @@ def update_cam(
 ) -> CamResponse:
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
-        raise HTTPException(status_code=422, detail="No fields to update")
+        raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     if any(value is None for value in changes.values()):
-        raise HTTPException(status_code=422, detail="Cam fields cannot be null")
+        raise HTTPException(status_code=422, detail="فیلدهای دوربین نمی‌توانند خالی باشند")
     changes["updated_by"] = current_user.id
     try:
         record = runtime.cam_store.update(cam_id, **changes)
@@ -275,7 +275,7 @@ def update_cam(
         )
         raise HTTPException(status_code=code, detail=detail) from exc
     if record is None:
-        raise HTTPException(status_code=404, detail="Cam not found")
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
     with runtime.cam_store.database.connection() as conn:
         return _response(record, conn)
 
@@ -291,5 +291,5 @@ def delete_cam(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not deleted:
-        raise HTTPException(status_code=404, detail="Cam not found")
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

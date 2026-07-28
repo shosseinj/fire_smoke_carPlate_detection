@@ -80,7 +80,7 @@ class DeveloperTestRequest(BaseModel):
     def _normalize_method(cls, value: str) -> str:
         method = value.upper().strip()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            raise ValueError("method must be one of GET, POST, PUT, PATCH, DELETE")
+            raise ValueError("متد باید یکی از GET, POST, PUT, PATCH, DELETE باشد")
         return method
 
     @field_validator("path")
@@ -88,9 +88,9 @@ class DeveloperTestRequest(BaseModel):
     def _validate_path(cls, value: str) -> str:
         path = value.strip()
         if not path.startswith("/api/v1/"):
-            raise ValueError("path must start with /api/v1/")
+            raise ValueError("مسیر باید با /api/v1/ شروع شود")
         if path in _UNSAFE_TEST_PATHS:
-            raise ValueError("this developer endpoint cannot call itself")
+            raise ValueError("این endpoint توسعه‌دهنده نمی‌تواند خودش را فراخوانی کند")
         return path
 
 

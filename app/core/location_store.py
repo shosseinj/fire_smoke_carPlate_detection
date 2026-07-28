@@ -164,7 +164,7 @@ class LocationStore:
     ) -> BuildingRecord:
         name = name.strip()
         if not name:
-            raise ValueError("Building name is required")
+            raise ValueError("نام ساختمان الزامی است")
         now = self._now()
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
@@ -202,7 +202,7 @@ class LocationStore:
                 return None
             new_name = name.strip() if name else existing["name"]
             if name is not None and not new_name:
-                raise ValueError("Building name cannot be blank")
+                raise ValueError("نام ساختمان نمی‌تواند خالی باشد")
             new_address = address if address is not None else existing["address"]
             new_description = description if description is not None else existing["description"]
             now = self._now()
@@ -265,7 +265,7 @@ class LocationStore:
     ) -> SectionRecord:
         name = name.strip()
         if not name:
-            raise ValueError("Section name is required")
+            raise ValueError("نام بخش الزامی است")
         now = self._now()
         with self._lock, self._connection() as conn:
             if building_id is not None:
@@ -309,7 +309,7 @@ class LocationStore:
                 return None
             new_name = name.strip() if name else existing["name"]
             if name is not None and not new_name:
-                raise ValueError("Section name cannot be blank")
+                raise ValueError("نام بخش نمی‌تواند خالی باشد")
             new_building_id = (
                 building_id if building_id is not None else existing["building_id"]
             )
@@ -416,11 +416,11 @@ class LocationStore:
     ) -> RoomRecord:
         name = name.strip()
         if not name:
-            raise ValueError("Room name is required")
+            raise ValueError("نام اتاق الزامی است")
         if polygon_json:
             points = parse_polygon(polygon_json)
             if len(points) < 3:
-                raise ValueError("Polygon must have at least 3 vertices")
+                raise ValueError("چندضلعی باید حداقل ۳ رأس داشته باشد")
         now = self._now()
         with self._lock, self._connection() as conn:
             effective_section_id = section_id
@@ -484,7 +484,7 @@ class LocationStore:
                 return None
             new_name = name.strip() if name else existing["name"]
             if name is not None and not new_name:
-                raise ValueError("Room name cannot be blank")
+                raise ValueError("نام اتاق نمی‌تواند خالی باشد")
 
             new_cam_id = existing["cam_id"] if cam_id is _UNSET else cam_id
             new_section_id = existing["section_id"]
@@ -523,7 +523,7 @@ class LocationStore:
             if polygon_json is not _UNSET and polygon_json is not None:
                 points = parse_polygon(polygon_json)
                 if len(points) < 3:
-                    raise ValueError("Polygon must have at least 3 vertices")
+raise ValueError("چندضلعی باید حداقل ۳ رأس داشته باشد")
             now = self._now()
             conn.execute(
                 "UPDATE rooms SET name=?, section_id=?, cam_id=?, room_number=?, room_type=?, description=?, is_active=?, polygon_json=?, "

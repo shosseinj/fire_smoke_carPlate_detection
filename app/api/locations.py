@@ -343,7 +343,7 @@ def update_building(
     if payload.description is not None:
         changes["description"] = payload.description
     if not changes:
-        raise HTTPException(status_code=422, detail="No fields to update")
+        raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     changes["updated_by"] = current_user.id
     store = _store(runtime)
     try:
@@ -372,7 +372,7 @@ def delete_building(
         raise HTTPException(
             status_code=400,
             detail=f"امکان حذف ساختمان وجود ندارد. این ساختمان دارای {count} بخش است. "
-                   "Deactivate or reassign them first.",
+                   "ابتدا آن‌ها را غیرفعال یا جابجا کنید",
         )
     store.delete_building(building_id)
     return {"message": "ساختمان با موفقیت حذف شد"}
@@ -484,7 +484,7 @@ def update_section(
     if payload.description is not None:
         changes["description"] = payload.description
     if not changes:
-        raise HTTPException(status_code=422, detail="No fields to update")
+        raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     changes["updated_by"] = current_user.id
     try:
         s = store.update_section(section_id=section_id, **changes)
@@ -558,7 +558,7 @@ def delete_section(
         raise HTTPException(
             status_code=400,
             detail=f"امکان حذف بخش وجود ندارد. این بخش دارای {camera_count} دوربین است. "
-                   "Reassign or delete them first.",
+                   "ابتدا آن‌ها را جابجا یا حذف کنید",
         )
     store.delete_section(section_id)
     return {"message": "بخش با موفقیت حذف شد"}
@@ -685,7 +685,7 @@ def _update_room(
     if "polygon_points" in payload.model_fields_set:
         changes["polygon_json"] = json.dumps(payload.polygon_points) if payload.polygon_points is not None else None
     if not changes:
-        raise HTTPException(status_code=422, detail="No fields to update")
+        raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     changes["updated_by"] = current_user.id
     try:
         r = store.update_room(room_id=room_id, **changes)

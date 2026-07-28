@@ -33,16 +33,16 @@ async def submit_jpeg_round(
         frame_indexes = list(json.loads(frame_indexes_json)) if frame_indexes_json else None
         source_times = list(json.loads(source_times_json)) if source_times_json else None
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid JSON form field: {exc}") from exc
+        raise HTTPException(status_code=422, detail=f"فیلد فرم JSON نامعتبر: {exc}") from exc
     if len(files) != len(source_ids):
-        raise HTTPException(status_code=422, detail="files and source_ids_json lengths differ")
+        raise HTTPException(status_code=422, detail="تعداد فایل‌ها و source_ids_json متفاوت است")
 
     frames: list[np.ndarray] = []
     for upload in files:
         content = await upload.read()
         frame = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
-            raise HTTPException(status_code=415, detail=f"Could not decode {upload.filename}")
+            raise HTTPException(status_code=415, detail=f"امکان خواندن {upload.filename} وجود ندارد")
         frames.append(frame)
 
     try:

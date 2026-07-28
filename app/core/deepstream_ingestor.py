@@ -415,7 +415,7 @@ class DeepStreamIngestor:
         """
         channels = {"BGR": 3, "BGRx": 4}.get(pixel_format)
         if width <= 0 or height <= 0 or channels is None:
-            raise ValueError(f"Unsupported DeepStream sample format: {pixel_format}")
+            raise ValueError(f"فرمت نمونه DeepStream پشتیبانی نشده: {pixel_format}")
         row_stride = len(payload) // height
         packed_width = width * channels
         if row_stride < packed_width:

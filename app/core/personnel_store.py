@@ -883,7 +883,7 @@ class PersonnelStore:
         wb = openpyxl.load_workbook(io.BytesIO(data))
         ws = wb.active
         if ws is None:
-            raise ValueError("Excel file has no active worksheet")
+            raise ValueError("فایل اکسل کاربرگ فعالی ندارد")
 
         # ── Pre-fetch valid reference IDs ──────────────────────────
         valid_shift_ids: set[int] = set()

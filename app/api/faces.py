@@ -40,13 +40,13 @@ def _processor(runtime: Runtime) -> FaceRecognitionProcessor:
     if not isinstance(processor, FaceRecognitionProcessor):
         raise HTTPException(
             status_code=503,
-            detail="Face enrollment is unavailable while PROCESSOR_MODE=mock",
+            detail="ثبت چهره در حالت PROCESSOR_MODE=mock غیرفعال است",
         )
     return processor
 
 
 def _service_unavailable(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=503, detail=f"Face recognition is not ready: {exc}")
+    return HTTPException(status_code=503, detail=f"تشخیص چهره آماده نیست: {exc}")
 
 
 @router.get("/status", summary="Face model, tracker, batch, and Qdrant status")
@@ -90,7 +90,7 @@ async def enroll(
     raw = await file.read()
     image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        raise HTTPException(status_code=422, detail="file must be a valid JPEG or PNG image")
+        raise HTTPException(status_code=422, detail="فایل باید تصویر JPEG یا PNG معتبر باشد")
     try:
         return await run_in_threadpool(
             _processor(runtime).enroll,
@@ -122,7 +122,7 @@ async def delete_identity(
     runtime: Runtime = Depends(get_runtime),
 ) -> dict:
     if not person.strip():
-        raise HTTPException(status_code=422, detail="person cannot be blank")
+        raise HTTPException(status_code=422, detail="نام شخص نمی‌تواند خالی باشد")
     try:
         deleted = await run_in_threadpool(_processor(runtime).delete_person, person)
     except (FileNotFoundError, RuntimeError, ImportError) as exc:
