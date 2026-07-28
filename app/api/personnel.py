@@ -105,7 +105,7 @@ def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePerson
     from app.core.jalali_utils import utc_iso_to_jalali_datetime
     c = u = None
     if p.created_by is not None or p.updated_by is not None:
-        with store.database.connection() as conn:
+        with store._connection() as conn:
             c = resolve_user_brief(p.created_by, conn)
             u = resolve_user_brief(p.updated_by, conn)
     return SimplePersonnelResponse(
