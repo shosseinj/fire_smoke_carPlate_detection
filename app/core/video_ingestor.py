@@ -13,7 +13,9 @@ from urllib.parse import urlsplit, urlunsplit
 
 import cv2
 
+from app.core.frontend_frame_worker import FrontendFrameWorker
 from app.core.router import TaskRouter
+from app.core.stream_demand import StreamDemandController
 from app.core.source_registry import (
     RTSP,
     STATIC_VIDEO,
@@ -25,6 +27,10 @@ from app.core.source_registry import (
 
 LOGGER = logging.getLogger(__name__)
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".webm"}
+# GStreamer/DeepStream and OpenCV/FFmpeg source construction both touch native
+# codec/plugin registries. Serialize only the open phase; frame reads remain
+# parallel after construction.
+VIDEO_SOURCE_OPEN_LOCK = threading.Lock()
 
 
 @dataclass(slots=True)
@@ -48,6 +54,7 @@ class VideoState:
     last_error: str | None = None
     source_frame_width: int = 0
     source_frame_height: int = 0
+    initial_frame: Any | None = None
 
 
 class VideoFileIngestor:
@@ -72,6 +79,11 @@ class VideoFileIngestor:
         rtsp_reconnect_seconds: float = 3.0,
         capture_factory: Callable[..., Any] = cv2.VideoCapture,
         read_workers: int = 1,
+        frontend_frame_worker: FrontendFrameWorker | None = None,
+        demand_controller: StreamDemandController | None = None,
+        video_only_mode: bool = False,
+        startup_delay_seconds: float = 0.0,
+        max_new_opens_per_round: int | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -93,6 +105,15 @@ class VideoFileIngestor:
         self.rtsp_read_timeout_ms = max(1000, rtsp_read_timeout_ms)
         self.rtsp_reconnect_seconds = max(0.5, rtsp_reconnect_seconds)
         self.capture_factory = capture_factory
+        self.frontend_frame_worker = frontend_frame_worker
+        self.demand_controller = demand_controller
+        self.video_only_mode = bool(video_only_mode)
+        self.startup_delay_seconds = max(0.0, float(startup_delay_seconds))
+        self.max_new_opens_per_round = (
+            None
+            if max_new_opens_per_round is None
+            else max(1, int(max_new_opens_per_round))
+        )
         self.read_workers = max(1, int(read_workers))
         self._read_executor = (
             ThreadPoolExecutor(
@@ -187,23 +208,74 @@ class VideoFileIngestor:
         is_live = self.is_rtsp_uri(resolved_uri)
         display_uri = self.redact_uri(resolved_uri)
         try:
-            if is_live:
-                parameters = [
-                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
-                    self.rtsp_open_timeout_ms,
-                    cv2.CAP_PROP_READ_TIMEOUT_MSEC,
-                    self.rtsp_read_timeout_ms,
-                ]
+            with VIDEO_SOURCE_OPEN_LOCK:
+                requested_backend = "CAP_FFMPEG"
+                LOGGER.warning(
+                    "VIDEO_CAPTURE_OPEN_BEGIN source=%s backend_requested=%s",
+                    display_uri,
+                    requested_backend,
+                )
+                if is_live:
+                    parameters = [
+                        cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                        self.rtsp_open_timeout_ms,
+                        cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                        self.rtsp_read_timeout_ms,
+                    ]
+                    try:
+                        capture = self.capture_factory(
+                            resolved_uri,
+                            cv2.CAP_FFMPEG,
+                            parameters,
+                        )
+                    except TypeError:
+                        capture = self.capture_factory(resolved_uri)
+                else:
+                    try:
+                        capture = self.capture_factory(
+                            resolved_uri,
+                            cv2.CAP_FFMPEG,
+                        )
+                    except TypeError:
+                        capture = self.capture_factory(resolved_uri)
+                actual_backend_id = int(
+                    capture.get(cv2.CAP_PROP_BACKEND)
+                    if hasattr(capture, "get")
+                    else -1
+                )
                 try:
-                    capture = self.capture_factory(
-                        resolved_uri,
-                        cv2.CAP_FFMPEG,
-                        parameters,
+                    actual_backend = cv2.videoio_registry.getBackendName(
+                        actual_backend_id
                     )
-                except TypeError:
-                    capture = self.capture_factory(resolved_uri)
-            else:
-                capture = self.capture_factory(resolved_uri)
+                except Exception:
+                    actual_backend = str(actual_backend_id)
+                LOGGER.warning(
+                    "VIDEO_CAPTURE_OPEN_RETURNED source=%s opened=%s "
+                    "backend_requested=%s backend_actual=%s backend_id=%d",
+                    display_uri,
+                    bool(capture.isOpened()),
+                    requested_backend,
+                    actual_backend,
+                    actual_backend_id,
+                )
+                initial_frame = None
+                if capture.isOpened():
+                    LOGGER.warning(
+                        "VIDEO_CAPTURE_FIRST_READ_BEGIN source=%s "
+                        "backend_actual=%s",
+                        display_uri,
+                        actual_backend,
+                    )
+                    first_ok, initial_frame = capture.read()
+                    LOGGER.warning(
+                        "VIDEO_CAPTURE_FIRST_READ_RETURNED source=%s ok=%s "
+                        "backend_actual=%s",
+                        display_uri,
+                        bool(first_ok),
+                        actual_backend,
+                    )
+                    if not first_ok:
+                        initial_frame = None
         except Exception as exc:
             self._open_failures += 1
             self._retry_after[record.source_uri] = (
@@ -244,6 +316,7 @@ class VideoFileIngestor:
             frame_width=record.frame_width,
             frame_height=record.frame_height,
             loop=record.loop,
+            initial_frame=initial_frame,
         )
 
     def _effective_fps(
@@ -264,7 +337,12 @@ class VideoFileIngestor:
             state.capture.release()
 
     def _read(self, state: VideoState) -> tuple[bool, Any, float | None]:
-        ok, frame = state.capture.read()
+        if state.initial_frame is not None:
+            frame = state.initial_frame
+            state.initial_frame = None
+            ok = True
+        else:
+            ok, frame = state.capture.read()
         if not ok and state.loop and not state.is_live:
             state.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             state.loop_count += 1
@@ -302,8 +380,11 @@ class VideoFileIngestor:
         state.source_frame_height = int(source_frame.shape[0])
         frame = source_frame
         if (
-            source_frame.shape[1] != state.frame_width
-            or source_frame.shape[0] != state.frame_height
+            self._ai_required()
+            and (
+                source_frame.shape[1] != state.frame_width
+                or source_frame.shape[0] != state.frame_height
+            )
         ):
             # Use GPU resize when available for better performance
             if self._gpu_resize_available:
@@ -347,6 +428,15 @@ class VideoFileIngestor:
             return self._process_once_unlocked()
 
     def _process_once_unlocked(self) -> dict[str, int]:
+        video_required = self._video_required()
+        ai_required = self._ai_required()
+        if not video_required and not ai_required:
+            return {
+                "received_frames": 0,
+                "accepted_sources": 0,
+                "task_submissions": 0,
+            }
+
         records = [
             record
             for record in self.registry.list()
@@ -378,6 +468,7 @@ class VideoFileIngestor:
         source_times: list[float | None] = []
         metadata: list[dict[str, Any]] = []
         due_states: list[tuple[SourceRecord, VideoState, float]] = []
+        opens_remaining = self.max_new_opens_per_round
 
         for record in records:
             now_monotonic = time.monotonic()
@@ -393,6 +484,10 @@ class VideoFileIngestor:
             if state is None:
                 if self._retry_after.get(record.source_uri, 0.0) > time.monotonic():
                     continue
+                if opens_remaining is not None and opens_remaining <= 0:
+                    continue
+                if opens_remaining is not None:
+                    opens_remaining -= 1
                 state = self._open(record)
                 if state is None:
                     continue
@@ -425,6 +520,17 @@ class VideoFileIngestor:
                 elif not state.loop:
                     self._retry_after[record.source_uri] = float("inf")
                     self._release(record.source_uri)
+                continue
+            if video_required and self.frontend_frame_worker is not None:
+                self.frontend_frame_worker.submit_frame(
+                    source_id=record.source_uri,
+                    frame=source_frame,
+                    frame_index=frame_index,
+                    source_time_seconds=source_time,
+                    source_type=record.source_type,
+                    ingest_backend="opencv",
+                )
+            if not ai_required:
                 continue
             frames.append(frame)
             source_ids.append(record.source_uri)
@@ -460,8 +566,24 @@ class VideoFileIngestor:
         self._last_error = None
         return summary
 
+    def _video_required(self) -> bool:
+        if self.demand_controller is None:
+            return True
+        return self.demand_controller.video_required()
+
+    def _ai_required(self) -> bool:
+        if self.video_only_mode:
+            return False
+        if self.demand_controller is None:
+            return True
+        return self.demand_controller.ai_required()
+
     def _run(self) -> None:
         self._started.set()
+        if self.startup_delay_seconds > 0 and self._stop.wait(
+            self.startup_delay_seconds
+        ):
+            return
         while not self._stop.is_set():
             started = time.monotonic()
             try:
@@ -509,6 +631,12 @@ class VideoFileIngestor:
             "max_sources": self.max_sources,
             "running": self._thread is not None and self._thread.is_alive(),
             "fps_control": "sources.fps",
+            "video_only_mode": self.video_only_mode,
+            "stream_demand": (
+                self.demand_controller.status()
+                if self.demand_controller is not None
+                else None
+            ),
             "read_workers": self.read_workers,
             "loop": self.loop,
             "rounds_submitted": self._rounds_submitted,
@@ -574,5 +702,6 @@ class StaticVideoFileIngestor(VideoFileIngestor):
             max_sources=max_sources,
             source_type_filter=source_type_filter,
             read_workers=min(32, max_sources),
+            max_new_opens_per_round=1,
             **kwargs,
         )

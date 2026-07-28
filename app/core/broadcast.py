@@ -1027,6 +1027,8 @@ class AnnotatedBroadcastHub:
             with self._condition:
                 if not self._enabled:
                     return
+                if not self._source_only_subscribers:
+                    return
                 if self._subscribers and not self._source_only_subscribers:
                     return
             if not self._source_only_render_buffer.put(packet):
@@ -1041,22 +1043,19 @@ class AnnotatedBroadcastHub:
 
     def publish_source_frame(
         self,
+        packet: FramePacket | None = None,
         *,
-        source_id: str,
-        frame: np.ndarray,
-        frame_index: int,
+        source_id: str | None = None,
+        frame: np.ndarray | None = None,
+        frame_index: int | None = None,
         source_time_seconds: float | None = None,
     ) -> None:
-        self._source_only_submitted += 1
-
-        if self._async_render:
-            with self._condition:
-                if not self._enabled:
-                    return
-
-                if self._subscribers and not self._source_only_subscribers:
-                    return
-
+        """Publish one original source frame on the video-stream path."""
+        if packet is None:
+            if source_id is None or frame is None or frame_index is None:
+                raise ValueError(
+                    "packet or source_id/frame/frame_index is required"
+                )
             packet = FramePacket(
                 source_id=source_id,
                 frame=frame,
@@ -1065,29 +1064,9 @@ class AnnotatedBroadcastHub:
                 captured_monotonic=time.monotonic(),
                 captured_at_utc=datetime.now(timezone.utc).isoformat(),
                 source_time_seconds=source_time_seconds,
-                metadata={
-                    "source_uri": source_id,
-                    "source_type": "rtsp",
-                    "source_frame_width": int(frame.shape[1]),
-                    "source_frame_height": int(frame.shape[0]),
-                    "ingest_backend": "deepstream",
-                },
+                metadata={"stream_mode": "video-stream"},
             )
-
-            if not self._source_only_render_buffer.put(packet):
-                self._source_only_dropped += 1
-
-            return
-
-        with self._condition:
-            if self._subscribers and not self._source_only_subscribers:
-                return
-
-        self._render_source_only(
-            source_id,
-            frame_index,
-            frame,
-        )
+        self.publish_source_only(packet)
 
 
 
@@ -1098,7 +1077,9 @@ class AnnotatedBroadcastHub:
         with self._condition:
             if not self._enabled:
                 return
-            need_full = not self._source_only_profiles or any(
+            if not self._source_only_subscribers:
+                return
+            need_full = any(
                 not wall or fullscreen_source == source_id
                 for wall, fullscreen_source in self._source_only_profiles.values()
             )
@@ -1228,8 +1209,11 @@ class AnnotatedBroadcastHub:
     def _source_only_render_loop(self) -> None:
         while not self._stop_source_only_render.is_set():
             packets = self._source_only_render_buffer.take_batch(
-                maximum=16,
-                max_wait_seconds=0.005,
+                # One packet per renderer keeps work distributed across the
+                # configured pool instead of one thread draining all cameras
+                # and encoding a large batch serially.
+                maximum=1,
+                max_wait_seconds=0.0,
             )
             if not packets:
                 continue

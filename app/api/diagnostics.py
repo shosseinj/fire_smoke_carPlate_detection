@@ -90,6 +90,12 @@ async def fps_diagnostics(
         expected_fps=desired_fps,
         camera_tasks=camera_tasks,
     )
+    report["video_only_mode"] = runtime.settings.video_only_mode
+    report["stream_demand"] = (
+        runtime.stream_demand.status()
+        if runtime.stream_demand is not None
+        else None
+    )
     report["sampled_at_utc"] = datetime.now(timezone.utc).isoformat()
     return report
 
@@ -111,6 +117,8 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
             "enabled": sum(1 for camera in cameras if camera.enabled),
             "revision": runtime.registry.revision,
         },
+        "video_only_mode": runtime.settings.video_only_mode,
+        "stream_demand": status.get("stream_demand"),
         "deepstream": status["video_ingestor"],
         "model_configuration": {
             "plate_pipeline": "vehicle -> plate -> OCR",

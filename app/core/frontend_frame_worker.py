@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import logging
-import queue
 import threading
-from dataclasses import dataclass
+import time
+from datetime import datetime, timezone
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
+
+from app.core.latest_buffer import LatestPerSourceBuffer
+from app.core.types import FramePacket
 
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class FrontendFrameJob:
-    source_id: str
-    frame: np.ndarray
-    frame_index: int
-    source_time_seconds: float | None
+def _redact_source_id(source_id: str) -> str:
+    if not source_id.strip().lower().startswith(("rtsp://", "rtsps://")):
+        return source_id
+    parsed = urlsplit(source_id)
+    host = parsed.hostname or "camera"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    credentials = "***:***@" if parsed.username is not None else ""
+    return urlunsplit((parsed.scheme, f"{credentials}{host}", parsed.path, "", ""))
 
 
 class FrontendFrameWorker:
@@ -25,17 +34,14 @@ class FrontendFrameWorker:
     def __init__(
         self,
         *,
-        publish_callback: Callable[
-            [str, np.ndarray, int, float | None],
-            None,
-        ],
+        publish_callback: Callable[[FramePacket], None],
         queue_capacity: int = 32,
     ) -> None:
         self.publish_callback = publish_callback
         self.queue_capacity = max(1, int(queue_capacity))
-
-        self._queue: queue.Queue[FrontendFrameJob] = queue.Queue(
-            maxsize=self.queue_capacity
+        self._buffer = LatestPerSourceBuffer(
+            policy="latest_per_source",
+            capacity=self.queue_capacity,
         )
 
         self._stop = threading.Event()
@@ -44,7 +50,6 @@ class FrontendFrameWorker:
 
         self._submitted = 0
         self._published = 0
-        self._dropped = 0
         self._last_error: str | None = None
 
     def start(self) -> None:
@@ -62,18 +67,12 @@ class FrontendFrameWorker:
 
     def close(self) -> None:
         self._stop.set()
+        self._buffer.close()
 
         if self._thread is not None:
             self._thread.join(timeout=5.0)
 
         self._thread = None
-
-        while True:
-            try:
-                self._queue.get_nowait()
-                self._queue.task_done()
-            except queue.Empty:
-                break
 
     def submit_frame(
         self,
@@ -82,80 +81,67 @@ class FrontendFrameWorker:
         frame: np.ndarray,
         frame_index: int,
         source_time_seconds: float | None,
-    ) -> None:
+        source_type: str,
+        ingest_backend: str,
+    ) -> bool:
         if self._stop.is_set():
-            return
+            return False
 
-        job = FrontendFrameJob(
+        packet = FramePacket(
             source_id=source_id,
-            frame=np.ascontiguousarray(frame).copy(),
+            # Both ingestors hand off a newly decoded array and do not mutate it
+            # afterwards. Avoid another full-resolution copy on the ingest path.
+            frame=np.ascontiguousarray(frame),
+            round_sequence=int(frame_index),
             frame_index=int(frame_index),
+            captured_monotonic=time.monotonic(),
+            captured_at_utc=datetime.now(timezone.utc).isoformat(),
             source_time_seconds=source_time_seconds,
+            metadata={
+                "source_uri": _redact_source_id(source_id),
+                "source_type": source_type,
+                "source_frame_width": int(frame.shape[1]),
+                "source_frame_height": int(frame.shape[0]),
+                "ingest_backend": ingest_backend,
+                "stream_mode": "video-stream",
+            },
         )
 
         with self._stats_lock:
             self._submitted += 1
-
-        try:
-            self._queue.put_nowait(job)
-            return
-        except queue.Full:
-            pass
-
-        try:
-            self._queue.get_nowait()
-            self._queue.task_done()
-
-            with self._stats_lock:
-                self._dropped += 1
-
-        except queue.Empty:
-            pass
-
-        try:
-            self._queue.put_nowait(job)
-        except queue.Full:
-            with self._stats_lock:
-                self._dropped += 1
+        return self._buffer.put(packet)
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                job = self._queue.get(timeout=0.25)
-            except queue.Empty:
+            packets = self._buffer.take_batch(
+                maximum=self.queue_capacity,
+                max_wait_seconds=0.005,
+            )
+            if not packets:
                 continue
 
-            try:
-                self.publish_callback(
-                    job.source_id,
-                    job.frame,
-                    job.frame_index,
-                    job.source_time_seconds,
-                )
+            for packet in packets:
+                try:
+                    self.publish_callback(packet)
 
-                with self._stats_lock:
-                    self._published += 1
-                    self._last_error = None
+                    with self._stats_lock:
+                        self._published += 1
+                        self._last_error = None
 
-            except Exception as exc:
-                with self._stats_lock:
-                    self._last_error = (
-                        f"{type(exc).__name__}: {exc}"
+                except Exception as exc:
+                    with self._stats_lock:
+                        self._last_error = f"{type(exc).__name__}: {exc}"
+
+                    LOGGER.exception(
+                        "Frontend frame publication failed source=%s",
+                        _redact_source_id(packet.source_id),
                     )
 
-                LOGGER.exception(
-                    "Frontend frame publication failed source=%s",
-                    job.source_id,
-                )
-
-            finally:
-                self._queue.task_done()
-
     def status(self) -> dict[str, object]:
+        buffer_stats = self._buffer.stats()
         with self._stats_lock:
             submitted = self._submitted
             published = self._published
-            dropped = self._dropped
             last_error = self._last_error
 
         return {
@@ -164,10 +150,19 @@ class FrontendFrameWorker:
                 self._thread is not None
                 and self._thread.is_alive()
             ),
-            "queue_size": self._queue.qsize(),
+            "queue_policy": buffer_stats.policy,
+            "queue_size": buffer_stats.queue_depth,
             "queue_capacity": self.queue_capacity,
+            "pending_sources": buffer_stats.pending_sources,
             "submitted": submitted,
             "published": published,
-            "dropped": dropped,
+            "dropped": (
+                buffer_stats.stale_replaced
+                + buffer_stats.full_rejections
+                + buffer_stats.rejected_after_close
+            ),
+            "replaced": buffer_stats.stale_replaced,
+            "replaced_by_source": buffer_stats.stale_replaced_by_source,
+            "rejected_after_close": buffer_stats.rejected_after_close,
             "last_error": last_error,
         }

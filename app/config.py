@@ -65,6 +65,7 @@ def _path(name: str, default: str) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    video_only_mode: bool = _env_bool("VIDEO_ONLY_MODE", False)
     raw_stream_enabled: bool = True
     raw_recording_enabled: bool = False
     raw_relay_enabled: bool = False
@@ -93,6 +94,12 @@ class Settings:
     model_export_timeout_seconds: int = _env_int("MODEL_EXPORT_TIMEOUT_SECONDS", 300)
 
     video_ingestion_enabled: bool = _env_bool("VIDEO_INGESTION_ENABLED", True)
+    static_video_ingestion_enabled: bool = _env_bool(
+        "STATIC_VIDEO_INGESTION_ENABLED", True
+    )
+    static_video_startup_delay_seconds: float = _env_float(
+        "STATIC_VIDEO_STARTUP_DELAY_SECONDS", 0.0
+    )
     video_ingest_backend: str = os.getenv(
         "VIDEO_INGEST_BACKEND", "deepstream"
     ).strip().lower()

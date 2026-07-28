@@ -1,4 +1,18 @@
 ================================================================================
+Timestamp UTC: 2026-07-28T07:12:48.4899404Z
+Agent: Codex GPT-5
+Task: Add and isolate on-demand VIDEO_ONLY_MODE ingestion
+Status: FAILED_AFTER_3_RETRIES
+Changed files: .env.example, app/api/broadcast.py, app/api/diagnostics.py, app/config.py, app/core/broadcast.py, app/core/deepstream_ingestor.py, app/core/frontend_frame_worker.py, app/core/router.py, app/core/stream_demand.py, app/core/video_ingestor.py, app/main.py, app/runtime.py, docker-compose.yml, tests/test_broadcast.py, tests/test_fps_diagnostics.py, tests/test_router.py, tests/test_stream_demand.py, tests/test_video_only_mode.py
+Baseline: Static-only video mode stayed healthy and all 18 static files opened and returned first frames through the requested FFMPEG backend; 235 tests passed and 375 skipped.
+Failed command: VIDEO_ONLY_MODE=true RTSP_INGESTION_ENABLED=true STATIC_VIDEO_INGESTION_ENABLED=false docker compose up -d --force-recreate video-ai-router
+Final error: Container exited with code 139, OOMKilled=false; faulthandler captured the DeepStream thread in GLib.iteration -> DeepStreamIngestor._on_bus_message while no StaticVideoFileIngestor was running.
+Retry 1: Suppressed inactive DeepStream source construction and delayed DeepStream until video demand; exit 139 persisted.
+Retry 2: Disabled MediaPreview in VIDEO_ONLY_MODE and isolated the frontend path; exit 139 persisted.
+Retry 3: Serialized native source construction, held the lock through the first OpenCV read, limited Static to one new open per scheduler round, and ran Static-only, DeepStream-only, and both with a five-second Static delay; Static-only passed, while both DeepStream scenarios exited 139.
+Current diagnosis: The crash is isolated to the DeepStream/GStreamer native lifecycle or bus-message path, not Static OpenCV/FFMPEG, concurrent source construction, AI workers, model preload, MediaPreview, or OOM.
+Manual next step: Instrument DeepStream source identity and Gst bus message type immediately before _on_bus_message handling, then enable RTSP sources one at a time to identify the exact pipeline/source or message that triggers the native crash.
+================================================================================
 Timestamp UTC: 2026-07-23T05:47:29.475Z
 Agent: OpenCode gpt-5.6-sol
 Task: Run and repair the project test suite

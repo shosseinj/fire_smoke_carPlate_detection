@@ -241,12 +241,15 @@ def test_deepstream_delivery_gate_counts_rate_limited_samples() -> None:
         source_type="video_file",
         pipeline=None,
         source=None,
-        sink=sink,
+        decoded_sink=sink,
+        raw_sink=None,
+        ai_valve=None,
+        video_valve=None,
         bus=None,
         bus_handler_id=0,
-        pipeline_handler_id=0,
         source_pad_handler_id=0,
-        sink_handler_id=0,
+        decoded_sink_handler_id=0,
+        raw_sink_handler_id=None,
         frame_width=640,
         frame_height=640,
         delivery_target_fps=5.0,
@@ -258,6 +261,9 @@ def test_deepstream_delivery_gate_counts_rate_limited_samples() -> None:
     ingestor._glib = object()
     ingestor._lock = threading.RLock()
     ingestor._states = {state.source_id: state}
+    ingestor.video_only_mode = False
+    ingestor.demand_controller = None
+    ingestor.router = SimpleNamespace(task_processing_enabled=lambda: True)
 
     assert ingestor._on_new_sample(sink, state.source_id) == "ok"
     assert state.decoded_samples == 1
@@ -300,12 +306,15 @@ def _admitting_deepstream_sample(
         source_type="rtsp",
         pipeline=None,
         source=None,
-        sink=sink,
+        decoded_sink=sink,
+        raw_sink=None,
+        ai_valve=None,
+        video_valve=None,
         bus=None,
         bus_handler_id=0,
-        pipeline_handler_id=0,
         source_pad_handler_id=0,
-        sink_handler_id=0,
+        decoded_sink_handler_id=0,
+        raw_sink_handler_id=None,
         frame_width=1,
         frame_height=1,
         delivery_target_fps=delivery_target_fps,
@@ -321,6 +330,9 @@ def _admitting_deepstream_sample(
     ingestor._failed_sources = set()
     ingestor._retry_after = {}
     ingestor._last_error = None
+    ingestor.video_only_mode = False
+    ingestor.demand_controller = None
+    ingestor.router = SimpleNamespace(task_processing_enabled=lambda: True)
     return ingestor, state, sink
 
 

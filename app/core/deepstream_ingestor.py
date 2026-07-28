@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 from app.core.frontend_frame_worker import FrontendFrameWorker
 from app.core.router import TaskRouter
+from app.core.stream_demand import DemandSnapshot, StreamDemandController
 from app.core.source_registry import (
     RTSP,
     SOURCE_TYPES,
@@ -20,7 +21,7 @@ from app.core.source_registry import (
     SourceRegistry,
     canonical_source_type,
 )
-from app.core.video_ingestor import VideoFileIngestor
+from app.core.video_ingestor import VIDEO_SOURCE_OPEN_LOCK, VideoFileIngestor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ class DeepStreamSourceState:
     source: Any
     decoded_sink: Any
     raw_sink: Any | None
+    ai_valve: Any | None
+    video_valve: Any | None
     bus: Any
 
     bus_handler_id: int
@@ -62,6 +65,8 @@ class DeepStreamSourceState:
     frame_height: int
     delivery_target_fps: float | None
     frontend_frame_index: int = -1
+    frontend_next_frame_due_monotonic: float = 0.0
+    frontend_rate_limited_frames: int = 0
     codec: str | None = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
@@ -100,6 +105,7 @@ class DeepStreamIngestor:
         "h265parse",
         "tee",
         "queue",
+        "valve",
         "nvv4l2decoder",
         "nvvideoconvert",
         "identity",
@@ -118,6 +124,8 @@ class DeepStreamIngestor:
         source_type_filter: str = RTSP,
         raw_stream_router: RawStreamRouter | None = None,
         frontend_frame_worker: FrontendFrameWorker | None = None,
+        demand_controller: StreamDemandController | None = None,
+        video_only_mode: bool = False,
         max_sources: int = 256,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
@@ -136,6 +144,8 @@ class DeepStreamIngestor:
         self.project_root = project_root
         self.raw_stream_router = raw_stream_router
         self.frontend_frame_worker = frontend_frame_worker
+        self.demand_controller = demand_controller
+        self.video_only_mode = bool(video_only_mode)
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         # NOTE: GPU resize is now handled by the nvvideoconvert capsfilter
         # in the GStreamer pipeline.  The _gpu_resize_available flag is kept
@@ -176,6 +186,53 @@ class DeepStreamIngestor:
         self._open_failures = 0
         self._reconnects = 0
         self._last_error: str | None = None
+        self._demand_unsubscribe: Callable[[], None] | None = None
+        if self.demand_controller is not None:
+            self._demand_unsubscribe = self.demand_controller.add_listener(
+                self._on_demand_changed
+            )
+
+    def _video_required(self) -> bool:
+        return (
+            self.frontend_frame_worker is not None
+            and (
+                self.demand_controller is None
+                or self.demand_controller.video_required()
+            )
+        )
+
+    def _ai_required(self) -> bool:
+        return (
+            not self.video_only_mode
+            and (
+                self.demand_controller is None
+                or self.demand_controller.ai_required()
+            )
+        )
+
+    def _on_demand_changed(self, _snapshot: DemandSnapshot) -> None:
+        """Apply current demand to live branches without rebuilding pipelines."""
+        if (
+            (self._video_required() or self._ai_required())
+            and (self._thread is None or not self._thread.is_alive())
+        ):
+            self.start()
+        video_drop = not self._video_required()
+        ai_drop = not self._ai_required()
+        with self._lock:
+            valves = [
+                (state.video_valve, video_drop)
+                for state in self._states.values()
+            ] + [
+                (state.ai_valve, ai_drop)
+                for state in self._states.values()
+            ]
+        for valve, drop in valves:
+            if valve is not None:
+                try:
+                    valve.set_property("drop", drop)
+                except Exception:
+                    LOGGER.exception("Could not update DeepStream demand valve")
 
     @staticmethod
     def is_supported_source(record: SourceRecord) -> bool:
@@ -251,6 +308,7 @@ class DeepStreamIngestor:
         gpu_convert: Any,
         bgrx_caps: Any,
         pacer: Any,
+        ai_valve: Any,
     ) -> dict[str, Any]:
         """Build one decode pipeline with two decoded branches.
 
@@ -287,6 +345,8 @@ class DeepStreamIngestor:
         decoded_tee = self._make("tee", f"decoded_tee_{safe_id}")
 
         # Original-resolution decoded branch -> FrontendFrameWorker.
+        video_valve = self._make("valve", f"video_valve_{safe_id}")
+        video_valve.set_property("drop", not self._video_required())
         raw_queue = self._make("queue", f"raw_queue_{safe_id}")
         raw_convert = self._make("nvvideoconvert", f"raw_convert_{safe_id}")
         raw_caps = self._make("capsfilter", f"raw_caps_{safe_id}")
@@ -320,6 +380,7 @@ class DeepStreamIngestor:
             decode_queue,
             decoder,
             decoded_tee,
+            video_valve,
             raw_queue,
             raw_convert,
             raw_caps,
@@ -341,8 +402,10 @@ class DeepStreamIngestor:
             raise RuntimeError("Could not link NVDEC to decoded tee")
 
         # Original-resolution decoded branch -> RawStreamRouter.
-        if not decoded_tee.link(raw_queue):
-            raise RuntimeError("Could not link decoded tee to raw queue")
+        if not decoded_tee.link(video_valve):
+            raise RuntimeError("Could not link decoded tee to frontend valve")
+        if not video_valve.link(raw_queue):
+            raise RuntimeError("Could not link frontend valve to raw queue")
         if not raw_queue.link(raw_convert):
             raise RuntimeError("Could not link raw queue to raw converter")
         if not raw_convert.link(raw_caps):
@@ -351,8 +414,10 @@ class DeepStreamIngestor:
             raise RuntimeError("Could not link raw caps to raw appsink")
 
         # AI branch -> resize caps -> decoded_sink -> TaskRouter.
-        if not decoded_tee.link(pacer):
-            raise RuntimeError("Could not link decoded tee to AI pacer")
+        if not decoded_tee.link(ai_valve):
+            raise RuntimeError("Could not link decoded tee to AI valve")
+        if not ai_valve.link(pacer):
+            raise RuntimeError("Could not link AI valve to AI pacer")
         if not pacer.link(gpu_convert):
             raise RuntimeError("Could not link AI pacer to nvvideoconvert")
         if not gpu_convert.link(bgrx_caps):
@@ -377,6 +442,8 @@ class DeepStreamIngestor:
             "depay": depay,
             "raw_sink": raw_sink,
             "raw_handler_id": raw_handler_id,
+            "video_valve": video_valve,
+            "ai_valve": ai_valve,
             "codec": codec,
         }
 
@@ -425,6 +492,7 @@ class DeepStreamIngestor:
                 gpu_convert=context["gpu_convert"],
                 bgrx_caps=context["bgrx_caps"],
                 pacer=context["pacer"],
+                ai_valve=context["ai_valve"],
             )
 
             sink_pad = branch["depay"].get_static_pad("sink")
@@ -441,6 +509,7 @@ class DeepStreamIngestor:
             context["codec"] = codec
             context["raw_sink"] = branch["raw_sink"]
             context["raw_handler_id"] = branch["raw_handler_id"]
+            context["video_valve"] = branch["video_valve"]
 
             with self._lock:
                 state = self._states.get(context["source_id"])
@@ -448,6 +517,7 @@ class DeepStreamIngestor:
                     state.codec = codec
                     state.raw_sink = branch["raw_sink"]
                     state.raw_sink_handler_id = branch["raw_handler_id"]
+                    state.video_valve = branch["video_valve"]
 
             LOGGER.info(
                 "DeepStream encoded branch ready source=%s codec=%s",
@@ -472,6 +542,8 @@ class DeepStreamIngestor:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
+        if not self._video_required():
+            return Gst.FlowReturn.OK
 
         try:
             caps = sample.get_caps()
@@ -513,6 +585,38 @@ class DeepStreamIngestor:
                 if state is None:
                     return Gst.FlowReturn.OK
 
+                now_monotonic = time.monotonic()
+                if state.delivery_target_fps is not None:
+                    period = 1.0 / state.delivery_target_fps
+                    tolerance = min(0.004, period * 0.10)
+                    if (
+                        state.frontend_next_frame_due_monotonic > 0.0
+                        and now_monotonic + tolerance
+                        < state.frontend_next_frame_due_monotonic
+                    ):
+                        state.frontend_rate_limited_frames += 1
+                        return Gst.FlowReturn.OK
+                    if state.frontend_next_frame_due_monotonic <= 0.0:
+                        state.frontend_next_frame_due_monotonic = (
+                            now_monotonic + period
+                        )
+                    else:
+                        periods = max(
+                            1,
+                            math.floor(
+                                max(
+                                    0.0,
+                                    now_monotonic
+                                    - state.frontend_next_frame_due_monotonic,
+                                )
+                                / period
+                            )
+                            + 1,
+                        )
+                        state.frontend_next_frame_due_monotonic += (
+                            periods * period
+                        )
+
                 state.frontend_frame_index += 1
                 frame_index = state.frontend_frame_index
 
@@ -535,6 +639,8 @@ class DeepStreamIngestor:
                     frame=frame,
                     frame_index=frame_index,
                     source_time_seconds=source_time_seconds,
+                    source_type="rtsp",
+                    ingest_backend="deepstream",
                 )
 
 
@@ -640,6 +746,8 @@ class DeepStreamIngestor:
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
+        if not self._ai_required() or not self.router.task_processing_enabled():
+            return Gst.FlowReturn.OK
 
         now = time.monotonic()
         with self._lock:
@@ -765,6 +873,8 @@ class DeepStreamIngestor:
 
         try:
             source = self._make("rtspsrc", f"source_{safe_id}")
+            ai_valve = self._make("valve", f"ai_valve_{safe_id}")
+            ai_valve.set_property("drop", not self._ai_required())
             pacer = self._make("identity", f"pacer_{safe_id}")
             gpu_convert = self._make(
                 "nvvideoconvert",
@@ -834,6 +944,7 @@ class DeepStreamIngestor:
 
             for element in (
                 source,
+                ai_valve,
                 pacer,
                 gpu_convert,
                 bgrx_caps,
@@ -849,6 +960,7 @@ class DeepStreamIngestor:
                 "gpu_convert": gpu_convert,
                 "bgrx_caps": bgrx_caps,
                 "pacer": pacer,
+                "ai_valve": ai_valve,
                 "branch_created": False,
                 "codec": None,
                 "raw_sink": None,
@@ -883,6 +995,8 @@ class DeepStreamIngestor:
                 source=source,
                 decoded_sink=decoded_sink,
                 raw_sink=None,
+                ai_valve=ai_valve,
+                video_valve=None,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
                 source_pad_handler_id=source_pad_handler_id,
@@ -1016,6 +1130,11 @@ class DeepStreamIngestor:
                 thread.join(timeout=min(remaining, 0.25))
 
     def _active_records(self) -> list[SourceRecord]:
+        # Keep source pipelines fully closed when neither frontend nor AI has
+        # a consumer. This is stronger than dropping at the valves: NVDEC,
+        # mapping and conversion also consume no resources while idle.
+        if not self._video_required() and not self._ai_required():
+            return []
         records = [
             record
             for record in self.registry.list()
@@ -1076,6 +1195,7 @@ class DeepStreamIngestor:
                 if state is not None:
                     if state.delivery_target_fps != record.fps:
                         state.next_frame_due_monotonic = 0.0
+                        state.frontend_next_frame_due_monotonic = 0.0
                     state.delivery_target_fps = record.fps
             if state is not None and state.source_uri != record.source_uri:
                 self._close_source(record.source_uri)
@@ -1084,7 +1204,8 @@ class DeepStreamIngestor:
             if state is not None or closing or retry_after > time.monotonic():
                 continue
             try:
-                self._open_source(record)
+                with VIDEO_SOURCE_OPEN_LOCK:
+                    self._open_source(record)
             except Exception as exc:
                 self._open_failures += 1
                 safe_uri = VideoFileIngestor.redact_uri(record.source_uri or "")
@@ -1099,6 +1220,8 @@ class DeepStreamIngestor:
                 LOGGER.exception("%s", self._last_error)
 
     def _submit_latest_round(self) -> None:
+        if not self._ai_required():
+            return
         with self._lock:
             selected = [
                 state
@@ -1216,6 +1339,9 @@ class DeepStreamIngestor:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=10.0)
+        if self._demand_unsubscribe is not None:
+            self._demand_unsubscribe()
+            self._demand_unsubscribe = None
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -1231,6 +1357,9 @@ class DeepStreamIngestor:
                 "gpu_resize_active": self._gpu_resize_available,
                 "loop": self.loop,
                 "rtsp_enabled": self.rtsp_enabled,
+                "video_only_mode": self.video_only_mode,
+                "video_required": self._video_required(),
+                "ai_required": self._ai_required(),
                 "rtsp_transport": self.rtsp_transport,
                 "rtsp_latency_ms": self.rtsp_latency_ms,
                 "rtsp_stall_timeout_seconds": self.rtsp_stall_timeout_seconds,
@@ -1269,6 +1398,10 @@ class DeepStreamIngestor:
                             else None
                         ),
                         "rate_limited_frames": state.rate_limited_frames,
+                        "frontend_rate_limited_frames": (
+                            state.frontend_rate_limited_frames
+                        ),
+                        "frontend_frame_index": state.frontend_frame_index,
                         "received_frames": state.received_frames,
                         "pre_submit_replacements": state.pre_submit_replacements,
                         "submitted_frames": state.submitted_frames,

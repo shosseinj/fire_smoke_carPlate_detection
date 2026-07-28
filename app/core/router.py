@@ -23,12 +23,14 @@ class TaskRouter:
         result_store: ResultStore,
         play_only_callback: Callable[[FramePacket], None] | None = None,
         source_only_callback: Callable[[FramePacket], None] | None = None,
+        task_processing_enabled_callback: Callable[[], bool] | None = None,
     ) -> None:
         self.registry = registry
         self.workers = dict(workers)
         self.result_store = result_store
         self.play_only_callback = play_only_callback
         self.source_only_callback = source_only_callback
+        self.task_processing_enabled_callback = task_processing_enabled_callback
         self.rounds_received = 0
         self.frames_received = 0
         self.frames_disabled = 0
@@ -37,6 +39,7 @@ class TaskRouter:
         self.task_submission_rejections = 0
         self.broadcast_frames = 0
         self.play_only_frames = 0
+        self.task_processing_paused_frames = 0
         self.last_round_sequence: int | None = None
         self.started = False
 
@@ -78,6 +81,7 @@ class TaskRouter:
         now_utc = captured_at_utc or datetime.now(timezone.utc).isoformat()
         accepted_sources = 0
         task_submissions = 0
+        task_processing_enabled = self.task_processing_enabled()
 
         for index, (source_id, frame) in enumerate(zip(source_ids, frames)):
             if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3):
@@ -109,6 +113,9 @@ class TaskRouter:
                 self.broadcast_frames += 1
             if not source.tasks:
                 self.play_only_frames += 1
+            if not task_processing_enabled:
+                self.task_processing_paused_frames += 1
+                continue
             for task in source.tasks:
                 worker = self.workers.get(task)
                 if worker is None:
@@ -140,7 +147,14 @@ class TaskRouter:
             "task_submission_rejections": self.task_submission_rejections,
             "broadcast_frames": self.broadcast_frames,
             "play_only_frames": self.play_only_frames,
+            "task_processing_enabled": self.task_processing_enabled(),
+            "task_processing_paused_frames": self.task_processing_paused_frames,
             "last_round_sequence": self.last_round_sequence,
             "enabled_source_ids": self.registry.enabled_source_ids(),
             "workers": {task.value: worker.status() for task, worker in self.workers.items()},
         }
+
+    def task_processing_enabled(self) -> bool:
+        if self.task_processing_enabled_callback is None:
+            return True
+        return bool(self.task_processing_enabled_callback())

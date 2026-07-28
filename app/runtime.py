@@ -57,6 +57,7 @@ from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 from app.processors.ultralytics_loader import preload_model_dependencies
 from app.core.raw_stream_router import RawStreamRouter
 from app.core.frontend_frame_worker import FrontendFrameWorker
+from app.core.stream_demand import StreamDemandController
 LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -102,6 +103,7 @@ class Runtime:
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
     frontend_frame_worker: FrontendFrameWorker | None = None
+    stream_demand: StreamDemandController | None = None
 
     raw_stream_router: RawStreamRouter | None = None
 
@@ -292,22 +294,30 @@ class Runtime:
             )
 
     def start(self) -> None:
-        self._log_selected_models()
-        if self.settings.processor_mode == "real":
-            preload_model_dependencies()
-            if isinstance(self.face_processor, FaceRecognitionProcessor):
-                try:
-                    self.face_processor.preload()
-                except Exception as exc:
-                    LOGGER.warning("FACE_RECOGNITION_NOT_READY %s", exc)
-        self.router.start()
+        if not self.settings.video_only_mode:
+            self._log_selected_models()
+            if self.settings.processor_mode == "real":
+                preload_model_dependencies()
+                if isinstance(self.face_processor, FaceRecognitionProcessor):
+                    try:
+                        self.face_processor.preload()
+                    except Exception as exc:
+                        LOGGER.warning("FACE_RECOGNITION_NOT_READY %s", exc)
+            self.router.start()
+        else:
+            LOGGER.info(
+                "VIDEO_ONLY_MODE active: AI model preload and task workers disabled"
+            )
         try:
             if self.raw_stream_router is not None:
                 self.raw_stream_router.start()
             if self.frontend_frame_worker is not None:
                 self.frontend_frame_worker.start()
 
-            if self.media_preview is not None:
+            if (
+                self.media_preview is not None
+                and not self.settings.video_only_mode
+            ):
                 try:
                     self.media_preview.start()
                 except Exception as exc:
@@ -357,6 +367,12 @@ class Runtime:
 
     def status(self) -> dict:
         value = self.router.status()
+        value["video_only_mode"] = self.settings.video_only_mode
+        value["stream_demand"] = (
+            self.stream_demand.status()
+            if self.stream_demand is not None
+            else None
+        )
 
         value["frontend_frame_worker"] = (
             self.frontend_frame_worker.status()
@@ -884,12 +900,21 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             location_observer=None,
         ),
     }
+    stream_demand = StreamDemandController()
     router = TaskRouter(
         registry=registry,
         workers=workers,
         result_store=results,
         play_only_callback=broadcast.publish_passthrough,
-        source_only_callback=broadcast.publish_source_only,
+        # video-stream is fed only by FrontendFrameWorker using native frames.
+        # AI packets remain isolated on the annotated broadcast path.
+        source_only_callback=None,
+        task_processing_enabled_callback=(
+            lambda: (
+                not app_settings.video_only_mode
+                and stream_demand.ai_required()
+            )
+        ),
     )
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
@@ -897,6 +922,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     raw_stream_router = None
     frontend_frame_worker = None
     if app_settings.video_ingestion_enabled:
+        frontend_frame_worker = FrontendFrameWorker(
+            publish_callback=broadcast.publish_source_frame,
+            queue_capacity=32,
+        )
         common_ingestor_settings = {
             "registry": registry,
             "router": router,
@@ -928,26 +957,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             #     ),
             #     skip_taskless_sources=app_settings.skip_taskless_sources,
             # )
-            def publish_frontend_frame(
-                source_id: str,
-                frame,
-                frame_index: int,
-                source_time_seconds: float | None,
-            ) -> None:
-                broadcast.publish_source_frame(
-                    source_id=source_id,
-                    frame=frame,
-                    frame_index=frame_index,
-                    source_time_seconds=source_time_seconds,
-                )
-
-            frontend_frame_worker = FrontendFrameWorker(
-                publish_callback=publish_frontend_frame,
-                queue_capacity=32,
-            )
-
-
-
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 raw_stream_router=raw_stream_router,
@@ -956,6 +965,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_sources=operational.rtsp_source_count,
                 # Original decoded frame path
                 frontend_frame_worker=frontend_frame_worker,
+                demand_controller=stream_demand,
+                video_only_mode=app_settings.video_only_mode,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
                 rtsp_stall_timeout_seconds=(
@@ -977,14 +988,21 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         else:
             raise ValueError("VIDEO_INGEST_BACKEND must be 'deepstream' or 'opencv'")
      
-        static_video_ingestor = StaticVideoFileIngestor(
-            registry=registry,
-            router=router,
-            project_root=project_root,
-            loop=operational.video_loop,
-            max_sources=operational.static_video_source_count,
-            gpu_resize_enabled=app_settings.gpu_resize_enabled,
-        )
+        if app_settings.static_video_ingestion_enabled:
+            static_video_ingestor = StaticVideoFileIngestor(
+                registry=registry,
+                router=router,
+                project_root=project_root,
+                loop=operational.video_loop,
+                max_sources=operational.static_video_source_count,
+                gpu_resize_enabled=app_settings.gpu_resize_enabled,
+                frontend_frame_worker=frontend_frame_worker,
+                demand_controller=stream_demand,
+                video_only_mode=app_settings.video_only_mode,
+                startup_delay_seconds=(
+                    app_settings.static_video_startup_delay_seconds
+                ),
+            )
             # static_video_ingestor = StaticVideoFileIngestor(
             #     registry=registry,
             #     router=router,
@@ -1008,6 +1026,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         database=database,
         raw_stream_router=raw_stream_router,
         frontend_frame_worker=frontend_frame_worker,
+        stream_demand=stream_demand,
         registry=registry,
         results=results,
         router=router,

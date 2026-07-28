@@ -28,6 +28,7 @@ from app.core.broadcast import (
     SourceDrawSettings,
 )
 from app.core.source_registry import SourceChange, SourceRecord
+from app.core.stream_demand import StreamDemandController
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
 
@@ -484,10 +485,11 @@ def test_source_video_wall_websocket_sends_unannotated_frames() -> None:
     hub = AnnotatedBroadcastHub(
         enabled=True, wall_max_width=160, wall_max_height=160, async_render=False
     )
-    hub.publish_source_only(packet(["face_recognition"]))
+    demand = StreamDemandController()
     runtime = SimpleNamespace(
         broadcast=hub,
         registry=SimpleNamespace(get=lambda source_id: object()),
+        stream_demand=demand,
     )
     app = FastAPI()
     app.include_router(broadcast_router)
@@ -495,6 +497,8 @@ def test_source_video_wall_websocket_sends_unannotated_frames() -> None:
 
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/video-wall/ws") as websocket:
+            assert demand.snapshot()["video_subscribers"] == 1
+            hub.publish_source_only(packet(["face_recognition"]))
             payload = websocket.receive_bytes()
             header_length = struct.unpack("!I", payload[:4])[0]
             header = json.loads(payload[4 : 4 + header_length])
@@ -507,6 +511,7 @@ def test_source_video_wall_websocket_sends_unannotated_frames() -> None:
             assert header["render_profile"] == "wall"
             assert image is not None
             hub.set_enabled(False)
+    assert demand.snapshot()["video_subscribers"] == 0
 
 
 def test_dashboard_can_switch_between_source_only_and_ai_streams() -> None:

@@ -167,6 +167,39 @@ def test_enabled_camera_with_tasks_is_broadcast_before_worker_result() -> None:
     assert router.status()["play_only_frames"] == 0
 
 
+def test_disabled_task_processing_keeps_ai_submissions_at_zero() -> None:
+    submitted = []
+    source = SimpleNamespace(
+        enabled=True,
+        tasks={TaskName.FACE_RECOGNITION},
+    )
+    registry = SimpleNamespace(
+        get=lambda source_id: source if source_id == "camera-01" else None,
+        enabled_source_ids=lambda: ["camera-01"],
+    )
+    worker = SimpleNamespace(
+        submit=lambda packet: submitted.append(packet) is None,
+        status=lambda: {},
+    )
+    router = TaskRouter(
+        registry=registry,
+        workers={TaskName.FACE_RECOGNITION: worker},
+        result_store=ResultStore(10),
+        task_processing_enabled_callback=lambda: False,
+    )
+
+    summary = router.submit_round(
+        frames=[np.zeros((16, 16, 3), dtype=np.uint8)],
+        source_ids=["camera-01"],
+        round_sequence=1,
+    )
+
+    assert summary["task_submissions"] == 0
+    assert submitted == []
+    assert router.status()["task_processing_enabled"] is False
+    assert router.status()["task_processing_paused_frames"] == 1
+
+
 def test_fifty_sources_can_be_routed_without_global_camera_limit(source_registry: SourceRegistry) -> None:
     registry = source_registry
     for index in range(1, 51):

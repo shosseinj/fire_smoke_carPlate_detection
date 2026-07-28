@@ -77,15 +77,22 @@ async def annotated_broadcast_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    subscriber_id, target = runtime.broadcast.subscribe(
-        wall=wall,
-        fullscreen_source=fullscreen_source,
+    demand_lease = (
+        runtime.stream_demand.acquire_ai()
+        if getattr(runtime, "stream_demand", None) is not None
+        else None
     )
-    recent_task = asyncio.create_task(
-        asyncio.to_thread(build_recent_detections_message, runtime)
-    )
-    recent_sent = False
+    subscriber_id: str | None = None
+    recent_task: asyncio.Task | None = None
     try:
+        subscriber_id, target = runtime.broadcast.subscribe(
+            wall=wall,
+            fullscreen_source=fullscreen_source,
+        )
+        recent_task = asyncio.create_task(
+            asyncio.to_thread(build_recent_detections_message, runtime)
+        )
+        recent_sent = False
         while runtime.broadcast.enabled:
             if not recent_sent and recent_task.done():
                 recent_sent = True
@@ -179,9 +186,12 @@ async def annotated_broadcast_websocket(
     except WebSocketDisconnect:
         pass
     finally:
-        if not recent_task.done():
+        if recent_task is not None and not recent_task.done():
             recent_task.cancel()
-        runtime.broadcast.unsubscribe(subscriber_id)
+        if subscriber_id is not None:
+            runtime.broadcast.unsubscribe(subscriber_id)
+        if demand_lease is not None:
+            demand_lease.release()
 
 
 @router.websocket("/api/v1/video-wall/ws")
@@ -201,11 +211,17 @@ async def source_video_wall_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    subscriber_id, target = runtime.broadcast.subscribe_source_only(
-        wall=wall,
-        fullscreen_source=fullscreen_source,
+    demand_lease = (
+        runtime.stream_demand.acquire_video()
+        if getattr(runtime, "stream_demand", None) is not None
+        else None
     )
+    subscriber_id: str | None = None
     try:
+        subscriber_id, target = runtime.broadcast.subscribe_source_only(
+            wall=wall,
+            fullscreen_source=fullscreen_source,
+        )
         while runtime.broadcast.enabled:
             try:
                 frame = await asyncio.to_thread(target.get, True, 20.0)
@@ -268,7 +284,10 @@ async def source_video_wall_websocket(
     except WebSocketDisconnect:
         pass
     finally:
-        runtime.broadcast.unsubscribe_source_only(subscriber_id)
+        if subscriber_id is not None:
+            runtime.broadcast.unsubscribe_source_only(subscriber_id)
+        if demand_lease is not None:
+            demand_lease.release()
 
 
 def _source_frame_payload(
