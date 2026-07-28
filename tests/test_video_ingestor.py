@@ -10,6 +10,7 @@ import numpy as np
 
 from app.core.source_registry import STATIC_VIDEO, SourceRecord, SourceRegistry
 from app.core.deepstream_ingestor import DeepStreamIngestor
+from app.core.stream_demand import StreamDemandController
 from app.core.types import TaskName
 from app.core.video_ingestor import VideoFileIngestor
 
@@ -46,6 +47,25 @@ class FakeCapture:
 
     def release(self) -> None:
         self.released = True
+
+
+class InMemorySourceRegistry:
+    def __init__(self, records: list[SourceRecord]) -> None:
+        self._records = list(records)
+        self.revision = 1
+
+    def list(self) -> list[SourceRecord]:
+        return list(self._records)
+
+    def get(self, source_uri: str) -> SourceRecord | None:
+        return next(
+            (
+                record
+                for record in self._records
+                if record.source_uri == source_uri
+            ),
+            None,
+        )
 
 
 class RecordingRouter:
@@ -335,6 +355,93 @@ def test_deepstream_static_only_mode_excludes_rtsp_before_open(
     )
 
     assert [record.source_uri for record in ingestor._active_records()] == ["data/example.mp4"]
+
+
+def test_deepstream_static_status_counts_all_demanded_sources_without_capping(
+    tmp_path: Path,
+) -> None:
+    records = [
+        SourceRecord(
+            name=f"Static {index}",
+            source_uri=f"data/static-{index:02d}.mp4",
+            source_type=STATIC_VIDEO,
+            enabled=True,
+        )
+        for index in range(18)
+    ]
+    registry = InMemorySourceRegistry(records)
+    demand = StreamDemandController()
+    lease = demand.acquire_video()
+    try:
+        ingestor = DeepStreamIngestor(
+            registry=registry,  # type: ignore[arg-type]
+            router=RecordingRouter(registry),  # type: ignore[arg-type]
+            project_root=tmp_path,
+            source_type_filter=STATIC_VIDEO,
+            max_sources=20,
+            max_active_sources=20,
+            demand_controller=demand,
+            video_only_mode=True,
+        )
+
+        status = ingestor.status()
+
+        assert status["configured_static_video_source_count"] == 20
+        assert status["max_sources"] == 20
+        assert status["registered_source_count"] == 18
+        assert status["eligible_source_count"] == 18
+        assert status["demanded_source_count"] == 18
+        assert status["active_source_count"] == 0
+        assert status["pending_source_opens"] == 18
+        assert status["skip_reasons"]["counts"] == {}
+        assert status["skip_reasons"]["sources"] == {}
+        assert len(ingestor._active_records()) == 18
+    finally:
+        lease.release()
+
+
+def test_deepstream_static_status_reports_no_demand_per_redacted_source(
+    tmp_path: Path,
+) -> None:
+    records = [
+        SourceRecord(
+            name=f"Static {index}",
+            source_uri=f"data/private-static-{index:02d}.mp4",
+            source_type=STATIC_VIDEO,
+            enabled=True,
+        )
+        for index in range(3)
+    ]
+    registry = InMemorySourceRegistry(records)
+    demand = StreamDemandController()
+    ingestor = DeepStreamIngestor(
+        registry=registry,  # type: ignore[arg-type]
+        router=RecordingRouter(registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_type_filter=STATIC_VIDEO,
+        max_sources=18,
+        max_active_sources=18,
+        demand_controller=demand,
+        video_only_mode=True,
+    )
+
+    status = ingestor.status()
+
+    assert status["configured_static_video_source_count"] == 18
+    assert status["max_sources"] == 18
+    assert status["registered_source_count"] == 3
+    assert status["eligible_source_count"] == 3
+    assert status["demanded_source_count"] == 0
+    assert status["active_source_count"] == 0
+    assert status["pending_source_opens"] == 0
+    assert status["skip_reasons"]["counts"] == {"no_demand": 3}
+    assert status["skip_reasons"]["sources"] == {
+        record.source_uri: "no_demand" for record in records
+    }
+    assert all(
+        "://" not in source_id
+        for source_id in status["skip_reasons"]["sources"]
+    )
 
 
 def test_deepstream_frame_index_remains_monotonic_across_file_reopen(

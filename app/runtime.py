@@ -953,9 +953,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "demand_controller": stream_demand,
             "video_only_mode": app_settings.video_only_mode,
             "max_active_sources": app_settings.deepstream_max_active_sources,
-            "source_open_stagger_seconds": (
-                app_settings.deepstream_source_open_stagger_seconds
-            ),
             "source_allowlist": (
                 app_settings.deepstream_source_allowlist or None
             ),
@@ -971,6 +968,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
             video_ingestor = RtspProcessSupervisor(
                 **common_ingestor_settings,
+                source_open_stagger_seconds=(
+                    app_settings.deepstream_source_open_stagger_seconds
+                ),
                 raw_stream_router=raw_stream_router,
                 loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
@@ -990,6 +990,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 **common_ingestor_settings,
                 raw_stream_router=raw_stream_router,
                 source_type_filter=STATIC_VIDEO,
+                source_open_stagger_seconds=(
+                    app_settings.static_video_source_open_stagger_seconds
+                ),
                 loop=operational.video_loop,
                 max_sources=operational.static_video_source_count,
                 rtsp_enabled=False,

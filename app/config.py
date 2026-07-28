@@ -303,6 +303,9 @@ class Settings:
     deepstream_source_open_stagger_seconds: float = _env_float(
         "DEEPSTREAM_SOURCE_OPEN_STAGGER_SECONDS", 5.0
     )
+    static_video_source_open_stagger_seconds: float = _env_float(
+        "STATIC_VIDEO_SOURCE_OPEN_STAGGER_SECONDS", 0.5
+    )
     deepstream_source_allowlist: tuple[str, ...] = _env_str_tuple(
         "DEEPSTREAM_SOURCE_ALLOWLIST"
     )

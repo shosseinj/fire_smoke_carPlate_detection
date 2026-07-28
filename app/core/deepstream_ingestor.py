@@ -233,6 +233,9 @@ class DeepStreamIngestor:
         self._open_failures = 0
         self._reconnects = 0
         self._last_error: str | None = None
+        self._last_selection_skip_reasons: dict[str, str] = {}
+        self._source_open_errors: dict[str, str] = {}
+        self._source_skip_codes: dict[str, str] = {}
         self._demand_unsubscribe: Callable[[], None] | None = None
         if self.demand_controller is not None:
             self._demand_unsubscribe = self.demand_controller.add_listener(
@@ -936,6 +939,7 @@ class DeepStreamIngestor:
                 state.last_error = safe_message
                 display_uri = state.display_uri
             self._last_error = f"{display_uri}: {safe_message}"
+            self._source_open_errors[source_id] = safe_message
             self._failed_sources.add(source_id)
             self._retry_after[source_id] = (
                 time.monotonic()
@@ -1533,6 +1537,15 @@ class DeepStreamIngestor:
         elif structure_name in {"video/x-h265", "video/x-hevc"}:
             codec = "h265"
         else:
+            if structure_name.startswith("video/"):
+                with self._lock:
+                    self._source_skip_codes[
+                        context["source_id"]
+                    ] = "unsupported_codec_or_container"
+                self._mark_failed(
+                    context["source_id"],
+                    f"unsupported codec/container caps={caps_text}",
+                )
             return
         with self._lock:
             if context["branch_created"]:
@@ -1826,45 +1839,133 @@ class DeepStreamIngestor:
             except Exception:
                 continue
 
+    def _selection_snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        registered: list[SourceRecord] = []
+        eligible: list[SourceRecord] = []
+        demanded: list[SourceRecord] = []
+        skip_reasons: dict[str, str] = {}
+        seen: set[str] = set()
+        if self.registry is None:
+            return {
+                "registered": [],
+                "eligible": [],
+                "demanded": [],
+                "selected": [],
+                "skip_reasons": {},
+                "active_limit": min(self.max_sources, self.max_active_sources),
+            }
+        aggregate_video_demand = (
+            self.demand_controller.video_required()
+            if self.demand_controller is not None
+            else self.frontend_frame_worker is not None
+        )
+        aggregate_demand = aggregate_video_demand or self._ai_required()
+        for record in self.registry.list():
+            if canonical_source_type(
+                record.source_uri, record.source_type
+            ) != self.source_type_filter:
+                continue
+            registered.append(record)
+            source_id = record.source_uri
+            display_id = VideoFileIngestor.redact_uri(source_id)
+            if source_id in seen:
+                skip_reasons[display_id] = "duplicate_source"
+                continue
+            seen.add(source_id)
+            if not record.enabled:
+                skip_reasons[display_id] = "disabled"
+                continue
+            with self._lock:
+                known_skip = self._source_skip_codes.get(source_id)
+            if known_skip is not None:
+                skip_reasons[display_id] = known_skip
+                continue
+            if not self.is_supported_source(record):
+                skip_reasons[display_id] = "unsupported_codec_or_container"
+                continue
+            if (
+                not self.rtsp_enabled
+                and VideoFileIngestor.is_rtsp_uri(source_id or "")
+            ):
+                skip_reasons[display_id] = "unsupported_codec_or_container"
+                continue
+            if self.source_allowlist and (
+                source_id not in self.source_allowlist
+                and display_id not in self.source_allowlist
+            ):
+                skip_reasons[display_id] = "not_in_source_allowlist"
+                continue
+            eligible.append(record)
+            source_video_demand = (
+                self.demand_controller.video_required(source_id)
+                if self.demand_controller is not None
+                else self.frontend_frame_worker is not None
+            )
+            if not aggregate_demand or not (
+                self._ai_required() or source_video_demand
+            ):
+                skip_reasons[display_id] = "no_demand"
+                continue
+            demanded.append(record)
+
+        active_limit = min(self.max_sources, self.max_active_sources)
+        selected = demanded[:active_limit]
+        for record in demanded[active_limit:]:
+            skip_reasons[
+                VideoFileIngestor.redact_uri(record.source_uri)
+            ] = "max_sources_reached"
+        with self._lock:
+            states = set(self._states)
+            retry_after = dict(self._retry_after)
+            open_errors = dict(self._source_open_errors)
+            skip_codes = dict(self._source_skip_codes)
+        for record in selected:
+            source_id = record.source_uri
+            display_id = VideoFileIngestor.redact_uri(source_id)
+            if source_id in states:
+                continue
+            retry_at = retry_after.get(source_id, 0.0)
+            if retry_at > now:
+                skip_reasons[display_id] = (
+                    skip_codes[source_id]
+                    if source_id in skip_codes
+                    else "pipeline_open_failed"
+                    if source_id in open_errors
+                    else "quarantined_or_retry_wait"
+                )
+        return {
+            "registered": registered,
+            "eligible": eligible,
+            "demanded": demanded,
+            "selected": selected,
+            "skip_reasons": skip_reasons,
+            "active_limit": active_limit,
+        }
+
     def _active_records(self) -> list[SourceRecord]:
         # Keep source pipelines fully closed when neither frontend nor AI has
         # a consumer. This is stronger than dropping at the valves: NVDEC,
         # mapping and conversion also consume no resources while idle.
-        if not self._video_required() and not self._ai_required():
-            return []
-        records = [
-            record
-            for record in self.registry.list()
-            if record.enabled and self.is_supported_source(record)
-            and canonical_source_type(
-                record.source_uri,
-                record.source_type,
-            ) == self.source_type_filter
-            and (
-                self.rtsp_enabled
-                or not VideoFileIngestor.is_rtsp_uri(record.source_uri or "")
-            )
-            and (
-                not self.source_allowlist
-                or record.source_uri in self.source_allowlist
-                or VideoFileIngestor.redact_uri(record.source_uri)
-                in self.source_allowlist
-            )
-            and (
-                self._ai_required()
-                or self._video_required(record.source_uri)
-            )
-        ]
-        # Enforce max_sources cap
-        active_limit = min(self.max_sources, self.max_active_sources)
-        if len(records) > active_limit:
+        snapshot = self._selection_snapshot()
+        records = snapshot["selected"]
+        if len(snapshot["demanded"]) > snapshot["active_limit"]:
             LOGGER.warning(
                 "source_type=%s sources=%d exceeds max_sources=%d; capping",
                 self.source_type_filter,
-                len(records),
-                active_limit,
+                len(snapshot["demanded"]),
+                snapshot["active_limit"],
             )
-            records = records[:active_limit]
+        reasons = snapshot["skip_reasons"]
+        if reasons != self._last_selection_skip_reasons:
+            for source_id, reason in reasons.items():
+                LOGGER.info(
+                    "DeepStream source skipped source=%s source_type=%s reason=%s",
+                    source_id,
+                    self.source_type_filter,
+                    reason,
+                )
+            self._last_selection_skip_reasons = dict(reasons)
         return records
 
     def _sync_sources(self) -> None:
@@ -1929,6 +2030,8 @@ class DeepStreamIngestor:
             opens_remaining -= 1
             try:
                 self._open_source(record)
+                with self._lock:
+                    self._source_open_errors.pop(record.source_uri, None)
                 self._next_source_open_monotonic = (
                     time.monotonic() + self.source_open_stagger_seconds
                 )
@@ -1940,6 +2043,7 @@ class DeepStreamIngestor:
                     f"Could not open {safe_uri}: "
                     f"{type(exc).__name__}: {safe_error}"
                 )
+                self._source_open_errors[record.source_uri] = self._last_error
                 self._retry_after[record.source_uri] = (
                     time.monotonic() + self.rtsp_reconnect_seconds
                 )
@@ -2092,22 +2196,56 @@ class DeepStreamIngestor:
     def status(self) -> dict[str, Any]:
         with self._lock:
             now = time.monotonic()
+            selection = self._selection_snapshot()
+            skip_sources = selection["skip_reasons"]
+            skip_counts: dict[str, int] = {}
+            for reason in skip_sources.values():
+                skip_counts[reason] = skip_counts.get(reason, 0) + 1
+            selected_ids = {
+                record.source_uri for record in selection["selected"]
+            }
+            active_pipeline_count = sum(
+                1
+                for source_id, state in self._states.items()
+                if source_id in selected_ids
+                and state.pipeline_state.lower() == "playing"
+            )
+            paused_pipeline_count = sum(
+                1
+                for state in self._states.values()
+                if state.pipeline_state.lower() == "paused"
+                or state.paused_for_demand
+            )
             return {
                 "enabled": True,
                 "backend": "deepstream",
                 "source_type_filter": self.source_type_filter,
                 "max_sources": self.max_sources,
+                "configured_static_video_source_count": (
+                    self.max_sources
+                    if self.source_type_filter == STATIC_VIDEO
+                    else None
+                ),
                 "max_active_sources": self.max_active_sources,
+                "effective_source_limit": selection["active_limit"],
+                "registered_source_count": len(selection["registered"]),
+                "eligible_source_count": len(selection["eligible"]),
+                "demanded_source_count": len(selection["demanded"]),
+                "selected_source_count": len(selection["selected"]),
                 "max_source_opens_per_sync": self.max_source_opens_per_sync,
                 "source_open_stagger_seconds": self.source_open_stagger_seconds,
                 "source_allowlist_count": len(self.source_allowlist),
                 "active_source_count": len(self._states),
+                "active_pipeline_count": active_pipeline_count,
+                "paused_pipeline_count": paused_pipeline_count,
+                "skip_reasons": {
+                    "counts": skip_counts,
+                    "sources": skip_sources,
+                },
                 "pending_source_opens": max(
                     0,
-                    (
-                        len(self._active_records()) - len(self._states)
-                        if self.registry is not None
-                        else 0
+                    len(
+                        selected_ids.difference(self._states)
                     ),
                 ),
                 "running": self._thread is not None and self._thread.is_alive(),
