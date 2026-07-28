@@ -235,7 +235,7 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
     c, u = _resolve_audit_briefs(s, store)
     return SectionResponse(
         id=s.id,
-        name=s.name,
+        section_name=s.name,
         floor=s.floor,
         description=s.description,
         is_active=s.is_active,
