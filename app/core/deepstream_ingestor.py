@@ -107,6 +107,9 @@ class DeepStreamIngestor:
         rtsp_stall_timeout_seconds: int = 30,
         skip_taskless_sources: bool = True,
         gst_loader: Callable[[], tuple[Any, Any]] = _load_gstreamer,
+        on_source_started: Callable[[str], None] | None = None,
+        on_source_eos: Callable[[str, bool], None] | None = None,
+        on_source_failed: Callable[[str, str], None] | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -134,6 +137,10 @@ class DeepStreamIngestor:
             0, int(rtsp_stall_timeout_seconds)
         )
         self.gst_loader = gst_loader
+        self.on_source_started = on_source_started
+        self.on_source_eos = on_source_eos
+        self.on_source_failed = on_source_failed
+        self._started_sources: set[str] = set()
 
         self._gst: Any | None = None
         self._glib: Any | None = None
@@ -284,9 +291,14 @@ class DeepStreamIngestor:
             detail = str(error)
             if debug:
                 detail = f"{detail} ({debug})"
+            if self.on_source_failed is not None:
+                self.on_source_failed(source_id, self._redact_error(source_id, detail))
             self._mark_failed(source_id, detail)
         elif message.type == Gst.MessageType.EOS:
-            if self._should_loop_source(source_id):
+            will_loop = self._should_loop_source(source_id)
+            if self.on_source_eos is not None:
+                self.on_source_eos(source_id, will_loop)
+            if will_loop:
                 with self._lock:
                     if source_id not in self._failed_sources:
                         self._loop_counts[source_id] = (
@@ -642,6 +654,16 @@ class DeepStreamIngestor:
             return
         self._schedule_state_disposal(state)
 
+    def release_source(self, source_id: str) -> None:
+        self._close_source(source_id)
+        with self._lock:
+            self._retry_after.pop(source_id, None)
+            self._failed_sources.discard(source_id)
+            self._frame_sequences.pop(source_id, None)
+            self._loop_counts.pop(source_id, None)
+            self._gst_source_ids.pop(source_id, None)
+            self._started_sources.discard(source_id)
+
     def _join_close_threads(self, timeout: float) -> None:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
@@ -741,6 +763,8 @@ class DeepStreamIngestor:
                     time.monotonic() + self.rtsp_reconnect_seconds
                 )
                 LOGGER.exception("%s", self._last_error)
+                if self.on_source_failed is not None:
+                    self.on_source_failed(record.source_uri, self._last_error)
 
     def _submit_latest_round(self) -> None:
         with self._lock:
@@ -774,15 +798,26 @@ class DeepStreamIngestor:
         if not frames:
             return
 
+        if self.on_source_started is not None:
+            for source_id in source_ids:
+                if source_id not in self._started_sources:
+                    self._started_sources.add(source_id)
+                    self.on_source_started(source_id)
         self._round_sequence += 1
-        self.router.submit_round(
-            frames=frames,  # type: ignore[arg-type]
-            source_ids=source_ids,
-            round_sequence=self._round_sequence,
-            frame_indexes=frame_indexes,
-            source_times_seconds=source_times,
-            metadata=metadata,
-        )
+        try:
+            self.router.submit_round(
+                frames=frames,  # type: ignore[arg-type]
+                source_ids=source_ids,
+                round_sequence=self._round_sequence,
+                frame_indexes=frame_indexes,
+                source_times_seconds=source_times,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if self.on_source_failed is not None:
+                for source_id in source_ids:
+                    self.on_source_failed(source_id, str(exc))
+            raise
         with self._lock:
             for source_id, version in versions.items():
                 state = self._states.get(source_id)

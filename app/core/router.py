@@ -52,6 +52,20 @@ class TaskRouter:
             worker.close()
         self.started = False
 
+    def wait_for_source_idle(self, source_id: str, timeout_seconds: float = 60.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while time.monotonic() <= deadline:
+            if all(worker.is_source_idle(source_id) for worker in self.workers.values()):
+                return True
+            time.sleep(0.01)
+        return all(worker.is_source_idle(source_id) for worker in self.workers.values())
+
+    def source_failed_frames(self, source_id: str) -> int:
+        return sum(
+            worker.failed_frames_for_source(source_id)
+            for worker in self.workers.values()
+        )
+
     def submit_round(
         self,
         *,

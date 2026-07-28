@@ -61,6 +61,7 @@ class TaskWorker:
         self._started = threading.Event()
         self._started_count = 0
         self._lock = threading.Lock()
+        self._inflight_by_source: dict[str, int] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -87,7 +88,11 @@ class TaskWorker:
             if self._started_count >= self.num_threads:
                 self._started.set()
         while True:
-            packets = self.buffer.take_batch(self.batch_size, self.max_wait_seconds)
+            packets = self.buffer.take_batch(
+                self.batch_size,
+                self.max_wait_seconds,
+                on_take=self._mark_inflight,
+            )
             if not packets:
                 return
             started = time.perf_counter()
@@ -151,6 +156,31 @@ class TaskWorker:
                             self.result_callback(packet, failed)
                         except Exception:
                             LOGGER.exception("Annotated broadcast callback failed")
+            finally:
+                with self._lock:
+                    for packet in packets:
+                        remaining = self._inflight_by_source.get(packet.source_id, 1) - 1
+                        if remaining > 0:
+                            self._inflight_by_source[packet.source_id] = remaining
+                        else:
+                            self._inflight_by_source.pop(packet.source_id, None)
+
+    def is_source_idle(self, source_id: str) -> bool:
+        if self.buffer.has_source(source_id):
+            return False
+        with self._lock:
+            return self._inflight_by_source.get(source_id, 0) == 0
+
+    def failed_frames_for_source(self, source_id: str) -> int:
+        with self._lock:
+            return self.counters.failed_frames_by_source.get(source_id, 0)
+
+    def _mark_inflight(self, packets: list[FramePacket]) -> None:
+        with self._lock:
+            for packet in packets:
+                self._inflight_by_source[packet.source_id] = (
+                    self._inflight_by_source.get(packet.source_id, 0) + 1
+                )
 
     @staticmethod
     def _print_positive_detection(result: TaskResult) -> None:

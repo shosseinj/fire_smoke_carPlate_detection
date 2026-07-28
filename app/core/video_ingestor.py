@@ -72,6 +72,9 @@ class VideoFileIngestor:
         rtsp_reconnect_seconds: float = 3.0,
         capture_factory: Callable[..., Any] = cv2.VideoCapture,
         read_workers: int = 1,
+        on_source_started: Callable[[str], None] | None = None,
+        on_source_eos: Callable[[str, bool], None] | None = None,
+        on_source_failed: Callable[[str, str], None] | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -94,6 +97,10 @@ class VideoFileIngestor:
         self.rtsp_reconnect_seconds = max(0.5, rtsp_reconnect_seconds)
         self.capture_factory = capture_factory
         self.read_workers = max(1, int(read_workers))
+        self.on_source_started = on_source_started
+        self.on_source_eos = on_source_eos
+        self.on_source_failed = on_source_failed
+        self._started_sources: set[str] = set()
         self._read_executor = (
             ThreadPoolExecutor(
                 max_workers=self.read_workers,
@@ -214,6 +221,8 @@ class VideoFileIngestor:
                 f"{type(exc).__name__}"
             )
             LOGGER.error(self._last_error)
+            if not is_live and self.on_source_failed is not None:
+                self.on_source_failed(record.source_uri, self._last_error)
             return None
         if not capture.isOpened():
             capture.release()
@@ -225,6 +234,8 @@ class VideoFileIngestor:
                 f"Could not open video source {record.source_uri}: {display_uri}"
             )
             LOGGER.error(self._last_error)
+            if not is_live and self.on_source_failed is not None:
+                self.on_source_failed(record.source_uri, self._last_error)
             return None
         self._retry_after.pop(record.source_uri, None)
         source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -262,10 +273,13 @@ class VideoFileIngestor:
         state = self._states.pop(source_id, None)
         if state is not None:
             state.capture.release()
+        self._started_sources.discard(source_id)
 
     def _read(self, state: VideoState) -> tuple[bool, Any, float | None]:
         ok, frame = state.capture.read()
         if not ok and state.loop and not state.is_live:
+            if self.on_source_eos is not None:
+                self.on_source_eos(state.source_id, True)
             state.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             state.loop_count += 1
             ok, frame = state.capture.read()
@@ -274,9 +288,19 @@ class VideoFileIngestor:
             if state.is_live:
                 state.last_error = "RTSP frame read failed; reconnect scheduled"
             else:
+                frame_count = float(state.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+                position = float(state.capture.get(cv2.CAP_PROP_POS_FRAMES) or 0.0)
+                truncated = not state.loop and frame_count > 0 and position < frame_count - 1
                 state.last_error = (
-                    "End of stream" if not state.loop else "Frame read failed after rewind"
+                    "Video decoding stopped before the expected end of file"
+                    if truncated
+                    else "End of stream" if not state.loop else "Frame read failed after rewind"
                 )
+                if state.loop or truncated:
+                    if self.on_source_failed is not None:
+                        self.on_source_failed(state.source_id, state.last_error)
+                elif self.on_source_eos is not None:
+                    self.on_source_eos(state.source_id, False)
             return False, None, None
 
         state.frame_index = max(
@@ -446,15 +470,26 @@ class VideoFileIngestor:
         if not frames:
             return {"received_frames": 0, "accepted_sources": 0, "task_submissions": 0}
 
+        if self.on_source_started is not None:
+            for source_id in source_ids:
+                if source_id not in self._started_sources:
+                    self._started_sources.add(source_id)
+                    self.on_source_started(source_id)
         self._round_sequence += 1
-        summary = self.router.submit_round(
-            frames=frames,
-            source_ids=source_ids,
-            round_sequence=self._round_sequence,
-            frame_indexes=frame_indexes,
-            source_times_seconds=source_times,
-            metadata=metadata,
-        )
+        try:
+            summary = self.router.submit_round(
+                frames=frames,
+                source_ids=source_ids,
+                round_sequence=self._round_sequence,
+                frame_indexes=frame_indexes,
+                source_times_seconds=source_times,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if self.on_source_failed is not None:
+                for source_id in source_ids:
+                    self.on_source_failed(source_id, str(exc))
+            raise
         self._rounds_submitted += 1
         self._frames_submitted += len(frames)
         self._last_error = None
@@ -482,6 +517,11 @@ class VideoFileIngestor:
                 self._release(source_id)
             self._retry_after.pop(source_id, None)
         return True
+
+    def release_source(self, source_id: str) -> None:
+        with self._state_lock:
+            self._release(source_id)
+            self._retry_after.pop(source_id, None)
 
     def close(self) -> None:
         self._stop.set()

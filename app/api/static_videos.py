@@ -23,6 +23,7 @@ def get_runtime() -> Runtime:
 
 class StaticVideoUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=300)
+    loop: bool | None = None
 
 
 def _safe_filename(filename: str) -> str:
@@ -100,6 +101,13 @@ def _api_response(record: StaticVideoRecord) -> dict[str, Any]:
         "source_uri": record.source_uri,
         "name": record.name,
         "source_type": record.source_type,
+        "loop": record.loop,
+        "processing_status": record.processing_status,
+        "is_processed": record.is_processed,
+        "processing_error": record.processing_error,
+        "processing_started_at": record.processing_started_at,
+        "processing_completed_at": record.processing_completed_at,
+        "processing_attempts": record.processing_attempts,
     }
 
 
@@ -115,6 +123,7 @@ def list_static_videos(
 async def create_static_video(
     file: UploadFile = File(..., description="Video file (.mp4, .avi, .mov, .mkv, .m4v, .webm)"),
     name: str | None = None,
+    loop: bool = False,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     """Upload a static video file and register it for processing.
@@ -131,18 +140,22 @@ async def create_static_video(
     record = runtime.static_video_store.create(
         name=video_name,
         source_uri=source_uri,
+        loop=loop,
     )
 
     # Create the processing-facing camera source (for the ingestor)
     try:
-        runtime.registry.create(
+        source = runtime.registry.create(
             SourceRecord(
                 source_uri=source_uri,
                 name=video_name,
                 source_type="static_video",
                 metadata={"original_filename": upload["filename"]},
-                loop=False,
+                loop=loop,
             )
+        )
+        record = runtime.static_video_store.update(
+            source_uri, source_config=source.to_dict()
         )
     except ValueError:
         pass  # already exists — fine for idempotent re-creation
@@ -151,6 +164,22 @@ async def create_static_video(
         **_api_response(record),
         "file_size_bytes": upload["size_bytes"],
     }
+
+
+@router.post("/{source_uri:path}/retry")
+def retry_static_video(
+    source_uri: str,
+    loop: bool | None = None,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    try:
+        record = runtime.static_video_lifecycle.retry(source_uri, loop=loop)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ویدیوی ایستا یافت نشد",
+        )
+    return _api_response(record)
 
 
 @router.patch("/{source_uri:path}")
@@ -171,6 +200,8 @@ async def update_static_video(
     changes: dict[str, Any] = {}
     if payload.name is not None:
         changes["name"] = payload.name
+    if payload.loop is not None:
+        changes["loop"] = payload.loop
 
     old_source_uri = source_uri
     if file is not None:
@@ -185,6 +216,7 @@ async def update_static_video(
         record = runtime.static_video_store.create(
             name=changes.get("name", current.name),
             source_uri=changes["source_uri"],
+            loop=bool(changes.get("loop", current.loop)),
         )
         runtime.static_video_store.delete(old_source_uri)
         # Re-register the camera source under the new path
@@ -193,13 +225,16 @@ async def update_static_video(
         except KeyError:
             pass
         try:
-            runtime.registry.create(
+            source = runtime.registry.create(
                 SourceRecord(
                     source_uri=changes["source_uri"],
                     name=record.name,
                     source_type="static_video",
-                    loop=False,
+                    loop=record.loop,
                 )
+            )
+            record = runtime.static_video_store.update(
+                record.source_uri, source_config=source.to_dict()
             )
         except ValueError:
             pass
@@ -209,6 +244,11 @@ async def update_static_video(
         if "name" in changes:
             try:
                 runtime.registry.update(old_source_uri, name=changes["name"])
+            except KeyError:
+                pass
+        if "loop" in changes:
+            try:
+                runtime.registry.update(old_source_uri, loop=bool(changes["loop"]))
             except KeyError:
                 pass
 

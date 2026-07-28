@@ -39,6 +39,7 @@ from app.core.detection_log_store import DetectionLogStore
 from app.core.import_progress_store import ImportProgressStore
 from app.core.personnel_zip_import_manager import PersonnelZipImportManager
 from app.core.static_video_store import StaticVideoStore
+from app.core.static_video_lifecycle import StaticVideoLifecycle
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
 from app.core.source_registry import SourceChange, SourceRegistry
@@ -98,6 +99,7 @@ class Runtime:
     import_progress: ImportProgressStore
     personnel_zip_imports: PersonnelZipImportManager
     static_video_store: StaticVideoStore
+    static_video_lifecycle: StaticVideoLifecycle
     general_settings: GeneralSettingsStore
     source_settings: SourceSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
@@ -189,8 +191,8 @@ class Runtime:
 
     def _release_ingestor_source(self, source_uri: str) -> None:
         """Drop any cached ingestor state for a source URI immediately."""
-        if self.static_video_ingestor is not None and hasattr(self.static_video_ingestor, "_release"):
-            self.static_video_ingestor._release(source_uri)
+        if self.static_video_ingestor is not None and hasattr(self.static_video_ingestor, "release_source"):
+            self.static_video_ingestor.release_source(source_uri)
         if self.video_ingestor is not None and hasattr(self.video_ingestor, "_close_source"):
             self.video_ingestor._close_source(source_uri)
 
@@ -332,6 +334,7 @@ class Runtime:
             self.static_video_ingestor.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
+        self.static_video_lifecycle.close()
         self.router.close()
         self.fire_smoke_logs.close()
         self.plate_logs.close()
@@ -860,6 +863,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         play_only_callback=broadcast.publish_passthrough,
         source_only_callback=broadcast.publish_source_only,
     )
+    static_video_lifecycle = StaticVideoLifecycle(static_video_store, registry, router)
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
     static_video_ingestor = None
@@ -912,6 +916,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                     operational.deepstream_rtsp_stall_timeout_seconds
                 ),
                 skip_taskless_sources=app_settings.skip_taskless_sources,
+                on_source_started=static_video_lifecycle.on_source_started,
+                on_source_eos=static_video_lifecycle.on_source_eos,
+                on_source_failed=static_video_lifecycle.on_source_failed,
             )
         else:
             static_video_ingestor = StaticVideoFileIngestor(
@@ -921,6 +928,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 loop=False,
                 max_sources=operational.static_video_source_count,
                 gpu_resize_enabled=app_settings.gpu_resize_enabled,
+                on_source_started=static_video_lifecycle.on_source_started,
+                on_source_eos=static_video_lifecycle.on_source_eos,
+                on_source_failed=static_video_lifecycle.on_source_failed,
             )
     media_preview = MediaPreviewPublisher(
         registry=registry,
@@ -963,6 +973,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         import_progress=import_progress,
         personnel_zip_imports=personnel_zip_imports,
         static_video_store=static_video_store,
+        static_video_lifecycle=static_video_lifecycle,
         general_settings=general_settings,
         source_settings=source_settings,
         video_ingestor=video_ingestor,
@@ -981,6 +992,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         )
 
     registry.add_listener(_on_source_change)
+    static_video_lifecycle.recover()
     # Push zone polygons to broadcast hub for all registered sources
     runtime_obj._refresh_all_source_zones()
     runtime_obj._refresh_all_source_draw_settings()

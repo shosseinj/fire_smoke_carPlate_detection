@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.core.types import FramePacket
@@ -106,7 +107,12 @@ class LatestPerSourceBuffer:
             self._accepted_by_source.get(packet.source_id, 0) + 1
         )
 
-    def take_batch(self, maximum: int, max_wait_seconds: float) -> list[FramePacket]:
+    def take_batch(
+        self,
+        maximum: int,
+        max_wait_seconds: float,
+        on_take: Callable[[list[FramePacket]], None] | None = None,
+    ) -> list[FramePacket]:
         maximum = max(1, maximum)
         max_wait_seconds = max(0.0, max_wait_seconds)
         with self._condition:
@@ -134,6 +140,8 @@ class LatestPerSourceBuffer:
                     packet = self._latest.pop(source_id, None)
                     if packet is not None:
                         packets.append(packet)
+            if packets and on_take is not None:
+                on_take(packets)
             return packets
 
     def close(self) -> None:
@@ -153,6 +161,12 @@ class LatestPerSourceBuffer:
             self._order.clear()
             self._condition.notify_all()
             return discarded
+
+    def has_source(self, source_id: str) -> bool:
+        with self._condition:
+            if self._policy == "lossless_fifo":
+                return any(packet.source_id == source_id for packet in self._fifo)
+            return source_id in self._latest
 
     def stats(self) -> BufferStats:
         with self._condition:

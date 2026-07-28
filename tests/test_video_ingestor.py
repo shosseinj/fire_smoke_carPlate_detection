@@ -48,6 +48,14 @@ class FakeCapture:
         self.released = True
 
 
+class OneFrameCapture(FakeCapture):
+    def read(self):
+        if self.position >= 1:
+            return False, None
+        self.position += 1
+        return True, np.full((4, 6, 3), self.position, dtype=np.uint8)
+
+
 class RecordingRouter:
     def __init__(self, registry: SourceRegistry) -> None:
         self.registry = registry
@@ -115,6 +123,54 @@ def test_deepstream_uses_live_per_source_loop_setting(
     source_registry.update("data/loop.mp4", loop=False)
     assert ingestor._should_loop_source("data/loop.mp4") is False
     assert ingestor._should_loop_source("missing.mp4") is False
+
+
+def test_non_looping_file_reports_started_then_eos(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    uri = "data/once.mp4"
+    source_registry.create(
+        SourceRecord(source_uri=uri, name="once", source_type=STATIC_VIDEO, loop=False)
+    )
+    events: list[tuple[str, object]] = []
+    ingestor = VideoFileIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_type_filter=STATIC_VIDEO,
+        capture_factory=OneFrameCapture,
+        on_source_started=lambda source: events.append(("started", source)),
+        on_source_eos=lambda source, looping: events.append(("eos", looping)),
+    )
+
+    assert ingestor.process_once()["received_frames"] == 1
+    assert ingestor.process_once()["received_frames"] == 0
+    assert events == [("started", uri), ("eos", False)]
+    ingestor.close()
+
+
+def test_looping_file_rewinds_without_terminal_completion(
+    tmp_path: Path, source_registry: SourceRegistry
+) -> None:
+    uri = "data/loop-forever.mp4"
+    source_registry.create(
+        SourceRecord(source_uri=uri, name="loop", source_type=STATIC_VIDEO, loop=True)
+    )
+    eos: list[bool] = []
+    ingestor = VideoFileIngestor(
+        registry=source_registry,
+        router=RecordingRouter(source_registry),  # type: ignore[arg-type]
+        project_root=tmp_path,
+        source_type_filter=STATIC_VIDEO,
+        capture_factory=OneFrameCapture,
+        on_source_eos=lambda _source, looping: eos.append(looping),
+    )
+
+    assert ingestor.process_once()["received_frames"] == 1
+    assert ingestor.process_once()["received_frames"] == 1
+    assert eos == [True]
+    assert source_registry.get(uri) is not None
+    ingestor.close()
 
 
 def test_video_files_are_sampled_as_one_camera_round(
