@@ -201,20 +201,17 @@ async def create_personnel_with_images(
     degree: str | None = Form(default=None),
     departmen_id: int | None = Form(default=None),
     department_id: int | None = Form(default=None),
-    images: Annotated[
-        list[UploadFile],
-        File(
-            description="JPEG, PNG, or BMP image files",
-            media_type="image/*",
-            json_schema_extra={
-                "items": {
-                    "type": "string",
-                    "format": "binary",
-                    "contentMediaType": "image/*",
-                }
-            },
-        ),
-    ] = File(...),
+    images: list[UploadFile] = File(
+        description="JPEG, PNG, or BMP image files",
+        media_type="image/*",
+        json_schema_extra={
+            "items": {
+                "type": "string",
+                "format": "binary",
+                "contentMediaType": "image/*",
+            }
+        },
+    ),
     enable_cropping: bool = Form(default=False),
 ) -> Any:
     store = _store(runtime)
