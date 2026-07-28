@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import logging
+import os
 import queue
 import threading
 import time
@@ -73,7 +75,18 @@ def _rtsp_child_main(
     events: Any,
     stop_event: Any,
 ) -> None:
+    # rtspsrc uses GSocketClient, which otherwise loads libgiolibproxy and
+    # libproxy for camera-LAN URIs. The image's libproxy path segfaults inside
+    # libstdc++ during proxy discovery. RTSP cameras are direct LAN endpoints,
+    # so select GIO's built-in direct resolver before importing GStreamer.
+    os.environ["GIO_USE_PROXY_RESOLVER"] = "dummy"
+    os.environ["NO_PROXY"] = "*"
+    os.environ["no_proxy"] = "*"
     # Importing Gst/DeepStream happens only inside this camera process.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
     from app.core.deepstream_ingestor import DeepStreamIngestor
 
     record = SourceRecord.from_dict(record_value)

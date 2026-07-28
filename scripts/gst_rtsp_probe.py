@@ -21,6 +21,11 @@ def main() -> int:
     parser.add_argument(
         "--codec", choices=("discover", "h264", "h265"), default="discover"
     )
+    parser.add_argument(
+        "--decoded",
+        action="store_true",
+        help="Exercise the production NVDEC/BGRx path after depay and parse.",
+    )
     parser.add_argument("--redacted-only", action="store_true")
     args = parser.parse_args()
 
@@ -61,6 +66,19 @@ def main() -> int:
         command.extend(["rtph264depay", "!", "h264parse", "!"])
     elif args.codec == "h265":
         command.extend(["rtph265depay", "!", "h265parse", "!"])
+    if args.decoded:
+        if args.codec == "discover":
+            raise SystemExit("--decoded requires --codec h264 or --codec h265")
+        command.extend(
+            [
+                "nvv4l2decoder",
+                "!",
+                "nvvideoconvert",
+                "!",
+                "video/x-raw,format=BGRx",
+                "!",
+            ]
+        )
     command.extend(["fakesink", "sync=false"])
     environment = dict(os.environ)
     environment["GST_DEBUG"] = "3"
@@ -71,7 +89,10 @@ def main() -> int:
         text=True,
         env=environment,
     )
-    print(f"source_index={args.index} source=redacted codec={args.codec}")
+    print(
+        f"source_index={args.index} source=redacted codec={args.codec} "
+        f"decoded={args.decoded}"
+    )
     print(
         f"endpoint={parsed.hostname}:{parsed.port or 554} "
         f"tcp_preflight={tcp_status}"

@@ -115,6 +115,7 @@ def build_supervisor(
         backoff_seconds=backoff_seconds,
         segfault_quarantine_threshold=segfault_quarantine_threshold,
         quarantine_seconds=quarantine_seconds,
+        source_open_stagger_seconds=0.0,
     )
     return supervisor, clock, factory
 
@@ -126,6 +127,8 @@ def test_exit_139_restarts_only_failed_source_and_keeps_healthy_child(
         tmp_path,
         source_ids=("rtsp://camera-1/live", "rtsp://camera-2/live"),
     )
+    supervisor.poll_once()
+    # Source opens are intentionally limited to one per scheduler poll.
     supervisor.poll_once()
     failed, healthy = factory.created
     failed.exit(139)

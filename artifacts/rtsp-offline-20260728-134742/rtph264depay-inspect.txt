@@ -1,0 +1,99 @@
+﻿Factory Details:
+  Rank                     secondary (128)
+  Long-name                RTP H264 depayloader
+  Klass                    Codec/Depayloader/Network/RTP
+  Description              Extracts H264 video from RTP packets (RFC 3984)
+  Author                   Wim Taymans <wim.taymans@gmail.com>
+
+Plugin Details:
+  Name                     rtp
+  Description              Real-time protocol plugins
+  Filename                 /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstrtp.so
+  Version                  1.20.3
+  License                  LGPL
+  Source module            gst-plugins-good
+  Source release date      2022-06-15
+  Binary package           GStreamer Good Plugins (Ubuntu)
+  Origin URL               https://launchpad.net/distros/ubuntu/+source/gst-plugins-good1.0
+
+GObject
+ +----GInitiallyUnowned
+       +----GstObject
+             +----GstElement
+                   +----GstRTPBaseDepayload
+                         +----GstRtpH264Depay
+
+Pad Templates:
+  SINK template: 'sink'
+    Availability: Always
+    Capabilities:
+      application/x-rtp
+                  media: video
+             clock-rate: 90000
+          encoding-name: H264
+  
+  SRC template: 'src'
+    Availability: Always
+    Capabilities:
+      video/x-h264
+          stream-format: avc
+              alignment: au
+      video/x-h264
+          stream-format: byte-stream
+              alignment: { (string)nal, (string)au }
+
+Element has no clocking capabilities.
+Element has no URI handling capabilities.
+
+Pads:
+  SINK: 'sink'
+    Pad Template: 'sink'
+  SRC: 'src'
+    Pad Template: 'src'
+
+Element Properties:
+  auto-header-extension: Whether RTP header extensions should be automatically enabled, if an implementation is available
+                        flags: readable, writable
+                        Boolean. Default: true
+  max-reorder         : Max seqnum reorder before assuming sender has restarted
+                        flags: readable, writable
+                        Integer. Range: 0 - 2147483647 Default: 100 
+  name                : The name of the object
+                        flags: readable, writable, 0x2000
+                        String. Default: "rtph264depay0"
+  parent              : The parent of the object
+                        flags: readable, writable, 0x2000
+                        Object of type "GstObject"
+  request-keyframe    : Request new keyframe when packet loss is detected
+                        flags: readable, writable
+                        Boolean. Default: false
+  source-info         : Add RTP source information as buffer meta
+                        flags: readable, writable
+                        Boolean. Default: false
+  stats               : Various statistics
+                        flags: readable
+                        Boxed pointer of type "GstStructure"
+                                                          clock_rate: 0
+                                                           npt-start: 0
+                                                            npt-stop: 18446744073709551615
+                                                          play-speed: 1
+                                                          play-scale: 1
+                                                     running-time-dts: 18446744073709551615
+                                                     running-time-pts: 18446744073709551615
+                                                              seqnum: 0
+                                                           timestamp: 0
+
+  wait-for-keyframe   : Wait for the next keyframe after packet loss, meaningful only when outputting access units
+                        flags: readable, writable
+                        Boolean. Default: false
+
+Element Signals:
+  "request-extension" :  GstRTPHeaderExtension* user_function (GstElement* object,
+                                                                guint arg0,
+                                                                gchararray arg1,
+                                                                gpointer user_data);
+
+Element Actions:
+  "add-extension" :  void user_function (GstElement* object,
+                                         GstRTPHeaderExtension* arg0);
+  "clear-extensions" :  void user_function (GstElement* object);

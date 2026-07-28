@@ -1,0 +1,38 @@
+Traceback (most recent call last):
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\http11.py", line 244, in parse
+    status_line = yield from parse_line(read_line)
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\http11.py", line 320, in parse_line
+    line = yield from read_line(MAX_LINE_LENGTH)
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\streams.py", line 46, in read_line
+    raise EOFError(f"stream ends after {p} bytes, before end of line")
+EOFError: stream ends after 0 bytes, before end of line
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\client.py", line 303, in parse
+    response = yield from Response.parse(
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\http11.py", line 246, in parse
+    raise EOFError("connection closed while reading HTTP status line") from exc
+EOFError: connection closed while reading HTTP status line
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 33, in <module>
+    main()
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 29, in main
+    asyncio.run(probe(args.url, args.duration))
+  File "C:\Users\jafari.h\AppData\Local\Programs\Python\Python310\lib\asyncio\runners.py", line 44, in run
+    return loop.run_until_complete(main)
+  File "C:\Users\jafari.h\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 646, in run_until_complete
+    return future.result()
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 13, in probe
+    async with websockets.connect(url, max_size=None) as websocket:
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\asyncio\client.py", line 590, in __aenter__
+    return await self
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\asyncio\client.py", line 546, in __await_impl__
+    await self.connection.handshake(
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\asyncio\client.py", line 115, in handshake
+    raise self.protocol.handshake_exc
+websockets.exceptions.InvalidMessage: did not receive a valid HTTP response

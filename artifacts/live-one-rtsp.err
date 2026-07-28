@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 33, in <module>
+    main()
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 29, in main
+    asyncio.run(probe(args.url, args.duration))
+  File "C:\Users\jafari.h\AppData\Local\Programs\Python\Python310\lib\asyncio\runners.py", line 44, in run
+    return loop.run_until_complete(main)
+  File "C:\Users\jafari.h\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 646, in run_until_complete
+    return future.result()
+  File "C:\Users\jafari.h\Desktop\ai_project\testing\merged_video_ai_router\scripts\video_ws_probe.py", line 16, in probe
+    message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
+  File "C:\Users\jafari.h\AppData\Local\Programs\Python\Python310\lib\asyncio\tasks.py", line 445, in wait_for
+    return fut.result()
+  File "C:\Users\jafari.h\AppData\Roaming\Python\Python310\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: received 1008 (policy violation) Fullscreen source not found; then sent 1008 (policy violation) Fullscreen source not found

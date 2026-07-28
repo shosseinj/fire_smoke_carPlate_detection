@@ -478,6 +478,7 @@ class DeepStreamIngestor:
         codec: str,
         generation: int,
         rtp: bool,
+        sync_with_parent: bool = True,
     ) -> dict[str, Any]:
         """Build parser, optional encoded packet tee, NVDEC and decoded outputs."""
         Gst, _ = self._require_runtime()
@@ -594,11 +595,12 @@ class DeepStreamIngestor:
             generation=generation,
         )
         all_elements = elements + outputs["elements"]
-        for element in all_elements:
-            if not element.sync_state_with_parent():
-                raise RuntimeError(
-                    f"Could not sync GStreamer element state: {element.get_name()}"
-                )
+        if sync_with_parent:
+            for element in all_elements:
+                if not element.sync_state_with_parent():
+                    raise RuntimeError(
+                        f"Could not sync GStreamer element state: {element.get_name()}"
+                    )
         return {
             "depay": depay,
             "parser": parser,
@@ -611,6 +613,7 @@ class DeepStreamIngestor:
             "encoded_sink": encoded_sink,
             "encoded_handler_id": encoded_handler_id,
             "codec": codec,
+            "elements": all_elements,
         }
 
     def _on_rtsp_pad_added(
@@ -675,6 +678,10 @@ class DeepStreamIngestor:
                 codec=codec,
                 generation=context["generation"],
                 rtp=True,
+                # rtspsrc emits this callback from its streaming lifecycle.
+                # Link its live pad before transitioning newly-added elements
+                # to the parent PLAYING state.
+                sync_with_parent=False,
             )
 
             sink_pad = branch["depay"].get_static_pad("sink")
@@ -686,6 +693,13 @@ class DeepStreamIngestor:
                 raise RuntimeError(
                     f"Could not link RTSP pad to {codec} depayloader: {result}"
                 )
+
+            for element in branch["elements"]:
+                if not element.sync_state_with_parent():
+                    raise RuntimeError(
+                        "Could not sync GStreamer element state: "
+                        f"{element.get_name()}"
+                    )
 
             context["codec"] = codec
             context["raw_sink"] = branch["raw_sink"]
@@ -987,11 +1001,15 @@ class DeepStreamIngestor:
                     factory = factory_object.get_name()
             except Exception:
                 factory = "<unknown>"
-        type_numeric = int(message.type)
+        # GI wraps a native GstMessage. Read its type once while the message
+        # reference is known to be live; repeated property access has crashed
+        # inside gi._gi for RTSP child processes.
+        message_type = message.type
+        type_numeric = int(message_type)
         try:
-            type_name = Gst.MessageType.get_name(message.type)
+            type_name = Gst.MessageType.get_name(message_type)
         except Exception:
-            type_name = str(message.type)
+            type_name = str(message_type)
         current_state = "UNKNOWN"
         pending_state = "UNKNOWN"
         try:
@@ -1024,7 +1042,7 @@ class DeepStreamIngestor:
             history = self._bus_history.setdefault(source_id, deque(maxlen=30))
             history.append(event)
         noisy_state_change = (
-            message.type == Gst.MessageType.STATE_CHANGED
+            message_type == Gst.MessageType.STATE_CHANGED
             and message_source is not pipeline
             and factory
             not in {"nvv4l2decoder", "rtspsrc", "qtdemux", "matroskademux"}
@@ -1049,13 +1067,13 @@ class DeepStreamIngestor:
                 codec,
                 generation,
             )
-        if message.type == Gst.MessageType.ERROR:
+        if message_type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
             detail = str(error)
             if debug:
                 detail = f"{detail} ({debug})"
             self._mark_failed(source_id, detail)
-        elif message.type == Gst.MessageType.EOS:
+        elif message_type == Gst.MessageType.EOS:
             if self._should_loop_source(source_id):
                 LOGGER.info(
                     "DeepStream file reached EOS; seek scheduled: %s",
@@ -1070,7 +1088,7 @@ class DeepStreamIngestor:
                 with self._lock:
                     self._failed_sources.add(source_id)
                     self._retry_after[source_id] = float("inf")
-        elif message.type == Gst.MessageType.WARNING:
+        elif message_type == Gst.MessageType.WARNING:
             warning, debug = message.parse_warning()
             safe_warning = self._redact_error(source_id, str(warning))
             if debug:

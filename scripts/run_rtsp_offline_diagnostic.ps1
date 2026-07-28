@@ -40,6 +40,15 @@ function Invoke-GstProbe {
     & docker exec $container python3 /workspace/scripts/gst_rtsp_probe.py `
         --index $Index --duration $GstDurationSeconds --codec $codec *>&1 |
         Tee-Object -FilePath $streamPath
+
+    # The parser-only probe proves RTSP negotiation, but the dashboard also
+    # depends on NVDEC and BGRx conversion. Exercise that exact native path
+    # separately so a decoder/converter crash cannot be mistaken for an RTSP
+    # connection failure.
+    $decodedPath = Join-Path $outputDirectory "source-$Index-$codec-decoded-$GstDurationSeconds-sec.txt"
+    & docker exec $container python3 /workspace/scripts/gst_rtsp_probe.py `
+        --index $Index --duration $GstDurationSeconds --codec $codec --decoded *>&1 |
+        Tee-Object -FilePath $decodedPath
     return $codec
 }
 
