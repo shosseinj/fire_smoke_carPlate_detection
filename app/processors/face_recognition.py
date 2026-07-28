@@ -21,6 +21,35 @@ from app.processors.ultralytics_loader import load_yolo_class, serialized_model_
 LOGGER = logging.getLogger(__name__)
 
 
+_FACE_QUALITY_REASON_FA: dict[str, str] = {
+    "face_too_small": "چهره در تصویر بیش از حد کوچک است؛ تصویر نزدیک‌تر و واضح‌تری استفاده کنید.",
+    "missing_landmarks": "نقاط کلیدی چهره (چشم‌ها، بینی و دهان) به‌طور کامل قابل تشخیص نیستند.",
+    "blurry": "تصویر چهره تار است؛ از تصویر واضح و بدون حرکت استفاده کنید.",
+    "eyes_too_close": "فاصله چشم‌ها در تصویر کم است؛ چهره باید بزرگ‌تر و نزدیک‌تر باشد.",
+    "pose_unavailable": "زاویه سر قابل محاسبه نیست؛ صورت را مستقیم رو به دوربین قرار دهید.",
+    "yaw_out_of_range": "چرخش صورت به چپ یا راست زیاد است؛ صورت باید روبه‌روی دوربین باشد.",
+    "pitch_out_of_range": "زاویه سر به بالا یا پایین زیاد است؛ سر را مستقیم نگه دارید.",
+    "roll_out_of_range": "کجی سر زیاد است؛ سر را صاف و عمودی نگه دارید.",
+    "quality_below_threshold": "کیفیت کلی چهره کمتر از حد مجاز است؛ نور، وضوح و زاویه تصویر را بهتر کنید.",
+    "alignment_failed": "هم‌ترازی چهره انجام نشد؛ تصویر مستقیم‌تر و واضح‌تری استفاده کنید.",
+}
+
+
+class FaceEnrollmentValidationError(ValueError):
+    """A client-correctable face enrollment validation failure."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
+
 @dataclass(frozen=True, slots=True)
 class FaceRecognitionSettings:
     human_model_path: Path
@@ -2253,13 +2282,45 @@ class FaceRecognitionProcessor(BatchProcessor):
         )
         faces = self._faces(results[0])
         valid: list[tuple[dict[str, Any], np.ndarray, float, dict[str, Any]]] = []
+        rejected: list[dict[str, Any]] = []
         for face in faces:
-            accepted, quality, _, crop, metrics = self._quality(image, face)
+            accepted, quality, reason, crop, metrics = self._quality(image, face)
             if accepted and crop is not None:
                 valid.append((face, crop, quality, metrics))
-        if len(valid) != 1:
-            raise ValueError(
-                f"Enrollment requires exactly one valid face; found {len(valid)}"
+            else:
+                rejected.append({
+                    "reason": reason,
+                    "message": _FACE_QUALITY_REASON_FA.get(
+                        reason, "چهره شرایط لازم برای ثبت را ندارد."
+                    ),
+                    "quality_score": round(float(quality), 6),
+                })
+        if not faces:
+            raise FaceEnrollmentValidationError(
+                "no_face_detected",
+                "هیچ چهره‌ای در تصویر شناسایی نشد؛ تصویر باید شامل یک چهره واضح و روبه‌دوربین باشد.",
+                details={"detected_faces": 0, "valid_faces": 0},
+            )
+        if not valid:
+            reasons = list(dict.fromkeys(item["message"] for item in rejected))
+            raise FaceEnrollmentValidationError(
+                "face_quality_rejected",
+                "چهره شناسایی شد، اما برای ثبت مناسب نیست: " + " ".join(reasons),
+                details={
+                    "detected_faces": len(faces),
+                    "valid_faces": 0,
+                    "rejections": rejected,
+                    "required_quality_score": self.settings.quality_threshold,
+                },
+            )
+        if len(valid) > 1:
+            raise FaceEnrollmentValidationError(
+                "multiple_valid_faces",
+                f"بیش از یک چهره معتبر در تصویر شناسایی شد ({len(valid)} چهره)؛ فقط تصویر یک نفر را ارسال کنید.",
+                details={
+                    "detected_faces": len(faces),
+                    "valid_faces": len(valid),
+                },
             )
         face, crop, quality, metrics = valid[0]
         embedding = self._embedder.embed([crop])[0]

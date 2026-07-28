@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config import settings
 
@@ -1114,6 +1114,7 @@ class PersonnelStore:
         data: bytes,
         face_processor: Any | None = None,
         enable_cropping: bool = False,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> dict[str, Any]:
         """Process a ZIP file containing personnel data and images.
 
@@ -1152,9 +1153,36 @@ class PersonnelStore:
         face_counts = {"no_face": 0, "multiple_faces": 0, "enrolled": 0, "skipped_unknown_name": 0, "errors": 0}
 
         total_images_in_zip = 0
+        progress_imported = 0
+        progress_failed = 0
+
+        def record_image_detail(detail: dict[str, Any]) -> None:
+            nonlocal progress_imported, progress_failed
+            image_details.append(detail)
+            if detail.get("status") == "ok":
+                progress_imported += 1
+            elif detail.get("status") == "failed":
+                progress_failed += 1
+            if progress_callback is not None:
+                progress_callback({
+                    "total": total_images_in_zip,
+                    "processed": len(image_details),
+                    "imported": progress_imported,
+                    "skipped": 0,
+                    "failed": progress_failed,
+                })
 
         with zipfile.ZipFile(BytesIO(data)) as zf:
             names = zf.namelist()
+            image_names = [
+                name for name in names
+                if not name.startswith(("__MACOSX", "."))
+                and not name.endswith((".xlsx", ".json", "/"))
+                and not name.startswith("metadata.")
+            ]
+            total_images_in_zip = len(image_names)
+            if progress_callback is not None:
+                progress_callback({"total": total_images_in_zip, "processed": 0, "imported": 0, "skipped": 0, "failed": 0})
 
             metadata: list[dict[str, str]] = []
             if "metadata.xlsx" in names:
@@ -1180,21 +1208,15 @@ class PersonnelStore:
                     except (ValueError, KeyError) as exc:
                         errors.append({"file": "metadata.json", "error": str(exc)})
 
-            for name in names:
-                if name.startswith("__MACOSX") or name.startswith("."):
-                    continue
-                if name.endswith((".xlsx", ".json", "/")):
-                    continue
-                if name.startswith("metadata."):
-                    continue
-
-                total_images_in_zip += 1
+            for name in image_names:
                 file_data = zf.read(name)
                 img_filename = Path(name).name
 
                 # Determine personnel info from folder or filename
                 fc, lc, nc_candidate = _parse_zip_entry_personnel(name)
                 error_reason: str | None = None
+                failure_code: str | None = None
+                failure_details: dict[str, Any] | None = None
                 saved_to_error_folder: str | None = None
                 person_name: str = "Unknown Unknown"
 
@@ -1214,13 +1236,16 @@ class PersonnelStore:
                             )
                             created_personnel += 1
                         except ValueError as exc:
-                            error_reason = str(exc)
-                            errors.append({"file": name, "error": error_reason})
+                            failure_code = "personnel_create_failed"
+                            error_reason = f"ایجاد پرسنل برای این تصویر انجام نشد: {exc}"
+                            errors.append({"file": name, "error": error_reason, "failure_code": failure_code})
                             saved_to_error_folder = self._save_error_image(nc_candidate, img_filename, file_data)
-                            image_details.append({
+                            record_image_detail({
                                 "file": name,
                                 "status": "failed",
                                 "error_reason": error_reason,
+                                "failure_code": failure_code,
+                                "failure_message": error_reason,
                                 "saved_to_error_folder": saved_to_error_folder,
                                 "face_status": -1,
                                 "enrolled_in_qdrant": False,
@@ -1228,13 +1253,16 @@ class PersonnelStore:
                             face_counts["errors"] += 1
                             continue
                 else:
-                    error_reason = "Cannot determine personnel from filename"
-                    errors.append({"file": name, "error": error_reason})
+                    failure_code = "personnel_not_identified"
+                    error_reason = "کد ملی معتبر از نام فایل یا پوشه قابل تشخیص نیست."
+                    errors.append({"file": name, "error": error_reason, "failure_code": failure_code})
                     saved_to_error_folder = self._save_error_image("unknown", img_filename, file_data)
-                    image_details.append({
+                    record_image_detail({
                         "file": name,
                         "status": "failed",
                         "error_reason": error_reason,
+                        "failure_code": failure_code,
+                        "failure_message": error_reason,
                         "saved_to_error_folder": saved_to_error_folder,
                         "face_status": -1,
                         "enrolled_in_qdrant": False,
@@ -1255,50 +1283,64 @@ class PersonnelStore:
                         )
                         if updated is not None:
                             person = updated
-                    person_name = f"{person.fname} {person.lname}".strip() 
+                    person_name = f"{person.fname} {person.lname}".strip()
+                    image_record: PersonnelImageRecord | None = None
+                    embedding_id: str | None = None
+                    cropped_face_key: str | None = None
+                    face_status = -1
                     try:
-                        storage_key = self._save_image_file(person.id, file_data, img_filename, nc_candidate)
+                        storage_key = self._save_image_file(
+                            person.id, file_data, img_filename, nc_candidate
+                        )
                         image_record = self.create_image(
                             person.id,
                             storage_key,
                             embedding_id=None,
                         )
 
-                        # Face processing
-                        face_status = -1
-                        cropped_face_key: str | None = None
-                        embedding_id: str | None = None
-                        enrolled_in_qdrant = False
-
-                        if face_processor is not None:
+                        if face_processor is None:
+                            failure_code = "face_processor_unavailable"
+                            error_reason = "سرویس تشخیص چهره در دسترس نیست؛ وضعیت مدل‌های چهره را بررسی کنید."
+                            face_counts["errors"] += 1
+                        else:
                             np_arr = np_mod.frombuffer(file_data, dtype=np_mod.uint8)
                             image = cv2_mod.imdecode(np_arr, cv2_mod.IMREAD_COLOR)
-                            if image is not None:
+                            if image is None:
+                                failure_code = "image_decode_failed"
+                                error_reason = "فایل تصویر خراب یا نامعتبر است و قابل خواندن نیست."
+                                face_counts["errors"] += 1
+                            else:
+                                raw_count: int | None = None
                                 try:
                                     raw_count = face_processor.count_faces(image)
-                                except Exception:
-                                    raw_count = 0
+                                except Exception as exc:
+                                    failure_code = "face_detection_error"
+                                    error_reason = "هنگام اجرای مدل تشخیص چهره خطای داخلی رخ داد؛ دوباره تلاش کنید."
+                                    failure_details = {"error_type": type(exc).__name__}
+                                    face_counts["errors"] += 1
+                                    LOGGER.exception(
+                                        "Face detection failed for ZIP image %s", name
+                                    )
 
                                 if raw_count == 0:
                                     face_status = 0
-                                    error_reason = "No face detected in image"
+                                    failure_code = "no_face_detected"
+                                    error_reason = "هیچ چهره‌ای در تصویر شناسایی نشد؛ تصویر واضح، با نور کافی و روبه‌دوربین ارسال کنید."
+                                    failure_details = {"detected_faces": 0}
                                     face_counts["no_face"] += 1
-                                elif raw_count >= 2:
+                                elif raw_count is not None and raw_count >= 2:
                                     face_status = 2
-                                    error_reason = f"Multiple faces detected ({raw_count})"
+                                    failure_code = "multiple_faces_detected"
+                                    error_reason = f"در تصویر {raw_count} چهره شناسایی شد؛ تصویر باید فقط شامل یک نفر باشد."
+                                    failure_details = {"detected_faces": raw_count}
                                     face_counts["multiple_faces"] += 1
-                                else:
-                                    # Exactly one face detected — attempt enrollment
+                                elif raw_count == 1:
                                     try:
-                                        # Skip enrollment when person name is unknown
                                         if person_name.lower() in ("unknown unknown", "unknown"):
                                             face_status = 1
-                                            error_reason = "Skipped vector enrollment: person name is unknown"
+                                            failure_code = "unknown_person_name"
+                                            error_reason = "نام شخص مشخص نیست و امکان ثبت بردار چهره وجود ندارد."
                                             face_counts["skipped_unknown_name"] += 1
-                                            LOGGER.info(
-                                                "Skipped Qdrant enrollment for '%s' (%s): name is unknown",
-                                                person_name, nc_candidate,
-                                            )
                                         else:
                                             enroll_result = face_processor.enroll(
                                                 image,
@@ -1306,66 +1348,131 @@ class PersonnelStore:
                                                 ref_img_id=str(image_record.id),
                                             )
                                             embedding_id = enroll_result.get("point_id")
+                                            if not embedding_id:
+                                                raise RuntimeError(
+                                                    "ثبت بردار چهره شناسه‌ای برنگرداند"
+                                                )
                                             face_status = 1
-                                            enrolled_in_qdrant = True
-                                            qdrant_enrolled += 1
-                                            face_counts["enrolled"] += 1
 
                                             if enable_cropping:
-                                                success, aligned = face_processor.get_aligned_face(image)
-                                                if success and aligned is not None:
-                                                    ok_enc, encoded = cv2_mod.imencode(".jpg", aligned)
-                                                    if ok_enc:
-                                                        cropped_face_key = self._save_cropped_face_file(
-                                                            person.id, encoded.tobytes(), img_filename, nc_candidate
-                                                        )
-
-                                            LOGGER.info(
-                                                "Enrolled face for '%s' (%s) in Qdrant: point_id=%s",
-                                                person_name, nc_candidate, embedding_id,
-                                            )
+                                                try:
+                                                    success, aligned = face_processor.get_aligned_face(image)
+                                                    if success and aligned is not None:
+                                                        ok_enc, encoded = cv2_mod.imencode(".jpg", aligned)
+                                                        if ok_enc:
+                                                            cropped_face_key = self._save_cropped_face_file(
+                                                                person.id,
+                                                                encoded.tobytes(),
+                                                                img_filename,
+                                                                nc_candidate,
+                                                            )
+                                                except Exception:
+                                                    LOGGER.exception(
+                                                        "Optional face crop failed for ZIP image %s",
+                                                        name,
+                                                    )
                                     except (ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
                                         face_status = 0
-                                        error_reason = f"Face enrollment failed: {exc}"
+                                        failure_code = getattr(exc, "code", "face_enrollment_failed")
+                                        failure_details = getattr(exc, "details", None)
+                                        error_reason = str(exc)
                                         face_counts["errors"] += 1
-                            else:
-                                error_reason = "Could not decode image"
-                                face_counts["errors"] += 1
-                        else:
-                            # No face processor — image saved without face check
-                            face_status = -1
 
-                        self.update_image_embedding(image_record.id, embedding_id)
+                        if not embedding_id or error_reason:
+                            saved_to_error_folder = self._save_error_image(
+                                nc_candidate, img_filename, file_data
+                            )
+                            if embedding_id and face_processor is not None:
+                                face_processor.delete_points([embedding_id])
+                                embedding_id = None
+                            self.delete_image(image_record.id)
+                            image_record = None
+                            if cropped_face_key:
+                                self._delete_storage_file(cropped_face_key)
+                                cropped_face_key = None
+                            failure_code = failure_code or "vector_enrollment_failed"
+                            failure = error_reason or "ثبت بردار چهره انجام نشد."
+                            record_image_detail({
+                                "file": name,
+                                "status": "failed",
+                                "error_reason": failure,
+                                "failure_code": failure_code,
+                                "failure_message": failure,
+                                "failure_details": failure_details,
+                                "saved_to_error_folder": saved_to_error_folder,
+                                "face_status": face_status,
+                                "enrolled_in_qdrant": False,
+                                "cropped_face_key": cropped_face_key,
+                                "embedding_id": None,
+                            })
+                            errors.append({
+                                "file": name,
+                                "error": failure,
+                                "failure_code": failure_code,
+                                "failure_details": failure_details,
+                            })
+                            continue
+
+                        try:
+                            self.update_image_embedding(image_record.id, embedding_id)
+                        except Exception:
+                            face_processor.delete_points([embedding_id])
+                            embedding_id = None
+                            self.delete_image(image_record.id)
+                            image_record = None
+                            if cropped_face_key:
+                                self._delete_storage_file(cropped_face_key)
+                                cropped_face_key = None
+                            raise
+
                         created_images += 1
-
-                        # Save to error folder if there was a problem
-                        if error_reason and embedding_id is None:
-                            saved_to_error_folder = self._save_error_image(nc_candidate, img_filename, file_data)
-
-                        image_details.append({
+                        qdrant_enrolled += 1
+                        face_counts["enrolled"] += 1
+                        record_image_detail({
                             "file": name,
-                            "status": "failed" if error_reason else "ok",
-                            "error_reason": error_reason,
-                            "saved_to_error_folder": saved_to_error_folder,
+                            "status": "ok",
+                            "error_reason": None,
+                            "failure_code": None,
+                            "failure_message": None,
+                            "failure_details": None,
+                            "saved_to_error_folder": None,
                             "face_status": face_status,
-                            "enrolled_in_qdrant": enrolled_in_qdrant,
+                            "enrolled_in_qdrant": True,
                             "cropped_face_key": cropped_face_key,
                             "embedding_id": embedding_id,
                         })
-                        if error_reason:
-                            errors.append({"file": name, "error": error_reason})
                     except Exception as exc:
-                        error_reason = f"{type(exc).__name__}: {exc}"
-                        errors.append({"file": name, "error": error_reason})
+                        if embedding_id and face_processor is not None:
+                            try:
+                                face_processor.delete_points([embedding_id])
+                            except Exception:
+                                LOGGER.exception("Could not roll back vector %s", embedding_id)
+                        if image_record is not None:
+                            self.delete_image(image_record.id)
+                        if cropped_face_key:
+                            self._delete_storage_file(cropped_face_key)
+                        LOGGER.exception("Unexpected ZIP image processing error for %s", name)
+                        failure_code = failure_code or "image_processing_error"
+                        failure_details = failure_details or {"error_type": type(exc).__name__}
+                        error_reason = "پردازش تصویر با خطای داخلی مواجه شد؛ دوباره تلاش کنید."
+                        errors.append({
+                            "file": name,
+                            "error": error_reason,
+                            "failure_code": failure_code,
+                            "failure_details": failure_details,
+                        })
                         saved_to_error_folder = self._save_error_image(
                             nc_candidate, img_filename, file_data
                         )
-                        image_details.append({
+                        record_image_detail({
                             "file": name,
                             "status": "failed",
                             "error_reason": error_reason,
+                            "failure_code": failure_code,
+                            "failure_message": error_reason,
+                            "failure_details": failure_details,
                             "saved_to_error_folder": saved_to_error_folder,
-                            "face_status": -1,
+                            "face_status": face_status,
                             "enrolled_in_qdrant": False,
                         })
                         face_counts["errors"] += 1

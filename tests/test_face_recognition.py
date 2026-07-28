@@ -12,6 +12,7 @@ import pytest
 from app.core.types import FramePacket
 from app.database import Database
 from app.processors.face_recognition import (
+    FaceEnrollmentValidationError,
     FaceMatch,
     FaceRecognitionProcessor,
     FaceRecognitionSettings,
@@ -483,6 +484,32 @@ def test_enrollment_uses_same_detector_embedder_and_store(tmp_path: Path) -> Non
         {"person": "Alice", "ref_img_id": "reference-1", "embeddings": 1}
     ]
     assert processor.delete_person("Alice") == 1
+
+
+def test_enrollment_reports_persian_quality_rejection_details(tmp_path: Path) -> None:
+    processor, _human, _face, _embedder, _store = build_processor(tmp_path)
+    processor.update_quality_settings({"quality_threshold": 0.99})
+
+    with pytest.raises(FaceEnrollmentValidationError) as captured:
+        processor.enroll(packet("cam-a", 1).frame, person="Alice")
+
+    error = captured.value
+    assert error.code == "face_quality_rejected"
+    assert "چهره شناسایی شد" in str(error)
+    assert error.details["detected_faces"] == 1
+    assert error.details["valid_faces"] == 0
+    assert error.details["rejections"][0]["reason"] == "quality_below_threshold"
+
+
+def test_enrollment_reports_persian_no_face_error(tmp_path: Path) -> None:
+    processor, _human, face, _embedder, _store = build_processor(tmp_path)
+    face.enabled = False
+
+    with pytest.raises(FaceEnrollmentValidationError) as captured:
+        processor.enroll(packet("cam-a", 1).frame, person="Alice")
+
+    assert captured.value.code == "no_face_detected"
+    assert "هیچ چهره‌ای" in str(captured.value)
 
 
 def test_remote_qdrant_store_batches_search_and_manages_identity(tmp_path: Path) -> None:

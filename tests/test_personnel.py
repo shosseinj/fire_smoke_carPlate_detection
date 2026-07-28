@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -984,16 +985,16 @@ def test_upload_personnel_zip_folder_structure(tmp_path: Path) -> None:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["success"] is True
+        assert body["success"] is False
         assert body["summary"]["total_persons"] == 1
-        assert body["summary"]["total_images_saved"] == 1
+        assert body["summary"]["total_images_saved"] == 0
         assert body["summary"]["total_images_in_zip"] == 1
-        assert body["summary"]["total_failed"] == 0
+        assert body["summary"]["total_failed"] == 1
         assert body["summary"]["qdrant_enrolled_count"] == 0  # no face processor in mock mode
         assert len(body["details"]) == 1
-        assert body["details"][0]["status"] in ("ok", "failed")
+        assert body["details"][0]["status"] == "failed"
         assert body["details"][0]["file"] == "1234567891/photo.jpg"
-        assert len(body.get("errors", [])) == 0
+        assert len(body.get("errors", [])) == 1
 
         # Verify the person was created with descriptive name from national code
         person_resp = client.get(
@@ -1005,6 +1006,82 @@ def test_upload_personnel_zip_folder_structure(tmp_path: Path) -> None:
         assert person["national_code"] == "1234567891"
         assert person["fname"] == "person_1234567891"
         assert person["lname"] == ""
+        assert test_runtime.personnel_store.list_images(person["id"]) == []
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_personnel_zip_background_job_reports_progress_and_result(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        response = client.post(
+            "/api/v1/personnel/upload-personnel-zip/jobs",
+            files={"file": ("test.zip", _make_test_zip("1234567891"), "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["status_url"] == f"/api/v1/import-progress/{body['job_id']}"
+
+        deadline = time.monotonic() + 5
+        progress = None
+        while time.monotonic() < deadline:
+            polled = client.get(body["status_url"], headers={"Authorization": f"Bearer {token}"})
+            assert polled.status_code == 200
+            progress = polled.json()
+            if progress["status"] in {"completed", "completed_with_errors", "failed"}:
+                break
+            time.sleep(0.01)
+
+        assert progress is not None
+        assert progress["status"] == "completed_with_errors"
+        assert progress["total_rows"] == 1
+        assert progress["processed_rows"] == 1
+        assert progress["failed_rows"] == 1
+        assert progress["progress_percent"] == 100.0
+        assert progress["result"]["summary"]["total_images_in_zip"] == 1
+        assert progress["result"]["details"][0]["failure_code"] == "face_processor_unavailable"
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_upload_personnel_zip_detector_error_deletes_reference_image(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+
+    class BrokenFaceProcessor:
+        def count_faces(self, _image):
+            raise RuntimeError("detector unavailable")
+
+        def delete_points(self, _point_ids):
+            return 0
+
+    monkeypatch.setattr(
+        "app.api.personnel._face_processor",
+        lambda _runtime: BrokenFaceProcessor(),
+    )
+    try:
+        token = _admin_token(client)
+        national_code = "1234567891"
+        response = client.post(
+            "/api/v1/personnel/upload-personnel-zip",
+            files={"file": ("test.zip", _make_test_zip(national_code), "application/zip")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is False
+        assert body["summary"]["total_images_saved"] == 0
+        assert body["summary"]["face_stats"]["errors"] == 1
+        detail = body["details"][0]
+        assert detail["failure_code"] == "face_detection_error"
+        assert detail["failure_message"] == "هنگام اجرای مدل تشخیص چهره خطای داخلی رخ داد؛ دوباره تلاش کنید."
+        assert detail["failure_details"]["error_type"] == "RuntimeError"
+        person = test_runtime.personnel_store.get_by_national_code(national_code)
+        assert person is not None
+        assert test_runtime.personnel_store.list_images(person.id) == []
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -1023,7 +1100,7 @@ def test_upload_personnel_zip_with_enable_cropping(tmp_path: Path) -> None:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["success"] is True
+        assert body["success"] is False
         assert body["summary"]["total_persons"] == 1
         assert body["summary"]["total_images_in_zip"] == 1
         assert body["summary"]["qdrant_enrolled_count"] == 0
@@ -1087,7 +1164,7 @@ def test_upload_personnel_zip_folder_creates_person_with_national_code_name(tmp_
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["success"] is True
+        assert body["success"] is False
         assert body["summary"]["qdrant_enrolled_count"] == 0  # no real face processor
         assert len(body["details"]) == 1
         assert body["details"][0]["file"] == f"{nc}/photo.jpg"
@@ -1136,7 +1213,7 @@ def test_upload_personnel_zip_updates_existing_unknown_name(tmp_path: Path) -> N
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["success"] is True
+        assert body["success"] is False
         assert body["summary"]["total_images_in_zip"] == 1
 
         # 3. Verify the person's name was updated

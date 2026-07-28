@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260728_0037"
+ALEMBIC_HEAD_REVISION = "20260728_0038"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -509,6 +509,7 @@ import_progress = Table(
     Column("failed_rows", Integer, nullable=False, server_default="0"),
     Column("status", Text, nullable=False, server_default="running"),
     Column("error_message", Text),
+    Column("result_json", Text),
     Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
     *_audit_columns(),
 )

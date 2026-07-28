@@ -96,25 +96,33 @@ async def upload_personnel_images(
         if not validation.valid:
             continue
         storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg", person.national_code)
-        embedding_id: str | None = None
-        process_result = processor.process_image(
-            raw,
-            person_name=person.national_code,
-            ref_img_id=f"{personnel_id}",
-            enable_cropping=enable_cropping,
-        )
-        if process_result.success:
-            embedding_id = process_result.vector_point_id
         try:
             img_record = store.create_image(
                 personnel_id=personnel_id,
                 storage_key=storage_key,
-                embedding_id=embedding_id,
+                embedding_id=None,
                 is_primary=is_primary if idx == 0 else None,
             )
-            saved_images.append(img_record)
         except ValueError:
             store._delete_storage_file(storage_key)
+            continue
+
+        process_result = processor.process_image(
+            raw,
+            person_name=person.national_code,
+            ref_img_id=str(img_record.id),
+            enable_cropping=enable_cropping,
+        )
+        if process_result.status != 1:
+            store.delete_image(img_record.id)
+            continue
+        try:
+            store.update_image_embedding(img_record.id, process_result.vector_point_id)
+        except Exception:
+            processor.delete_vector(process_result.vector_point_id)
+            store.delete_image(img_record.id)
+            continue
+        saved_images.append(store.get_image(img_record.id) or img_record)
 
     if not saved_images:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="همه تصاویر پردازش نشدند")

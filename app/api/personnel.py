@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import queue
+import zipfile
 from datetime import datetime
 from typing import Annotated
 
@@ -24,6 +27,7 @@ from app.core.personnel_image_service import (
     PersonnelImageProcessor,
     validate_uploaded_image,
 )
+from app.core.personnel_zip_import_manager import format_zip_result
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.runtime import Runtime
 from app.core.auth_store import UserRecord
@@ -256,12 +260,20 @@ async def create_personnel_with_images(
             ref_img_id=str(img_record.id),
             enable_cropping=enable_cropping,
         )
-        if process_result.success:
+        if process_result.status == 1:
             embedding_id = process_result.vector_point_id
-            store.update_image_embedding(img_record.id, embedding_id)
+            try:
+                store.update_image_embedding(img_record.id, embedding_id)
+            except Exception:
+                processor.delete_vector(embedding_id)
+                store.delete_image(img_record.id)
+                errors.append(f"{img_file.filename}: failed to persist vector reference")
+                continue
         else:
             errors.append(f"{img_file.filename}: {process_result.failure_message}")
-        saved_images.append(img_record)
+            store.delete_image(img_record.id)
+            continue
+        saved_images.append(store.get_image(img_record.id) or img_record)
 
     if not saved_images and not errors:
         store.delete(person.id)
@@ -357,6 +369,7 @@ async def upload_personnel_zip(
     file: UploadFile = File(...),
     skip_invalid_national_codes: bool = Form(default=True),
     enable_cropping: bool = Form(default=False),
+    _: UserRecord = Depends(require_role("admin")),
 ) -> Any:
     store = _store(runtime)
     raw = await file.read()
@@ -367,27 +380,45 @@ async def upload_personnel_zip(
         result = await run_in_threadpool(store.upload_personnel_zip, raw, fp, enable_cropping)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    summary = {
-        "total_images_in_zip": result.get("total_images_in_zip", 0),
-        "total_persons": result.get("created_personnel", 0),
-        "total_images_saved": result.get("created_images", 0),
-        "total_errors": len(result.get("errors", [])),
-        "total_failed": result.get("total_failed", 0),
-        "qdrant_enrolled_count": result.get("qdrant_enrolled", 0),
-        "face_stats": result.get("face_counts", {}),
-    }
+    return format_zip_result(file.filename or "file.zip", result)
+
+
+@router.post(
+    "/upload-personnel-zip/jobs",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="شروع ورود پس‌زمینه‌ای فایل ZIP پرسنل با امکان نمایش پیشرفت",
+)
+async def start_personnel_zip_import(
+    runtime: Runtime = Depends(get_runtime),
+    file: UploadFile = File(...),
+    enable_cropping: bool = Form(default=False),
+    current_user: UserRecord = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=422, detail="فایل ZIP خالی است.")
+    if not zipfile.is_zipfile(io.BytesIO(raw)):
+        raise HTTPException(status_code=422, detail="فایل ارسال‌شده یک ZIP معتبر نیست.")
+    try:
+        record = runtime.personnel_zip_imports.submit(
+            raw,
+            file.filename or "file.zip",
+            enable_cropping,
+            current_user.id,
+        )
+    except queue.Full:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="صف ورود فایل‌های پرسنل پر است؛ پس از پایان یکی از پردازش‌ها دوباره تلاش کنید.",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     return {
-        "success": len(result.get("errors", [])) == 0,
-        "filename": file.filename or "file.zip",
-        "message": (
-            f"تعداد {summary['total_images_in_zip']} تصویر پردازش شد: "
-            f"{summary['total_images_saved']} ذخیره شد، "
-            f"{summary['qdrant_enrolled_count']} در Qdrant ثبت شد، "
-            f"{summary['total_failed']} ناموفق"
-        ),
-        "summary": summary,
-        "details": result.get("image_details", []),
-        "errors": result.get("errors", []),
+        "job_id": record.id,
+        "progress_id": record.id,
+        "status": record.status,
+        "status_url": f"/api/v1/import-progress/{record.id}",
+        "message": "فایل دریافت شد و پردازش آن در صف قرار گرفت.",
     }
 
 
@@ -534,25 +565,60 @@ async def upload_personnel_images(
             continue
 
         storage_key = store._save_image_file(personnel_id, raw, img_file.filename or "image.jpg", person.national_code)
+        try:
+            img_record = store.create_image(
+                personnel_id=personnel_id,
+                storage_key=storage_key,
+                description=None,
+                embedding_id=None,
+                is_primary=is_primary_val,
+            )
+        except ValueError as exc:
+            store._delete_storage_file(storage_key)
+            results.append({"success": False, "failure_code": "storage_error", "failure_message": str(exc), "image": None})
+            continue
+
         embedding_id: str | None = None
         face_status = 0
         cropped_face_key: str | None = None
+        failure_code = "face_enrollment_failed"
+        failure_message = "ثبت چهره و ایجاد بردار انجام نشد."
+        failure_details: dict[str, Any] | None = None
 
         if face_processor is not None:
             image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
             if image is not None:
+                raw_face_count: int | None = None
                 try:
                     raw_face_count = await run_in_threadpool(face_processor.count_faces, image)
-                except Exception:
-                    raw_face_count = 0
+                except Exception as exc:
+                    LOGGER.exception("Face detection failed for personnel %s", personnel_id)
+                    failure_code = "face_detection_error"
+                    failure_message = (
+                        "سرویس تشخیص چهره هنگام پردازش تصویر با خطا مواجه شد؛ "
+                        "وضعیت مدل‌های تشخیص چهره را بررسی کنید و دوباره تلاش کنید."
+                    )
+                    failure_details = {"error_type": type(exc).__name__}
 
                 if raw_face_count == 0:
                     face_status = 0
-                elif raw_face_count >= 2:
+                    failure_code = "no_face_detected"
+                    failure_message = (
+                        "هیچ چهره‌ای در تصویر شناسایی نشد؛ تصویر واضح، با نور کافی "
+                        "و شامل یک چهره روبه‌دوربین ارسال کنید."
+                    )
+                    failure_details = {"detected_faces": 0}
+                elif raw_face_count is not None and raw_face_count >= 2:
                     face_status = 2
-                else:
-                    process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=f"{personnel_id}", enable_cropping=enable_cropping)
-                    if process_result.success:
+                    failure_code = "multiple_faces_detected"
+                    failure_message = (
+                        f"در تصویر {raw_face_count} چهره شناسایی شد؛ "
+                        "تصویر باید فقط شامل یک نفر باشد."
+                    )
+                    failure_details = {"detected_faces": raw_face_count}
+                elif raw_face_count == 1:
+                    process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=str(img_record.id), enable_cropping=enable_cropping)
+                    if process_result.status == 1:
                         embedding_id = process_result.vector_point_id
                         face_status = 1
                         if enable_cropping:
@@ -566,24 +632,55 @@ async def upload_personnel_images(
                                 LOGGER.warning("Cropped face save failed for personnel %s: %s", personnel_id, exc)
                     else:
                         face_status = 0
+                        failure_code = process_result.failure_code or failure_code
+                        failure_message = process_result.failure_message or failure_message
+                        failure_details = process_result.failure_details
             else:
-                LOGGER.warning("Could not decode uploaded image for face enrollment")
+                failure_code = "image_decode_failed"
+                failure_message = "فایل تصویر خراب یا نامعتبر است و قابل خواندن نیست."
         else:
-            process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=f"{personnel_id}", enable_cropping=enable_cropping)
-            if process_result.success:
+            process_result = processor.process_image(raw, person_name=person.national_code, ref_img_id=str(img_record.id), enable_cropping=enable_cropping)
+            if process_result.status == 1:
                 embedding_id = process_result.vector_point_id
+            else:
+                failure_code = process_result.failure_code or failure_code
+                failure_message = process_result.failure_message or failure_message
+                failure_details = process_result.failure_details
+
+        if not embedding_id:
+            store.delete_image(img_record.id)
+            results.append({
+                "success": False,
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+                "failure_details": failure_details,
+                "image": None,
+            })
+            continue
 
         try:
-            img_record = store.create_image(personnel_id=personnel_id, storage_key=storage_key, description=None, embedding_id=embedding_id, is_primary=is_primary_val)
-            saved_images.append(img_record)
-            all_failed = False
-            img_dict = dataclass_to_dict(img_record)
-            img_dict["face_status"] = face_status
-            img_dict["cropped_face_key"] = cropped_face_key
-            results.append({"success": True, "failure_code": None, "failure_message": None, "image": img_dict})
-        except ValueError as exc:
-            store._delete_storage_file(storage_key)
-            results.append({"success": False, "failure_code": "storage_error", "failure_message": str(exc), "image": None})
+            store.update_image_embedding(img_record.id, embedding_id)
+        except Exception as exc:
+            processor.delete_vector(embedding_id)
+            store.delete_image(img_record.id)
+            if cropped_face_key:
+                store._delete_storage_file(cropped_face_key)
+            results.append({
+                "success": False,
+                "failure_code": "vector_reference_persistence_failed",
+                "failure_message": "بردار چهره ایجاد شد، اما اتصال آن به تصویر مرجع ذخیره نشد؛ عملیات بازگردانی شد.",
+                "failure_details": {"error_type": type(exc).__name__},
+                "image": None,
+            })
+            continue
+
+        img_record = store.get_image(img_record.id) or img_record
+        saved_images.append(img_record)
+        all_failed = False
+        img_dict = dataclass_to_dict(img_record)
+        img_dict["face_status"] = face_status
+        img_dict["cropped_face_key"] = cropped_face_key
+        results.append({"success": True, "failure_code": None, "failure_message": None, "image": img_dict})
 
     if all_failed:
         raise HTTPException(

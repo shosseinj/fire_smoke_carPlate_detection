@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.core.personnel_image_service import ImageProcessResult
 from app.runtime import build_runtime
 
 
@@ -237,10 +238,64 @@ class TestEndpointValidation:
             person = _create_person(client, token)
             resp = _upload_single(client, token, person["id"], filename="test.gif", data=_valid_jpeg_bytes(), content_type="image/gif")
             assert resp.status_code == 422
-            assert "unsupported_extension" in resp.text.lower() or "Unsupported extension" in resp.text
+            assert "unsupported_extension" in resp.text.lower() or "پسوند تصویر پشتیبانی نمی‌شود" in resp.text
         finally:
             _teardown(runtime, old_runtime)
 
+
+class TestVectorEnrollmentContract:
+    def test_uses_created_image_id_as_vector_reference(self, tmp_path: Path, monkeypatch) -> None:
+        runtime, old_runtime, client = _setup_client(tmp_path)
+        references: list[str | int | None] = []
+
+        class RecordingProcessor:
+            def process_image(self, _data, *, person_name, ref_img_id, enable_cropping):
+                references.append(ref_img_id)
+                return ImageProcessResult(success=True, vector_point_id="point-1")
+
+            def delete_vector(self, _point_id):
+                return True
+
+        monkeypatch.setattr("app.api.personnel._image_processor", lambda _runtime: RecordingProcessor())
+        try:
+            token = _admin_token(client)
+            person = _create_person(client, token)
+            response = _upload_single(client, token, person["id"])
+            assert response.status_code == 201, response.text
+            image_id = response.json()["results"][0]["image"]["id"]
+            assert references == [str(image_id)]
+            assert str(image_id) != str(person["id"])
+        finally:
+            _teardown(runtime, old_runtime)
+
+    def test_non_success_status_removes_generated_image(self, tmp_path: Path, monkeypatch) -> None:
+        runtime, old_runtime, client = _setup_client(tmp_path)
+
+        class FailingProcessor:
+            def process_image(self, _data, *, person_name, ref_img_id, enable_cropping):
+                return ImageProcessResult(
+                    success=False,
+                    failure_code="enrollment_failed",
+                    failure_message="vector rejected",
+                )
+
+            def delete_vector(self, _point_id):
+                return True
+
+        monkeypatch.setattr("app.api.personnel._image_processor", lambda _runtime: FailingProcessor())
+        try:
+            token = _admin_token(client)
+            person = _create_person(client, token)
+            response = _upload_single(client, token, person["id"])
+            assert response.status_code == 422
+            assert runtime.personnel_store.list_images(person["id"]) == []
+            snapshot_dir = tmp_path / "saved_media" / "personnel_snapshots"
+            assert not list(snapshot_dir.glob("*"))
+        finally:
+            _teardown(runtime, old_runtime)
+
+
+class TestEndpointValidationContinued:
     def test_invalid_mime_type(self, tmp_path: Path) -> None:
         runtime, old_runtime, client = _setup_client(tmp_path)
         try:
@@ -249,7 +304,7 @@ class TestEndpointValidation:
             resp = _upload_single(client, token, person["id"], content_type="text/plain")
             assert resp.status_code == 422
             result = resp.json()
-            assert len(result.get("detail", {}).get("results", [])) > 0 or "unsupported" in resp.text.lower()
+            assert len(result.get("detail", {}).get("results", [])) > 0 or "پشتیبانی نمی‌شود" in resp.text
         finally:
             _teardown(runtime, old_runtime)
 

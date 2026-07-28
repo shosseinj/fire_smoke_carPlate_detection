@@ -37,6 +37,7 @@ from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.import_progress_store import ImportProgressStore
+from app.core.personnel_zip_import_manager import PersonnelZipImportManager
 from app.core.static_video_store import StaticVideoStore
 from app.core.init_db import init_database
 from app.core.router import TaskRouter
@@ -95,6 +96,7 @@ class Runtime:
     request_store: RequestStore
     detection_log_store: DetectionLogStore
     import_progress: ImportProgressStore
+    personnel_zip_imports: PersonnelZipImportManager
     static_video_store: StaticVideoStore
     general_settings: GeneralSettingsStore
     source_settings: SourceSettingsStore
@@ -322,6 +324,7 @@ class Runtime:
         # End long-lived MJPEG responses first so Uvicorn reload/shutdown cannot
         # wait forever for frontend clients that still have streams open.
         self.broadcast.close()
+        self.personnel_zip_imports.close()
         self.model_conversions.close()
         if self.media_preview is not None:
             self.media_preview.close()
@@ -929,6 +932,11 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
         reconnect_seconds=operational.rtsp_reconnect_seconds,
     )
+    personnel_zip_imports = PersonnelZipImportManager(
+        personnel_store,
+        import_progress,
+        face_processor,
+    )
     runtime_obj = Runtime(
         settings=app_settings,
         database=database,
@@ -953,6 +961,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         request_store=request_store,
         detection_log_store=detection_log_store,
         import_progress=import_progress,
+        personnel_zip_imports=personnel_zip_imports,
         static_video_store=static_video_store,
         general_settings=general_settings,
         source_settings=source_settings,

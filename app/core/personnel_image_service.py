@@ -11,7 +11,10 @@ import cv2
 import numpy as np
 
 from app.config import settings
-from app.processors.face_recognition import FaceRecognitionProcessor
+from app.processors.face_recognition import (
+    FaceEnrollmentValidationError,
+    FaceRecognitionProcessor,
+)
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -104,12 +107,18 @@ class ImageProcessResult:
     success: bool
     failure_code: str | None = None
     failure_message: str | None = None
+    failure_details: dict[str, Any] | None = None
     processed_bytes: bytes | None = None
     processed_format: str | None = None  # "jpeg", "png", "bmp"
     embedding: np.ndarray | None = None
     vector_point_id: str | None = None
     detected_face_count: int = 0
     selected_face_metadata: dict[str, Any] | None = None
+
+    @property
+    def status(self) -> int:
+        """Legacy-compatible vector enrollment status (1=success, 0=failure)."""
+        return 1 if self.success and self.vector_point_id else 0
 
 
 # ── Validation ──────────────────────────────────────────────────────
@@ -122,16 +131,16 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
     """
     # 1. Nonempty
     if not data:
-        return ImageValidationResult(valid=False, failure_code="empty_file", failure_message="File is empty")
+        return ImageValidationResult(valid=False, failure_code="empty_file", failure_message="فایل تصویر خالی است.")
 
     # 2. Safe filename
     safe_name = _safe_filename(filename)
     if not safe_name:
-        return ImageValidationResult(valid=False, failure_code="invalid_filename", failure_message="Filename is empty after sanitization")
+        return ImageValidationResult(valid=False, failure_code="invalid_filename", failure_message="نام فایل تصویر معتبر نیست.")
 
     # 3. No path traversal
     if ".." in filename or "/" in filename.lstrip("/") or "\\" in filename:
-        return ImageValidationResult(valid=False, failure_code="path_traversal", failure_message="Filename contains path traversal")
+        return ImageValidationResult(valid=False, failure_code="path_traversal", failure_message="نام فایل شامل مسیر غیرمجاز است.")
 
     # 4. Extension check
     ext = _validate_extension(filename)
@@ -139,7 +148,7 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
         return ImageValidationResult(
             valid=False,
             failure_code="unsupported_extension",
-            failure_message=f"Unsupported extension. Allowed: {', '.join(settings.supported_image_extensions)}",
+            failure_message=f"پسوند تصویر پشتیبانی نمی‌شود. پسوندهای مجاز: {', '.join(settings.supported_image_extensions)}",
         )
 
     # 5. MIME check (when provided)
@@ -148,7 +157,7 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
         return ImageValidationResult(
             valid=False,
             failure_code="unsupported_mime",
-            failure_message=f"Unsupported MIME type: {content_type}",
+            failure_message=f"نوع محتوای فایل پشتیبانی نمی‌شود: {content_type}",
         )
 
     # 6. Extension-MIME consistency (when both provided)
@@ -156,7 +165,7 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
         return ImageValidationResult(
             valid=False,
             failure_code="mime_extension_mismatch",
-            failure_message=f"MIME type '{content_type}' does not match extension '{ext}'",
+            failure_message="نوع محتوای فایل با پسوند آن مطابقت ندارد.",
         )
 
     # 7. File size
@@ -164,38 +173,38 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
         return ImageValidationResult(
             valid=False,
             failure_code="file_too_large",
-            failure_message=f"File exceeds maximum size of {settings.max_upload_bytes_per_image // (1024 * 1024)} MB",
+            failure_message=f"حجم تصویر بیشتر از حد مجاز {settings.max_upload_bytes_per_image // (1024 * 1024)} مگابایت است.",
         )
 
     # 8. Decode and check format
     detected = _detect_format_from_bytes(data)
     if detected is None:
-        return ImageValidationResult(valid=False, failure_code="corrupt_image", failure_message="Could not detect image format from magic bytes")
+        return ImageValidationResult(valid=False, failure_code="corrupt_image", failure_message="فایل تصویر خراب یا نامعتبر است و قابل خواندن نیست.")
 
     # 9. Verify actual image decoding
     np_arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     if img is None:
-        return ImageValidationResult(valid=False, failure_code="corrupt_image", failure_message="Could not decode image")
+        return ImageValidationResult(valid=False, failure_code="corrupt_image", failure_message="فایل تصویر خراب یا نامعتبر است و قابل خواندن نیست.")
 
     height, width = img.shape[:2]
 
     # 10. Nonzero dimensions
     if width < 1 or height < 1:
-        return ImageValidationResult(valid=False, failure_code="zero_dimensions", failure_message="Image has zero width or height")
+        return ImageValidationResult(valid=False, failure_code="zero_dimensions", failure_message="عرض یا ارتفاع تصویر نامعتبر است.")
 
     # 11. Max dimensions
     if width > settings.max_decoded_width:
         return ImageValidationResult(
             valid=False,
             failure_code="dimensions_too_large",
-            failure_message=f"Image width {width} exceeds maximum {settings.max_decoded_width}",
+            failure_message=f"عرض تصویر ({width}) بیشتر از حد مجاز ({settings.max_decoded_width}) است.",
         )
     if height > settings.max_decoded_height:
         return ImageValidationResult(
             valid=False,
             failure_code="dimensions_too_large",
-            failure_message=f"Image height {height} exceeds maximum {settings.max_decoded_height}",
+            failure_message=f"ارتفاع تصویر ({height}) بیشتر از حد مجاز ({settings.max_decoded_height}) است.",
         )
 
     # 12. Max pixels
@@ -204,7 +213,7 @@ def validate_uploaded_image(data: bytes, filename: str, content_type: str | None
         return ImageValidationResult(
             valid=False,
             failure_code="too_many_pixels",
-            failure_message=f"Image has {total_pixels} pixels, maximum is {settings.max_total_decoded_pixels}",
+            failure_message=f"تعداد پیکسل‌های تصویر ({total_pixels}) بیشتر از حد مجاز ({settings.max_total_decoded_pixels}) است.",
         )
 
     return ImageValidationResult(
@@ -267,7 +276,7 @@ class PersonnelImageProcessor:
             return ImageProcessResult(
                 success=False,
                 failure_code="decode_failed",
-                failure_message="Could not decode image for face processing",
+                failure_message="فایل تصویر قابل خواندن نیست یا ساختار آن خراب است.",
             )
 
         # Run face enrollment through the existing processor pipeline
@@ -277,26 +286,28 @@ class PersonnelImageProcessor:
                 person=person_name,
                 ref_img_id=ref_img_id,
             )
+        except FaceEnrollmentValidationError as exc:
+            return ImageProcessResult(
+                success=False,
+                failure_code=exc.code,
+                failure_message=str(exc),
+                failure_details=exc.details,
+            )
         except ValueError as exc:
-            err_str = str(exc)
-            if "exactly one valid face" in err_str:
-                # Extract count from error message
-                return ImageProcessResult(
-                    success=False,
-                    failure_code="invalid_face_count",
-                    failure_message=err_str,
-                )
             return ImageProcessResult(
                 success=False,
                 failure_code="enrollment_failed",
-                failure_message=err_str,
+                failure_message=f"ثبت چهره انجام نشد: {exc}",
             )
         except Exception as exc:
             LOGGER.warning("Face enrollment unexpected error: %s", exc)
             return ImageProcessResult(
                 success=False,
                 failure_code="enrollment_error",
-                failure_message=f"Face enrollment error: {type(exc).__name__}",
+                failure_message=(
+                    "خطای داخلی هنگام پردازش چهره رخ داد؛ وضعیت مدل‌ها و سرویس برداری را بررسی کنید. "
+                    f"({type(exc).__name__})"
+                ),
             )
 
         point_id = enroll_result.get("point_id")
@@ -364,3 +375,13 @@ class PersonnelImageProcessor:
 
     def is_mock(self) -> bool:
         return self._face_processor is None
+
+    def delete_vector(self, point_id: str | None) -> bool:
+        """Compensate a successful enrollment when image persistence fails."""
+        if not point_id or self._face_processor is None:
+            return True
+        try:
+            return bool(self._face_processor.delete_points([point_id]))
+        except Exception as exc:
+            LOGGER.warning("Vector enrollment rollback failed for %s: %s", point_id, exc)
+            return False

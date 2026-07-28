@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,7 +10,7 @@ from app.time_utils import utc_now_text
 
 IMPORT_COLUMNS = (
     "id, import_type, source_filename, total_rows, imported_rows, "
-    "skipped_rows, failed_rows, status, error_message, created_by, "
+    "skipped_rows, failed_rows, status, error_message, result_json, created_by, "
     "created_at_utc, updated_at_utc"
 )
 
@@ -25,6 +26,7 @@ class ImportProgressRecord:
     failed_rows: int
     status: str
     error_message: str | None
+    result: dict[str, Any] | None
     created_by: int | None
     created_at_utc: str
     updated_at_utc: str
@@ -40,6 +42,12 @@ class ImportProgressRecord:
             "failed_rows": self.failed_rows,
             "status": self.status,
             "error_message": self.error_message,
+            "result": self.result,
+            "processed_rows": self.imported_rows + self.skipped_rows + self.failed_rows,
+            "progress_percent": (
+                round(min(100.0, (self.imported_rows + self.skipped_rows + self.failed_rows) * 100.0 / self.total_rows), 1)
+                if self.total_rows > 0 else (100.0 if self.status in ("completed", "completed_with_errors") else 0.0)
+            ),
             "created_by": self.created_by,
             "created_at": self.created_at_utc,
             "updated_at": self.updated_at_utc,
@@ -64,6 +72,7 @@ class ImportProgressStore:
             failed_rows=int(row["failed_rows"]),
             status=str(row["status"]),
             error_message=str(row["error_message"]) if row["error_message"] is not None else None,
+            result=json.loads(str(row["result_json"])) if row["result_json"] else None,
             created_by=int(row["created_by"]) if row["created_by"] is not None else None,
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
@@ -75,12 +84,13 @@ class ImportProgressStore:
         source_filename: str,
         total_rows: int = 0,
         created_by: int | None = None,
+        status: str = "running",
     ) -> ImportProgressRecord:
         now = utc_now_text()
         with self._connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO import_progress (import_type, source_filename, total_rows, imported_rows, skipped_rows, failed_rows, status, created_by, created_at_utc, updated_at_utc) VALUES (?, ?, ?, 0, 0, 0, 'running', ?, ?, ?)",
-                (import_type, source_filename, total_rows, created_by, now, now),
+                "INSERT INTO import_progress (import_type, source_filename, total_rows, imported_rows, skipped_rows, failed_rows, status, created_by, created_at_utc, updated_at_utc) VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, ?)",
+                (import_type, source_filename, total_rows, status, created_by, now, now),
             )
             row = conn.execute(
                 f"SELECT {IMPORT_COLUMNS} FROM import_progress WHERE id = ?",
@@ -95,13 +105,18 @@ class ImportProgressStore:
         progress_id: int,
         *,
         imported_rows: int | None = None,
+        total_rows: int | None = None,
         skipped_rows: int | None = None,
         failed_rows: int | None = None,
         status: str | None = None,
         error_message: str | None = None,
+        result: dict[str, Any] | None = None,
     ) -> ImportProgressRecord | None:
         sets: list[str] = []
         params: list[Any] = []
+        if total_rows is not None:
+            sets.append("total_rows = ?")
+            params.append(total_rows)
         if imported_rows is not None:
             sets.append("imported_rows = ?")
             params.append(imported_rows)
@@ -117,6 +132,9 @@ class ImportProgressStore:
         if error_message is not None:
             sets.append("error_message = ?")
             params.append(error_message)
+        if result is not None:
+            sets.append("result_json = ?")
+            params.append(json.dumps(result, ensure_ascii=False))
         if not sets:
             return self.get(progress_id)
         sets.append("updated_at_utc = ?")

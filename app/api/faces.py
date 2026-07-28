@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.processors.face_recognition import FaceRecognitionProcessor
+from app.processors.face_recognition import (
+    FaceEnrollmentValidationError,
+    FaceRecognitionProcessor,
+)
 from app.runtime import Runtime
 
 
@@ -98,6 +101,15 @@ async def enroll(
             person=person,
             ref_img_id=ref_img_id,
         )
+    except FaceEnrollmentValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "failure_code": exc.code,
+                "failure_message": str(exc),
+                "failure_details": exc.details,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (FileNotFoundError, RuntimeError, ImportError) as exc:
