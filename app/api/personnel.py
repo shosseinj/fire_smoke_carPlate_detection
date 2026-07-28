@@ -367,7 +367,7 @@ def import_template(
 async def start_personnel_zip_import(
     runtime: Runtime = Depends(get_runtime),
     file: UploadFile = File(...),
-    enable_cropping: bool = Form(default=False),
+    enable_cropping: bool = Form(default=True),
     current_user: UserRecord = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     raw = await file.read()

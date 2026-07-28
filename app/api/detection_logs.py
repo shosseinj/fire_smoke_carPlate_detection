@@ -9,13 +9,18 @@ from zoneinfo import ZoneInfo
 import jdatetime
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from openpyxl.styles import Alignment
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
 from app.core.auth import require_role
 from app.core.detection_log_store import DetectionLogRecord, DetectionLogStore
+from app.core.detection_media import (
+    DetectionMediaStorage,
+    InvalidMediaKey,
+    MEDIA_STATUS_READY,
+)
 from app.core.jalali_utils import (
     _get_tehran_tz,
     gregorian_to_jalali_str,
@@ -64,9 +69,10 @@ class DetectionLogResponse(BaseModel):
     body_image_url: str | None = None
     body_thumbnail: str | None = None
     snapshot_image_url: str | None = None
-    snapshot_thumbnail: str | None = None
     video_url: str | None = None
-    face_video_url: str | None = None
+    video_status: str | None = None
+    face_video_status: str | None = None
+    media_finalized_at: str | None = None
     unknown_faces_path: str | None = None
     log_type: str | None = None
     ref_img_id: int | str | None = None
@@ -82,8 +88,6 @@ class DetectionLogResponse(BaseModel):
     camera_name: str | None = None
     section_name: str | None = None
     building_name: str | None = None
-    fname: str | None = None
-    lname: str | None = None
     personnel_id: int | None = None
     camera_id: str | int | None = None
     section_id: int | None = None
@@ -107,6 +111,7 @@ def _excel_bool(value: Any, default: bool) -> bool:
     raise ValueError("مقدار بولی نامعتبر است")
 
 _detection_log_store: DetectionLogStore | None = None
+_detection_media_storage: DetectionMediaStorage | None = None
 
 
 def get_runtime() -> Any:
@@ -119,6 +124,13 @@ def get_detection_log_store() -> DetectionLogStore:
     if _detection_log_store is None:
         _detection_log_store = DetectionLogStore(get_runtime().database)
     return _detection_log_store
+
+
+def get_detection_media_storage() -> DetectionMediaStorage:
+    global _detection_media_storage
+    if _detection_media_storage is None:
+        _detection_media_storage = DetectionMediaStorage(settings.saved_media_path)
+    return _detection_media_storage
 
 
 def get_location_store() -> Any:
@@ -182,13 +194,20 @@ def _calculate_old_person_access(
     return personnel_id is not None and location_store.check_room_access(personnel_id, room_id)
 
 
-def _resolve_media_path(relative_path: str | None) -> Path:
-    if not relative_path:
+def _resolve_media_path(relative_path: str | None) -> Path | None:
+    try:
+        return get_detection_media_storage().resolve(relative_path)
+    except InvalidMediaKey:
         return None
-    p = Path(relative_path)
-    if p.is_absolute():
-        return p
-    return settings.saved_media_path / relative_path
+
+
+def _canonical_media_input(value: Any, field_name: str) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return get_detection_media_storage().canonical_key(str(value))
+    except InvalidMediaKey as exc:
+        raise HTTPException(400, f"{field_name}: {exc}") from exc
 
 
 def _resolve_usernames(
@@ -261,6 +280,8 @@ def _resolve_personnel_name(personnel_id: int | None) -> str | None:
 def _build_response(
     record: DetectionLogRecord,
     include_detail: bool = False,
+    *,
+    include_face_thumbnail: bool = True,
 ) -> dict:
     c_user, u_user = _resolve_usernames(record)
     full_name = _resolve_personnel_name(record.personnel_id)
@@ -281,24 +302,76 @@ def _build_response(
     response["detection_time"] = response.get("detection_time_jalali")
     response["created_at"] = response.get("created_at_jalali")
     response["updated_at"] = response.get("updated_at_jalali")
+
+    media = get_detection_media_storage()
+    face_ready = media.exists(record.face_image)
+    body_ready = media.exists(record.body_image)
+    snapshot_ready = media.exists(record.snapshot_image)
+    video_ready = record.video_status == MEDIA_STATUS_READY and media.exists(record.video)
+    face_video_ready = (
+        record.face_video_status == MEDIA_STATUS_READY
+        and media.exists(record.face_video_or_unknown_faces)
+    )
+    response.update(
+        {
+            "face_image_url": f"/api/v1/logs/{record.id}/face" if face_ready else None,
+            "face_thumbnail": (
+                media.thumbnail_data_uri(record.face_thumbnail, record.face_image)
+                if include_face_thumbnail
+                else None
+            ),
+            "body_image_url": f"/api/v1/logs/{record.id}/body" if body_ready else None,
+            "body_thumbnail": None,
+            "snapshot_image_url": (
+                f"/api/v1/logs/{record.id}/snapshot" if snapshot_ready else None
+            ),
+            "video_url": f"/api/v1/logs/{record.id}/video" if video_ready else None,
+            "face_video_url": (
+                f"/api/v1/logs/{record.id}/face-video" if face_video_ready else None
+            ),
+            "unknown_faces_path": (
+                f"/api/v1/logs/{record.id}/face-video" if face_video_ready else None
+            ),
+            "video_status": record.video_status,
+            "face_video_status": record.face_video_status,
+            "media_finalized_at": (
+                record.media_finalized_at.isoformat()
+                if hasattr(record.media_finalized_at, "isoformat")
+                else record.media_finalized_at
+            ),
+        }
+    )
     for field in (
         "detection_time_utc", "detection_time_local", "detection_time_jalali",
         "created_at_utc", "created_at_local", "created_at_jalali",
         "updated_at_utc", "updated_at_local", "updated_at_jalali",
         "face_image", "body_image", "snapshot_image", "reference_image",
-        "import_source_parts",
+        "snapshot_thumbnail", "import_source_parts",
     ):
         response.pop(field, None)
     return response
 
 
 def _delete_media_files(record: DetectionLogRecord) -> None:
-    for attr in ("face_image", "body_image", "snapshot_image", "video", "face_video_or_unknown_faces"):
-        path_str = getattr(record, attr, None)
-        if path_str:
-            fpath = _resolve_media_path(path_str)
-            if fpath and fpath.exists():
-                fpath.unlink(missing_ok=True)
+    store = get_detection_log_store()
+    storage = get_detection_media_storage()
+    candidates = (
+        record.face_image,
+        record.face_thumbnail,
+        record.body_image,
+        record.snapshot_image,
+        record.video,
+        record.face_video_or_unknown_faces,
+    )
+    unreferenced: list[str] = []
+    for raw in candidates:
+        try:
+            key = storage.canonical_key(raw)
+        except InvalidMediaKey:
+            continue
+        if key and not store.is_media_key_referenced(key):
+            unreferenced.append(key)
+    storage.delete_many(unreferenced)
 
 
 def _period_to_utc_range(
@@ -354,10 +427,27 @@ def create_detection_log(
     person = str(body.get("person", "Unknown"))
     confidence = float(body.get("confidence", 0.0))
     ref_img_id = body.get("ref_img_id")
-    face_image = body.get("face_image_path") or body.get("face_image")
-    body_image = body.get("body_image_path") or body.get("body_image")
-    snapshot_image = body.get("snapshot_image_path") or body.get("snapshot_image")
-    unknown_faces = body.get("unknown_faces_path") or body.get("face_video_or_unknown_faces")
+    face_image = _canonical_media_input(
+        body.get("face_image_path") or body.get("face_image"), "face_image"
+    )
+    face_thumbnail = _canonical_media_input(
+        body.get("face_thumbnail_path") or body.get("face_thumbnail"),
+        "face_thumbnail",
+    )
+    body_image = _canonical_media_input(
+        body.get("body_image_path") or body.get("body_image"), "body_image"
+    )
+    snapshot_image = _canonical_media_input(
+        body.get("snapshot_image_path") or body.get("snapshot_image"),
+        "snapshot_image",
+    )
+    video = _canonical_media_input(
+        body.get("video_path") or body.get("video"), "video"
+    )
+    unknown_faces = _canonical_media_input(
+        body.get("unknown_faces_path") or body.get("face_video_or_unknown_faces"),
+        "face_video_or_unknown_faces",
+    )
     log_type = str(body.get("log_type", "real_time"))
     detection_time = body.get("detection_time", "")
     access_granted = bool(body.get("access_granted", False))
@@ -376,8 +466,8 @@ def create_detection_log(
         )
         if existing is not None:
             if confidence >= existing.confidence:
-                _delete_media_files(existing)
                 store.delete(existing.id)
+                _delete_media_files(existing)
             else:
                 return _build_response(existing, include_detail=True)
 
@@ -398,13 +488,44 @@ def create_detection_log(
             counts_for_attendance=counts_for_attendance,
             log_type=log_type,
             face_image=face_image,
+            face_thumbnail=face_thumbnail,
             body_image=body_image,
             snapshot_image=snapshot_image,
+            video=video,
             face_video_or_unknown_faces=unknown_faces,
+            video_status=get_detection_media_storage().finalized_video_status(video),
+            face_video_status=get_detection_media_storage().finalized_video_status(
+                unknown_faces
+            ),
+            media_finalized_at=(
+                datetime.now(timezone.utc).isoformat()
+                if video or unknown_faces
+                else None
+            ),
             created_by=user_id,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+    media = get_detection_media_storage()
+    if media.exists(record.face_image) and not media.exists(record.face_thumbnail):
+        generated_thumbnail: str | None = None
+        try:
+            generated_thumbnail = media.create_face_thumbnail(
+                record.face_image,
+                filename=f"detection_{record.id}_face_thumbnail.jpg",
+            )
+            if generated_thumbnail:
+                updated_record = store.update(
+                    record.id, face_thumbnail=generated_thumbnail
+                )
+                if updated_record is not None:
+                    record = updated_record
+                else:
+                    media.delete(generated_thumbnail)
+        except (OSError, RuntimeError):
+            if generated_thumbnail:
+                media.delete(generated_thumbnail)
 
     return _build_response(record, include_detail=True)
 
@@ -451,7 +572,12 @@ def filter_logs(
         to_date_utc=to_date_utc,
         include_thumbnails=include_thumbnails,
     )
-    return [_build_response(r, include_detail=True) for r in records]
+    return [
+        _build_response(
+            r, include_detail=True, include_face_thumbnail=include_thumbnails
+        )
+        for r in records
+    ]
 
 
 @router.get("/daily-summary")
@@ -797,7 +923,21 @@ def delete_all_logs(
     current_user: dict = Depends(require_role("superuser")),
 ) -> dict:
     store = get_detection_log_store()
+    records = store.list_all()
     count = store.delete_all()
+    media_keys = [
+        key
+        for record in records
+        for key in (
+            record.face_image,
+            record.face_thumbnail,
+            record.body_image,
+            record.snapshot_image,
+            record.video,
+            record.face_video_or_unknown_faces,
+        )
+    ]
+    get_detection_media_storage().delete_many(media_keys)
     return {"deleted_count": count}
 
 
@@ -1028,94 +1168,188 @@ def patch_log_person(
     return _build_response(updated, include_detail=True)
 
 
-@router.get("/{log_id}/thumbnail")
-def get_thumbnail(
+def _content_disposition(path: Path, download: bool) -> str:
+    disposition = "attachment" if download else "inline"
+    safe_name = path.name.replace('"', "")
+    return f'{disposition}; filename="{safe_name}"'
+
+
+def _range_not_satisfiable(file_size: int) -> Response:
+    return Response(
+        status_code=416,
+        headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
+    )
+
+
+def _serve_media_file(path: Path, request: Request, download: bool) -> Response:
+    media_type = get_detection_media_storage().content_type(path)
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": _content_disposition(path, download),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    range_header = request.headers.get("range")
+    if not range_header:
+        return FileResponse(str(path), media_type=media_type, headers=common_headers)
+
+    file_size = path.stat().st_size
+    if not range_header.startswith("bytes=") or "," in range_header:
+        return _range_not_satisfiable(file_size)
+    value = range_header[len("bytes=") :].strip()
+    try:
+        start_text, end_text = value.split("-", 1)
+        if not start_text:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                return _range_not_satisfiable(file_size)
+            start = max(0, file_size - suffix_length)
+            end = file_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else file_size - 1
+    except (TypeError, ValueError):
+        return _range_not_satisfiable(file_size)
+    if start < 0 or end < start or start >= file_size:
+        return _range_not_satisfiable(file_size)
+    end = min(end, file_size - 1)
+    content_length = end - start + 1
+
+    def iterator():
+        remaining = content_length
+        with path.open("rb") as stream:
+            stream.seek(start)
+            while remaining > 0:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        iterator(),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            **common_headers,
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(content_length),
+        },
+    )
+
+
+def _get_media_path(
     log_id: int,
-    _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
+    kind: str,
+) -> tuple[DetectionLogRecord, Path]:
+    record = get_detection_log_store().get(log_id)
     if record is None:
         raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.snapshot_image)
-    if fpath is None or not fpath.exists():
+    field_by_kind = {
+        "face": "face_image",
+        "body": "body_image",
+        "snapshot": "snapshot_image",
+        "video": "video",
+        "face-video": "face_video_or_unknown_faces",
+    }
+    field = field_by_kind[kind]
+    if kind == "video" and record.video_status != MEDIA_STATUS_READY:
+        status_code = 409 if record.video_status == "writing" else 404
+        raise HTTPException(status_code, "ویدیو هنوز آماده نیست")
+    if kind == "face-video" and record.face_video_status != MEDIA_STATUS_READY:
+        status_code = 409 if record.face_video_status == "writing" else 404
+        raise HTTPException(status_code, "ویدیوی چهره هنوز آماده نیست")
+    path = _resolve_media_path(getattr(record, field))
+    if path is None or not path.is_file():
         raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+    return record, path
+
+
+@router.get("/{log_id}/thumbnail")
+@router.get("/{log_id}/media/thumbnail", include_in_schema=False)
+def get_thumbnail(
+    log_id: int,
+    download: bool = Query(False),
+    _: dict = Depends(require_role("operator")),
+) -> Response:
+    record = get_detection_log_store().get(log_id)
+    if record is None:
+        raise HTTPException(404, "لاگ یافت نشد")
+    data = get_detection_media_storage().thumbnail_bytes(
+        record.face_thumbnail, record.face_image
+    )
+    if not data:
+        raise HTTPException(404, "تصویر بندانگشتی چهره یافت نشد")
+    filename = Path(record.face_thumbnail or record.face_image or "face_thumbnail.jpg")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": _content_disposition(filename, download),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.get("/{log_id}/face")
+@router.get("/{log_id}/media/face", include_in_schema=False)
 def get_face(
     log_id: int,
+    request: Request,
+    download: bool = Query(False),
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.face_image)
-    if fpath is None or not fpath.exists():
-        raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+) -> Response:
+    _, path = _get_media_path(log_id, "face")
+    return _serve_media_file(path, request, download)
 
 
 @router.get("/{log_id}/body")
+@router.get("/{log_id}/media/body", include_in_schema=False)
 def get_body(
     log_id: int,
+    request: Request,
+    download: bool = Query(False),
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.body_image)
-    if fpath is None or not fpath.exists():
-        raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+) -> Response:
+    _, path = _get_media_path(log_id, "body")
+    return _serve_media_file(path, request, download)
 
 
 @router.get("/{log_id}/snapshot")
+@router.get("/{log_id}/media/snapshot", include_in_schema=False)
 def get_snapshot(
     log_id: int,
+    request: Request,
+    download: bool = Query(False),
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.snapshot_image)
-    if fpath is None or not fpath.exists():
-        raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+) -> Response:
+    _, path = _get_media_path(log_id, "snapshot")
+    return _serve_media_file(path, request, download)
 
 
 @router.get("/{log_id}/video")
+@router.get("/{log_id}/media/video", include_in_schema=False)
 def get_video(
     log_id: int,
+    request: Request,
+    download: bool = Query(False),
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.video)
-    if fpath is None or not fpath.exists():
-        raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+) -> Response:
+    _, path = _get_media_path(log_id, "video")
+    return _serve_media_file(path, request, download)
 
 
 @router.get("/{log_id}/face-video")
+@router.get("/{log_id}/media/face-video", include_in_schema=False)
 def get_face_video(
     log_id: int,
+    request: Request,
+    download: bool = Query(False),
     _: dict = Depends(require_role("operator")),
-) -> FileResponse:
-    store = get_detection_log_store()
-    record = store.get(log_id)
-    if record is None:
-        raise HTTPException(404, "لاگ یافت نشد")
-    fpath = _resolve_media_path(record.face_video_or_unknown_faces)
-    if fpath is None or not fpath.exists():
-        raise HTTPException(404, "پرونده یافت نشد")
-    return FileResponse(str(fpath), filename=fpath.name)
+) -> Response:
+    _, path = _get_media_path(log_id, "face-video")
+    return _serve_media_file(path, request, download)
 
 
 @router.delete("/{log_id}")
@@ -1127,10 +1361,10 @@ def delete_log(
     record = store.get(log_id)
     if record is None:
         raise HTTPException(404, "لاگ یافت نشد")
-    _delete_media_files(record)
     deleted = store.delete(log_id)
     if not deleted:
         raise HTTPException(404, "لاگ یافت نشد")
+    _delete_media_files(record)
     return {
         "message": "لاگ با موفقیت حذف شد",
         "log_id": log_id,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.core.auth import require_role
+
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.runtime import Runtime
 
@@ -24,6 +26,7 @@ def logs(
     name: str | None = Query(default=None),
     track_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=1000),
+    _: dict = Depends(require_role("operator")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict:
     items = runtime.human_logs.list(

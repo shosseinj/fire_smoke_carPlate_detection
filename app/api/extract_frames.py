@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.config import settings
 from app.core.auth import get_current_user
 from app.core.detection_log_store import DetectionLogStore
+from app.core.detection_media import DetectionMediaStorage, InvalidMediaKey, MEDIA_STATUS_READY
 from app.core.auth_store import UserRecord
 
 
@@ -27,15 +28,14 @@ def get_detection_log_store() -> DetectionLogStore:
 
 
 def _resolve_saved_video_path(video_path: str) -> Path:
-    media_root = settings.saved_media_path.resolve()
-    normalized = video_path.strip()
-    if normalized.startswith("/media/"):
-        candidate = media_root / normalized.removeprefix("/media/")
-    else:
-        candidate_path = Path(normalized)
-        candidate = candidate_path if candidate_path.is_absolute() else media_root / candidate_path
-    resolved = candidate.resolve()
-    if resolved != media_root and media_root not in resolved.parents:
+    try:
+        resolved = DetectionMediaStorage(settings.saved_media_path).resolve(video_path)
+    except InvalidMediaKey as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="مسیر ویدیوی ذخیره‌شده معتبر نیست",
+        ) from exc
+    if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="مسیر ویدیوی ذخیره‌شده معتبر نیست",
@@ -121,6 +121,15 @@ def extract_frames(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="لاگ تشخیص یافت نشد")
     saved_video = record.face_video_or_unknown_faces
+    if record.face_video_status != MEDIA_STATUS_READY:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_409_CONFLICT
+                if record.face_video_status == "writing"
+                else status.HTTP_404_NOT_FOUND
+            ),
+            detail="ویدیوی چهره هنوز آماده نیست",
+        )
     if not saved_video:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -137,5 +146,5 @@ def extract_frames(
         detection_id,
         frame_interval,
         max_frames,
-        saved_video,
+        f"/api/v1/logs/{detection_id}/face-video",
     )

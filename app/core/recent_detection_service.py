@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import cv2
 
+from app.core.detection_media import DetectionMediaStorage, InvalidMediaKey
+
 if TYPE_CHECKING:
     from app.runtime import Runtime
 
@@ -103,20 +105,12 @@ def _upper_section(image):
 
 
 def _media_path(runtime: Runtime, raw: str | None) -> Path | None:
-    if not raw:
+    try:
+        return DetectionMediaStorage(runtime.settings.saved_media_path).resolve(
+            raw, require_file=True
+        )
+    except InvalidMediaKey:
         return None
-    raw_text = str(raw)
-    if raw_text.startswith("/media/"):
-        raw_text = raw_text[len("/media/") :]
-    candidate = Path(raw_text)
-    if candidate.is_absolute():
-        return candidate
-    media_root = runtime.settings.saved_media_path.resolve()
-    direct = media_root / candidate
-    if direct.is_file():
-        return direct
-    project_relative = Path.cwd() / candidate
-    return project_relative if project_relative.is_file() else direct
 
 
 def _reference_path(runtime: Runtime, row: dict[str, Any]) -> Path | None:
@@ -201,65 +195,16 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
 
     face_image_b64: str | None = None
     body_image_b64: str | None = None
-    body_image_path = _media_path(
-        runtime,
-        row.get("body_image") or row.get("snapshot_image"),
-    )
-    image = _read_image(body_image_path)
-    image_kind = "body" if image is not None else "placeholder"
-
-    if image is not None:
-        if concatenate:
-            ref_img_id = row.get("ref_img_id")
-            reference_path = _reference_path(runtime, row)
-            reference_image = _read_image(reference_path)
-            if ref_img_id is None:
-                LOGGER.warning(
-                    "RECENT_KNOWN_REFERENCE_MISSING log_id=%s person=%s ref_img_id=None",
-                    row.get("id"),
-                    person,
-                )
-            elif reference_path is None:
-                LOGGER.warning(
-                    "RECENT_KNOWN_REFERENCE_NOT_FOUND log_id=%s person=%s ref_img_id=%s",
-                    row.get("id"),
-                    person,
-                    ref_img_id,
-                )
-            elif reference_image is None:
-                LOGGER.warning(
-                    "RECENT_KNOWN_REFERENCE unreadable log_id=%s person=%s ref_img_id=%s path=%s",
-                    row.get("id"),
-                    person,
-                    ref_img_id,
-                    reference_path,
-                )
-            else:
-                source_image = _upper_section(image)
-                image = _concat_if_needed(source_image, reference_image)
-                if image is source_image:
-                    LOGGER.warning(
-                        "RECENT_KNOWN_CONCATENATION_FAILED log_id=%s person=%s ref_img_id=%s",
-                        row.get("id"),
-                        person,
-                        ref_img_id,
-                    )
-                else:
-                    LOGGER.info(
-                        "RECENT_KNOWN_CONCATENATED log_id=%s person=%s ref_img_id=%s body_shape=%s reference_shape=%s",
-                        row.get("id"),
-                        person,
-                        ref_img_id,
-                        source_image.shape,
-                        reference_image.shape,
-                    )
-        success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        if success:
-            encoded_image = base64.b64encode(encoded.tobytes()).decode("utf-8")
-            if image_kind == "body":
-                body_image_b64 = encoded_image
-            else:
-                face_image_b64 = encoded_image
+    media = DetectionMediaStorage(runtime.settings.saved_media_path)
+    try:
+        thumbnail = media.thumbnail_bytes(
+            row.get("face_thumbnail"), row.get("face_image")
+        )
+    except (InvalidMediaKey, OSError):
+        thumbnail = None
+    if thumbnail:
+        face_image_b64 = base64.b64encode(thumbnail).decode("ascii")
+    image_kind = "face" if face_image_b64 else "placeholder"
 
     return {
         "id": row["id"],
@@ -319,6 +264,7 @@ def get_single_detection_payload_by_id(runtime: Runtime, log_id: int) -> dict[st
         "camera_id": record.camera_id,
         "source_human_log_id": record.source_human_log_id,
         "face_image": record.face_image,
+        "face_thumbnail": record.face_thumbnail,
         "body_image": record.body_image,
         "snapshot_image": record.snapshot_image,
         "ref_img_id": record.ref_img_id,

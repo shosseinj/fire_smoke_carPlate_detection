@@ -61,10 +61,12 @@ _SAMPLE_BY_NAME = {
     "jalali_datetime": "1404/10/11 12:00",
     "log_type": "camera_rtsp",
     "detection_type": "known",
-    "face_image_url": "/media/faces/sample.jpg",
-    "body_image_url": "/media/bodies/sample.jpg",
-    "snapshot_image_url": "/media/snapshots/sample.jpg",
-    "video_url": "/media/videos/sample.mp4",
+    "face_image_url": "/api/v1/logs/1/face",
+    "face_thumbnail": "data:image/jpeg;base64,<thumbnail>",
+    "body_image_url": "/api/v1/logs/1/body",
+    "snapshot_image_url": "/api/v1/logs/1/snapshot",
+    "video_url": "/api/v1/logs/1/video",
+    "face_video_url": "/api/v1/logs/1/face-video",
 }
 
 

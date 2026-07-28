@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
 from app.time_utils import utc_now_text
+from app.core.detection_media import VALID_MEDIA_STATUSES
 
 import logging
 import threading
@@ -29,10 +30,14 @@ class DetectionLogRecord:
     log_type: str
     import_source_parts: str | None
     face_image: str | None
+    face_thumbnail: str | None
     body_image: str | None
     snapshot_image: str | None
     video: str | None
     face_video_or_unknown_faces: str | None
+    video_status: str
+    face_video_status: str
+    media_finalized_at: str | None
     created_by: int | None
     updated_by: int | None
     created_at_utc: str
@@ -76,10 +81,14 @@ class DetectionLogStore:
             log_type=row["log_type"],
             import_source_parts=row.get("import_source_parts"),
             face_image=row.get("face_image"),
+            face_thumbnail=row.get("face_thumbnail"),
             body_image=row.get("body_image"),
             snapshot_image=row.get("snapshot_image"),
             video=row.get("video"),
             face_video_or_unknown_faces=row.get("face_video_or_unknown_faces"),
+            video_status=row.get("video_status") or "missing",
+            face_video_status=row.get("face_video_status") or "missing",
+            media_finalized_at=row.get("media_finalized_at"),
             created_by=row.get("created_by"),
             updated_by=row.get("updated_by"),
             created_at_utc=row["created_at_utc"],
@@ -103,12 +112,20 @@ class DetectionLogStore:
         log_type: str = "real_time",
         import_source_parts: str | None = None,
         face_image: str | None = None,
+        face_thumbnail: str | None = None,
         body_image: str | None = None,
         snapshot_image: str | None = None,
         video: str | None = None,
         face_video_or_unknown_faces: str | None = None,
+        video_status: str = "missing",
+        face_video_status: str = "missing",
+        media_finalized_at: str | None = None,
         created_by: int | None = None,
     ) -> DetectionLogRecord:
+        if video_status not in VALID_MEDIA_STATUSES:
+            raise ValueError(f"Invalid video_status: {video_status}")
+        if face_video_status not in VALID_MEDIA_STATUSES:
+            raise ValueError(f"Invalid face_video_status: {face_video_status}")
         if not detection_time:
             detection_time = _now()
         now = _now()
@@ -118,17 +135,18 @@ class DetectionLogStore:
                 "(source_system, source_event_key, source_human_log_id, "
                 "personnel_id, person, confidence, detection_time, ref_img_id, "
                 "room_id, camera_id, access_granted, counts_for_attendance, "
-                "log_type, import_source_parts, face_image, body_image, "
-                "snapshot_image, video, face_video_or_unknown_faces, "
-                "created_by, updated_by, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "log_type, import_source_parts, face_image, face_thumbnail, body_image, "
+                "snapshot_image, video, face_video_or_unknown_faces, video_status, "
+                "face_video_status, media_finalized_at, created_by, updated_by, "
+                "created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     source_system, source_event_key, source_human_log_id,
                     personnel_id, person, confidence, detection_time, ref_img_id,
                     room_id, camera_id, int(access_granted), int(counts_for_attendance),
-                    log_type, import_source_parts, face_image, body_image,
-                    snapshot_image, video, face_video_or_unknown_faces,
-                    created_by, created_by, now, now,
+                    log_type, import_source_parts, face_image, face_thumbnail, body_image,
+                    snapshot_image, video, face_video_or_unknown_faces, video_status,
+                    face_video_status, media_finalized_at, created_by, created_by, now, now,
                 ),
             )
             row = conn.execute(
@@ -163,6 +181,26 @@ class DetectionLogStore:
             if not kwargs:
                 return self._row_to_log(existing)
             bool_fields = {"access_granted", "counts_for_attendance"}
+            allowed_fields = {
+                "source_system", "source_event_key", "source_human_log_id",
+                "personnel_id", "person", "confidence", "detection_time",
+                "ref_img_id", "room_id", "camera_id", "access_granted",
+                "counts_for_attendance", "log_type", "import_source_parts",
+                "face_image", "face_thumbnail", "body_image", "snapshot_image",
+                "video", "face_video_or_unknown_faces", "video_status",
+                "face_video_status", "media_finalized_at", "created_by", "updated_by",
+            }
+            unknown_fields = set(kwargs) - allowed_fields
+            if unknown_fields:
+                raise ValueError(f"Unsupported detection-log fields: {sorted(unknown_fields)}")
+            for status_field in ("video_status", "face_video_status"):
+                if (
+                    status_field in kwargs
+                    and kwargs[status_field] not in VALID_MEDIA_STATUSES
+                ):
+                    raise ValueError(
+                        f"Invalid {status_field}: {kwargs[status_field]}"
+                    )
             set_parts: list[str] = []
             params: list[Any] = []
             for key, value in kwargs.items():
@@ -286,11 +324,19 @@ class DetectionLogStore:
             where = " WHERE " + " AND ".join(where_clauses)
         join_clause = " ".join(joins)
 
-        select_cols = "d.id, d.source_system, d.source_event_key, d.source_human_log_id, d.personnel_id, d.person, d.confidence, d.detection_time, d.ref_img_id, d.room_id, d.camera_id, d.access_granted, d.counts_for_attendance, d.log_type, d.import_source_parts, d.created_by, d.updated_by, d.created_at_utc, d.updated_at_utc"
+        select_cols = (
+            "d.id, d.source_system, d.source_event_key, d.source_human_log_id, "
+            "d.personnel_id, d.person, d.confidence, d.detection_time, d.ref_img_id, "
+            "d.room_id, d.camera_id, d.access_granted, d.counts_for_attendance, "
+            "d.log_type, d.import_source_parts, d.face_image, d.body_image, "
+            "d.snapshot_image, d.video, d.face_video_or_unknown_faces, "
+            "d.video_status, d.face_video_status, d.media_finalized_at, "
+            "d.created_by, d.updated_by, d.created_at_utc, d.updated_at_utc"
+        )
         if include_thumbnails:
-            select_cols += ", d.face_image, d.body_image, d.snapshot_image, d.video, d.face_video_or_unknown_faces"
+            select_cols += ", d.face_thumbnail"
         else:
-            select_cols += ", NULL AS face_image, NULL AS body_image, NULL AS snapshot_image, NULL AS video, NULL AS face_video_or_unknown_faces"
+            select_cols += ", NULL AS face_thumbnail"
 
         with self._lock, self._connection() as conn:
             total = conn.execute(
@@ -330,7 +376,27 @@ class DetectionLogStore:
             )
             return cursor.rowcount
 
+    def is_media_key_referenced(self, media_key: str) -> bool:
+        if not media_key:
+            return False
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM detection_logs WHERE "
+                "face_image = ? OR face_thumbnail = ? OR body_image = ? OR "
+                "snapshot_image = ? OR video = ? OR "
+                "face_video_or_unknown_faces = ? LIMIT 1",
+                (media_key,) * 6,
+            ).fetchone()
+            return row is not None
+
+    def list_all(self) -> list[DetectionLogRecord]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute("SELECT * FROM detection_logs ORDER BY id").fetchall()
+            return [self._row_to_log(row) for row in rows]
+
     def delete_all(self) -> int:
         with self._lock, self._connection() as conn:
-            cursor = conn.execute("TRUNCATE TABLE detection_logs")
-            return cursor.rowcount
+            row = conn.execute("SELECT COUNT(*) AS count FROM detection_logs").fetchone()
+            count = int(row["count"] if row is not None else 0)
+            conn.execute("TRUNCATE TABLE detection_logs")
+            return count

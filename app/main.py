@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -46,6 +45,7 @@ from app.api.import_progress import router as import_progress_router
 from app.api.static_videos import router as static_videos_router
 
 from app.config import settings
+from app.core.detection_media import RestrictedMediaStaticFiles
 from app.runtime import build_runtime
 
 runtime = build_runtime(settings)
@@ -161,18 +161,31 @@ app.include_router(developer_router)
 app.include_router(project_info_router)
 app.include_router(import_progress_router)
 app.include_router(static_videos_router)
-app.mount("/media", StaticFiles(directory=settings.saved_media_path), name="media")
-os.makedirs("media/fire_smoke_snapshots", exist_ok=True)
-os.makedirs("media/human_face_videos", exist_ok=True)
-os.makedirs("media/human_snapshots", exist_ok=True)
-os.makedirs("media/human_videos", exist_ok=True)
-os.makedirs("media/personnel_cropped_faces", exist_ok=True)
-os.makedirs("media/personnel_snapshots", exist_ok=True)
-os.makedirs("media/personnel_zip_errors", exist_ok=True)
-os.makedirs("media/plate_snapshots", exist_ok=True)
-os.makedirs("media/plate_videos", exist_ok=True)
-os.makedirs("media/fire_smoke_videos", exist_ok=True)
-os.makedirs("media/static_videos", exist_ok=True)
+settings.saved_media_path.mkdir(parents=True, exist_ok=True)
+for media_directory in (
+    "fire_smoke_snapshots",
+    "fire_smoke_videos",
+    "plate_snapshots",
+    "plate_videos",
+    "detected_faces",
+    "face_thumbnails",
+    "human_face_videos",
+    "human_snapshots",
+    "whole_snapshots",
+    "human_videos",
+    "personnel_cropped_faces",
+    "personnel_snapshots",
+    "personnel_zip_errors",
+):
+    (settings.saved_media_path / media_directory).mkdir(parents=True, exist_ok=True)
+settings.static_video_upload_path.mkdir(parents=True, exist_ok=True)
+# Keep compatibility for non-person media while preventing direct unauthenticated
+# access to personnel images and person-detection evidence.
+app.mount(
+    "/media",
+    RestrictedMediaStaticFiles(directory=settings.saved_media_path),
+    name="media",
+)
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,allow_origins=["*"],

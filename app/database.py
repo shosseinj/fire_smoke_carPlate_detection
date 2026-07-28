@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260728_0038"
+ALEMBIC_HEAD_REVISION = "20260728_0039"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -104,10 +104,22 @@ detection_logs = Table(
     Column("log_type", String(64), nullable=False, server_default="real_time"),
     Column("import_source_parts", Text),
     Column("face_image", Text),
+    Column("face_thumbnail", Text),
     Column("body_image", Text),
     Column("snapshot_image", Text),
     Column("video", Text),
     Column("face_video_or_unknown_faces", Text),
+    Column("video_status", String(16), nullable=False, server_default="missing"),
+    Column("face_video_status", String(16), nullable=False, server_default="missing"),
+    Column("media_finalized_at", UTC_TS),
+    CheckConstraint(
+        "video_status IN ('missing', 'writing', 'ready', 'failed')",
+        name="ck_detection_logs_video_status",
+    ),
+    CheckConstraint(
+        "face_video_status IN ('missing', 'writing', 'ready', 'failed')",
+        name="ck_detection_logs_face_video_status",
+    ),
     Column("created_by", Integer),
     Column("updated_by", Integer),
     *_audit_columns(),

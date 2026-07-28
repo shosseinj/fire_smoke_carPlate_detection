@@ -16,6 +16,7 @@ import numpy as np
 
 from app.core.types import FramePacket, TaskResult
 from app.core.detection_log_store import DetectionLogStore
+from app.core.detection_media import DetectionMediaStorage, MEDIA_STATUS_READY
 from app.core.personnel_store import normalize_national_code
 
 
@@ -50,8 +51,8 @@ class TrackMediaState:
     face_writer: cv2.VideoWriter | None = None
     full_frame_size: tuple[int, int] | None = None
     face_size: tuple[int, int] | None = None
-    video_url: str = ""
-    face_video_url: str = ""
+    video_key: str = ""
+    face_video_key: str = ""
     last_event_monotonic: float = 0.0
 
 
@@ -71,15 +72,18 @@ class HumanLogStore:
     ) -> None:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
+        self.media_storage = DetectionMediaStorage(media_root)
         self.snapshot_dir = media_root / "human_snapshots"
         self.whole_snapshot_dir = media_root / "whole_snapshots"
         self.detected_face_dir = media_root / "detected_faces"
+        self.face_thumbnail_dir = media_root / "face_thumbnails"
         self.video_dir = media_root / "human_videos"
         self.face_video_dir = media_root / "human_face_videos"
         for directory in (
             self.snapshot_dir,
             self.whole_snapshot_dir,
             self.detected_face_dir,
+            self.face_thumbnail_dir,
             self.video_dir,
             self.face_video_dir,
         ):
@@ -378,19 +382,10 @@ class HumanLogStore:
                 continue
             if not persist_human_log and (disappeared or face_frame is None):
                 continue
-            current_face_or_human = face_image_frame if face_image_frame is not None else human_crop
-            reference_frame = (
-                self._reference_image(raw_ref) if name != "Unknown" else None
-            )
-            snapshot_image = current_face_or_human
-            if reference_frame is not None and face_image_frame is not None:
-                snapshot_image = self._concat_reference_and_face(
-                    reference_frame,
-                    face_image_frame,
-                )
+            # body_image is a real crop of the tracked person. Face evidence is
+            # stored separately and only its small thumbnail is embedded in JSON.
+            snapshot_image = human_crop
             with self._lock:
-                if face_frame is not None:
-                    self._last_face_images[key] = face_frame.copy()
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
                 previous_full_frame_at = self._last_full_frame_at.get(
@@ -400,6 +395,7 @@ class HumanLogStore:
                     key, float("-inf")
                 )
                 previous_best_face = self._best_face_scores.get(key, -1.0)
+                previous_best_face_image = self._last_face_images.get(key)
                 identity_changed = previous_name is None or (
                     previous_name == "Unknown" and name != "Unknown"
                 )
@@ -432,6 +428,17 @@ class HumanLogStore:
                     self._last_face_video_at[key] = now
                 if better_face:
                     self._best_face_scores[key] = face_quality
+                    self._last_face_images[key] = face_frame.copy()
+
+            # Persist the highest-quality face seen for the track, not merely
+            # the last face visible on the disappearance frame.
+            face_image_frame = (
+                face_frame
+                if better_face
+                else previous_best_face_image
+                if previous_best_face_image is not None
+                else face_frame
+            )
 
             raw_personnel_id = resolved_personnel_id
             if raw_personnel_id is None and raw_ref is not None:
@@ -502,6 +509,10 @@ class HumanLogStore:
                             self._best_face_scores.pop(key, None)
                         else:
                             self._best_face_scores[key] = previous_best_face
+                        if previous_best_face_image is None:
+                            self._last_face_images.pop(key, None)
+                        else:
+                            self._last_face_images[key] = previous_best_face_image
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
             if disappeared and face_image_frame is None:
                 LOGGER.warning(
@@ -535,7 +546,7 @@ class HumanLogStore:
             writer.release()
             path.unlink(missing_ok=True)
             raise RuntimeError(f"Could not create human video: {path}")
-        return writer, f"/media/{url_prefix}/{filename}"
+        return writer, self.media_storage.key_for_path(path)
 
     def _media_state(self, event: HumanMediaEvent) -> TrackMediaState:
         key = (event.session_id, event.camera, event.track_id)
@@ -551,7 +562,7 @@ class HumanLogStore:
         ):
             height, width = event.full_frame_video_frame.shape[:2]
             state.full_frame_size = (width, height)
-            state.full_frame_writer, state.video_url = self._new_writer(
+            state.full_frame_writer, state.video_key = self._new_writer(
                 self.video_dir,
                 "human_videos",
                 stem,
@@ -561,7 +572,7 @@ class HumanLogStore:
         if event.face_video_frame is not None and state.face_writer is None:
             face_height, face_width = event.face_video_frame.shape[:2]
             state.face_size = (face_width, face_height)
-            state.face_writer, state.face_video_url = self._new_writer(
+            state.face_writer, state.face_video_key = self._new_writer(
                 self.face_video_dir,
                 "human_face_videos",
                 f"{stem}_faces",
@@ -581,7 +592,7 @@ class HumanLogStore:
             [cv2.IMWRITE_JPEG_QUALITY, 92],
         ):
             raise RuntimeError(f"Could not save human snapshot: {path}")
-        return f"/media/human_snapshots/{filename}", path
+        return self.media_storage.key_for_path(path), path
 
     def _save_whole_snapshot(self, event: HumanMediaEvent) -> tuple[str, Path]:
         assert event.whole_snapshot_frame is not None
@@ -594,41 +605,50 @@ class HumanLogStore:
             [cv2.IMWRITE_JPEG_QUALITY, 92],
         ):
             raise RuntimeError(f"Could not save whole snapshot: {path}")
-        return f"/media/whole_snapshots/{filename}", path
+        return self.media_storage.key_for_path(path), path
 
-    def _save_face_image(self, event: HumanMediaEvent) -> tuple[str, Path]:
+    def _save_face_image(self, event: HumanMediaEvent) -> tuple[str, str, Path]:
         assert event.face_image_frame is not None
-        self.detected_face_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{self._safe_stem(event.camera, event.track_id)}_face.jpg"
-        path = self.detected_face_dir / filename
-        if not cv2.imwrite(
-            str(path),
+        stem = self._safe_stem(event.camera, event.track_id)
+        face_key, path = self.media_storage.save_jpeg(
             event.face_image_frame,
-            [cv2.IMWRITE_JPEG_QUALITY, 92],
-        ):
-            raise RuntimeError(f"Could not save human face image: {path}")
+            directory="detected_faces",
+            filename=f"{stem}_face.jpg",
+            quality=92,
+        )
+        thumbnail_key, _ = self.media_storage.save_jpeg(
+            event.face_image_frame,
+            directory="face_thumbnails",
+            filename=f"{stem}_thumbnail.jpg",
+            quality=72,
+            max_size=224,
+        )
         LOGGER.info(
-            "HUMAN_FACE_IMAGE_SAVED camera=%s track_id=%s path=%s",
+            "HUMAN_FACE_IMAGE_SAVED camera=%s track_id=%s key=%s thumbnail_key=%s",
             event.camera,
             event.track_id,
-            path.relative_to(self.snapshot_dir.parent),
+            face_key,
+            thumbnail_key,
         )
-        return f"/media/detected_faces/{filename}", path
+        return face_key, thumbnail_key, path
 
     def _write(self, event: HumanMediaEvent) -> None:
-        state = self._media_state(event)
-        wrote_full_frame = False
-        wrote_face = False
-        face_image_url = ""
-        whole_snapshot_url = ""
-        if event.face_image_frame is not None:
-            face_image_url, _ = self._save_face_image(event)
-        if event.whole_snapshot_frame is not None:
-            whole_snapshot_url, _ = self._save_whole_snapshot(event)
         if not event.persist_human_log:
             with self._lock:
                 self._last_error = None
             return
+        state = self._media_state(event)
+        wrote_full_frame = False
+        wrote_face = False
+        face_image_key = ""
+        face_thumbnail_key = ""
+        whole_snapshot_key = ""
+        # Detection evidence is persisted once, when the track is finalized.
+        # This avoids creating an orphan face/whole-frame file on every frame.
+        if event.finalize_detection_log and event.face_image_frame is not None:
+            face_image_key, face_thumbnail_key, _ = self._save_face_image(event)
+        if event.finalize_detection_log and event.whole_snapshot_frame is not None:
+            whole_snapshot_key, _ = self._save_whole_snapshot(event)
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -655,8 +675,8 @@ class HumanLogStore:
         with self._connect() as connection:
             existing = connection.execute(
                 """
-                SELECT snapshot_url, snapshot_quality, best_face_quality, name,
-                       recognition_score, ref_img_id
+                SELECT snapshot_url, video_url, face_video_url, snapshot_quality,
+                       best_face_quality, name, recognition_score, ref_img_id
                 FROM human_logs
                 WHERE session_id = ? AND camera = ? AND track_id = ?
                 """,
@@ -679,6 +699,15 @@ class HumanLogStore:
                 new_snapshot_url
                 if new_snapshot_url
                 else str(existing["snapshot_url"] or "") if existing else ""
+            )
+            # The writer may have been closed by idle cleanup before the final
+            # disappearance event. Preserve the keys already persisted in
+            # human_logs instead of overwriting them with empty strings.
+            video_key = state.video_key or (
+                str(existing["video_url"] or "") if existing else ""
+            )
+            face_video_key = state.face_video_key or (
+                str(existing["face_video_url"] or "") if existing else ""
             )
             snapshot_quality = (
                 event.snapshot_quality
@@ -719,8 +748,8 @@ class HumanLogStore:
                         stored_recognition_score,
                         None if stored_ref_img_id is None else str(stored_ref_img_id),
                         snapshot_url,
-                        state.video_url,
-                        state.face_video_url,
+                        video_key,
+                        face_video_key,
                         snapshot_quality,
                         event.face_quality,
                         int(wrote_full_frame),
@@ -748,8 +777,8 @@ class HumanLogStore:
                         max(stored_recognition_score, 0.0),
                         None if stored_ref_img_id is None else str(stored_ref_img_id),
                         snapshot_url,
-                        state.video_url,
-                        state.face_video_url,
+                        video_key,
+                        face_video_key,
                         snapshot_quality,
                         bool(better_face),
                         event.face_quality,
@@ -763,16 +792,34 @@ class HumanLogStore:
                     ),
                 )
             human_row = connection.execute(
-                "SELECT id FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
+                "SELECT id, snapshot_url, video_url, face_video_url "
+                "FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
                 (event.session_id, event.camera, event.track_id),
             ).fetchone()
         if event.finalize_detection_log and self.detection_log_store is not None:
+            # Release writers before exposing video URLs. MP4 metadata is not
+            # guaranteed to be readable until VideoWriter.release() completes.
+            self._release_state(state)
+            state.full_frame_writer = None
+            state.face_writer = None
+            self._media.pop((event.session_id, event.camera, event.track_id), None)
+            finalized_video_key = (
+                str(human_row["video_url"] or "") if human_row is not None else video_key
+            )
+            finalized_face_video_key = (
+                str(human_row["face_video_url"] or "")
+                if human_row is not None
+                else face_video_key
+            )
+            video_status = self._finalized_video_status(finalized_video_key)
+            face_video_status = self._finalized_video_status(finalized_face_video_key)
             source_event_key = (
                 f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
             )
             existing_detection = self.detection_log_store.get_by_source_event_key(
                 source_event_key
             )
+            media_finalized_at = event.captured_at_utc
             if existing_detection is None:
                 self.detection_log_store.create(
                     source_system="face_recognition",
@@ -789,31 +836,49 @@ class HumanLogStore:
                     access_granted=event.personnel_id is not None,
                     counts_for_attendance=True,
                     log_type="camera_rtsp",
-                    face_image=face_image_url,
-                    body_image=snapshot_url,
-                    snapshot_image=whole_snapshot_url,
-                    video=state.video_url,
-                    face_video_or_unknown_faces=state.face_video_url,
+                    face_image=face_image_key or None,
+                    face_thumbnail=face_thumbnail_key or None,
+                    body_image=snapshot_url or None,
+                    snapshot_image=whole_snapshot_key or None,
+                    video=finalized_video_key or None,
+                    face_video_or_unknown_faces=finalized_face_video_key or None,
+                    video_status=video_status,
+                    face_video_status=face_video_status,
+                    media_finalized_at=media_finalized_at,
                 )
-            elif not existing_detection.face_image and face_image_url:
-                self.detection_log_store.update(
-                    existing_detection.id,
-                    face_image=face_image_url,
-                    body_image=existing_detection.body_image or snapshot_url,
-                    snapshot_image=whole_snapshot_url or existing_detection.snapshot_image,
-                    video=state.video_url or existing_detection.video,
-                    face_video_or_unknown_faces=(
-                        state.face_video_url
-                        or existing_detection.face_video_or_unknown_faces
-                    ),
-                )
+            else:
+                updates: dict[str, Any] = {
+                    "video_status": video_status,
+                    "face_video_status": face_video_status,
+                    "media_finalized_at": media_finalized_at,
+                }
+                candidates = {
+                    "face_image": face_image_key,
+                    "face_thumbnail": face_thumbnail_key,
+                    "body_image": snapshot_url,
+                    "snapshot_image": whole_snapshot_key,
+                    "video": finalized_video_key,
+                    "face_video_or_unknown_faces": finalized_face_video_key,
+                }
+                replaced_keys: list[str] = []
+                for field, value in candidates.items():
+                    previous = getattr(existing_detection, field)
+                    if value and value != previous:
+                        updates[field] = value
+                        if previous:
+                            replaced_keys.append(previous)
+                self.detection_log_store.update(existing_detection.id, **updates)
+                self.media_storage.delete_many(replaced_keys)
         if old_snapshot_url and old_snapshot_url != new_snapshot_url:
-            (self.snapshot_dir / Path(old_snapshot_url).name).unlink(missing_ok=True)
+            self.media_storage.delete(old_snapshot_url)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
             self._full_frame_video_frames += int(wrote_full_frame)
             self._accepted_face_video_frames += int(wrote_face)
             self._last_error = None
+
+    def _finalized_video_status(self, key: str) -> str:
+        return self.media_storage.finalized_video_status(key)
 
     @staticmethod
     def _release_state(state: TrackMediaState) -> None:
@@ -868,22 +933,26 @@ class HumanLogStore:
         values: list[Any] = []
         for column, value in (("camera", camera), ("name", name), ("track_id", track_id)):
             if value is not None:
-                conditions.append(f"{column} = ?")
+                conditions.append(f"h.{column} = ?")
                 values.append(value)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         values.append(max(1, min(int(limit), 1000)))
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, session_id, camera, track_id, name, first_seen,
-                       last_seen, recognition_score, ref_img_id, snapshot_url,
-                       video_url, face_video_url, snapshot_quality,
-                       best_face_quality, full_frame_video_frames,
-                       accepted_face_frames, personnel_id, counts_for_attendance
-                FROM human_logs
+                SELECT h.id, h.session_id, h.camera, h.track_id, h.name,
+                       h.first_seen, h.last_seen, h.recognition_score,
+                       h.ref_img_id, h.snapshot_url, h.video_url,
+                       h.face_video_url, h.snapshot_quality,
+                       h.best_face_quality, h.full_frame_video_frames,
+                       h.accepted_face_frames, h.personnel_id,
+                       h.counts_for_attendance, d.id AS detection_log_id,
+                       d.video_status, d.face_video_status
+                FROM human_logs h
+                LEFT JOIN detection_logs d ON d.source_human_log_id = h.id
                 """
                 + where
-                + " ORDER BY id DESC LIMIT ?",
+                + " ORDER BY h.id DESC LIMIT ?",
                 values,
             ).fetchall()
         items = [dict(row) for row in rows]
@@ -897,7 +966,27 @@ class HumanLogStore:
                 last_name = parts[1] if len(parts) > 1 else ""
             item["first_name"] = first_name
             item["last_name"] = last_name
-            item["image_url"] = item.get("snapshot_url") or ""
+            detection_log_id = item.get("detection_log_id")
+            item["snapshot_url"] = (
+                f"/api/v1/logs/{detection_log_id}/body"
+                if detection_log_id and item.get("snapshot_url")
+                else None
+            )
+            item["image_url"] = item["snapshot_url"]
+            item["video_url"] = (
+                f"/api/v1/logs/{detection_log_id}/video"
+                if detection_log_id
+                and item.get("video_url")
+                and item.get("video_status") == MEDIA_STATUS_READY
+                else None
+            )
+            item["face_video_url"] = (
+                f"/api/v1/logs/{detection_log_id}/face-video"
+                if detection_log_id
+                and item.get("face_video_url")
+                and item.get("face_video_status") == MEDIA_STATUS_READY
+                else None
+            )
         return items
 
     def count(self) -> int:
