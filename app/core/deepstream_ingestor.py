@@ -1465,14 +1465,22 @@ class DeepStreamIngestor:
         source = self._make("rtspsrc", f"rtsp_source_{safe_id}_{generation}")
         source.set_property("location", record.source_uri)
         self._set_if_supported(source, "latency", self.rtsp_latency_ms)
-        self._set_if_supported(source, "drop-on-latency", True)
-        self._set_if_supported(
-            source, "protocols", 4 if self.rtsp_transport == "tcp" else 3
+        # Match the independently stable gst-launch baseline. Keep RTSP on
+        # interleaved TCP and retain plugin defaults for timeout and
+        # drop-on-latency; those extra overrides were present only in Python.
+        self._set_if_supported(source, "protocols", 4)
+        LOGGER.info(
+            "RTSP_SOURCE_CONFIGURED source=%s transport=tcp latency_ms=%s "
+            "protocols=%s drop_on_latency=%s timeout_us=%s tcp_timeout_us=%s "
+            "generation=%s",
+            VideoFileIngestor.redact_uri(record.source_uri),
+            source.get_property("latency"),
+            source.get_property("protocols"),
+            source.get_property("drop-on-latency"),
+            source.get_property("timeout"),
+            source.get_property("tcp-timeout"),
+            generation,
         )
-        timeout_us = int(self.rtsp_stall_timeout_seconds * 1_000_000)
-        if timeout_us > 0:
-            self._set_if_supported(source, "timeout", timeout_us)
-            self._set_if_supported(source, "tcp-timeout", timeout_us)
         pipeline.add(source)
         context = {
             "pipeline": pipeline,

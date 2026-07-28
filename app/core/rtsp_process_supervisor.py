@@ -161,6 +161,11 @@ class RtspProcessSupervisor:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._source_start_stagger_seconds = max(
+            0.0,
+            float(child_settings.get("source_open_stagger_seconds", 0.5)),
+        )
+        self._next_child_start_monotonic = 0.0
         self._child_settings = {
             "project_root": project_root,
             "video_only_mode": bool(child_settings.get("video_only_mode", False)),
@@ -266,6 +271,7 @@ class RtspProcessSupervisor:
     def poll_once(self) -> None:
         required = {record.source_uri: record for record in self._required_records()}
         now = self._clock()
+        start_available = now >= self._next_child_start_monotonic
         with self._lock:
             for source_id, child in list(self._children.items()):
                 if source_id not in required:
@@ -276,13 +282,26 @@ class RtspProcessSupervisor:
                     exit_code = child.process.exitcode
                     if exit_code is not None:
                         self._handle_exit(child, int(exit_code))
-                if child.process is None and now >= child.restart_at:
+                if (
+                    child.process is None
+                    and now >= child.restart_at
+                    and start_available
+                ):
                     self._start_child(child)
+                    start_available = False
+                    self._next_child_start_monotonic = (
+                        now + self._source_start_stagger_seconds
+                    )
             for source_id, record in required.items():
                 if source_id not in self._children:
                     child = _Child(record=record)
                     self._children[source_id] = child
-                    self._start_child(child)
+                    if start_available:
+                        self._start_child(child)
+                        start_available = False
+                        self._next_child_start_monotonic = (
+                            now + self._source_start_stagger_seconds
+                        )
         with self._lock:
             event_queues = [
                 child.events
@@ -397,6 +416,9 @@ class RtspProcessSupervisor:
                 "running": self._thread is not None and self._thread.is_alive(),
                 "active_source_count": sum(
                     1 for value in sources.values() if value["running"]
+                ),
+                "source_start_stagger_seconds": (
+                    self._source_start_stagger_seconds
                 ),
                 "sources": sources,
             }

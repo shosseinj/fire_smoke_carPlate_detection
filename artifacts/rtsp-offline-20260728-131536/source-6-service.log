@@ -1,0 +1,199 @@
+﻿video-ai-router-1  | INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+video-ai-router-1  | INFO  [alembic.runtime.migration] Will assume transactional DDL.
+video-ai-router-1  | /workspace/app/main.py:31: FastAPIDeprecationWarning: `example` has been deprecated, please use `examples` instead
+video-ai-router-1  |   from app.api.auth import router as auth_router
+video-ai-router-1  | INIT_DB room 'string' already belongs to cam 2
+video-ai-router-1  | INIT_DB room 'string' already belongs to cam 2
+video-ai-router-1  | INIT_DB skip source room assignment for 'string': cam ownership mismatch
+video-ai-router-1  | INIT_DB skip source room assignment for 'string': cam ownership mismatch
+video-ai-router-1  | INFO:     Started server process [1]
+video-ai-router-1  | INFO:     Waiting for application startup.
+video-ai-router-1  | INFO:     VIDEO_ONLY_MODE active: AI model preload and task workers disabled
+video-ai-router-1  | INFO:     RAW_STREAM_ROUTER_STARTED
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/company/video6.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     Application startup complete.
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/4.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     Uvicorn running on http://0.0.0.0:9999 (Press CTRL+C to quit)
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/3.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/2.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/1.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/company/video3.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/company/video5.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/12.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/13.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/14.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/1.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/2.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/3.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/4.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/5.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/6.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/7.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     DeepStream source skipped source=./data/new/8.mp4 source_type=static_video reason=not_in_source_allowlist
+video-ai-router-1  | INFO:     172.19.0.1:50038 - "WebSocket /api/v1/video-wall/ws?wall=true&batch=true" [accepted]
+video-ai-router-1  | INFO:     connection open
+video-ai-router-1  | Fatal Python error: Aborted
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007fb042cc1640 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 324 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 607 in wait
+video-ai-router-1  |   File "/workspace/app/core/deepstream_ingestor.py", line 2159 in _run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 953 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 1016 in _bootstrap_inner
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 973 in _bootstrap
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007fb152b82740 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 261 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 349 in wait
+video-ai-router-1  |   File "/workspace/app/core/rtsp_process_supervisor.py", line 99 in _rtsp_child_main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 108 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 314 in _bootstrap
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 129 in _main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 116 in spawn_main
+video-ai-router-1  |   File "<string>", line 1 in <module>
+video-ai-router-1  | 
+video-ai-router-1  | Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, sqlalchemy.cyextension.collections, sqlalchemy.cyextension.immutabledict, sqlalchemy.cyextension.processors, sqlalchemy.cyextension.resultproxy, sqlalchemy.cyextension.util, greenlet._greenlet, gi._gi, gi.overrides._gi_gst (total: 10)
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50070 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50082 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:58520 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | Fatal Python error: Segmentation fault
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007f3508a09640 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 324 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 607 in wait
+video-ai-router-1  |   File "/workspace/app/core/deepstream_ingestor.py", line 2159 in _run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 953 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 1016 in _bootstrap_inner
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 973 in _bootstrap
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007f36188c9740 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 261 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 349 in wait
+video-ai-router-1  |   File "/workspace/app/core/rtsp_process_supervisor.py", line 99 in _rtsp_child_main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 108 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 314 in _bootstrap
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 129 in _main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 116 in spawn_main
+video-ai-router-1  |   File "<string>", line 1 in <module>
+video-ai-router-1  | 
+video-ai-router-1  | Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, sqlalchemy.cyextension.collections, sqlalchemy.cyextension.immutabledict, sqlalchemy.cyextension.processors, sqlalchemy.cyextension.resultproxy, sqlalchemy.cyextension.util, greenlet._greenlet, gi._gi, gi.overrides._gi_gst (total: 10)
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:43754 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:43764 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:41576 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:41578 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | Fatal Python error: Aborted
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007f88eb13b640 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 324 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 607 in wait
+video-ai-router-1  |   File "/workspace/app/core/deepstream_ingestor.py", line 2159 in _run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 953 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 1016 in _bootstrap_inner
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 973 in _bootstrap
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007f89fb010740 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 261 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 349 in wait
+video-ai-router-1  |   File "/workspace/app/core/rtsp_process_supervisor.py", line 99 in _rtsp_child_main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 108 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 314 in _bootstrap
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 129 in _main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 116 in spawn_main
+video-ai-router-1  |   File "<string>", line 1 in <module>
+video-ai-router-1  | 
+video-ai-router-1  | Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, sqlalchemy.cyextension.collections, sqlalchemy.cyextension.immutabledict, sqlalchemy.cyextension.processors, sqlalchemy.cyextension.resultproxy, sqlalchemy.cyextension.util, greenlet._greenlet, gi._gi, gi.overrides._gi_gst (total: 10)
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:60408 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:60424 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:43136 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:43152 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | Fatal Python error: Aborted
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007fb48a43d640 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 324 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 607 in wait
+video-ai-router-1  |   File "/workspace/app/core/deepstream_ingestor.py", line 2159 in _run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 953 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 1016 in _bootstrap_inner
+video-ai-router-1  |   File "/usr/lib/python3.10/threading.py", line 973 in _bootstrap
+video-ai-router-1  | 
+video-ai-router-1  | Thread 0x00007fb59a317740 (most recent call first):
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 261 in wait
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/synchronize.py", line 349 in wait
+video-ai-router-1  |   File "/workspace/app/core/rtsp_process_supervisor.py", line 99 in _rtsp_child_main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 108 in run
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/process.py", line 314 in _bootstrap
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 129 in _main
+video-ai-router-1  |   File "/usr/lib/python3.10/multiprocessing/spawn.py", line 116 in spawn_main
+video-ai-router-1  |   File "<string>", line 1 in <module>
+video-ai-router-1  | 
+video-ai-router-1  | Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, sqlalchemy.cyextension.collections, sqlalchemy.cyextension.immutabledict, sqlalchemy.cyextension.processors, sqlalchemy.cyextension.resultproxy, sqlalchemy.cyextension.util, greenlet._greenlet, gi._gi, gi.overrides._gi_gst (total: 10)
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:54894 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:54908 - "GET /health HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50054 - "GET /api/v1/broadcast/state HTTP/1.1" 200 OK
+video-ai-router-1  | INFO:     172.19.0.1:50048 - "GET /api/v1/sources/preview-config HTTP/1.1" 200 OK
