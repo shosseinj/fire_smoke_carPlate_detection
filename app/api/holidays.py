@@ -3,11 +3,20 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 
 from app.api.holiday_schemas import HolidayCreate, HolidayResponse, HolidayUpdate
 from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.holiday_import import (
+    MAX_OFFICIAL_IMPORT_YEAR,
+    MIN_OFFICIAL_IMPORT_YEAR,
+    HolidayImportValidationError,
+    build_holiday_excel_template,
+    excel_choice_code_help,
+    parse_holiday_excel,
+)
 from app.core.holiday_store import HolidayRecord
 
 router = APIRouter(prefix="/api/v1/holidays", tags=["Holidays"])
@@ -72,6 +81,99 @@ def list_holidays(
         records = [r for r in records if r.every_year == every_year]
     records.sort(key=lambda r: r.date_value)
     return [_record_to_response(r, *_resolve_briefs(store, r)) for r in records]
+
+
+@router.get("/import-excel/template")
+def download_holiday_import_template(
+    _: dict = Depends(require_role("admin")),
+) -> Response:
+    """Download the Excel template used for official yearly imports."""
+    content = build_holiday_excel_template()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=official_holidays_template_fa.xlsx"
+        },
+    )
+
+
+@router.post("/import-excel")
+def import_official_holidays_excel(
+    year: int = Query(
+        ...,
+        ge=MIN_OFFICIAL_IMPORT_YEAR,
+        le=MAX_OFFICIAL_IMPORT_YEAR,
+        description="سال جلالی؛ فقط از 1406 تا 1500",
+    ),
+    file: UploadFile = File(..., description="Completed official-holiday Excel template"),
+    current_user: dict = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Validate the entire workbook, then atomically replace one official year."""
+    filename = file.filename or ""
+    if not filename.casefold().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "Only .xlsx and .xlsm files are accepted")
+
+    contents = file.file.read()
+    if not contents:
+        raise HTTPException(400, "The uploaded Excel file is empty")
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(413, "The uploaded Excel file exceeds the 5 MB limit")
+
+    try:
+        rows = parse_holiday_excel(contents, year=year)
+    except HolidayImportValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.response_detail(year=year, filename=filename),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "فایل اکسل قابل پردازش نیست؛ هیچ تغییری در پایگاه داده انجام نشد.",
+                "year": year,
+                "filename": filename,
+                "database_changed": False,
+                "imported_count": 0,
+                "summary": {
+                    "total_data_rows": 0,
+                    "valid_rows": 0,
+                    "invalid_rows": 0,
+                },
+                "choice_codes": excel_choice_code_help(),
+                "file_errors": [
+                    {
+                        "code": "invalid_workbook",
+                        "message": str(exc),
+                    }
+                ],
+                "failed_rows": [],
+            },
+        ) from exc
+
+    if isinstance(current_user, dict):
+        current_user_id = current_user.get("id")
+    else:
+        current_user_id = getattr(current_user, "id", None)
+
+    result = get_holiday_store().replace_official_year(
+        year,
+        [row.to_store_mapping() for row in rows],
+        user_id=current_user_id,
+    )
+    return {
+        "message": "تعطیلات رسمی با موفقیت وارد شدند.",
+        "filename": filename,
+        "database_changed": True,
+        "choice_codes": excel_choice_code_help(),
+        "summary": {
+            "total_data_rows": len(rows),
+            "valid_rows": len(rows),
+            "invalid_rows": 0,
+        },
+        **result,
+    }
 
 
 @router.get("/{holiday_id}", response_model=HolidayResponse)

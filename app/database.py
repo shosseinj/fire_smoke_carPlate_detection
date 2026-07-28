@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260727_0035"
+ALEMBIC_HEAD_REVISION = "20260728_0037"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -151,10 +151,28 @@ holidays = Table(
     Column("date_value", Date, nullable=False), Column("description", Text),
     Column("holiday_type", Text, nullable=False, server_default="national"),
     Column("every_year", Integer, nullable=False, server_default="0"),
-    Column("is_active", Integer, nullable=False, server_default="1"), *_audit_columns(), *_user_audit_columns(),
+    Column("is_active", Integer, nullable=False, server_default="1"),
+    Column("is_official", Integer, nullable=False, server_default="0"),
+    Column("official_jalali_year", Integer),
+    CheckConstraint(
+        "(is_official = 0 AND official_jalali_year IS NULL) OR "
+        "(is_official = 1 AND official_jalali_year BETWEEN 1200 AND 1600)",
+        name="ck_holidays_official_year",
+    ),
+    *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_holidays_date", holidays.c.date_value)
 Index("idx_holidays_active", holidays.c.is_active)
+Index("idx_holidays_official_year", holidays.c.is_official, holidays.c.official_jalali_year)
+Index(
+    "uq_holidays_active_identity",
+    holidays.c.date_value,
+    holidays.c.every_year,
+    holidays.c.name,
+    holidays.c.is_official,
+    unique=True,
+    postgresql_where=holidays.c.is_active == 1,
+)
 
 work_shifts = Table(
     "work_shifts", metadata,

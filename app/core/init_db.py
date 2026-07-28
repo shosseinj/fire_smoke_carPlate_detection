@@ -17,6 +17,8 @@ from typing import Any
 from app.core.cam_store import CamRecord, CamStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.location_store import LocationStore
+from app.core.holiday_import import seed_default_official_holidays
+from app.core.holiday_store import HolidayStore
 from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
 from app.core.source_registry import SourceRecord, SourceRegistry
@@ -532,6 +534,7 @@ def init_database(
     detection_log_store: DetectionLogStore | None = None,
     location_store: LocationStore | None = None,
     shift_store: ShiftStore | None = None,
+    holiday_store: HolidayStore | None = None,
     registry: SourceRegistry | None = None,
     cam_store: CamStore | None = None,
     target_log_count: int = 100,
@@ -549,7 +552,7 @@ def init_database(
     Parameters
     ----------
     personnel_store, detection_log_store, location_store, shift_store,
-    registry, cam_store:
+    holiday_store, registry, cam_store:
         Store instances through which seed operations are performed.
         Any store that is ``None`` is skipped.
     target_log_count:
@@ -658,6 +661,16 @@ def init_database(
         existing, _ = shift_store.list(limit=1)
         if existing:
             shift = existing[0]
+
+    # ── Seed official Iran 1405 holidays ─────────────────────────────
+    if holiday_store is not None:
+        holiday_seed = seed_default_official_holidays(holiday_store)
+        if bool(holiday_seed["seeded"]):
+            LOGGER.info(
+                "INIT_DB created %d official holiday record(s) for Jalali year 1405",
+                holiday_seed["inserted_count"],
+            )
+            seeded = True
 
     # ── Seed default personnel ──────────────────────────────────────
     if personnel_store is not None:

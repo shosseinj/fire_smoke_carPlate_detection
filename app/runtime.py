@@ -520,6 +520,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             detection_log_store=detection_log_store,
             location_store=location_store,
             shift_store=shift_store,
+            holiday_store=holiday_store,
             registry=registry,
             cam_store=cam_store,
         )

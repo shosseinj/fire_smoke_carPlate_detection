@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ class HolidayRecord:
     holiday_type: str
     every_year: bool
     is_active: bool
+    is_official: bool
+    official_jalali_year: int | None
     created_by: int | None
     updated_by: int | None
     created_at_utc: str
@@ -62,6 +64,8 @@ class HolidayStore:
             holiday_type=row["holiday_type"],
             every_year=bool(row["every_year"]),
             is_active=bool(row["is_active"]),
+            is_official=bool(row.get("is_official", 0)),
+            official_jalali_year=row.get("official_jalali_year"),
             created_by=row.get("created_by"),
             updated_by=row.get("updated_by"),
             created_at_utc=row["created_at_utc"],
@@ -123,8 +127,9 @@ class HolidayStore:
         now = _now()
         with self._lock, self._connection() as conn:
             existing = conn.execute(
-                "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? AND is_active = 1",
-                (normalized_date, 1 if every_year else 0),
+                "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? "
+                "AND name = ? AND is_official = 0 AND is_active = 1",
+                (normalized_date, 1 if every_year else 0, name),
             ).fetchone()
             if existing is not None:
                 raise ValueError(
@@ -132,8 +137,8 @@ class HolidayStore:
                 )
             cursor = conn.execute(
                 "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, "
-                "is_active, created_at_utc, updated_at_utc, created_by) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                "is_active, is_official, official_jalali_year, created_at_utc, updated_at_utc, "
+                "created_by) VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?, ?, ?)",
                 (name, normalized_date, description, holiday_type, 1 if every_year else 0,
                  now, now, created_by),
             )
@@ -143,6 +148,125 @@ class HolidayStore:
             if row is None:
                 raise RuntimeError("Failed to retrieve created holiday")
             return self._row_to_holiday(row)
+
+    @staticmethod
+    def _validate_official_rows(rows: Sequence[Mapping[str, Any]]) -> None:
+        if not rows:
+            raise ValueError("At least one official holiday row is required")
+        seen: set[tuple[str, bool, str]] = set()
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if not name:
+                raise ValueError("Official holiday name is required")
+            holiday_type = str(row.get("holiday_type") or "national")
+            if holiday_type not in VALID_HOLIDAY_TYPES:
+                raise ValueError(f"Invalid holiday type: {holiday_type!r}")
+            date_value = str(row.get("date_value") or "")
+            try:
+                date.fromisoformat(date_value)
+            except ValueError as exc:
+                raise ValueError(f"Invalid Gregorian date: {date_value!r}") from exc
+            every_year = bool(row.get("every_year", False))
+            if every_year:
+                raise ValueError("Official Jalali-year holidays cannot use every_year=true")
+            key = (date_value, every_year, name)
+            if key in seen:
+                raise ValueError(f"Duplicate official holiday: {name!r} on {date_value}")
+            seen.add(key)
+
+    @staticmethod
+    def _insert_official_rows(
+        conn: Connection,
+        *,
+        year: int,
+        rows: Sequence[Mapping[str, Any]],
+        user_id: int | None,
+    ) -> int:
+        now = _now()
+        inserted = 0
+        for row in rows:
+            conn.execute(
+                "INSERT INTO holidays (name, date_value, description, holiday_type, every_year, "
+                "is_active, is_official, official_jalali_year, created_at_utc, updated_at_utc, "
+                "created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+                (
+                    str(row["name"]).strip(),
+                    str(row["date_value"]),
+                    row.get("description"),
+                    str(row.get("holiday_type") or "national"),
+                    1 if bool(row.get("every_year", False)) else 0,
+                    1 if bool(row.get("is_active", True)) else 0,
+                    year,
+                    now,
+                    now,
+                    user_id,
+                    user_id,
+                ),
+            )
+            inserted += 1
+        return inserted
+
+    def count_official_year(self, year: int) -> int:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM holidays WHERE is_official = 1 "
+                "AND official_jalali_year = ?",
+                (year,),
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
+
+    def seed_official_year_if_missing(
+        self,
+        year: int,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> dict[str, int | bool]:
+        """Insert a bundled official year once; never overwrite later edits."""
+        self._validate_official_rows(rows)
+        with self._lock, self._connection() as conn:
+            existing_row = conn.execute(
+                "SELECT COUNT(*) FROM holidays WHERE is_official = 1 "
+                "AND official_jalali_year = ?",
+                (year,),
+            ).fetchone()
+            existing_count = int(existing_row[0]) if existing_row is not None else 0
+            if existing_count:
+                return {"seeded": False, "existing_count": existing_count, "inserted_count": 0}
+            inserted = self._insert_official_rows(
+                conn, year=year, rows=rows, user_id=None
+            )
+            return {"seeded": True, "existing_count": 0, "inserted_count": inserted}
+
+    def replace_official_year(
+        self,
+        year: int,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        user_id: int | None = None,
+    ) -> dict[str, int]:
+        """Atomically replace only imported official holidays for one Jalali year."""
+        self._validate_official_rows(rows)
+        with self._lock, self._connection() as conn:
+            previous_row = conn.execute(
+                "SELECT COUNT(*) FROM holidays WHERE is_official = 1 "
+                "AND official_jalali_year = ?",
+                (year,),
+            ).fetchone()
+            previous_count = int(previous_row[0]) if previous_row is not None else 0
+            conn.execute(
+                "DELETE FROM holidays WHERE is_official = 1 "
+                "AND official_jalali_year = ?",
+                (year,),
+            )
+            inserted_count = self._insert_official_rows(
+                conn, year=year, rows=rows, user_id=user_id
+            )
+            active_count = sum(1 for row in rows if bool(row.get("is_active", True)))
+            return {
+                "year": year,
+                "replaced_count": previous_count,
+                "imported_count": inserted_count,
+                "active_count": active_count,
+            }
 
     def get(self, holiday_id: int) -> HolidayRecord | None:
         with self._lock, self._connection() as conn:
@@ -181,16 +305,11 @@ class HolidayStore:
 
             # Check duplicate on reactivation or date change
             check_date = new_date
-            check_every = bool(new_every)
-            conn.execute(
-                "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? "
-                "AND is_active = 1 AND id != ?",
-                (check_date, new_every, holiday_id),
-            )
+            namespace_is_official = bool(existing.get("is_official", 0))
             dup = conn.execute(
                 "SELECT id FROM holidays WHERE date_value = ? AND every_year = ? "
-                "AND is_active = 1 AND id != ?",
-                (check_date, new_every, holiday_id),
+                "AND name = ? AND is_official = ? AND is_active = 1 AND id != ?",
+                (check_date, new_every, new_name, 1 if namespace_is_official else 0, holiday_id),
             ).fetchone()
             if dup is not None:
                 raise ValueError(
