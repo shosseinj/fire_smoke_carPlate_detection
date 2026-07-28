@@ -972,19 +972,38 @@ def _make_test_zip(national_code: str) -> bytes:
     return buf.getvalue()
 
 
+def _submit_zip_and_wait(client: TestClient, *, files, headers, data=None) -> dict:
+    response = client.post(
+        "/api/v1/personnel/upload-personnel-zip",
+        files=files,
+        headers=headers,
+        data=data,
+    )
+    assert response.status_code == 202, response.text
+    status_url = response.json()["status_url"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        progress_response = client.get(status_url, headers=headers)
+        assert progress_response.status_code == 200, progress_response.text
+        progress = progress_response.json()
+        if progress["status"] in {"completed", "completed_with_errors", "failed"}:
+            assert progress["result"] is not None
+            return progress["result"]
+        time.sleep(0.01)
+    raise AssertionError("personnel ZIP import did not finish in time")
+
+
 def test_upload_personnel_zip_folder_structure(tmp_path: Path) -> None:
     """ZIP with folder-per-person structure creates personnel + image records."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         zip_bytes = _make_test_zip("1234567891")
-        resp = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("test.zip", zip_bytes, "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["success"] is False
         assert body["summary"]["total_persons"] == 1
         assert body["summary"]["total_images_saved"] == 0
@@ -1016,7 +1035,7 @@ def test_personnel_zip_background_job_reports_progress_and_result(tmp_path: Path
     try:
         token = _admin_token(client)
         response = client.post(
-            "/api/v1/personnel/upload-personnel-zip/jobs",
+            "/api/v1/personnel/upload-personnel-zip",
             files={"file": ("test.zip", _make_test_zip("1234567891"), "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -1058,20 +1077,15 @@ def test_upload_personnel_zip_detector_error_deletes_reference_image(
         def delete_points(self, _point_ids):
             return 0
 
-    monkeypatch.setattr(
-        "app.api.personnel._face_processor",
-        lambda _runtime: BrokenFaceProcessor(),
-    )
+    test_runtime.personnel_zip_imports._face_processor = BrokenFaceProcessor()
     try:
         token = _admin_token(client)
         national_code = "1234567891"
-        response = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("test.zip", _make_test_zip(national_code), "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
         assert body["success"] is False
         assert body["summary"]["total_images_saved"] == 0
         assert body["summary"]["face_stats"]["errors"] == 1
@@ -1092,14 +1106,12 @@ def test_upload_personnel_zip_with_enable_cropping(tmp_path: Path) -> None:
     try:
         token = _admin_token(client)
         zip_bytes = _make_test_zip("9876543210")
-        resp = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("test.zip", zip_bytes, "application/zip")},
             data={"enable_cropping": "true"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["success"] is False
         assert body["summary"]["total_persons"] == 1
         assert body["summary"]["total_images_in_zip"] == 1
@@ -1127,13 +1139,11 @@ def test_upload_personnel_zip_invalid_national_code_saves_error(tmp_path: Path) 
         zip_bytes = buf.getvalue()
 
         token = _admin_token(client)
-        resp = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("bad.zip", zip_bytes, "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["success"] is False
         assert body["summary"]["total_images_in_zip"] == 1
         assert body["summary"]["total_persons"] == 0
@@ -1157,13 +1167,11 @@ def test_upload_personnel_zip_folder_creates_person_with_national_code_name(tmp_
         token = _admin_token(client)
         nc = VALID_CODE_3  # "1234123411" — valid checksum
         zip_bytes = _make_test_zip(nc)
-        resp = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("test.zip", zip_bytes, "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["success"] is False
         assert body["summary"]["qdrant_enrolled_count"] == 0  # no real face processor
         assert len(body["details"]) == 1
@@ -1206,13 +1214,11 @@ def test_upload_personnel_zip_updates_existing_unknown_name(tmp_path: Path) -> N
 
         # 2. Upload a ZIP for the same national code
         zip_bytes = _make_test_zip(nc)
-        resp = client.post(
-            "/api/v1/personnel/upload-personnel-zip",
+        body = _submit_zip_and_wait(
+            client,
             files={"file": ("test.zip", zip_bytes, "application/zip")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["success"] is False
         assert body["summary"]["total_images_in_zip"] == 1
 

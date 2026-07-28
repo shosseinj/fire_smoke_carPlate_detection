@@ -27,7 +27,6 @@ from app.core.personnel_image_service import (
     PersonnelImageProcessor,
     validate_uploaded_image,
 )
-from app.core.personnel_zip_import_manager import format_zip_result
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.runtime import Runtime
 from app.core.auth_store import UserRecord
@@ -362,29 +361,6 @@ def import_template(
 
 @router.post(
     "/upload-personnel-zip",
-    summary="آپلود فایل ZIP حاوی اطلاعات پرسنل و تصاویر",
-)
-async def upload_personnel_zip(
-    runtime: Runtime = Depends(get_runtime),
-    file: UploadFile = File(...),
-    skip_invalid_national_codes: bool = Form(default=True),
-    enable_cropping: bool = Form(default=False),
-    _: UserRecord = Depends(require_role("admin")),
-) -> Any:
-    store = _store(runtime)
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="فایل خالی است")
-    try:
-        fp = _face_processor(runtime)
-        result = await run_in_threadpool(store.upload_personnel_zip, raw, fp, enable_cropping)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    return format_zip_result(file.filename or "file.zip", result)
-
-
-@router.post(
-    "/upload-personnel-zip/jobs",
     status_code=status.HTTP_202_ACCEPTED,
     summary="شروع ورود پس‌زمینه‌ای فایل ZIP پرسنل با امکان نمایش پیشرفت",
 )
