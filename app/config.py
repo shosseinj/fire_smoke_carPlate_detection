@@ -187,18 +187,18 @@ class Settings:
 
     face_human_model_path: Path = _path(
         "FACE_HUMAN_MODEL",
-        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b26_trt107.engine",
+        "weights/face_recognition/linux_trt10/yolo26s-pose_dynamic_b8_trt107.engine",
     )
     face_detector_model_path: Path = _path(
         "FACE_DETECTOR_MODEL",
-        "weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b26_trt107.engine",
+        "weights/face_recognition/linux_trt10/yolov8n-face_dynamic_b8_trt107.engine",
     )
     face_embedding_model_path: Path = _path(
         "FACE_EMBEDDING_MODEL",
         "weights/face_recognition/linux_trt10/arcface_dynamic_b64_trt107.engine",
     )
     face_device: str = os.getenv("FACE_DEVICE", "0")
-    face_batch_size: int = _env_int("FACE_BATCH_SIZE", 26)
+    face_batch_size: int = _env_int("FACE_BATCH_SIZE", 8)
     face_max_wait_ms: float = _env_float("FACE_MAX_WAIT_MS", 60.0)
     face_human_imgsz: int = _env_int("FACE_HUMAN_IMGSZ", 640)
     face_detector_imgsz: int = _env_int("FACE_DETECTOR_IMGSZ", 640)
