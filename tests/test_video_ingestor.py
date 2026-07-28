@@ -602,6 +602,31 @@ def test_deepstream_gpu_resize_always_active(tmp_path: Path) -> None:
     assert ingestor.status()["gpu_resize_active"] is False
 
 
+def test_video_only_wall_scaling_does_not_change_ai_full_resolution_mode(
+    tmp_path: Path,
+) -> None:
+    wall = DeepStreamIngestor(
+        registry=None,  # type: ignore[arg-type]
+        router=None,  # type: ignore[arg-type]
+        project_root=tmp_path,
+        video_only_mode=True,
+        video_wall_width=640,
+        video_wall_height=360,
+    )
+    ai = DeepStreamIngestor(
+        registry=None,  # type: ignore[arg-type]
+        router=None,  # type: ignore[arg-type]
+        project_root=tmp_path,
+        video_only_mode=False,
+        video_wall_width=640,
+        video_wall_height=360,
+    )
+
+    assert wall.frontend_wall_mode is True
+    assert (wall.video_wall_width, wall.video_wall_height) == (640, 360)
+    assert ai.frontend_wall_mode is False
+
+
 def test_deepstream_submits_640_inference_view_with_native_source_frame(
     tmp_path: Path, source_registry: SourceRegistry
 ) -> None:

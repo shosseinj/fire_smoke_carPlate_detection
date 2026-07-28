@@ -119,6 +119,26 @@ def test_global_wall_demand_enables_every_source() -> None:
     assert not controller.video_required("camera-1")
 
 
+def test_wall_and_fullscreen_demands_are_composed_and_released_independently() -> None:
+    controller = StreamDemandController()
+    wall = controller.acquire_wall()
+    fullscreen = controller.acquire_fullscreen("camera-1")
+
+    assert controller.wall_required("camera-1")
+    assert controller.wall_required("camera-2")
+    assert controller.fullscreen_required("camera-1")
+    assert not controller.fullscreen_required("camera-2")
+    snapshot = controller.snapshot()
+    assert snapshot["wall_subscribers"] == 1
+    assert snapshot["fullscreen_subscribers_by_source"] == {"camera-1": 1}
+
+    fullscreen.release()
+    assert controller.wall_required("camera-1")
+    assert not controller.fullscreen_required("camera-1")
+    wall.release()
+    assert not controller.video_required()
+
+
 def test_source_release_is_guarded_and_cannot_decrement_another_source() -> None:
     controller = StreamDemandController()
     lease = controller.acquire_video("camera-1")

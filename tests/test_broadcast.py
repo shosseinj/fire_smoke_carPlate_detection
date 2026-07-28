@@ -435,12 +435,68 @@ def test_source_only_fullscreen_subscription_skips_cached_wall_only_frame() -> N
 
     next_packet = packet([], "camera-07")
     hub.publish_source_only(next_packet)
+    assert fullscreen_queue.empty()
+    hub.publish_fullscreen_frame(next_packet)
     fullscreen = fullscreen_queue.get_nowait()
 
     assert isinstance(fullscreen, EncodedBroadcastFrame)
     assert (fullscreen.frame_width, fullscreen.frame_height) == (320, 180)
     hub.unsubscribe_source_only(fullscreen_subscriber_id)
     hub.unsubscribe_source_only(wall_subscriber_id)
+
+
+def test_wall_and_fullscreen_use_independent_frames_and_wall_cache_continues() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=320,
+        wall_max_height=180,
+        async_render=False,
+    )
+    wall_id, wall_queue = hub.subscribe_source_only(wall=True)
+    fullscreen_id, fullscreen_queue = hub.subscribe_source_only(
+        wall=True,
+        fullscreen_source="camera-07",
+    )
+    try:
+        wall_frame_1 = replace(
+            packet([], "camera-07"),
+            frame=np.zeros((180, 320, 3), dtype=np.uint8),
+            frame_index=1,
+        )
+        hub.publish_source_only(wall_frame_1)
+        wall_encoded_1 = wall_queue.get_nowait()
+        wall_queue.task_done()
+        assert (wall_encoded_1.frame_width, wall_encoded_1.frame_height) == (
+            320,
+            180,
+        )
+        assert fullscreen_queue.empty()
+
+        full_frame = replace(
+            packet([], "camera-07"),
+            frame=np.zeros((1440, 2560, 3), dtype=np.uint8),
+            frame_index=1,
+        )
+        wall_cache_before = hub._source_only_latest["camera-07"]
+        hub.publish_fullscreen_frame(full_frame)
+        fullscreen_encoded = fullscreen_queue.get_nowait()
+        fullscreen_queue.task_done()
+        assert (
+            fullscreen_encoded.frame_width,
+            fullscreen_encoded.frame_height,
+        ) == (2560, 1440)
+        assert hub._source_only_latest["camera-07"] is wall_cache_before
+
+        wall_frame_2 = replace(wall_frame_1, frame_index=2)
+        hub.publish_source_only(wall_frame_2)
+        assert hub._source_only_latest["camera-07"].frame_index == 2
+        assert hub._source_only_fullscreen_latest["camera-07"].frame_index == 1
+    finally:
+        hub.unsubscribe_source_only(fullscreen_id)
+        wall_frame_3 = replace(wall_frame_1, frame_index=3)
+        hub.publish_source_only(wall_frame_3)
+        assert hub._source_only_latest["camera-07"].frame_index == 3
+        hub.unsubscribe_source_only(wall_id)
 
 
 def test_source_only_broadcast_never_replaces_new_frame_with_stale_frame() -> None:
@@ -950,6 +1006,76 @@ def test_publish_source_frame_builds_complete_packet_for_async_render() -> None:
             time.sleep(0.01)
 
         assert hub._source_only_latest["camera-07"].frame_index == 27
+    finally:
+        hub.unsubscribe_source_only(subscriber_id)
+        hub.close()
+
+
+def test_pre_scaled_wall_frame_skips_cpu_resize_and_reports_stage_metrics() -> None:
+    hub = AnnotatedBroadcastHub(
+        enabled=True,
+        wall_max_width=320,
+        wall_max_height=180,
+        async_render=False,
+    )
+    subscriber_id, _ = hub.subscribe_source_only(wall=True)
+    try:
+        hub.publish_source_frame(
+            source_id="camera-wall",
+            frame=np.zeros((180, 320, 3), dtype=np.uint8),
+            frame_index=1,
+            source_time_seconds=0.0,
+        )
+        hub.record_source_only_websocket_publish(("camera-wall",))
+        metrics = hub.status()["source_only_stage_metrics"]["camera-wall"]
+
+        assert metrics["frontend_submitted"] == 1
+        assert metrics["broadcast_rendered"] == 1
+        assert metrics["jpeg_encoded"] == 1
+        assert metrics["websocket_published"] == 1
+        assert metrics["cpu_wall_resizes"] == 0
+        assert metrics["jpeg_encode_ms"] >= 0.0
+    finally:
+        hub.unsubscribe_source_only(subscriber_id)
+        hub.close()
+
+
+def test_full_video_wall_queue_coalesces_latest_frame_per_source() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=False)
+    subscriber_id, target = hub.subscribe_source_only(
+        maximum_queue=8,
+        wall=True,
+    )
+    try:
+        for frame_index in range(8):
+            hub.publish_source_frame(
+                source_id="fast-camera",
+                frame=np.zeros((32, 32, 3), dtype=np.uint8),
+                frame_index=frame_index,
+                source_time_seconds=None,
+            )
+        hub.publish_source_frame(
+            source_id="slow-camera",
+            frame=np.zeros((32, 32, 3), dtype=np.uint8),
+            frame_index=1,
+            source_time_seconds=None,
+        )
+
+        queued = []
+        while not target.empty():
+            item = target.get_nowait()
+            target.task_done()
+            if item is not None:
+                queued.append(item)
+        assert {item.source_id for item in queued} == {
+            "fast-camera",
+            "slow-camera",
+        }
+        assert max(
+            item.frame_index
+            for item in queued
+            if item.source_id == "fast-camera"
+        ) == 7
     finally:
         hub.unsubscribe_source_only(subscriber_id)
         hub.close()

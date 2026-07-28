@@ -48,6 +48,8 @@ class _IpcFrontend:
         metadata_dropped: Any,
         overwritten_frames: Any,
         write_copy_ns: Any,
+        event_kind: str = "shared_frame",
+        profile: str = "wall",
     ) -> None:
         self.events = events
         self.generation = generation
@@ -61,6 +63,8 @@ class _IpcFrontend:
         self.metadata_dropped = metadata_dropped
         self.overwritten_frames = overwritten_frames
         self.write_copy_ns = write_copy_ns
+        self.event_kind = event_kind
+        self.profile = profile
         self._segments: tuple[Any, Any] | None = None
         self._payload_capacity = 0
 
@@ -174,10 +178,11 @@ class _IpcFrontend:
             "active_buffer_index": target,
             "payload_size": payload_size,
             "sequence": sequence,
+            "profile": self.profile,
         }
         accepted, dropped = _put_latest_with_drop(
             self.events,
-            ("shared_frame", metadata),
+            (self.event_kind, metadata),
         )
         if dropped:
             self._increment(self.metadata_dropped)
@@ -198,6 +203,46 @@ class _IpcRouter:
         # The child never transports AI frames. The parent routes the exact
         # full-resolution frame copied from shared memory.
         return {"accepted_sources": 0}
+
+
+class _IpcFrontendMux:
+    def __init__(self, wall: _IpcFrontend, fullscreen: _IpcFrontend) -> None:
+        self.wall = wall
+        self.fullscreen = fullscreen
+
+    def submit_frame(self, **payload: Any) -> bool:
+        return self.submit_wall_frame(**payload)
+
+    def submit_wall_frame(self, **payload: Any) -> bool:
+        return self.wall.submit_frame(**payload)
+
+    def submit_fullscreen_frame(self, **payload: Any) -> bool:
+        return self.fullscreen.submit_frame(**payload)
+
+    def close(self) -> None:
+        self.wall.close()
+        self.fullscreen.close()
+
+
+class _ChildDemandProxy:
+    def __init__(self, fullscreen_required: Any) -> None:
+        self._fullscreen_required = fullscreen_required
+
+    def video_required(self, _source_id: str | None = None) -> bool:
+        return True
+
+    def wall_required(self, _source_id: str | None = None) -> bool:
+        return True
+
+    def fullscreen_required(self, _source_id: str) -> bool:
+        with self._fullscreen_required.get_lock():
+            return bool(self._fullscreen_required.value)
+
+    def ai_required(self) -> bool:
+        return False
+
+    def add_listener(self, *_args: Any, **_kwargs: Any) -> Callable[[], None]:
+        return lambda: None
 
 
 class _IpcRawRouter:
@@ -241,6 +286,8 @@ def _rtsp_child_main(
     auxiliary_events: Any,
     stop_event: Any,
     shared_transport: dict[str, Any],
+    fullscreen_transport: dict[str, Any],
+    fullscreen_required: Any,
 ) -> None:
     # rtspsrc uses GSocketClient, which otherwise loads libgiolibproxy and
     # libproxy for camera-LAN URIs. The image's libproxy path segfaults inside
@@ -259,9 +306,19 @@ def _rtsp_child_main(
     record = SourceRecord.from_dict(record_value)
     # AI routing happens in the parent from the same original-resolution
     # shared-memory frame. Never build/send the child's resized AI branch.
+    settings["frontend_wall_mode"] = True
     settings["video_only_mode"] = True
     router = _IpcRouter()
-    frontend = _IpcFrontend(events, **shared_transport)
+    frontend = _IpcFrontendMux(
+        _IpcFrontend(events, **shared_transport, profile="wall"),
+        _IpcFrontend(
+            events,
+            **fullscreen_transport,
+            event_kind="fullscreen_frame",
+            profile="fullscreen",
+        ),
+    )
+    demand_proxy = _ChildDemandProxy(fullscreen_required)
     raw_router = (
         _IpcRawRouter(auxiliary_events)
         if settings.pop("raw_enabled")
@@ -272,7 +329,7 @@ def _rtsp_child_main(
         router=router,  # type: ignore[arg-type]
         frontend_frame_worker=frontend,  # type: ignore[arg-type]
         raw_stream_router=raw_router,  # type: ignore[arg-type]
-        demand_controller=None,
+        demand_controller=demand_proxy,  # type: ignore[arg-type]
         source_type_filter=RTSP,
         max_sources=1,
         max_active_sources=1,
@@ -283,8 +340,12 @@ def _rtsp_child_main(
     )
     try:
         ingestor.start()
-        while not stop_event.wait(0.5):
-            pass
+        last_fullscreen_required = False
+        while not stop_event.wait(0.05):
+            current = demand_proxy.fullscreen_required(record.source_uri)
+            if current != last_fullscreen_required:
+                ingestor.refresh_demand()
+                last_fullscreen_required = current
     finally:
         ingestor.close()
         frontend.close()
@@ -317,13 +378,21 @@ class _Child:
     overwritten_frames: Any | None = None
     write_copy_ns: Any | None = None
     shared_memory_frames_read: int = 0
+    metadata_received: int = 0
+    frontend_submitted: int = 0
     read_copy_ns: int = 0
     read_failures: int = 0
     shared_segments: dict[str, Any] | None = None
+    fullscreen_channel: dict[str, Any] | None = None
+    fullscreen_required: Any | None = None
+    fullscreen_frames_read: int = 0
+    fullscreen_frontend_submitted: int = 0
 
 
 class RtspProcessSupervisor:
     """Supervises one disposable native GStreamer process per RTSP source."""
+
+    IPC_POLL_SECONDS = 0.02
 
     def __init__(
         self,
@@ -375,6 +444,8 @@ class RtspProcessSupervisor:
             "project_root": project_root,
             "video_only_mode": bool(child_settings.get("video_only_mode", False)),
             "gpu_resize_enabled": bool(child_settings.get("gpu_resize_enabled", True)),
+            "video_wall_width": int(child_settings.get("video_wall_width", 320)),
+            "video_wall_height": int(child_settings.get("video_wall_height", 320)),
             "loop": bool(child_settings.get("loop", True)),
             "rtsp_transport": child_settings.get("rtsp_transport", "tcp"),
             "rtsp_latency_ms": int(child_settings.get("rtsp_latency_ms", 500)),
@@ -442,6 +513,29 @@ class RtspProcessSupervisor:
         child.overwritten_frames = self._ctx.Value("Q", 0)
         child.write_copy_ns = self._ctx.Value("Q", 0)
         child.shared_segments = {}
+        fullscreen_prefix = f"{prefix}_fullscreen"
+        child.fullscreen_channel = {
+            "shared_memory_names": (
+                f"{fullscreen_prefix}_0",
+                f"{fullscreen_prefix}_1",
+            ),
+            "buffer_locks": (self._ctx.Lock(), self._ctx.Lock()),
+            "active_buffer_index": self._ctx.Value("i", -1),
+            "write_sequence": self._ctx.Value("Q", 0),
+            "read_sequence": self._ctx.Value("Q", 0),
+            "buffer_sequences": (
+                self._ctx.Value("Q", 0),
+                self._ctx.Value("Q", 0),
+            ),
+            "frames_written": self._ctx.Value("Q", 0),
+            "metadata_dropped": self._ctx.Value("Q", 0),
+            "overwritten_frames": self._ctx.Value("Q", 0),
+            "write_copy_ns": self._ctx.Value("Q", 0),
+            "shared_segments": {},
+            "read_copy_ns": 0,
+            "read_failures": 0,
+        }
+        child.fullscreen_required = self._ctx.Value("b", False)
         settings = dict(self._child_settings)
         shared_transport = {
             "generation": child.generation,
@@ -456,6 +550,24 @@ class RtspProcessSupervisor:
             "overwritten_frames": child.overwritten_frames,
             "write_copy_ns": child.write_copy_ns,
         }
+        fullscreen_transport = {
+            key: value
+            for key, value in child.fullscreen_channel.items()
+            if key
+            in {
+                "shared_memory_names",
+                "buffer_locks",
+                "active_buffer_index",
+                "write_sequence",
+                "read_sequence",
+                "buffer_sequences",
+                "frames_written",
+                "metadata_dropped",
+                "overwritten_frames",
+                "write_copy_ns",
+            }
+        }
+        fullscreen_transport["generation"] = child.generation
         child.process = self._process_factory(
             target=_rtsp_child_main,
             args=(
@@ -465,6 +577,8 @@ class RtspProcessSupervisor:
                 child.auxiliary_events,
                 child.stop_event,
                 shared_transport,
+                fullscreen_transport,
+                child.fullscreen_required,
             ),
             name=f"rtsp-{child.record.id or 'source'}",
             daemon=True,
@@ -528,44 +642,78 @@ class RtspProcessSupervisor:
                 segment.unlink()
             except FileNotFoundError:
                 pass
+        channel = child.fullscreen_channel
+        if channel:
+            for segment in channel.get("shared_segments", {}).values():
+                try:
+                    segment.close()
+                except Exception:
+                    pass
+            channel.get("shared_segments", {}).clear()
+            for name in channel.get("shared_memory_names", ()):
+                try:
+                    segment = shared_memory.SharedMemory(name=name, create=False)
+                except FileNotFoundError:
+                    continue
+                try:
+                    segment.close()
+                    segment.unlink()
+                except FileNotFoundError:
+                    pass
 
     def _read_shared_frame(
         self,
         child: _Child,
         payload: dict[str, Any],
     ) -> np.ndarray | None:
+        channel = (
+            child.fullscreen_channel
+            if payload.get("profile") == "fullscreen"
+            else None
+        )
+        def channel_value(name: str) -> Any:
+            return (
+                channel.get(name)
+                if channel is not None
+                else getattr(child, name)
+            )
+
         if (
             payload.get("generation") != child.generation
-            or child.buffer_locks is None
-            or child.buffer_sequences is None
-            or child.read_sequence is None
-            or child.shared_memory_names is None
+            or channel_value("buffer_locks") is None
+            or channel_value("buffer_sequences") is None
+            or channel_value("read_sequence") is None
+            or channel_value("shared_memory_names") is None
         ):
             return None
         # The queue item is only a wake-up/shape descriptor. It may have been
         # superseded while waiting in the bounded queue, so always select the
         # latest fully published buffer rather than rejecting an older
         # notification.
-        if child.active_buffer_index is None:
+        active_buffer_index = channel_value("active_buffer_index")
+        if active_buffer_index is None:
             return None
-        with child.active_buffer_index.get_lock():
-            index = int(child.active_buffer_index.value)
+        with active_buffer_index.get_lock():
+            index = int(active_buffer_index.value)
         if index not in (0, 1):
             return None
-        lock = child.buffer_locks[index]
+        lock = channel_value("buffer_locks")[index]
         if not lock.acquire(block=False):
             child.read_failures += 1
             return None
         try:
-            sequence = self._counter_value(child.buffer_sequences[index])
-            if sequence <= self._counter_value(child.read_sequence):
+            sequence = self._counter_value(
+                channel_value("buffer_sequences")[index]
+            )
+            if sequence <= self._counter_value(channel_value("read_sequence")):
                 return None
-            name = child.shared_memory_names[index]
-            assert child.shared_segments is not None
-            segment = child.shared_segments.get(name)
+            name = channel_value("shared_memory_names")[index]
+            shared_segments = channel_value("shared_segments")
+            assert shared_segments is not None
+            segment = shared_segments.get(name)
             if segment is None:
                 segment = shared_memory.SharedMemory(name=name, create=False)
-                child.shared_segments[name] = segment
+                shared_segments[name] = segment
             dtype = np.dtype(str(payload["dtype"]))
             height = int(payload["height"])
             width = int(payload["width"])
@@ -581,30 +729,41 @@ class RtspProcessSupervisor:
                 dtype=dtype,
                 buffer=segment.buf[:expected_size],
             ).copy()
-            child.read_copy_ns += time.perf_counter_ns() - started_ns
-            child.shared_memory_frames_read += 1
-            with child.read_sequence.get_lock():
-                child.read_sequence.value = max(
-                    int(child.read_sequence.value),
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            if channel is None:
+                child.read_copy_ns += elapsed_ns
+                child.shared_memory_frames_read += 1
+            else:
+                channel["read_copy_ns"] += elapsed_ns
+                child.fullscreen_frames_read += 1
+            read_sequence = channel_value("read_sequence")
+            with read_sequence.get_lock():
+                read_sequence.value = max(
+                    int(read_sequence.value),
                     sequence,
                 )
             return frame
         except FileNotFoundError:
-            child.read_failures += 1
+            if channel is None:
+                child.read_failures += 1
+            else:
+                channel["read_failures"] += 1
             return None
         finally:
             lock.release()
 
     def _forward_event(self, kind: str, payload: Any) -> None:
-        if kind == "shared_frame":
+        if kind in {"shared_frame", "fullscreen_frame"}:
             source_id = payload["source_id"]
             with self._lock:
                 child = self._children.get(source_id)
                 if child is None or payload.get("generation") != child.generation:
                     return
+                child.metadata_received += 1
             frame = self._read_shared_frame(child, payload)
             if frame is None:
                 return
+            profile = payload.get("profile", "wall")
             frontend_payload = {
                 "source_id": source_id,
                 "frame": frame,
@@ -613,8 +772,25 @@ class RtspProcessSupervisor:
                 "source_type": payload["source_type"],
                 "ingest_backend": payload["ingest_backend"],
             }
-            self.frontend_frame_worker.submit_frame(**frontend_payload)
-            if not self._video_only_mode:
+            if profile == "fullscreen":
+                fullscreen_demanded = (
+                    self.demand_controller is not None
+                    and hasattr(self.demand_controller, "fullscreen_required")
+                    and self.demand_controller.fullscreen_required(source_id)
+                )
+                if fullscreen_demanded and getattr(
+                    self.frontend_frame_worker,
+                    "submit_fullscreen_frame",
+                    self.frontend_frame_worker.submit_frame,
+                )(**frontend_payload):
+                    child.fullscreen_frontend_submitted += 1
+            elif getattr(
+                self.frontend_frame_worker,
+                "submit_wall_frame",
+                self.frontend_frame_worker.submit_frame,
+            )(**frontend_payload):
+                child.frontend_submitted += 1
+            if not self._video_only_mode and profile == "fullscreen":
                 self.router.submit_round(
                     frames=[frame],
                     source_ids=[source_id],
@@ -627,6 +803,9 @@ class RtspProcessSupervisor:
                             "ingest_backend": payload["ingest_backend"],
                             "source_frame_width": int(payload["width"]),
                             "source_frame_height": int(payload["height"]),
+                            "frame_branch": "fullscreen_full_resolution",
+                            "frame_shape": list(frame.shape),
+                            "frame_dtype": str(frame.dtype),
                         }
                     ],
                 )
@@ -650,6 +829,28 @@ class RtspProcessSupervisor:
                     del self._children[source_id]
                     continue
                 if child.process is not None:
+                    if child.fullscreen_required is not None:
+                        full_required = (
+                            (
+                                hasattr(
+                                    self.demand_controller,
+                                    "fullscreen_required",
+                                )
+                                and self.demand_controller.fullscreen_required(
+                                    source_id
+                                )
+                            )
+                            if self.demand_controller is not None
+                            else False
+                        ) or (
+                            not self._video_only_mode
+                            and (
+                                self.demand_controller is None
+                                or self.demand_controller.ai_required()
+                            )
+                        )
+                        with child.fullscreen_required.get_lock():
+                            child.fullscreen_required.value = full_required
                     exit_code = child.process.exitcode
                     if exit_code is not None:
                         self._handle_exit(child, int(exit_code))
@@ -731,7 +932,10 @@ class RtspProcessSupervisor:
         child.state = "stopped"
 
     def _run(self) -> None:
-        while not self._stop.wait(0.1):
+        # 100 ms imposed a hard ~10 Hz supervisor ceiling before queue/raw
+        # work and resulted in only ~5.5 reads/s. Shared-memory notifications
+        # are non-blocking and bounded, so poll at 20 ms without adding threads.
+        while not self._stop.wait(self.IPC_POLL_SECONDS):
             self.poll_once()
         with self._lock:
             for child in self._children.values():
@@ -784,6 +988,10 @@ class RtspProcessSupervisor:
                 process = child.process
                 frames_written = self._counter_value(child.frames_written)
                 frames_read = child.shared_memory_frames_read
+                fullscreen_channel = child.fullscreen_channel or {}
+                fullscreen_written = self._counter_value(
+                    fullscreen_channel.get("frames_written")
+                )
                 sources[VideoFileIngestor.redact_uri(source_id)] = {
                     "pid": process.pid if process is not None else None,
                     "state": child.state,
@@ -791,6 +999,7 @@ class RtspProcessSupervisor:
                     "failed": child.exit_code is not None,
                     "exit_code": child.exit_code,
                     "restart_count": child.restart_count,
+                    "generation": child.generation,
                     "last_error": child.last_error,
                     "last_frame_time": child.last_frame_time,
                     "last_frame_age_seconds": (
@@ -806,6 +1015,26 @@ class RtspProcessSupervisor:
                     "consecutive_exit_139": child.consecutive_exit_139,
                     "shared_memory_frames_written": frames_written,
                     "shared_memory_frames_read": frames_read,
+                    "metadata_received": child.metadata_received,
+                    "frontend_submitted": child.frontend_submitted,
+                    "fullscreen_shared_memory_frames_written": fullscreen_written,
+                    "fullscreen_shared_memory_frames_read": (
+                        child.fullscreen_frames_read
+                    ),
+                    "fullscreen_frontend_submitted": (
+                        child.fullscreen_frontend_submitted
+                    ),
+                    "fullscreen_required": (
+                        bool(child.fullscreen_required.value)
+                        if child.fullscreen_required is not None
+                        else False
+                    ),
+                    "fullscreen_read_copy_ms": round(
+                        fullscreen_channel.get("read_copy_ns", 0)
+                        / max(1, child.fullscreen_frames_read)
+                        / 1_000_000.0,
+                        3,
+                    ),
                     "metadata_dropped": self._counter_value(
                         child.metadata_dropped
                     ),
@@ -815,6 +1044,20 @@ class RtspProcessSupervisor:
                     "read_copy_ms": round(
                         child.read_copy_ns / max(1, frames_read) / 1_000_000.0,
                         3,
+                    ),
+                    "shared_memory_read_copy_ms": round(
+                        child.read_copy_ns / max(1, frames_read) / 1_000_000.0,
+                        3,
+                    ),
+                    "full_res_copies": (
+                        frames_written + frames_read
+                        if not self._video_only_mode
+                        else 0
+                    ),
+                    "wall_copies": (
+                        frames_written + frames_read
+                        if self._video_only_mode
+                        else 0
                     ),
                     "write_copy_ms": round(
                         (
@@ -836,6 +1079,7 @@ class RtspProcessSupervisor:
                 "source_start_stagger_seconds": (
                     self._source_start_stagger_seconds
                 ),
+                "ipc_poll_seconds": self.IPC_POLL_SECONDS,
                 "sources": sources,
             }
         finally:

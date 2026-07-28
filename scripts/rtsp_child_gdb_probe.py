@@ -53,6 +53,25 @@ def main() -> None:
         "overwritten_frames": context.Value("Q", 0),
         "write_copy_ns": context.Value("Q", 0),
     }
+    fullscreen_transport = {
+        **shared_transport,
+        "shared_memory_names": (
+            f"{prefix}_fullscreen_0",
+            f"{prefix}_fullscreen_1",
+        ),
+        "buffer_locks": (context.Lock(), context.Lock()),
+        "active_buffer_index": context.Value("i", -1),
+        "write_sequence": context.Value("Q", 0),
+        "read_sequence": context.Value("Q", 0),
+        "buffer_sequences": (
+            context.Value("Q", 0),
+            context.Value("Q", 0),
+        ),
+        "frames_written": context.Value("Q", 0),
+        "metadata_dropped": context.Value("Q", 0),
+        "overwritten_frames": context.Value("Q", 0),
+        "write_copy_ns": context.Value("Q", 0),
+    }
     _rtsp_child_main(
         record.to_dict(),
         {
@@ -72,6 +91,8 @@ def main() -> None:
         context.Queue(maxsize=32),
         context.Event(),
         shared_transport,
+        fullscreen_transport,
+        context.Value("b", False),
     )
 
 

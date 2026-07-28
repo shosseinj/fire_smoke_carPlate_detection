@@ -78,6 +78,17 @@ class StreamDemandController:
         normalized = self._normalize_source_id(source_id)
         return self.acquire("video", source_id=normalized)
 
+    def acquire_wall(self, source_id: str | None = None) -> StreamDemandLease:
+        """Acquire thumbnail-wall demand (global or for one wall tile)."""
+        return self.acquire_video(source_id)
+
+    def acquire_fullscreen(self, source_id: str) -> StreamDemandLease:
+        """Acquire an independent original-resolution frontend lease."""
+        normalized = self._normalize_source_id(source_id)
+        if normalized is None:
+            raise ValueError("fullscreen source_id is required")
+        return self.acquire_video(normalized)
+
     def acquire_ai(self) -> StreamDemandLease:
         return self.acquire("ai")
 
@@ -136,6 +147,32 @@ class StreamDemandController:
                     self._video_grace_until_by_source
                 )
             return global_required or (
+                self._video_subscribers_by_source.get(normalized, 0) > 0
+                or self._video_grace_until_by_source.get(normalized, 0.0)
+                > time.monotonic()
+            )
+
+    def wall_required(self, source_id: str | None = None) -> bool:
+        """Return only thumbnail-wall demand, excluding fullscreen leases."""
+        normalized = self._normalize_source_id(source_id)
+        with self._lock:
+            self._prune_expired_grace_locked()
+            global_required = (
+                self._global_video_subscribers > 0
+                or self._global_video_grace_until > time.monotonic()
+            )
+            if normalized is None:
+                return global_required
+            return global_required
+
+    def fullscreen_required(self, source_id: str) -> bool:
+        """Return only original-resolution frontend demand for one source."""
+        normalized = self._normalize_source_id(source_id)
+        if normalized is None:
+            return False
+        with self._lock:
+            self._prune_expired_grace_locked()
+            return (
                 self._video_subscribers_by_source.get(normalized, 0) > 0
                 or self._video_grace_until_by_source.get(normalized, 0.0)
                 > time.monotonic()
@@ -235,9 +272,18 @@ class StreamDemandController:
         return {
             "video_subscribers": total_video_subscribers,
             "global_video_subscribers": self._global_video_subscribers,
+            "wall_subscribers": self._global_video_subscribers,
             "video_subscribers_by_source": subscribers_by_source,
+            "fullscreen_subscribers_by_source": subscribers_by_source,
             "ai_subscribers": self._ai_subscribers,
             "video_required": video_required,
+            "wall_required": (
+                self._global_video_subscribers > 0
+                or global_grace_remaining > 0
+            ),
+            "fullscreen_required_sources": sorted(
+                set(subscribers_by_source) | set(grace_by_source)
+            ),
             "ai_required": self._ai_subscribers > 0,
             "video_release_grace_seconds": self._video_release_grace_seconds,
             "global_video_grace_remaining_seconds": round(

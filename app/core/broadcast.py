@@ -196,6 +196,9 @@ class AnnotatedBroadcastHub:
         ] = {}
         self._subscriber_profiles: dict[str, tuple[bool, str | None]] = {}
         self._source_only_latest: dict[str, EncodedBroadcastFrame] = {}
+        self._source_only_fullscreen_latest: dict[
+            str, EncodedBroadcastFrame
+        ] = {}
         self._source_only_subscribers: dict[
             str, queue.Queue[EncodedBroadcastFrame | None]
         ] = {}
@@ -204,6 +207,16 @@ class AnnotatedBroadcastHub:
         self._source_only_submitted = 0
         self._source_only_rendered = 0
         self._source_only_dropped = 0
+        self._source_only_stage_metrics: dict[str, dict[str, int]] = defaultdict(
+            lambda: {
+                "frontend_submitted": 0,
+                "broadcast_rendered": 0,
+                "jpeg_encoded": 0,
+                "jpeg_encode_ns": 0,
+                "websocket_published": 0,
+                "cpu_wall_resizes": 0,
+            }
+        )
         self._version = 0
         self._rendered_frames = 0
         self._encode_failures = 0
@@ -223,6 +236,10 @@ class AnnotatedBroadcastHub:
         self._source_only_render_buffer = LatestPerSourceBuffer(
             policy="latest_per_source",
             capacity=256,
+        )
+        self._fullscreen_render_buffer = LatestPerSourceBuffer(
+            policy="latest_per_source",
+            capacity=32,
         )
         self._render_threads: list[threading.Thread] = []
         self._source_only_render_threads: list[threading.Thread] = []
@@ -397,6 +414,7 @@ class AnnotatedBroadcastHub:
         self._stop_source_only_render.set()
         self._render_queue.close()
         self._source_only_render_buffer.close()
+        self._fullscreen_render_buffer.close()
         for render_thread in self._render_threads:
             render_thread.join(timeout=2.0)
         for render_thread in self._source_only_render_threads:
@@ -1023,6 +1041,10 @@ class AnnotatedBroadcastHub:
     def publish_source_only(self, packet: FramePacket) -> None:
         """Publish a source-only JPEG frame for the independent video-wall WS."""
         self._source_only_submitted += 1
+        with self._condition:
+            self._source_only_stage_metrics[packet.source_id][
+                "frontend_submitted"
+            ] += 1
         if self._async_render:
             with self._condition:
                 if not self._enabled:
@@ -1079,10 +1101,7 @@ class AnnotatedBroadcastHub:
                 return
             if not self._source_only_subscribers:
                 return
-            need_full = any(
-                not wall or fullscreen_source == source_id
-                for wall, fullscreen_source in self._source_only_profiles.values()
-            )
+            need_full = False
             latest = self._source_only_latest.get(source_id)
             if latest is not None and (
                 frame_index < latest.frame_index
@@ -1113,11 +1132,16 @@ class AnnotatedBroadcastHub:
         if wall_width == width and wall_height == height:
             wall_frame = frame
         else:
+            with self._condition:
+                self._source_only_stage_metrics[source_id][
+                    "cpu_wall_resizes"
+                ] += 1
             wall_frame = cv2.resize(
                 frame,
                 (wall_width, wall_height),
                 interpolation=cv2.INTER_LINEAR,
             )
+        jpeg_started_ns = time.perf_counter_ns()
         wall_ok, wall_jpeg = cv2.imencode(
             ".jpg",
             wall_frame,
@@ -1127,6 +1151,7 @@ class AnnotatedBroadcastHub:
             with self._condition:
                 self._encode_failures += 1
             return
+        jpeg_elapsed_ns = time.perf_counter_ns() - jpeg_started_ns
         wall_bytes = wall_jpeg.tobytes()
         full_width = wall_width
         full_height = wall_height
@@ -1165,6 +1190,10 @@ class AnnotatedBroadcastHub:
                 return
             self._source_only_version += 1
             self._source_only_rendered += 1
+            stage_metrics = self._source_only_stage_metrics[source_id]
+            stage_metrics["broadcast_rendered"] += 1
+            stage_metrics["jpeg_encoded"] += 1
+            stage_metrics["jpeg_encode_ns"] += jpeg_elapsed_ns
             encoded = EncodedBroadcastFrame(
                 version=self._source_only_version,
                 source_id=source_id,
@@ -1179,7 +1208,103 @@ class AnnotatedBroadcastHub:
                 updated_monotonic=time.monotonic(),
             )
             self._source_only_latest[source_id] = encoded
-            for target in self._source_only_subscribers.values():
+            for subscriber_id, target in self._source_only_subscribers.items():
+                if self._source_only_profiles.get(subscriber_id, (True, None))[1]:
+                    continue
+                try:
+                    target.put_nowait(encoded)
+                except queue.Full:
+                    # A global FIFO lets high-rate sources evict slower cameras
+                    # from a busy video wall. Coalesce the bounded backlog to
+                    # one latest frame per source, then append this frame.
+                    latest_by_source: dict[str, EncodedBroadcastFrame] = {}
+                    while True:
+                        try:
+                            queued = target.get_nowait()
+                        except queue.Empty:
+                            break
+                        target.task_done()
+                        if queued is not None:
+                            latest_by_source[queued.source_id] = queued
+                    latest_by_source[source_id] = encoded
+                    for queued in latest_by_source.values():
+                        try:
+                            target.put_nowait(queued)
+                        except queue.Full:
+                            break
+            self._condition.notify_all()
+
+    def publish_fullscreen_frame(self, packet: FramePacket) -> None:
+        """Queue one original-resolution frontend frame for fullscreen only."""
+        with self._condition:
+            if not self._enabled:
+                return
+            if not any(
+                fullscreen_source == packet.source_id
+                for _, fullscreen_source in self._source_only_profiles.values()
+            ):
+                return
+        if self._async_render:
+            self._fullscreen_render_buffer.put(packet)
+        else:
+            self._render_fullscreen_source_only(
+                packet.source_id, packet.frame_index, packet.frame
+            )
+
+    def _render_fullscreen_source_only(
+        self, source_id: str, frame_index: int, frame: np.ndarray
+    ) -> None:
+        with self._condition:
+            if not any(
+                fullscreen_source == source_id
+                for _, fullscreen_source in self._source_only_profiles.values()
+            ):
+                return
+            jpeg_quality = self.jpeg_quality
+        started_ns = time.perf_counter_ns()
+        ok, jpeg = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+        )
+        if not ok:
+            with self._condition:
+                self._encode_failures += 1
+            return
+        jpeg_bytes = jpeg.tobytes()
+        height, width = frame.shape[:2]
+        with self._condition:
+            current = self._source_only_fullscreen_latest.get(source_id)
+            if current is not None and current.frame_index >= frame_index:
+                return
+            self._source_only_version += 1
+            encoded = EncodedBroadcastFrame(
+                version=self._source_only_version,
+                source_id=source_id,
+                frame_index=frame_index,
+                jpeg=jpeg_bytes,
+                wall_jpeg=jpeg_bytes,
+                frame_width=width,
+                frame_height=height,
+                wall_width=width,
+                wall_height=height,
+                tasks=(),
+                updated_monotonic=time.monotonic(),
+            )
+            self._source_only_fullscreen_latest[source_id] = encoded
+            metrics = self._source_only_stage_metrics[source_id]
+            metrics["fullscreen_rendered"] = (
+                metrics.get("fullscreen_rendered", 0) + 1
+            )
+            metrics["fullscreen_jpeg_encode_ns"] = (
+                metrics.get("fullscreen_jpeg_encode_ns", 0)
+                + time.perf_counter_ns()
+                - started_ns
+            )
+            for subscriber_id, target in self._source_only_subscribers.items():
+                _, fullscreen_source = self._source_only_profiles.get(
+                    subscriber_id, (True, None)
+                )
+                if fullscreen_source != source_id:
+                    continue
                 try:
                     target.put_nowait(encoded)
                 except queue.Full:
@@ -1190,6 +1315,16 @@ class AnnotatedBroadcastHub:
                     except (queue.Empty, queue.Full):
                         pass
             self._condition.notify_all()
+
+    def record_source_only_websocket_publish(
+        self, source_ids: list[str] | tuple[str, ...]
+    ) -> None:
+        """Record frames successfully handed to the ASGI WebSocket."""
+        with self._condition:
+            for source_id in source_ids:
+                self._source_only_stage_metrics[source_id][
+                    "websocket_published"
+                ] += 1
 
     def _start_source_only_render_thread(self) -> None:
         if any(thread.is_alive() for thread in self._source_only_render_threads):
@@ -1215,7 +1350,15 @@ class AnnotatedBroadcastHub:
                 maximum=1,
                 max_wait_seconds=0.0,
             )
-            if not packets:
+            fullscreen_packets = (
+                []
+                if packets
+                else self._fullscreen_render_buffer.take_batch(
+                    maximum=1,
+                    max_wait_seconds=0.0,
+                )
+            )
+            if not packets and not fullscreen_packets:
                 continue
             for packet in packets:
                 try:
@@ -1227,6 +1370,19 @@ class AnnotatedBroadcastHub:
                 except Exception:
                     LOGGER.exception(
                         "Source-only broadcast render failed: source=%s frame=%s",
+                        packet.source_id,
+                        packet.frame_index,
+                    )
+            for packet in fullscreen_packets:
+                try:
+                    self._render_fullscreen_source_only(
+                        packet.source_id,
+                        packet.frame_index,
+                        packet.frame,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Fullscreen broadcast render failed: source=%s frame=%s",
                         packet.source_id,
                         packet.frame_index,
                     )
@@ -1245,9 +1401,17 @@ class AnnotatedBroadcastHub:
         with self._condition:
             self._source_only_subscribers[subscriber_id] = target
             self._source_only_profiles[subscriber_id] = (wall, fullscreen_source)
-            for frame in sorted(
-                self._source_only_latest.values(), key=lambda item: item.version
-            ):
+            cached_frames = (
+                [self._source_only_fullscreen_latest[fullscreen_source]]
+                if fullscreen_source in self._source_only_fullscreen_latest
+                else []
+                if fullscreen_source is not None
+                else sorted(
+                    self._source_only_latest.values(),
+                    key=lambda item: item.version,
+                )
+            )
+            for frame in cached_frames:
                 if (
                     fullscreen_source is not None
                     and frame.source_id == fullscreen_source
@@ -1383,6 +1547,18 @@ class AnnotatedBroadcastHub:
                 "source_only_exclusive": (
                     bool(self._source_only_subscribers) and not bool(self._subscribers)
                 ),
+                "source_only_stage_metrics": {
+                    source_id: {
+                        **metrics,
+                        "jpeg_encode_ms": round(
+                            metrics["jpeg_encode_ns"]
+                            / max(1, metrics["jpeg_encoded"])
+                            / 1_000_000.0,
+                            3,
+                        ),
+                    }
+                    for source_id, metrics in self._source_only_stage_metrics.items()
+                },
                 "active_streams": {
                     source_id: {
                         "frame_index": frame.frame_index,

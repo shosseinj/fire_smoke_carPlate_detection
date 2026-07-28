@@ -126,6 +126,10 @@ class Settings:
     broadcast_wall_jpeg_quality: int = _env_int("BROADCAST_WALL_JPEG_QUALITY", 70)
     broadcast_wall_max_width: int = _env_int("BROADCAST_WALL_MAX_WIDTH", 320)
     broadcast_wall_max_height: int = _env_int("BROADCAST_WALL_MAX_HEIGHT", 320)
+    # Zero means inherit the effective broadcast wall setting, including a
+    # value persisted through general settings.
+    video_wall_width: int = _env_int("VIDEO_WALL_WIDTH", 0)
+    video_wall_height: int = _env_int("VIDEO_WALL_HEIGHT", 0)
     broadcast_source_only_render_threads: int = _env_int(
         "BROADCAST_SOURCE_ONLY_RENDER_THREADS", 4
     )

@@ -940,6 +940,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     if app_settings.video_ingestion_enabled:
         frontend_frame_worker = FrontendFrameWorker(
             publish_callback=broadcast.publish_source_frame,
+            publish_fullscreen_callback=broadcast.publish_fullscreen_frame,
             queue_capacity=32,
         )
         common_ingestor_settings = {
@@ -952,6 +953,14 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "frontend_frame_worker": frontend_frame_worker,
             "demand_controller": stream_demand,
             "video_only_mode": app_settings.video_only_mode,
+            "video_wall_width": (
+                app_settings.video_wall_width
+                or operational.broadcast_wall_max_width
+            ),
+            "video_wall_height": (
+                app_settings.video_wall_height
+                or operational.broadcast_wall_max_height
+            ),
             "max_active_sources": app_settings.deepstream_max_active_sources,
             "source_allowlist": (
                 app_settings.deepstream_source_allowlist or None

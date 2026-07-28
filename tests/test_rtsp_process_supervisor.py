@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.core.rtsp_process_supervisor import (
     _IpcFrontend,
 )
 from app.core.source_registry import RTSP, SourceRecord
+from app.core.stream_demand import StreamDemandController
 
 
 class FakeClock:
@@ -166,6 +168,46 @@ def test_exit_139_restarts_only_failed_source_and_keeps_healthy_child(
     assert healthy.is_alive()
 
 
+def test_fullscreen_demand_does_not_restart_wall_child_or_change_generation(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    factory = FakeProcessFactory()
+    sink = Sink()
+    demand = StreamDemandController()
+    wall = demand.acquire_wall()
+    supervisor = RtspProcessSupervisor(
+        registry=FakeRegistry("rtsp://camera-1/live"),
+        router=sink,
+        project_root=tmp_path,
+        frontend_frame_worker=sink,
+        demand_controller=demand,
+        process_factory=factory,
+        monotonic=clock,
+        source_open_stagger_seconds=0.0,
+        video_only_mode=True,
+    )
+    supervisor.poll_once()
+    child = supervisor._children["rtsp://camera-1/live"]
+    pid_before = child.process.pid
+    generation_before = child.generation
+
+    fullscreen = demand.acquire_fullscreen("rtsp://camera-1/live")
+    supervisor.poll_once()
+    assert bool(child.fullscreen_required.value)
+    assert child.process.pid == pid_before
+    assert child.generation == generation_before
+
+    fullscreen.release()
+    supervisor.poll_once()
+    assert not bool(child.fullscreen_required.value)
+    assert child.process.pid == pid_before
+    assert child.generation == generation_before
+    assert demand.wall_required("rtsp://camera-1/live")
+    wall.release()
+    supervisor.close()
+
+
 def test_restart_backoff_progresses_and_caps_at_last_delay(tmp_path: Path) -> None:
     supervisor, clock, factory = build_supervisor(tmp_path)
     supervisor.poll_once()
@@ -308,19 +350,27 @@ def test_full_resolution_frame_uses_shared_memory_and_reaches_ai_unchanged(
     )
     supervisor.poll_once()
     child = supervisor._children[source_id]
+    supervisor.demand_controller = SimpleNamespace(
+        fullscreen_required=lambda _source_id: True,
+        ai_required=lambda: True,
+    )
+    fullscreen_channel = child.fullscreen_channel
+    assert fullscreen_channel is not None
     writer = _IpcFrontend(
         child.events,
         generation=child.generation,
-        shared_memory_names=child.shared_memory_names,
-        buffer_locks=child.buffer_locks,
-        active_buffer_index=child.active_buffer_index,
-        write_sequence=child.write_sequence,
-        read_sequence=child.read_sequence,
-        buffer_sequences=child.buffer_sequences,
-        frames_written=child.frames_written,
-        metadata_dropped=child.metadata_dropped,
-        overwritten_frames=child.overwritten_frames,
-        write_copy_ns=child.write_copy_ns,
+        shared_memory_names=fullscreen_channel["shared_memory_names"],
+        buffer_locks=fullscreen_channel["buffer_locks"],
+        active_buffer_index=fullscreen_channel["active_buffer_index"],
+        write_sequence=fullscreen_channel["write_sequence"],
+        read_sequence=fullscreen_channel["read_sequence"],
+        buffer_sequences=fullscreen_channel["buffer_sequences"],
+        frames_written=fullscreen_channel["frames_written"],
+        metadata_dropped=fullscreen_channel["metadata_dropped"],
+        overwritten_frames=fullscreen_channel["overwritten_frames"],
+        write_copy_ns=fullscreen_channel["write_copy_ns"],
+        event_kind="fullscreen_frame",
+        profile="fullscreen",
     )
     frame = np.arange(2560 * 1440 * 3, dtype=np.uint8).reshape(1440, 2560, 3)
     expected_checksum = int(frame.sum(dtype=np.uint64))
@@ -334,7 +384,7 @@ def test_full_resolution_frame_uses_shared_memory_and_reaches_ai_unchanged(
             ingest_backend="deepstream",
         )
         kind, metadata = child.events.get(timeout=2.0)
-        assert kind == "shared_frame"
+        assert kind == "fullscreen_frame"
         assert not any(
             isinstance(value, np.ndarray) for value in metadata.values()
         )
@@ -366,7 +416,7 @@ def test_full_resolution_frame_uses_shared_memory_and_reaches_ai_unchanged(
             "source_frame_width"
         ] == 2560
         assert supervisor.status()["sources"][source_id][
-            "shared_memory_frames_read"
+            "fullscreen_shared_memory_frames_read"
         ] == 1
     finally:
         writer.close()

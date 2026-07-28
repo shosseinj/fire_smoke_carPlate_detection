@@ -73,6 +73,15 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
+    fullscreen_sink: Any | None = None
+    fullscreen_valve: Any | None = None
+    fullscreen_sink_handler_id: int | None = None
+    fullscreen_frame_index: int = -1
+    fullscreen_next_frame_due_monotonic: float = 0.0
+    fullscreen_samples: int = 0
+    fullscreen_cpu_maps: int = 0
+    fullscreen_copies: int = 0
+    fullscreen_map_ns: int = 0
     encoded_sink: Any | None = None
     encoded_sink_handler_id: int | None = None
     generation: int = 0
@@ -113,6 +122,12 @@ class DeepStreamSourceState:
     duration_seconds: float | None = None
     seek_failures: int = 0
     paused_for_demand: bool = False
+    full_res_cpu_maps: int = 0
+    wall_cpu_maps: int = 0
+    full_res_copies: int = 0
+    wall_copies: int = 0
+    wall_gpu_resize_frames: int = 0
+    wall_map_ns: int = 0
 
 
 class DeepStreamIngestor:
@@ -164,6 +179,9 @@ class DeepStreamIngestor:
         source_open_stagger_seconds: float = 0.5,
         source_allowlist: tuple[str, ...] | None = None,
         max_source_opens_per_sync: int = 1,
+        video_wall_width: int = 320,
+        video_wall_height: int = 320,
+        frontend_wall_mode: bool | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -176,6 +194,13 @@ class DeepStreamIngestor:
         self.frontend_frame_worker = frontend_frame_worker
         self.demand_controller = demand_controller
         self.video_only_mode = bool(video_only_mode)
+        self.frontend_wall_mode = (
+            self.video_only_mode
+            if frontend_wall_mode is None
+            else bool(frontend_wall_mode)
+        )
+        self.video_wall_width = max(16, int(video_wall_width))
+        self.video_wall_height = max(16, int(video_wall_height))
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         # NOTE: GPU resize is now handled by the nvvideoconvert capsfilter
         # in the GStreamer pipeline.  The _gpu_resize_available flag is kept
@@ -251,6 +276,24 @@ class DeepStreamIngestor:
             )
         )
 
+    def _wall_required(self, source_id: str | None = None) -> bool:
+        return (
+            self.frontend_frame_worker is not None
+            and (
+                self.demand_controller is None
+                or not hasattr(self.demand_controller, "wall_required")
+                or self.demand_controller.wall_required(source_id)
+            )
+        )
+
+    def _fullscreen_required(self, source_id: str) -> bool:
+        return (
+            self.frontend_frame_worker is not None
+            and self.demand_controller is not None
+            and hasattr(self.demand_controller, "fullscreen_required")
+            and self.demand_controller.fullscreen_required(source_id)
+        )
+
     def _ai_required(self) -> bool:
         return (
             not self.video_only_mode
@@ -267,6 +310,10 @@ class DeepStreamIngestor:
             and (self._thread is None or not self._thread.is_alive())
         ):
             self.start()
+        self._commands.put(("demand_changed", None))
+
+    def refresh_demand(self) -> None:
+        """Schedule valve updates on the owning GLib/GStreamer thread."""
         self._commands.put(("demand_changed", None))
 
     @staticmethod
@@ -361,10 +408,38 @@ class DeepStreamIngestor:
         frontend_sink = self._make(
             "appsink", f"frontend_sink_{safe_id}_{generation}"
         )
-        video_valve.set_property("drop", not self._video_required(source_id))
+        fullscreen_valve = self._make(
+            "valve", f"fullscreen_valve_{safe_id}_{generation}"
+        )
+        fullscreen_queue = self._make(
+            "queue", f"fullscreen_queue_{safe_id}_{generation}"
+        )
+        fullscreen_convert = self._make(
+            "nvvideoconvert", f"fullscreen_convert_{safe_id}_{generation}"
+        )
+        fullscreen_caps = self._make(
+            "capsfilter", f"fullscreen_caps_{safe_id}_{generation}"
+        )
+        fullscreen_sink = self._make(
+            "appsink", f"fullscreen_sink_{safe_id}_{generation}"
+        )
+        video_valve.set_property("drop", not self._wall_required(source_id))
+        fullscreen_valve.set_property(
+            "drop", not self._fullscreen_required(source_id)
+        )
         self._configure_nonblocking_queue(frontend_queue, 2)
+        self._configure_nonblocking_queue(fullscreen_queue, 2)
+        frontend_caps_text = "video/x-raw,format=BGRx"
+        if self.frontend_wall_mode:
+            # The source-only wall never needs a full-resolution CPU mapping.
+            # nvvideoconvert scales in the NVMM/GPU branch immediately before
+            # the final appsink map. AI-enabled operation intentionally keeps
+            # the original-resolution contract unchanged.
+            frontend_caps_text += (
+                f",width={self.video_wall_width},height={self.video_wall_height}"
+            )
         frontend_caps.set_property(
-            "caps", Gst.Caps.from_string("video/x-raw,format=BGRx")
+            "caps", Gst.Caps.from_string(frontend_caps_text)
         )
         record = self.registry.get(source_id)
         static_source = bool(
@@ -376,12 +451,25 @@ class DeepStreamIngestor:
         )
         for name, value in (
             ("emit-signals", True),
+            ("async", False),
             ("sync", static_source),
             ("max-buffers", 1),
             ("drop", True),
         ):
             frontend_sink.set_property(name, value)
         self._set_if_supported(frontend_sink, "enable-last-sample", False)
+        fullscreen_caps.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw,format=BGRx")
+        )
+        for name, value in (
+            ("emit-signals", True),
+            ("async", False),
+            ("sync", static_source),
+            ("max-buffers", 1),
+            ("drop", True),
+        ):
+            fullscreen_sink.set_property(name, value)
+        self._set_if_supported(fullscreen_sink, "enable-last-sample", False)
 
         elements = [
             decoded_tee,
@@ -390,6 +478,11 @@ class DeepStreamIngestor:
             frontend_convert,
             frontend_caps,
             frontend_sink,
+            fullscreen_valve,
+            fullscreen_queue,
+            fullscreen_convert,
+            fullscreen_caps,
+            fullscreen_sink,
         ]
         ai_valve = None
         decoded_sink = None
@@ -411,11 +504,12 @@ class DeepStreamIngestor:
             ai_caps.set_property(
                 "caps",
                 Gst.Caps.from_string(
-                    "video/x-raw,format=BGRx,width=640,height=640"
+                    "video/x-raw,format=BGRx"
                 ),
             )
             for name, value in (
                 ("emit-signals", True),
+                ("async", False),
                 ("sync", False),
                 ("max-buffers", 1),
                 ("drop", True),
@@ -440,6 +534,16 @@ class DeepStreamIngestor:
             raise RuntimeError("Could not link frontend converter to BGRx caps")
         if not frontend_caps.link(frontend_sink):
             raise RuntimeError("Could not link frontend caps to appsink")
+        if not decoded_tee.link(fullscreen_valve):
+            raise RuntimeError("Could not link decoded tee to fullscreen valve")
+        if not fullscreen_valve.link(fullscreen_queue):
+            raise RuntimeError("Could not link fullscreen valve to queue")
+        if not fullscreen_queue.link(fullscreen_convert):
+            raise RuntimeError("Could not link fullscreen queue to converter")
+        if not fullscreen_convert.link(fullscreen_caps):
+            raise RuntimeError("Could not link fullscreen converter to caps")
+        if not fullscreen_caps.link(fullscreen_sink):
+            raise RuntimeError("Could not link fullscreen caps to appsink")
         if ai_valve is not None and decoded_sink is not None:
             if not decoded_tee.link(ai_valve):
                 raise RuntimeError("Could not link decoded tee to AI valve")
@@ -457,12 +561,22 @@ class DeepStreamIngestor:
                 "new-sample", self._on_new_sample, source_id, generation
             )
         frontend_handler_id = frontend_sink.connect(
-            "new-sample", self._on_frontend_sample, source_id, generation
+            "new-sample", self._on_frontend_sample, source_id, generation, "wall"
+        )
+        fullscreen_handler_id = fullscreen_sink.connect(
+            "new-sample",
+            self._on_frontend_sample,
+            source_id,
+            generation,
+            "fullscreen",
         )
         return {
             "frontend_sink": frontend_sink,
             "frontend_handler_id": frontend_handler_id,
             "video_valve": video_valve,
+            "fullscreen_sink": fullscreen_sink,
+            "fullscreen_valve": fullscreen_valve,
+            "fullscreen_handler_id": fullscreen_handler_id,
             "ai_valve": ai_valve,
             "decoded_sink": decoded_sink,
             "decoded_sink_handler_id": decoded_sink_handler_id,
@@ -607,6 +721,9 @@ class DeepStreamIngestor:
             "raw_sink": outputs["frontend_sink"],
             "raw_handler_id": outputs["frontend_handler_id"],
             "video_valve": outputs["video_valve"],
+            "fullscreen_sink": outputs["fullscreen_sink"],
+            "fullscreen_valve": outputs["fullscreen_valve"],
+            "fullscreen_handler_id": outputs["fullscreen_handler_id"],
             "ai_valve": outputs["ai_valve"],
             "decoded_sink": outputs["decoded_sink"],
             "decoded_sink_handler_id": outputs["decoded_sink_handler_id"],
@@ -713,6 +830,11 @@ class DeepStreamIngestor:
                     state.raw_sink = branch["raw_sink"]
                     state.raw_sink_handler_id = branch["raw_handler_id"]
                     state.video_valve = branch["video_valve"]
+                    state.fullscreen_sink = branch["fullscreen_sink"]
+                    state.fullscreen_valve = branch["fullscreen_valve"]
+                    state.fullscreen_sink_handler_id = branch[
+                        "fullscreen_handler_id"
+                    ]
                     state.ai_valve = branch["ai_valve"]
                     state.decoded_sink = branch["decoded_sink"]
                     state.decoded_sink_handler_id = branch[
@@ -753,6 +875,7 @@ class DeepStreamIngestor:
                     sink is None
                     or state.raw_sink is sink
                     or state.decoded_sink is sink
+                    or state.fullscreen_sink is sink
                 )
             )
 
@@ -761,6 +884,7 @@ class DeepStreamIngestor:
         sink: Any,
         source_id: str,
         generation: int | None = None,
+        profile: str = "wall",
     ) -> Any:
         """Deliver one original-resolution decoded frame to the frontend."""
         Gst, _ = self._require_runtime()
@@ -772,7 +896,11 @@ class DeepStreamIngestor:
         if sample is None:
             return Gst.FlowReturn.ERROR
         if (
-            not self._video_required(source_id)
+            not (
+                self._fullscreen_required(source_id)
+                if profile == "fullscreen"
+                else self._wall_required(source_id)
+            )
             or not self._callback_is_current(
                 source_id, generation, sink=sink
             )
@@ -793,6 +921,51 @@ class DeepStreamIngestor:
             if buffer is None:
                 raise ValueError("Raw decoded sample has no buffer")
 
+            # Apply the configured delivery cap before the expensive final
+            # CPU map/copy. Previously native 25/30 FPS files were mapped in
+            # full and only then reduced to 15 FPS.
+            with self._lock:
+                state = self._states.get(source_id)
+                if state is None or state.generation != generation:
+                    return Gst.FlowReturn.OK
+                now_monotonic = time.monotonic()
+                if state.delivery_target_fps is not None:
+                    period = 1.0 / state.delivery_target_fps
+                    tolerance = min(0.004, period * 0.10)
+                    next_due = (
+                        state.fullscreen_next_frame_due_monotonic
+                        if profile == "fullscreen"
+                        else state.frontend_next_frame_due_monotonic
+                    )
+                    if (
+                        next_due > 0.0
+                        and now_monotonic + tolerance
+                        < next_due
+                    ):
+                        state.frontend_rate_limited_frames += 1
+                        return Gst.FlowReturn.OK
+                    if next_due <= 0.0:
+                        next_due = now_monotonic + period
+                    else:
+                        periods = max(
+                            1,
+                            math.floor(
+                                max(
+                                    0.0,
+                                    now_monotonic
+                                    - next_due,
+                                )
+                                / period
+                            )
+                            + 1,
+                        )
+                        next_due += periods * period
+                    if profile == "fullscreen":
+                        state.fullscreen_next_frame_due_monotonic = next_due
+                    else:
+                        state.frontend_next_frame_due_monotonic = next_due
+
+            map_started_ns = time.perf_counter_ns()
             payload = buffer.extract_dup(0, buffer.get_size())
             frame = self._decode_cpu_sample(
                 payload,
@@ -800,6 +973,7 @@ class DeepStreamIngestor:
                 height=height,
                 pixel_format=pixel_format,
             )
+            map_elapsed_ns = time.perf_counter_ns() - map_started_ns
 
             pts_ns = (
                 None
@@ -812,47 +986,37 @@ class DeepStreamIngestor:
                 else int(buffer.duration)
             )
 
-           
             with self._lock:
                 state = self._states.get(source_id)
 
                 if state is None or state.generation != generation:
                     return Gst.FlowReturn.OK
+                if profile == "fullscreen":
+                    state.fullscreen_cpu_maps += 1
+                    state.fullscreen_map_ns += map_elapsed_ns
+                    state.fullscreen_copies += (
+                        2 if pixel_format == "BGRx" else 1
+                    )
+                elif self.frontend_wall_mode:
+                    state.wall_cpu_maps += 1
+                    state.wall_map_ns += map_elapsed_ns
+                    state.wall_gpu_resize_frames += 1
+                    # extract_dup owns one packed payload and BGRx->BGR needs
+                    # one contiguous colour-channel copy.
+                    state.wall_copies += 2 if pixel_format == "BGRx" else 1
+                else:
+                    state.full_res_cpu_maps += 1
+                    state.full_res_copies += (
+                        2 if pixel_format == "BGRx" else 1
+                    )
 
-                now_monotonic = time.monotonic()
-                if state.delivery_target_fps is not None:
-                    period = 1.0 / state.delivery_target_fps
-                    tolerance = min(0.004, period * 0.10)
-                    if (
-                        state.frontend_next_frame_due_monotonic > 0.0
-                        and now_monotonic + tolerance
-                        < state.frontend_next_frame_due_monotonic
-                    ):
-                        state.frontend_rate_limited_frames += 1
-                        return Gst.FlowReturn.OK
-                    if state.frontend_next_frame_due_monotonic <= 0.0:
-                        state.frontend_next_frame_due_monotonic = (
-                            now_monotonic + period
-                        )
-                    else:
-                        periods = max(
-                            1,
-                            math.floor(
-                                max(
-                                    0.0,
-                                    now_monotonic
-                                    - state.frontend_next_frame_due_monotonic,
-                                )
-                                / period
-                            )
-                            + 1,
-                        )
-                        state.frontend_next_frame_due_monotonic += (
-                            periods * period
-                        )
-
-                state.frontend_frame_index += 1
-                frame_index = state.frontend_frame_index
+                if profile == "fullscreen":
+                    state.fullscreen_frame_index += 1
+                    state.fullscreen_samples += 1
+                    frame_index = state.fullscreen_frame_index
+                else:
+                    state.frontend_frame_index += 1
+                    frame_index = state.frontend_frame_index
 
                 state.latest_source_frame = frame
                 state.source_frame_width = width
@@ -868,7 +1032,20 @@ class DeepStreamIngestor:
             )
 
             if self.frontend_frame_worker is not None:
-                self.frontend_frame_worker.submit_frame(
+                submitter = (
+                    getattr(
+                        self.frontend_frame_worker,
+                        "submit_fullscreen_frame",
+                        self.frontend_frame_worker.submit_frame,
+                    )
+                    if profile == "fullscreen"
+                    else getattr(
+                        self.frontend_frame_worker,
+                        "submit_wall_frame",
+                        self.frontend_frame_worker.submit_frame,
+                    )
+                )
+                submitter(
                     source_id=source_id,
                     frame=frame,
                     frame_index=frame_index,
@@ -1602,6 +1779,11 @@ class DeepStreamIngestor:
                 state.raw_sink = branch["raw_sink"]
                 state.raw_sink_handler_id = branch["raw_handler_id"]
                 state.video_valve = branch["video_valve"]
+                state.fullscreen_sink = branch["fullscreen_sink"]
+                state.fullscreen_valve = branch["fullscreen_valve"]
+                state.fullscreen_sink_handler_id = branch[
+                    "fullscreen_handler_id"
+                ]
                 state.ai_valve = branch["ai_valve"]
                 state.decoded_sink = branch["decoded_sink"]
                 state.decoded_sink_handler_id = branch[
@@ -1698,6 +1880,10 @@ class DeepStreamIngestor:
                 state.raw_sink_handler_id,
             ),
             (
+                state.fullscreen_sink,
+                state.fullscreen_sink_handler_id,
+            ),
+            (
                 state.encoded_sink,
                 state.encoded_sink_handler_id,
             ),
@@ -1776,7 +1962,13 @@ class DeepStreamIngestor:
         for state in states:
             video_required = self._video_required(state.source_id)
             if state.video_valve is not None:
-                state.video_valve.set_property("drop", not video_required)
+                state.video_valve.set_property(
+                    "drop", not self._wall_required(state.source_id)
+                )
+            if state.fullscreen_valve is not None:
+                state.fullscreen_valve.set_property(
+                    "drop", not self._fullscreen_required(state.source_id)
+                )
             if state.ai_valve is not None:
                 state.ai_valve.set_property("drop", not self._ai_required())
             if state.source_type == STATIC_VIDEO:
@@ -2088,12 +2280,7 @@ class DeepStreamIngestor:
             # Frames are already at frame_width x frame_height from the
             # GPU capsfilter — no CPU resize needed.
             frames = [state.latest_frame for state in selected]
-            source_frames = [
-                state.latest_source_frame
-                if state.latest_source_frame is not None
-                else state.latest_frame
-                for state in selected
-            ]
+            source_frames = [state.latest_frame for state in selected]
             source_ids = [state.source_id for state in selected]
             frame_indexes = [state.frame_index for state in selected]
             source_times = [state.source_time_seconds for state in selected]
@@ -2101,11 +2288,14 @@ class DeepStreamIngestor:
                 {
                     "source_uri": state.display_uri,
                     "source_type": state.source_type,
-                    "frame_width": 640,
-                    "frame_height": 640,
+                    "frame_width": int(state.latest_frame.shape[1]),
+                    "frame_height": int(state.latest_frame.shape[0]),
                     "source_frame_width": int(source_frame.shape[1]),
                     "source_frame_height": int(source_frame.shape[0]),
                     "source_frame": source_frame,
+                    "frame_branch": "ai_full_resolution",
+                    "frame_dtype": str(state.latest_frame.dtype),
+                    "frame_shape": list(state.latest_frame.shape),
                     "ingest_backend": "deepstream",
                 }
                 for state, source_frame in zip(selected, source_frames)
@@ -2281,6 +2471,9 @@ class DeepStreamIngestor:
                 "loop": self.loop,
                 "rtsp_enabled": self.rtsp_enabled,
                 "video_only_mode": self.video_only_mode,
+                "frontend_wall_mode": self.frontend_wall_mode,
+                "video_wall_width": self.video_wall_width,
+                "video_wall_height": self.video_wall_height,
                 "video_required": self._video_required(),
                 "ai_required": self._ai_required(),
                 "rtsp_transport": self.rtsp_transport,
@@ -2336,6 +2529,30 @@ class DeepStreamIngestor:
                             else None
                         ),
                         "frontend_samples": state.raw_samples,
+                        "full_res_cpu_maps": state.full_res_cpu_maps,
+                        "wall_cpu_maps": state.wall_cpu_maps,
+                        "full_res_copies": state.full_res_copies,
+                        "wall_copies": state.wall_copies,
+                        "wall_gpu_resize_frames": state.wall_gpu_resize_frames,
+                        "wall_map_ms": round(
+                            state.wall_map_ns
+                            / max(1, state.wall_cpu_maps)
+                            / 1_000_000.0,
+                            3,
+                        ),
+                        "fullscreen_samples": state.fullscreen_samples,
+                        "fullscreen_cpu_maps": state.fullscreen_cpu_maps,
+                        "fullscreen_copies": state.fullscreen_copies,
+                        "fullscreen_map_ms": round(
+                            state.fullscreen_map_ns
+                            / max(1, state.fullscreen_cpu_maps)
+                            / 1_000_000.0,
+                            3,
+                        ),
+                        "wall_required": self._wall_required(source_id),
+                        "fullscreen_required": self._fullscreen_required(
+                            source_id
+                        ),
                         "frontend_frame_age_seconds": (
                             round(now - state.last_raw_packet_monotonic, 3)
                             if state.last_raw_packet_monotonic > 0

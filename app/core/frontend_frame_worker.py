@@ -35,21 +35,34 @@ class FrontendFrameWorker:
         self,
         *,
         publish_callback: Callable[[FramePacket], None],
+        publish_fullscreen_callback: Callable[[FramePacket], None] | None = None,
         queue_capacity: int = 32,
     ) -> None:
         self.publish_callback = publish_callback
+        self.publish_fullscreen_callback = (
+            publish_fullscreen_callback or publish_callback
+        )
         self.queue_capacity = max(1, int(queue_capacity))
         self._buffer = LatestPerSourceBuffer(
+            policy="latest_per_source",
+            capacity=self.queue_capacity,
+        )
+        self._fullscreen_buffer = LatestPerSourceBuffer(
             policy="latest_per_source",
             capacity=self.queue_capacity,
         )
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._fullscreen_thread: threading.Thread | None = None
         self._stats_lock = threading.Lock()
 
         self._submitted = 0
         self._published = 0
+        self._wall_submitted = 0
+        self._wall_published = 0
+        self._fullscreen_submitted = 0
+        self._fullscreen_published = 0
         self._last_error: str | None = None
 
     def start(self) -> None:
@@ -59,24 +72,60 @@ class FrontendFrameWorker:
         self._stop.clear()
 
         self._thread = threading.Thread(
-            target=self._run,
+            target=self._run_profile,
+            args=(self._buffer, self.publish_callback, "wall"),
             name="frontend-frame-worker",
             daemon=True,
         )
+        self._fullscreen_thread = threading.Thread(
+            target=self._run_profile,
+            args=(
+                self._fullscreen_buffer,
+                self.publish_fullscreen_callback,
+                "fullscreen",
+            ),
+            name="frontend-fullscreen-frame-worker",
+            daemon=True,
+        )
         self._thread.start()
+        self._fullscreen_thread.start()
 
     def close(self) -> None:
         self._stop.set()
         self._buffer.close()
+        self._fullscreen_buffer.close()
 
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+        if self._fullscreen_thread is not None:
+            self._fullscreen_thread.join(timeout=5.0)
 
         self._thread = None
+        self._fullscreen_thread = None
 
     def submit_frame(
         self,
         *,
+        source_id: str,
+        frame: np.ndarray,
+        frame_index: int,
+        source_time_seconds: float | None,
+        source_type: str,
+        ingest_backend: str,
+    ) -> bool:
+        return self.submit_wall_frame(
+            source_id=source_id,
+            frame=frame,
+            frame_index=frame_index,
+            source_time_seconds=source_time_seconds,
+            source_type=source_type,
+            ingest_backend=ingest_backend,
+        )
+
+    def _submit_profile(
+        self,
+        *,
+        profile: str,
         source_id: str,
         frame: np.ndarray,
         frame_index: int,
@@ -104,16 +153,38 @@ class FrontendFrameWorker:
                 "source_frame_height": int(frame.shape[0]),
                 "ingest_backend": ingest_backend,
                 "stream_mode": "video-stream",
+                "stream_profile": profile,
             },
         )
 
         with self._stats_lock:
             self._submitted += 1
-        return self._buffer.put(packet)
+            if profile == "fullscreen":
+                self._fullscreen_submitted += 1
+            else:
+                self._wall_submitted += 1
+        return (
+            self._fullscreen_buffer.put(packet)
+            if profile == "fullscreen"
+            else self._buffer.put(packet)
+        )
 
-    def _run(self) -> None:
+    def submit_wall_frame(self, **payload: object) -> bool:
+        return self._submit_profile(profile="wall", **payload)  # type: ignore[arg-type]
+
+    def submit_fullscreen_frame(self, **payload: object) -> bool:
+        return self._submit_profile(
+            profile="fullscreen", **payload  # type: ignore[arg-type]
+        )
+
+    def _run_profile(
+        self,
+        buffer: LatestPerSourceBuffer,
+        publish_callback: Callable[[FramePacket], None],
+        profile: str,
+    ) -> None:
         while not self._stop.is_set():
-            packets = self._buffer.take_batch(
+            packets = buffer.take_batch(
                 maximum=self.queue_capacity,
                 max_wait_seconds=0.005,
             )
@@ -122,10 +193,14 @@ class FrontendFrameWorker:
 
             for packet in packets:
                 try:
-                    self.publish_callback(packet)
+                    publish_callback(packet)
 
                     with self._stats_lock:
                         self._published += 1
+                        if profile == "fullscreen":
+                            self._fullscreen_published += 1
+                        else:
+                            self._wall_published += 1
                         self._last_error = None
 
                 except Exception as exc:
@@ -139,10 +214,15 @@ class FrontendFrameWorker:
 
     def status(self) -> dict[str, object]:
         buffer_stats = self._buffer.stats()
+        fullscreen_buffer_stats = self._fullscreen_buffer.stats()
         with self._stats_lock:
             submitted = self._submitted
             published = self._published
             last_error = self._last_error
+            wall_submitted = self._wall_submitted
+            wall_published = self._wall_published
+            fullscreen_submitted = self._fullscreen_submitted
+            fullscreen_published = self._fullscreen_published
 
         return {
             "enabled": True,
@@ -165,4 +245,10 @@ class FrontendFrameWorker:
             "replaced_by_source": buffer_stats.stale_replaced_by_source,
             "rejected_after_close": buffer_stats.rejected_after_close,
             "last_error": last_error,
+            "wall_submitted": wall_submitted,
+            "wall_published": wall_published,
+            "fullscreen_submitted": fullscreen_submitted,
+            "fullscreen_published": fullscreen_published,
+            "fullscreen_queue_size": fullscreen_buffer_stats.queue_depth,
+            "fullscreen_replaced": fullscreen_buffer_stats.stale_replaced,
         }

@@ -171,6 +171,9 @@ async def annotated_broadcast_websocket(
                         for item in latest_by_source.values()
                     ]
                     await websocket.send_bytes(_source_frame_batch_payload(records))
+                    runtime.broadcast.record_source_only_websocket_publish(
+                        tuple(item.source_id for item in frames)
+                    )
                     if stop_after_send:
                         break
                     continue
@@ -211,11 +214,14 @@ async def source_video_wall_websocket(
         await websocket.close(code=1008, reason="Fullscreen source not found")
         return
 
-    demand_lease = (
-        runtime.stream_demand.acquire_video(fullscreen_source)
-        if getattr(runtime, "stream_demand", None) is not None
-        else None
-    )
+    demand_leases = []
+    if getattr(runtime, "stream_demand", None) is not None:
+        if wall:
+            demand_leases.append(runtime.stream_demand.acquire_wall())
+        if fullscreen_source is not None:
+            demand_leases.append(
+                runtime.stream_demand.acquire_fullscreen(fullscreen_source)
+            )
     subscriber_id: str | None = None
     try:
         subscriber_id, target = runtime.broadcast.subscribe_source_only(
@@ -279,6 +285,9 @@ async def source_video_wall_websocket(
                             fullscreen_source=fullscreen_source,
                         )
                     )
+                    runtime.broadcast.record_source_only_websocket_publish(
+                        (frame.source_id,)
+                    )
             finally:
                 target.task_done()
     except WebSocketDisconnect:
@@ -286,7 +295,7 @@ async def source_video_wall_websocket(
     finally:
         if subscriber_id is not None:
             runtime.broadcast.unsubscribe_source_only(subscriber_id)
-        if demand_lease is not None:
+        for demand_lease in reversed(demand_leases):
             demand_lease.release()
 
 
