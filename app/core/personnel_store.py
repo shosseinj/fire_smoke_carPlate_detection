@@ -693,9 +693,26 @@ class PersonnelStore:
 
     def generate_import_template(self) -> bytes:
         import openpyxl
-        from openpyxl.styles import Alignment, Font, PatternFill, Protection
+        from openpyxl.styles import Alignment, Font, PatternFill, Protection, Border, Side
         wb = openpyxl.Workbook()
 
+        # ── Fetch live data ──────────────────────────────────────────
+        shifts: list[tuple[int, str]] = []
+        sections: list[tuple[int, str]] = []
+        try:
+            with self._connection() as conn:
+                shift_rows = conn.execute(
+                    "SELECT id, shift_name FROM work_shifts ORDER BY id"
+                ).fetchall()
+                shifts = [(int(r["id"]), str(r["shift_name"])) for r in shift_rows]
+                section_rows = conn.execute(
+                    "SELECT id, name FROM sections ORDER BY id"
+                ).fetchall()
+                sections = [(int(r["id"]), str(r["name"])) for r in section_rows]
+        except Exception:
+            pass
+
+        # ── Data entry sheet ─────────────────────────────────────────
         ws = wb.active
         ws.title = "ورود اطلاعات پرسنل"
         ws.sheet_view.rightToLeft = True
@@ -712,25 +729,138 @@ class PersonnelStore:
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
+        # ── Guidance sheet ───────────────────────────────────────────
         ws_guide = wb.create_sheet("راهنما")
-        guide_lines = [
-            "راهنمای واردسازی پرسنل", "",
-            "ستون‌ها:",
-            "A: نام (اجباری)",
-            "B: نام خانوادگی (اجباری)",
-            "C: کد ملی ۱۰ رقمی (اجباری، دارای جمع کنترلی)",
-            "D: نوع کارمند (کد 1 پیمانکار، 2 مشتری، 3 مهمان، 4 کارمند، 5 نامشخص)",
-            "E: شناسه دپارتمان (اختیاری)",
-            "F: شناسه شیفت کاری (اختیاری)",
-            "G: مدرک تحصیلی (کد 1 تا 8 یا مقدار فارسی)",
-            "", "توجه:",
-            "- ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
-            "- ردیف‌های خالی رد می‌شوند",
-            "- کد ملی باید ۱۰ رقمی و معتبر باشد",
+        ws_guide.sheet_view.rightToLeft = True
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+        right_align = Alignment(horizontal="right", vertical="top", wrap_text=True)
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        r = 1
+        ws_guide.cell(row=r, column=1, value="راهنمای واردسازی پرسنل").font = Font(bold=True, size=14)
+        r += 2
+
+        # ── Column descriptions ──────────────────────────────────────
+        ws_guide.cell(row=r, column=1, value="راهنمای ستون‌ها").font = Font(bold=True, size=12)
+        r += 1
+        col_guide = [
+            ("A: نام", "نام شخص (اجباری)"),
+            ("B: نام خانوادگی", "نام خانوادگی شخص (اجباری)"),
+            ("C: کد ملی", "کد ملی ۱۰ رقمی معتبر (اجباری)"),
+            ("D: نوع کارمند", "1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"),
+            ("E: دپارتمان", "شناسه دپارتمان از جدول دپارتمان‌های زیر (اختیاری)"),
+            ("F: شیفت کاری", "شناسه شیفت از جدول شیفت‌های زیر (اختیاری)"),
+            ("G: مدرک تحصیلی", "1=بی‌سواد, 2=ابتدایی, 3=سیکل, 4=دیپلم, 5=فوق‌دیپلم, 6=لیسانس, 7=فوق‌لیسانس, 8=دکتری"),
         ]
-        for i, line in enumerate(guide_lines, 1):
-            ws_guide.cell(row=i, column=1, value=line)
-        ws_guide.column_dimensions["A"].width = 60
+        for col, desc in col_guide:
+            ws_guide.cell(row=r, column=1, value=col).font = Font(bold=True)
+            ws_guide.cell(row=r, column=2, value=desc).alignment = right_align
+            r += 1
+        r += 1
+
+        # ── Employee type code table ──────────────────────────────────
+        ws_guide.cell(row=r, column=1, value="کدهای نوع کارمند").font = Font(bold=True, size=12)
+        r += 1
+        et_header = ["کد", "عنوان فارسی", "عنوان انگلیسی"]
+        for c, val in enumerate(et_header, 1):
+            cell = ws_guide.cell(row=r, column=c, value=val)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+        r += 1
+        for code, fa, en in [("1", "پیمانکار", "contractor"), ("2", "مشتری", "customer"),
+                              ("3", "مهمان", "guest"), ("4", "کارمند", "employee"),
+                              ("5", "نامشخص", "unknown")]:
+            ws_guide.cell(row=r, column=1, value=code).alignment = center_align
+            ws_guide.cell(row=r, column=2, value=fa).alignment = right_align
+            ws_guide.cell(row=r, column=3, value=en).alignment = Alignment(horizontal="left")
+            for c in range(1, 4):
+                ws_guide.cell(row=r, column=c).border = thin_border
+            r += 1
+        r += 1
+
+        # ── Degree code table ────────────────────────────────────────
+        ws_guide.cell(row=r, column=1, value="کدهای مدرک تحصیلی").font = Font(bold=True, size=12)
+        r += 1
+        deg_header = ["کد", "عنوان"]
+        for c, val in enumerate(deg_header, 1):
+            cell = ws_guide.cell(row=r, column=c, value=val)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+        r += 1
+        for code, label in [("1", "بی‌سواد"), ("2", "ابتدایی"), ("3", "سیکل"),
+                             ("4", "دیپلم"), ("5", "فوق‌دیپلم"), ("6", "لیسانس"),
+                             ("7", "فوق‌لیسانس"), ("8", "دکتری")]:
+            ws_guide.cell(row=r, column=1, value=code).alignment = center_align
+            ws_guide.cell(row=r, column=2, value=label).alignment = right_align
+            for c in range(1, 3):
+                ws_guide.cell(row=r, column=c).border = thin_border
+            r += 1
+        r += 1
+
+        # ── Departments table ────────────────────────────────────────
+        if sections:
+            ws_guide.cell(row=r, column=1, value="دپارتمان‌های موجود").font = Font(bold=True, size=12)
+            r += 1
+            sec_header = ["شناسه", "نام دپارتمان"]
+            for c, val in enumerate(sec_header, 1):
+                cell = ws_guide.cell(row=r, column=c, value=val)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_align
+                cell.border = thin_border
+            r += 1
+            for sid, sname in sections:
+                ws_guide.cell(row=r, column=1, value=sid).alignment = center_align
+                ws_guide.cell(row=r, column=2, value=sname).alignment = right_align
+                for c in range(1, 3):
+                    ws_guide.cell(row=r, column=c).border = thin_border
+                r += 1
+            r += 1
+
+        # ── Shifts table ─────────────────────────────────────────────
+        if shifts:
+            ws_guide.cell(row=r, column=1, value="شیفت‌های کاری موجود").font = Font(bold=True, size=12)
+            r += 1
+            sh_header = ["شناسه", "نام شیفت"]
+            for c, val in enumerate(sh_header, 1):
+                cell = ws_guide.cell(row=r, column=c, value=val)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_align
+                cell.border = thin_border
+            r += 1
+            for sid, sname in shifts:
+                ws_guide.cell(row=r, column=1, value=sid).alignment = center_align
+                ws_guide.cell(row=r, column=2, value=sname).alignment = right_align
+                for c in range(1, 3):
+                    ws_guide.cell(row=r, column=c).border = thin_border
+                r += 1
+            r += 1
+
+        # ── Notes ────────────────────────────────────────────────────
+        ws_guide.cell(row=r, column=1, value="نکات مهم").font = Font(bold=True, size=12)
+        r += 1
+        notes = [
+            "ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
+            "ردیف‌های خالی رد می‌شوند",
+            "کد ملی باید ۱۰ رقمی و معتبر باشد",
+        ]
+        for note in notes:
+            ws_guide.cell(row=r, column=1, value=note).alignment = right_align
+            r += 1
+
+        ws_guide.column_dimensions["A"].width = 30
+        ws_guide.column_dimensions["B"].width = 50
+        ws_guide.column_dimensions["C"].width = 25
         ws_guide.protection.sheet = True
         ws_guide.protection.set_password("readonly")
         ws.protection.sheet = False
