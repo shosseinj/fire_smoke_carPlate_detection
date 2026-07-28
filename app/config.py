@@ -65,6 +65,11 @@ def _path(name: str, default: str) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    raw_stream_enabled: bool = True
+    raw_recording_enabled: bool = False
+    raw_relay_enabled: bool = False
+    raw_clip_buffer_enabled: bool = True
+    
     app_name: str = os.getenv("APP_NAME", "Unified Video AI Task Router")
     processor_mode: str = os.getenv("PROCESSOR_MODE", "real").strip().lower()
     database_url: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)

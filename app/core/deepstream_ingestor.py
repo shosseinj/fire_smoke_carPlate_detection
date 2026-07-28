@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-
+from app.core.raw_stream_router import RawStreamRouter
 import cv2
 import numpy as np
 
@@ -46,32 +46,42 @@ class DeepStreamSourceState:
     source_uri: str
     display_uri: str
     source_type: str
+
     pipeline: Any
     source: Any
-    sink: Any
+    decoded_sink: Any
+    raw_sink: Any | None
     bus: Any
+
     bus_handler_id: int
-    pipeline_handler_id: int
     source_pad_handler_id: int
-    sink_handler_id: int
+    decoded_sink_handler_id: int
+    raw_sink_handler_id: int | None
+
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
+
+    codec: str | None = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
     frame_index: int = -1
     source_time_seconds: float | None = None
+
     decoded_samples: int = 0
+    raw_samples: int = 0
+    raw_bytes: int = 0
     rate_limited_frames: int = 0
     received_frames: int = 0
     pre_submit_replacements: int = 0
     submitted_frames: int = 0
+
     last_frame_monotonic: float = 0.0
+    last_raw_packet_monotonic: float = 0.0
     last_error: str | None = None
     warnings: int = 0
-    loop_count: int = 0
     source_frame_width: int = 0
     source_frame_height: int = 0
 
@@ -82,9 +92,15 @@ class DeepStreamIngestor:
     SCHEDULER_MAX_FPS = 240.0
 
     REQUIRED_ELEMENTS = (
-        "nvurisrcbin",
-        "nvvideoconvert",
+        "rtspsrc",
+        "rtph264depay",
+        "rtph265depay",
+        "h264parse",
+        "h265parse",
+        "tee",
         "queue",
+        "nvv4l2decoder",
+        "nvvideoconvert",
         "identity",
         "capsfilter",
         "appsink",
@@ -99,6 +115,7 @@ class DeepStreamIngestor:
         gpu_resize_enabled: bool = True,
         loop: bool = True,
         source_type_filter: str = RTSP,
+        raw_stream_router: RawStreamRouter | None = None,
         max_sources: int = 256,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
@@ -115,6 +132,7 @@ class DeepStreamIngestor:
         self.registry = registry
         self.router = router
         self.project_root = project_root
+        self.raw_stream_router = raw_stream_router
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         # NOTE: GPU resize is now handled by the nvvideoconvert capsfilter
         # in the GStreamer pipeline.  The _gpu_resize_available flag is kept
@@ -219,27 +237,271 @@ class DeepStreamIngestor:
             raise RuntimeError(f"Required GStreamer element is unavailable: {factory}")
         return element
 
-    def _on_pad_added(self, _: Any, pad: Any, queue: Any) -> None:
+    def _build_encoded_branches(
+        self,
+        *,
+        pipeline: Any,
+        source_id: str,
+        safe_id: str,
+        codec: str,
+        decoded_sink: Any,
+        gpu_convert: Any,
+        bgrx_caps: Any,
+        pacer: Any,
+    ) -> dict[str, Any]:
         Gst, _ = self._require_runtime()
+
+        if codec == "h264":
+            depay = self._make("rtph264depay", f"h264_depay_{safe_id}")
+            parser = self._make("h264parse", f"h264_parser_{safe_id}")
+            encoded_caps_value = (
+                "video/x-h264,stream-format=byte-stream,alignment=au"
+            )
+        elif codec == "h265":
+            depay = self._make("rtph265depay", f"h265_depay_{safe_id}")
+            parser = self._make("h265parse", f"h265_parser_{safe_id}")
+            encoded_caps_value = (
+                "video/x-h265,stream-format=byte-stream,alignment=au"
+            )
+        else:
+            raise ValueError(f"Unsupported codec: {codec}")
+
+        self._set_if_supported(parser, "config-interval", -1)
+
+        encoded_caps = self._make("capsfilter", f"encoded_caps_{safe_id}")
+        encoded_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(encoded_caps_value),
+        )
+
+        encoded_tee = self._make("tee", f"encoded_tee_{safe_id}")
+        decode_queue = self._make("queue", f"decode_queue_{safe_id}")
+        raw_queue = self._make("queue", f"raw_queue_{safe_id}")
+        decoder = self._make("nvv4l2decoder", f"decoder_{safe_id}")
+        raw_sink = self._make("appsink", f"raw_sink_{safe_id}")
+
+        decode_queue.set_property("leaky", 2)
+        decode_queue.set_property("max-size-buffers", 2)
+        decode_queue.set_property("max-size-bytes", 0)
+        decode_queue.set_property("max-size-time", 0)
+
+        raw_queue.set_property("leaky", 2)
+        raw_queue.set_property("max-size-buffers", 120)
+        raw_queue.set_property("max-size-bytes", 0)
+        raw_queue.set_property("max-size-time", 0)
+
+        raw_sink.set_property("emit-signals", True)
+        raw_sink.set_property("sync", False)
+        raw_sink.set_property("max-buffers", 60)
+        raw_sink.set_property("drop", True)
+        self._set_if_supported(raw_sink, "enable-last-sample", False)
+
+        elements = (
+            depay,
+            parser,
+            encoded_caps,
+            encoded_tee,
+            decode_queue,
+            raw_queue,
+            decoder,
+            raw_sink,
+        )
+        for element in elements:
+            pipeline.add(element)
+
+        if not depay.link(parser):
+            raise RuntimeError("Could not link depayloader to parser")
+        if not parser.link(encoded_caps):
+            raise RuntimeError("Could not link parser to encoded caps")
+        if not encoded_caps.link(encoded_tee):
+            raise RuntimeError("Could not link encoded caps to tee")
+
+        if not encoded_tee.link(decode_queue):
+            raise RuntimeError("Could not link tee to decode queue")
+        if not decode_queue.link(decoder):
+            raise RuntimeError("Could not link decode queue to NVDEC")
+        if not decoder.link(pacer):
+            raise RuntimeError("Could not link NVDEC to pacer")
+        if not pacer.link(gpu_convert):
+            raise RuntimeError("Could not link pacer to nvvideoconvert")
+        if not gpu_convert.link(bgrx_caps):
+            raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
+        if not bgrx_caps.link(decoded_sink):
+            raise RuntimeError("Could not link BGRx caps to decoded appsink")
+
+        if not encoded_tee.link(raw_queue):
+            raise RuntimeError("Could not link tee to raw queue")
+        if not raw_queue.link(raw_sink):
+            raise RuntimeError("Could not link raw queue to raw appsink")
+
+        raw_handler_id = raw_sink.connect(
+            "new-sample",
+            self._on_raw_sample,
+            source_id,
+            codec,
+        )
+
+        for element in elements:
+            if not element.sync_state_with_parent():
+                raise RuntimeError(
+                    f"Could not sync GStreamer element state: "
+                    f"{element.get_name()}"
+                )
+
+        return {
+            "depay": depay,
+            "raw_sink": raw_sink,
+            "raw_handler_id": raw_handler_id,
+            "codec": codec,
+        }
+
+    def _on_rtsp_pad_added(
+        self,
+        _: Any,
+        pad: Any,
+        context: dict[str, Any],
+    ) -> None:
+        Gst, _ = self._require_runtime()
+
         caps = pad.get_current_caps() or pad.query_caps(None)
-        if caps is None or not caps.to_string().startswith("video/"):
+        if caps is None or caps.get_size() == 0:
             return
-        sink_pad = queue.get_static_pad("sink")
-        if sink_pad is None or sink_pad.is_linked():
+
+        structure = caps.get_structure(0)
+        media = structure.get_string("media")
+        encoding_name = structure.get_string("encoding-name")
+
+        if media != "video" or not encoding_name:
             return
-        result = pad.link(sink_pad)
-        if result != Gst.PadLinkReturn.OK:
-            LOGGER.error("DeepStream source pad could not be linked: %s", result)
 
-    @staticmethod
-    def _on_autoplug_continue(_: Any, __: Any, caps: Any) -> bool:
-        """Keep decodebin from searching for decoders for unused audio tracks."""
-        return caps is None or not caps.to_string().startswith("audio/")
+        encoding_name = encoding_name.upper()
+        if encoding_name == "H264":
+            codec = "h264"
+        elif encoding_name in {"H265", "HEVC"}:
+            codec = "h265"
+        else:
+            LOGGER.warning(
+                "Unsupported RTSP video codec source=%s codec=%s",
+                VideoFileIngestor.redact_uri(context["source_id"]),
+                encoding_name,
+            )
+            return
 
-    def _on_deep_element_added(self, _: Any, __: Any, element: Any) -> None:
-        factory = element.get_factory()
-        if factory is not None and factory.get_name() == "uridecodebin":
-            element.connect("autoplug-continue", self._on_autoplug_continue)
+        if context["branch_created"]:
+            return
+
+        try:
+            branch = self._build_encoded_branches(
+                pipeline=context["pipeline"],
+                source_id=context["source_id"],
+                safe_id=context["safe_id"],
+                codec=codec,
+                decoded_sink=context["decoded_sink"],
+                gpu_convert=context["gpu_convert"],
+                bgrx_caps=context["bgrx_caps"],
+                pacer=context["pacer"],
+            )
+
+            sink_pad = branch["depay"].get_static_pad("sink")
+            if sink_pad is None:
+                raise RuntimeError("Depayloader sink pad is unavailable")
+
+            result = pad.link(sink_pad)
+            if result != Gst.PadLinkReturn.OK:
+                raise RuntimeError(
+                    f"Could not link RTSP pad to {codec} depayloader: {result}"
+                )
+
+            context["branch_created"] = True
+            context["codec"] = codec
+            context["raw_sink"] = branch["raw_sink"]
+            context["raw_handler_id"] = branch["raw_handler_id"]
+
+            with self._lock:
+                state = self._states.get(context["source_id"])
+                if state is not None:
+                    state.codec = codec
+                    state.raw_sink = branch["raw_sink"]
+                    state.raw_sink_handler_id = branch["raw_handler_id"]
+
+            LOGGER.info(
+                "DeepStream encoded branch ready source=%s codec=%s",
+                VideoFileIngestor.redact_uri(context["source_id"]),
+                codec,
+            )
+        except Exception as exc:
+            self._mark_failed(
+                context["source_id"],
+                f"Could not create encoded RTSP branch: "
+                f"{type(exc).__name__}: {exc}",
+            )
+
+    def _on_raw_sample(
+        self,
+        sink: Any,
+        source_id: str,
+        codec: str,
+    ) -> Any:
+        Gst, _ = self._require_runtime()
+
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+
+        buffer = sample.get_buffer()
+        if buffer is None:
+            return Gst.FlowReturn.ERROR
+
+        success, map_info = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return Gst.FlowReturn.ERROR
+
+        try:
+            payload = bytes(map_info.data)
+            is_keyframe = not buffer.has_flags(Gst.BufferFlags.DELTA_UNIT)
+
+            pts_ns = (
+                None
+                if buffer.pts == Gst.CLOCK_TIME_NONE
+                else int(buffer.pts)
+            )
+            dts_ns = (
+                None
+                if buffer.dts == Gst.CLOCK_TIME_NONE
+                else int(buffer.dts)
+            )
+            duration_ns = (
+                None
+                if buffer.duration == Gst.CLOCK_TIME_NONE
+                else int(buffer.duration)
+            )
+
+            if self.raw_stream_router is not None:
+                self.raw_stream_router.publish_packet(
+                    source_id=source_id,
+                    codec=codec,
+                    pts_ns=pts_ns,
+                    dts_ns=dts_ns,
+                    duration_ns=duration_ns,
+                    is_keyframe=is_keyframe,
+                    data=payload,
+                )
+
+            with self._lock:
+                state = self._states.get(source_id)
+                if state is not None:
+                    state.raw_samples += 1
+                    state.raw_bytes += len(payload)
+                    state.last_raw_packet_monotonic = time.monotonic()
+        except Exception:
+            LOGGER.exception(
+                "Raw packet delivery failed source=%s",
+                VideoFileIngestor.redact_uri(source_id),
+            )
+        finally:
+            buffer.unmap(map_info)
+
+        return Gst.FlowReturn.OK
 
     def _redact_error(self, source_id: str, message: str) -> str:
         display_uri = VideoFileIngestor.redact_uri(source_id)
@@ -337,7 +599,7 @@ class DeepStreamIngestor:
         now = time.monotonic()
         with self._lock:
             state = self._states.get(source_id)
-            if state is None or state.sink is not sink:
+            if state is None or state.decoded_sink is not sink:
                 return Gst.FlowReturn.OK
             state.decoded_samples += 1
             if state.delivery_target_fps is not None:
@@ -442,14 +704,14 @@ class DeepStreamIngestor:
     def _open_source(self, record: SourceRecord) -> None:
         Gst, _ = self._require_runtime()
         assert record.source_uri is not None
-        is_rtsp = VideoFileIngestor.is_rtsp_uri(record.source_uri)
-        if not is_rtsp:
-            source_path = Path(record.source_uri).expanduser()
-            if not source_path.is_absolute():
-                source_path = self.project_root / source_path
-            if not source_path.is_file():
-                raise FileNotFoundError(f"Video file was not found: {record.source_uri}")
-        gst_uri = self._resolve_uri(record.source_uri)
+
+        if not VideoFileIngestor.is_rtsp_uri(record.source_uri):
+            raise ValueError(
+                f"DeepStreamIngestor only accepts RTSP sources: "
+                f"{record.source_uri}"
+            )
+
+        gst_uri = record.source_uri
         display_uri = VideoFileIngestor.redact_uri(record.source_uri)
         safe_id = self._safe_element_name(record.source_uri)
         pipeline = Gst.Pipeline.new(f"pipeline_{safe_id}")
@@ -457,124 +719,154 @@ class DeepStreamIngestor:
             raise RuntimeError("Could not create a GStreamer pipeline")
 
         try:
-            source = self._make("nvurisrcbin", f"source_{safe_id}")
-            queue = self._make("queue", f"queue_{safe_id}")
+            source = self._make("rtspsrc", f"source_{safe_id}")
             pacer = self._make("identity", f"pacer_{safe_id}")
-            gpu_convert = self._make("nvvideoconvert", f"gpu_convert_{safe_id}")
-            bgrx_caps = self._make("capsfilter", f"bgrx_caps_{safe_id}")
-            sink = self._make("appsink", f"appsink_{safe_id}")
-
-            # DeepStream 7.1 still lets its internal uridecodebin autoplug AAC
-            # even with disable-audio=true. Hook it before the source bin is
-            # added so encoded audio pads are ignored without requiring an AAC
-            # decoder or spending CPU on an unused audio stream.
-            pipeline_handler_id = pipeline.connect(
-                "deep-element-added", self._on_deep_element_added
+            gpu_convert = self._make(
+                "nvvideoconvert",
+                f"gpu_convert_{safe_id}",
+            )
+            bgrx_caps = self._make(
+                "capsfilter",
+                f"bgrx_caps_{safe_id}",
+            )
+            decoded_sink = self._make(
+                "appsink",
+                f"decoded_sink_{safe_id}",
             )
 
-            source.set_property("uri", gst_uri)
+            source.set_property("location", gst_uri)
             self._set_if_supported(
-                source, "source-id", self._gst_source_id(record.source_uri)
+                source,
+                "latency",
+                self.rtsp_latency_ms,
             )
-            self._set_if_supported(source, "disable-audio", True)
-            if is_rtsp:
-                self._set_if_supported(source, "latency", self.rtsp_latency_ms)
-                self._set_if_supported(source, "drop-on-latency", True)
-                self._set_if_supported(
-                    source,
-                    "rtsp-reconnect-interval",
-                    self.rtsp_stall_timeout_seconds,
-                )
-                self._set_if_supported(source, "rtsp-reconnect-attempts", -1)
-                self._set_if_supported(
-                    source,
-                    "select-rtp-protocol",
-                    4 if self.rtsp_transport == "tcp" else 0,
-                )
-            else:
-                # nvurisrcbin's internal file-loop can emit buffers before a new
-                # segment event on some DeepStream 7.1 builds, stalling NVDEC.
-                # Leave it disabled and restart the pipeline cleanly on EOS.
-                self._set_if_supported(source, "file-loop", False)
+            self._set_if_supported(
+                source,
+                "drop-on-latency",
+                True,
+            )
 
-            queue.set_property("leaky", 2)
-            queue.set_property("max-size-buffers", 1)
-            queue.set_property("max-size-bytes", 0)
-            queue.set_property("max-size-time", 0)
-            pacer.set_property("sync", not is_rtsp)
-            # Always resize on GPU via nvvideoconvert capsfilter to
-            # frame_width x frame_height (default 640x640).  This avoids
-            # CPU-side resize in _submit_latest_round and eliminates
-            # per-frame GPU↔CPU copy for resize.
+            # GstRTSPLowerTrans: UDP=1, UDP_MCAST=2, TCP=4.
+            self._set_if_supported(
+                source,
+                "protocols",
+                4 if self.rtsp_transport == "tcp" else 3,
+            )
+
+            timeout_us = int(
+                self.rtsp_stall_timeout_seconds * 1_000_000
+            )
+            if timeout_us > 0:
+                self._set_if_supported(
+                    source,
+                    "timeout",
+                    timeout_us,
+                )
+                self._set_if_supported(
+                    source,
+                    "tcp-timeout",
+                    timeout_us,
+                )
+
+            pacer.set_property("sync", False)
+
             bgrx_caps_value = (
                 f"video/x-raw,format=BGRx,"
-                f"width={record.frame_width},height={record.frame_height}"
+                f"width={record.frame_width},"
+                f"height={record.frame_height}"
             )
             bgrx_caps.set_property(
                 "caps",
                 Gst.Caps.from_string(bgrx_caps_value),
             )
-            sink.set_property("emit-signals", True)
-            sink.set_property("sync", False)
-            sink.set_property("max-buffers", 1)
-            sink.set_property("drop", True)
-            self._set_if_supported(sink, "enable-last-sample", False)
+
+            decoded_sink.set_property("emit-signals", True)
+            decoded_sink.set_property("sync", False)
+            decoded_sink.set_property("max-buffers", 1)
+            decoded_sink.set_property("drop", True)
+            self._set_if_supported(
+                decoded_sink,
+                "enable-last-sample",
+                False,
+            )
 
             for element in (
                 source,
-                queue,
                 pacer,
                 gpu_convert,
                 bgrx_caps,
-                sink,
+                decoded_sink,
             ):
                 pipeline.add(element)
-            if not pacer.link(queue):
-                raise RuntimeError("Could not link source pacer to DeepStream queue")
-            if not queue.link(gpu_convert):
-                raise RuntimeError("Could not link DeepStream queue to nvvideoconvert")
-            if not gpu_convert.link(bgrx_caps):
-                raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
-            if not bgrx_caps.link(sink):
-                raise RuntimeError("Could not link BGRx caps to appsink")
+
+            pad_context: dict[str, Any] = {
+                "pipeline": pipeline,
+                "source_id": record.source_uri,
+                "safe_id": safe_id,
+                "decoded_sink": decoded_sink,
+                "gpu_convert": gpu_convert,
+                "bgrx_caps": bgrx_caps,
+                "pacer": pacer,
+                "branch_created": False,
+                "codec": None,
+                "raw_sink": None,
+                "raw_handler_id": None,
+            }
+
             source_pad_handler_id = source.connect(
-                "pad-added", self._on_pad_added, pacer
+                "pad-added",
+                self._on_rtsp_pad_added,
+                pad_context,
             )
-            sink_handler_id = sink.connect(
-                "new-sample", self._on_new_sample, record.source_uri
+            decoded_sink_handler_id = decoded_sink.connect(
+                "new-sample",
+                self._on_new_sample,
+                record.source_uri,
             )
 
             bus = pipeline.get_bus()
             bus.add_signal_watch()
-            bus_handler_id = bus.connect("message", self._on_bus_message, record.source_uri)
+            bus_handler_id = bus.connect(
+                "message",
+                self._on_bus_message,
+                record.source_uri,
+            )
+
             state = DeepStreamSourceState(
                 source_id=record.source_uri,
                 source_uri=record.source_uri,
                 display_uri=display_uri,
-                source_type="rtsp" if is_rtsp else "video_file",
+                source_type="rtsp",
                 pipeline=pipeline,
                 source=source,
-                sink=sink,
+                decoded_sink=decoded_sink,
+                raw_sink=None,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
-                pipeline_handler_id=pipeline_handler_id,
                 source_pad_handler_id=source_pad_handler_id,
-                sink_handler_id=sink_handler_id,
+                decoded_sink_handler_id=decoded_sink_handler_id,
+                raw_sink_handler_id=None,
                 frame_width=record.frame_width,
                 frame_height=record.frame_height,
                 delivery_target_fps=record.fps,
-                loop_count=self._loop_counts.get(record.source_uri, 0),
             )
+
             with self._lock:
                 self._states[record.source_uri] = state
+
             result = pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
-                raise RuntimeError("GStreamer pipeline refused the PLAYING state")
+                raise RuntimeError(
+                    "GStreamer pipeline refused the PLAYING state"
+                )
+
             with self._lock:
                 self._retry_after.pop(record.source_uri, None)
+
         except Exception:
             with self._lock:
                 state = self._states.pop(record.source_uri, None)
+
             if state is not None:
                 self._schedule_state_disposal(state)
             else:
@@ -585,29 +877,55 @@ class DeepStreamIngestor:
                     pass
             raise
 
-    def _dispose_state(self, state: DeepStreamSourceState) -> None:
+    def _dispose_state(
+        self,
+        state: DeepStreamSourceState,
+    ) -> None:
         Gst, _ = self._require_runtime()
-        for element, handler_id in (
-            (state.sink, state.sink_handler_id),
-            (state.source, state.source_pad_handler_id),
-            (state.pipeline, state.pipeline_handler_id),
-            (state.bus, state.bus_handler_id),
-        ):
+
+        handlers: tuple[
+            tuple[Any | None, int | None],
+            ...,
+        ] = (
+            (
+                state.decoded_sink,
+                state.decoded_sink_handler_id,
+            ),
+            (
+                state.raw_sink,
+                state.raw_sink_handler_id,
+            ),
+            (
+                state.source,
+                state.source_pad_handler_id,
+            ),
+            (
+                state.bus,
+                state.bus_handler_id,
+            ),
+        )
+
+        for element, handler_id in handlers:
+            if element is None or handler_id is None:
+                continue
             try:
                 element.disconnect(handler_id)
             except Exception:
                 pass
+
         try:
             state.bus.remove_signal_watch()
         except Exception:
             pass
+
         state.pipeline.set_state(Gst.State.NULL)
         try:
-            # Wait until NVDEC and nvurisrcbin have actually released their
-            # resources before another pipeline for this camera is constructed.
             state.pipeline.get_state(5 * Gst.SECOND)
         except Exception:
-            LOGGER.debug("GStreamer NULL-state wait failed for %s", state.source_id)
+            LOGGER.debug(
+                "GStreamer NULL-state wait failed for %s",
+                state.source_id,
+            )
 
     def _schedule_state_disposal(self, state: DeepStreamSourceState) -> None:
         source_id = state.source_id
@@ -895,14 +1213,23 @@ class DeepStreamIngestor:
                         ),
                         "delivery_target_fps": state.delivery_target_fps,
                         "decoded_samples": state.decoded_samples,
+                        "codec": state.codec,
+                        "raw_samples": state.raw_samples,
+                        "raw_bytes": state.raw_bytes,
+                        "last_raw_packet_age_seconds": (
+                            round(
+                                now
+                                - state.last_raw_packet_monotonic,
+                                3,
+                            )
+                            if state.last_raw_packet_monotonic > 0
+                            else None
+                        ),
                         "rate_limited_frames": state.rate_limited_frames,
                         "received_frames": state.received_frames,
                         "pre_submit_replacements": state.pre_submit_replacements,
                         "submitted_frames": state.submitted_frames,
                         "frame_index": state.frame_index,
-                        "loop_count": self._loop_counts.get(
-                            source_id, state.loop_count
-                        ),
                         "last_frame_age_seconds": (
                             round(now - state.last_frame_monotonic, 3)
                             if state.last_frame_monotonic > 0
