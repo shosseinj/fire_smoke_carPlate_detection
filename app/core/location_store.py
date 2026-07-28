@@ -43,6 +43,8 @@ class SectionRecord:
     updated_at_utc: str
     created_by: int | None = None
     updated_by: int | None = None
+    floor: str | None = None
+    is_active: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +256,8 @@ class LocationStore:
             updated_at_utc=row["updated_at_utc"],
             created_by=row.get("created_by"),
             updated_by=row.get("updated_by"),
+            floor=row.get("floor"),
+            is_active=bool(row.get("is_active", 1)),
         )
 
     def create_section(
@@ -261,6 +265,8 @@ class LocationStore:
         name: str,
         building_id: int | None = None,
         description: str | None = None,
+        floor: str | None = None,
+        is_active: bool = True,
         created_by: int | None = None,
     ) -> SectionRecord:
         name = name.strip()
@@ -275,9 +281,9 @@ class LocationStore:
                 if bld is None:
                     raise ValueError(f"Building not found: {building_id}")
             cursor = conn.execute(
-                "INSERT INTO sections (building_id, name, description, created_at_utc, updated_at_utc, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (building_id, name, description, now, now, created_by),
+                "INSERT INTO sections (building_id, name, description, floor, is_active, created_at_utc, updated_at_utc, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (building_id, name, description, floor, int(is_active), now, now, created_by),
             )
             row = conn.execute(
                 "SELECT * FROM sections WHERE id = ?", (cursor.lastrowid,)
@@ -299,6 +305,8 @@ class LocationStore:
         name: str | None = None,
         building_id: int | None = None,
         description: str | None = None,
+        floor: str | None = None,
+        is_active: bool | None = None,
         updated_by: int | None = None,
     ) -> SectionRecord | None:
         with self._lock, self._connection() as conn:
@@ -320,10 +328,12 @@ class LocationStore:
                 if bld is None:
                     raise ValueError(f"Building not found: {building_id}")
             new_description = description if description is not None else existing["description"]
+            new_floor = floor if floor is not None else existing.get("floor")
+            new_is_active = int(is_active) if is_active is not None else existing.get("is_active", 1)
             now = self._now()
             conn.execute(
-                "UPDATE sections SET name=?, building_id=?, description=?, updated_at_utc=?, updated_by=? WHERE id=?",
-                (new_name, new_building_id, new_description, now, updated_by, section_id),
+                "UPDATE sections SET name=?, building_id=?, description=?, floor=?, is_active=?, updated_at_utc=?, updated_by=? WHERE id=?",
+                (new_name, new_building_id, new_description, new_floor, new_is_active, now, updated_by, section_id),
             )
             row = conn.execute(
                 "SELECT * FROM sections WHERE id = ?", (section_id,)

@@ -49,7 +49,7 @@ class BuildingUpdate(BaseModel):
 
 class SectionMinimal(BaseModel):
     id: int
-    section_name: str
+    name: str
 
 
 class BuildingResponse(BaseModel):
@@ -208,7 +208,7 @@ def _resolve_audit_briefs(record, store: LocationStore):
 def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
     if sections is None:
         sec_rows, _ = store.list_sections(building_id=b.id, limit=1000)
-        sections = [SectionMinimal(id=s.id, section_name=s.name) for s in sec_rows]
+        sections = [SectionMinimal(id=s.id, name=s.name) for s in sec_rows]
     c, u = _resolve_audit_briefs(b, store)
     return BuildingResponse(
         id=b.id,
@@ -235,10 +235,10 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
     c, u = _resolve_audit_briefs(s, store)
     return SectionResponse(
         id=s.id,
-        section_name=s.name,
-        floor=None,
+        name=s.name,
+        floor=s.floor,
         description=s.description,
-        is_active=True,
+        is_active=s.is_active,
         building_id=s.building_id or 0,
         created_at=s.created_at_utc,
         updated_at=s.updated_at_utc,
@@ -292,7 +292,7 @@ def list_buildings(
     result = []
     for b in records:
         sec_rows, _ = store.list_sections(building_id=b.id, limit=1000)
-        sections = [SectionMinimal(id=s.id, section_name=s.name) for s in sec_rows]
+        sections = [SectionMinimal(id=s.id, name=s.name) for s in sec_rows]
         result.append(_build_response(store, b, sections))
     return result
 
@@ -452,6 +452,8 @@ def create_section(
             name=payload.section_name,
             building_id=payload.building_id,
             description=payload.description,
+            floor=payload.floor,
+            is_active=payload.is_active,
             created_by=current_user.id,
         )
     except ValueError as exc:
@@ -483,6 +485,10 @@ def update_section(
         changes["building_id"] = payload.building_id
     if payload.description is not None:
         changes["description"] = payload.description
+    if payload.floor is not None:
+        changes["floor"] = payload.floor
+    if payload.is_active is not None:
+        changes["is_active"] = payload.is_active
     if not changes:
         raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     changes["updated_by"] = current_user.id

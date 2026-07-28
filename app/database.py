@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260727_0034"
+ALEMBIC_HEAD_REVISION = "20260727_0035"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -207,7 +207,9 @@ sections = Table(
     "sections", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("building_id", Integer, ForeignKey("buildings.id", ondelete="SET NULL")),
-    Column("name", Text, nullable=False), Column("description", Text), *_audit_columns(), *_user_audit_columns(),
+    Column("name", Text, nullable=False), Column("description", Text),
+    Column("floor", Text), Column("is_active", Integer, nullable=False, server_default="1"),
+    *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_sections_building", sections.c.building_id); Index("idx_sections_name", sections.c.name)
 rooms = Table(
