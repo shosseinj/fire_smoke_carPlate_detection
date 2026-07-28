@@ -774,6 +774,7 @@ Key metrics:
 - Never use destructive Git or filesystem commands without explicit authorization.
 - Do not rewrite unrelated code to make tests pass.
 - Keep model weights, TensorRT engines, runtime databases, generated media, and local secrets out of commits unless explicitly requested.
+- **Never commit, push, or create PRs without the user explicitly asking.** Wait for the user to say "commit", "push", "create PR", or similar. The only exception is when the user has given prior explicit consent in the same conversation for the specific operation.
 
 <!-- OPENCODE-REALTIME-WORKFLOW:START -->
 # Real-Time Project Agent Rules

@@ -302,6 +302,7 @@ async def import_excel(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     total = result["created"] + result["skipped"] + len(result["errors"])
+    updated_count = sum(1 for r in result.get("successful_rows", []) if r["action"] == "updated")
     return {
         "summary": {
             "total_rows": total,
@@ -309,11 +310,25 @@ async def import_excel(
             "failed": len(result["errors"]),
             "skipped": result["skipped"],
             "created": result["created"],
-            "updated": 0,
+            "updated": updated_count,
         },
-        "successful_rows": [],
-        "failed_rows": [{"row": e["row"], "error": e["error"]} for e in result["errors"]],
-        "skipped_rows": [],
+        "successful_rows": result.get("successful_rows", []),
+        "failed_rows": [
+            {
+                "row": e["row"],
+                "national_code": e.get("national_code", ""),
+                "field_errors": e.get("field_errors", []),
+            }
+            for e in result["errors"]
+        ],
+        "skipped_rows": [
+            {
+                "row": s["row"],
+                "national_code": s.get("national_code", ""),
+                "field_errors": s.get("field_errors", []),
+            }
+            for s in result.get("skipped_rows", [])
+        ],
     }
 
 

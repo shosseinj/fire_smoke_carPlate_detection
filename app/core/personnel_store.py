@@ -751,7 +751,7 @@ class PersonnelStore:
         col_guide = [
             ("A: نام", "نام شخص (اجباری)"),
             ("B: نام خانوادگی", "نام خانوادگی شخص (اجباری)"),
-            ("C: کد ملی", "کد ملی ۱۰ رقمی معتبر (اجباری)"),
+            ("C: کد ملی", "کد ملی ۱۰ رقمی معتبر (اجباری) — صفرهای ابتدا را حتماً وارد کنید، مثال: 0012345678"),
             ("D: نوع کارمند", "1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"),
             ("E: دپارتمان", "شناسه دپارتمان از جدول دپارتمان‌های زیر (اختیاری)"),
             ("F: شیفت کاری", "شناسه شیفت از جدول شیفت‌های زیر (اختیاری)"),
@@ -852,7 +852,7 @@ class PersonnelStore:
         notes = [
             "ردیف اول (سرستون) در واردسازی نادیده گرفته می‌شود",
             "ردیف‌های خالی رد می‌شوند",
-            "کد ملی باید ۱۰ رقمی و معتبر باشد",
+            "کد ملی باید ۱۰ رقمی و معتبر باشد — صفرهای ابتدایی حتماً حفظ شوند",
         ]
         for note in notes:
             ws_guide.cell(row=r, column=1, value=note).alignment = right_align
@@ -884,11 +884,24 @@ class PersonnelStore:
         ws = wb.active
         if ws is None:
             raise ValueError("Excel file has no active worksheet")
-        rows_iter = ws.iter_rows(min_row=2, values_only=True)
-        created = 0
-        skipped = 0
-        errors: list[dict[str, Any]] = []
-        employee_types = {
+
+        # ── Pre-fetch valid reference IDs ──────────────────────────
+        valid_shift_ids: set[int] = set()
+        valid_section_ids: set[int] = set()
+        try:
+            with self._connection() as conn:
+                valid_shift_ids = {
+                    int(r["id"])
+                    for r in conn.execute("SELECT id FROM work_shifts").fetchall()
+                }
+                valid_section_ids = {
+                    int(r["id"])
+                    for r in conn.execute("SELECT id FROM sections").fetchall()
+                }
+        except Exception:
+            pass
+
+        employee_type_map = {
             "1": "contractor", "2": "customer", "3": "guest",
             "4": "employee", "5": "unknown",
             "contractor": "contractor", "customer": "customer",
@@ -896,49 +909,205 @@ class PersonnelStore:
             "پیمانکار": "contractor", "مشتری": "customer", "مهمان": "guest",
             "کارمند": "employee", "نامشخص": "unknown",
         }
-        degrees = {
+        degree_map = {
             "1": "illiterate", "2": "below_diploma", "3": "diploma",
             "4": "associate", "5": "bachelor", "6": "master",
             "7": "doctorate", "8": "unknown",
         }
+        valid_degree_codes = set(degree_map.keys())
+
+        rows_iter = ws.iter_rows(min_row=2, values_only=True)
+        created = 0
+        skipped = 0
+        errors: list[dict[str, Any]] = []
+        successful_rows: list[dict[str, Any]] = []
+        skipped_rows: list[dict[str, Any]] = []
+
         for row_idx, row in enumerate(rows_iter, start=2):
             if not row or all(cell is None for cell in row):
                 continue
+            row_field_errors: list[dict[str, str]] = []
             try:
-                fname = str(row[0]).strip() if row[0] is not None else ""
-                lname = str(row[1]).strip() if row[1] is not None else ""
-                national_code = str(row[2]).strip() if row[2] is not None else ""
-                employee_key = str(row[3]).strip().lower() if len(row) > 3 and row[3] is not None else "5"
-                employee_type = employee_types.get(employee_key)
-                if employee_type is None:
-                    raise ValueError("Invalid employee type code")
-                department_id = int(row[4]) if len(row) > 4 and row[4] not in (None, "") else None
-                shift_id = int(row[5]) if len(row) > 5 and row[5] not in (None, "") else None
-                degree_key = str(row[6]).strip() if len(row) > 6 and row[6] is not None else None
-                degree = degrees.get(degree_key, degree_key)
-                if not fname or not lname or not national_code:
-                    skipped += 1
-                    errors.append({"row": row_idx, "error": "Missing required fields (fname, lname, national_code)"})
-                    continue
+                # ── Parse fname ────────────────────────────────────
+                fname_val = row[0] if len(row) > 0 else None
+                fname = str(fname_val).strip() if fname_val is not None else ""
+
+                # ── Parse lname ────────────────────────────────────
+                lname_val = row[1] if len(row) > 1 else None
+                lname = str(lname_val).strip() if lname_val is not None else ""
+
+                # ── Parse national_code ────────────────────────────
+                raw_nc_val = row[2] if len(row) > 2 else None
+                if raw_nc_val is None:
+                    national_code = ""
+                elif isinstance(raw_nc_val, (int, float)):
+                    national_code = str(int(float(raw_nc_val))).zfill(10)
+                else:
+                    national_code = str(raw_nc_val).strip()
+
+                # ── Validate required fields ───────────────────────
+                if not fname:
+                    row_field_errors.append({"field": "fname", "message": "نام (فیلد A) اجباری است"})
+                if not lname:
+                    row_field_errors.append({"field": "lname", "message": "نام خانوادگی (فیلد B) اجباری است"})
+                if not national_code:
+                    row_field_errors.append({"field": "national_code", "message": "کد ملی (فیلد C) اجباری است"})
+
+                # ── Parse & validate employee_type ─────────────────
+                et_raw = row[3] if len(row) > 3 else None
+                employee_type: str | None = None
+                if et_raw is not None and str(et_raw).strip():
+                    et_key = str(et_raw).strip().lower()
+                    employee_type = employee_type_map.get(et_key)
+                    if employee_type is None:
+                        row_field_errors.append({
+                            "field": "employee_type",
+                            "message": (
+                                f"کد نوع کارمند نامعتبر: '{et_raw}'. "
+                                "کدهای مجاز: 1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"
+                            ),
+                        })
+                else:
+                    employee_type = "unknown"
+
+                # ── Parse & validate department_id ────────────────
+                dept_val = row[4] if len(row) > 4 else None
+                department_id: int | None = None
+                if dept_val is not None and str(dept_val).strip() not in ("", "nan", "None"):
+                    try:
+                        dept_parsed = int(float(str(dept_val)))
+                        if valid_section_ids and dept_parsed not in valid_section_ids:
+                            row_field_errors.append({
+                                "field": "department_id",
+                                "message": f"شناسه دپارتمان '{dept_parsed}' در سیستم وجود ندارد",
+                            })
+                        else:
+                            department_id = dept_parsed
+                    except (ValueError, TypeError):
+                        row_field_errors.append({
+                            "field": "department_id",
+                            "message": f"شناسه دپارتمان نامعتبر: '{dept_val}'",
+                        })
+
+                # ── Parse & validate shift_id ─────────────────────
+                shift_val = row[5] if len(row) > 5 else None
+                shift_id: int | None = None
+                if shift_val is not None and str(shift_val).strip() not in ("", "nan", "None"):
+                    try:
+                        shift_parsed = int(float(str(shift_val)))
+                        if valid_shift_ids and shift_parsed not in valid_shift_ids:
+                            row_field_errors.append({
+                                "field": "shift_id",
+                                "message": f"شناسه شیفت کاری '{shift_parsed}' در سیستم وجود ندارد",
+                            })
+                        else:
+                            shift_id = shift_parsed
+                    except (ValueError, TypeError):
+                        row_field_errors.append({
+                            "field": "shift_id",
+                            "message": f"شناسه شیفت کاری نامعتبر: '{shift_val}'",
+                        })
+
+                # ── Parse & validate degree ───────────────────────
+                deg_raw = row[6] if len(row) > 6 else None
+                degree: str | None = None
+                if deg_raw is not None and str(deg_raw).strip() not in ("", "nan", "None"):
+                    deg_key = str(deg_raw).strip()
+                    mapped = degree_map.get(deg_key)
+                    if mapped is not None:
+                        degree = mapped
+                    else:
+                        row_field_errors.append({
+                            "field": "degree",
+                            "message": (
+                                f"کد مدرک تحصیلی نامعتبر: '{deg_raw}'. "
+                                "کدهای مجاز: 1=بی‌سواد, 2=ابتدایی, 3=سیکل, 4=دیپلم, "
+                                "5=فوق‌دیپلم, 6=لیسانس, 7=فوق‌لیسانس, 8=دکتری"
+                            ),
+                        })
+
+                if row_field_errors:
+                    if skip_invalid_rows:
+                        skipped += 1
+                        skipped_rows.append({
+                            "row": row_idx,
+                            "national_code": national_code,
+                            "field_errors": row_field_errors,
+                        })
+                        continue
+                    else:
+                        raise ValueError("; ".join(e["message"] for e in row_field_errors))
+
+                # ── Upsert logic ──────────────────────────────────
                 existing = self.get_by_national_code(national_code)
                 if existing is not None:
                     if not update_existing:
                         skipped += 1
-                        errors.append({"row": row_idx, "error": "Personnel already exists"})
+                        skipped_rows.append({
+                            "row": row_idx,
+                            "national_code": national_code,
+                            "field_errors": [{"field": "national_code", "message": "کد ملی تکراری است"}],
+                        })
                         continue
-                    self.update(existing.id, fname, lname, national_code, employee_type, degree, shift_id, department_id)
+                    self.update(
+                        existing.id, fname, lname, national_code,
+                        employee_type, degree, shift_id, department_id,
+                    )
+                    action = "updated"
                 else:
-                    self.create(fname, lname, national_code, employee_type, degree, shift_id, department_id)
+                    self.create(
+                        fname, lname, national_code, employee_type,
+                        degree, shift_id, department_id,
+                    )
+                    action = "created"
                 created += 1
+                successful_rows.append({
+                    "row": row_idx,
+                    "action": action,
+                    "national_code": national_code,
+                    "fname": fname,
+                    "lname": lname,
+                    "employee_type": employee_type,
+                    "degree": degree,
+                    "shift_id": shift_id,
+                    "department_id": department_id,
+                })
             except ValueError as exc:
+                nc = locals().get("national_code", "")
                 if skip_invalid_rows:
                     skipped += 1
-                errors.append({"row": row_idx, "error": str(exc)})
+                    skipped_rows.append({
+                        "row": row_idx,
+                        "national_code": nc,
+                        "field_errors": [{"field": None, "message": str(exc)}],
+                    })
+                errors.append({
+                    "row": row_idx,
+                    "national_code": nc,
+                    "field_errors": [{"field": None, "message": str(exc)}],
+                })
             except Exception as exc:
+                msg = f"{type(exc).__name__}: {exc}"
+                nc = locals().get("national_code", "")
                 if skip_invalid_rows:
                     skipped += 1
-                errors.append({"row": row_idx, "error": f"{type(exc).__name__}: {exc}"})
-        return {"created": created, "skipped": skipped, "errors": errors}
+                    skipped_rows.append({
+                        "row": row_idx,
+                        "national_code": nc,
+                        "field_errors": [{"field": None, "message": msg}],
+                    })
+                errors.append({
+                    "row": row_idx,
+                    "national_code": nc,
+                    "field_errors": [{"field": None, "message": msg}],
+                })
+        return {
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+            "successful_rows": successful_rows,
+            "skipped_rows": skipped_rows,
+        }
 
     def upload_personnel_zip(
         self,
