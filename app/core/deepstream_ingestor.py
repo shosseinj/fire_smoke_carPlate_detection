@@ -11,7 +11,7 @@ from typing import Any, Callable
 from app.core.raw_stream_router import RawStreamRouter
 import cv2
 import numpy as np
-
+from app.core.frontend_frame_worker import FrontendFrameWorker
 from app.core.router import TaskRouter
 from app.core.source_registry import (
     RTSP,
@@ -61,10 +61,11 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
-
+    frontend_frame_index: int = -1
     codec: str | None = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
+    latest_source_frame: np.ndarray | None = None
     latest_version: int = 0
     submitted_version: int = 0
     frame_index: int = -1
@@ -116,6 +117,7 @@ class DeepStreamIngestor:
         loop: bool = True,
         source_type_filter: str = RTSP,
         raw_stream_router: RawStreamRouter | None = None,
+        frontend_frame_worker: FrontendFrameWorker | None = None,
         max_sources: int = 256,
         rtsp_enabled: bool = True,
         rtsp_transport: str = "tcp",
@@ -133,6 +135,7 @@ class DeepStreamIngestor:
         self.router = router
         self.project_root = project_root
         self.raw_stream_router = raw_stream_router
+        self.frontend_frame_worker = frontend_frame_worker
         self.gpu_resize_enabled = bool(gpu_resize_enabled)
         # NOTE: GPU resize is now handled by the nvvideoconvert capsfilter
         # in the GStreamer pipeline.  The _gpu_resize_available flag is kept
@@ -249,6 +252,11 @@ class DeepStreamIngestor:
         bgrx_caps: Any,
         pacer: Any,
     ) -> dict[str, Any]:
+        """Build one decode pipeline with two decoded branches.
+
+        Branch 1 keeps the decoded camera resolution and delivers BGR frames to
+ 
+        """
         Gst, _ = self._require_runtime()
 
         if codec == "h264":
@@ -274,25 +282,34 @@ class DeepStreamIngestor:
             Gst.Caps.from_string(encoded_caps_value),
         )
 
-        encoded_tee = self._make("tee", f"encoded_tee_{safe_id}")
         decode_queue = self._make("queue", f"decode_queue_{safe_id}")
-        raw_queue = self._make("queue", f"raw_queue_{safe_id}")
         decoder = self._make("nvv4l2decoder", f"decoder_{safe_id}")
+        decoded_tee = self._make("tee", f"decoded_tee_{safe_id}")
+
+        # Original-resolution decoded branch -> FrontendFrameWorker.
+        raw_queue = self._make("queue", f"raw_queue_{safe_id}")
+        raw_convert = self._make("nvvideoconvert", f"raw_convert_{safe_id}")
+        raw_caps = self._make("capsfilter", f"raw_caps_{safe_id}")
         raw_sink = self._make("appsink", f"raw_sink_{safe_id}")
 
-        decode_queue.set_property("leaky", 2)
-        decode_queue.set_property("max-size-buffers", 2)
-        decode_queue.set_property("max-size-bytes", 0)
-        decode_queue.set_property("max-size-time", 0)
+        raw_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,format=BGRx"),
+        )
 
-        raw_queue.set_property("leaky", 2)
-        raw_queue.set_property("max-size-buffers", 120)
-        raw_queue.set_property("max-size-bytes", 0)
-        raw_queue.set_property("max-size-time", 0)
+        # Queue configuration. Each branch is independent and may drop old frames.
+        for queue, max_buffers in (
+            (decode_queue, 4),
+            (raw_queue, 2),
+        ):
+            queue.set_property("leaky", 2)
+            queue.set_property("max-size-buffers", max_buffers)
+            queue.set_property("max-size-bytes", 0)
+            queue.set_property("max-size-time", 0)
 
         raw_sink.set_property("emit-signals", True)
         raw_sink.set_property("sync", False)
-        raw_sink.set_property("max-buffers", 60)
+        raw_sink.set_property("max-buffers", 1)
         raw_sink.set_property("drop", True)
         self._set_if_supported(raw_sink, "enable-last-sample", False)
 
@@ -300,52 +317,60 @@ class DeepStreamIngestor:
             depay,
             parser,
             encoded_caps,
-            encoded_tee,
             decode_queue,
-            raw_queue,
             decoder,
+            decoded_tee,
+            raw_queue,
+            raw_convert,
+            raw_caps,
             raw_sink,
         )
         for element in elements:
             pipeline.add(element)
 
+        # RTP/encoded input -> one hardware decoder.
         if not depay.link(parser):
             raise RuntimeError("Could not link depayloader to parser")
         if not parser.link(encoded_caps):
             raise RuntimeError("Could not link parser to encoded caps")
-        if not encoded_caps.link(encoded_tee):
-            raise RuntimeError("Could not link encoded caps to tee")
-
-        if not encoded_tee.link(decode_queue):
-            raise RuntimeError("Could not link tee to decode queue")
+        if not encoded_caps.link(decode_queue):
+            raise RuntimeError("Could not link encoded caps to decode queue")
         if not decode_queue.link(decoder):
             raise RuntimeError("Could not link decode queue to NVDEC")
-        if not decoder.link(pacer):
-            raise RuntimeError("Could not link NVDEC to pacer")
-        if not pacer.link(gpu_convert):
-            raise RuntimeError("Could not link pacer to nvvideoconvert")
-        if not gpu_convert.link(bgrx_caps):
-            raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
-        if not bgrx_caps.link(decoded_sink):
-            raise RuntimeError("Could not link BGRx caps to decoded appsink")
+        if not decoder.link(decoded_tee):
+            raise RuntimeError("Could not link NVDEC to decoded tee")
 
-        if not encoded_tee.link(raw_queue):
-            raise RuntimeError("Could not link tee to raw queue")
-        if not raw_queue.link(raw_sink):
-            raise RuntimeError("Could not link raw queue to raw appsink")
+        # Original-resolution decoded branch -> RawStreamRouter.
+        if not decoded_tee.link(raw_queue):
+            raise RuntimeError("Could not link decoded tee to raw queue")
+        if not raw_queue.link(raw_convert):
+            raise RuntimeError("Could not link raw queue to raw converter")
+        if not raw_convert.link(raw_caps):
+            raise RuntimeError("Could not link raw converter to raw caps")
+        if not raw_caps.link(raw_sink):
+            raise RuntimeError("Could not link raw caps to raw appsink")
+
+        # AI branch -> resize caps -> decoded_sink -> TaskRouter.
+        if not decoded_tee.link(pacer):
+            raise RuntimeError("Could not link decoded tee to AI pacer")
+        if not pacer.link(gpu_convert):
+            raise RuntimeError("Could not link AI pacer to nvvideoconvert")
+        if not gpu_convert.link(bgrx_caps):
+            raise RuntimeError("Could not link AI converter to 640x640 caps")
+        if not bgrx_caps.link(decoded_sink):
+            raise RuntimeError("Could not link AI caps to decoded appsink")
 
         raw_handler_id = raw_sink.connect(
             "new-sample",
             self._on_raw_sample,
             source_id,
-            codec,
         )
 
+        # The elements are added while the parent pipeline is already running.
         for element in elements:
             if not element.sync_state_with_parent():
                 raise RuntimeError(
-                    f"Could not sync GStreamer element state: "
-                    f"{element.get_name()}"
+                    f"Could not sync GStreamer element state: {element.get_name()}"
                 )
 
         return {
@@ -440,35 +465,40 @@ class DeepStreamIngestor:
         self,
         sink: Any,
         source_id: str,
-        codec: str,
     ) -> Any:
+        """Deliver an original-resolution decoded BGR frame to RawStreamRouter."""
         Gst, _ = self._require_runtime()
 
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.ERROR
 
-        buffer = sample.get_buffer()
-        if buffer is None:
-            return Gst.FlowReturn.ERROR
-
-        success, map_info = buffer.map(Gst.MapFlags.READ)
-        if not success:
-            return Gst.FlowReturn.ERROR
-
         try:
-            payload = bytes(map_info.data)
-            is_keyframe = not buffer.has_flags(Gst.BufferFlags.DELTA_UNIT)
+            caps = sample.get_caps()
+            if caps is None or caps.get_size() == 0:
+                raise ValueError("Raw decoded sample has no caps")
+
+            structure = caps.get_structure(0)
+            width = int(structure.get_value("width"))
+            height = int(structure.get_value("height"))
+            pixel_format = str(structure.get_value("format"))
+
+            buffer = sample.get_buffer()
+            if buffer is None:
+                raise ValueError("Raw decoded sample has no buffer")
+
+            payload = buffer.extract_dup(0, buffer.get_size())
+            frame = self._decode_cpu_sample(
+                payload,
+                width=width,
+                height=height,
+                pixel_format=pixel_format,
+            )
 
             pts_ns = (
                 None
                 if buffer.pts == Gst.CLOCK_TIME_NONE
                 else int(buffer.pts)
-            )
-            dts_ns = (
-                None
-                if buffer.dts == Gst.CLOCK_TIME_NONE
-                else int(buffer.dts)
             )
             duration_ns = (
                 None
@@ -476,30 +506,45 @@ class DeepStreamIngestor:
                 else int(buffer.duration)
             )
 
-            if self.raw_stream_router is not None:
-                self.raw_stream_router.publish_packet(
-                    source_id=source_id,
-                    codec=codec,
-                    pts_ns=pts_ns,
-                    dts_ns=dts_ns,
-                    duration_ns=duration_ns,
-                    is_keyframe=is_keyframe,
-                    data=payload,
-                )
-
+           
             with self._lock:
                 state = self._states.get(source_id)
-                if state is not None:
-                    state.raw_samples += 1
-                    state.raw_bytes += len(payload)
-                    state.last_raw_packet_monotonic = time.monotonic()
+
+                if state is None:
+                    return Gst.FlowReturn.OK
+
+                state.frontend_frame_index += 1
+                frame_index = state.frontend_frame_index
+
+                state.latest_source_frame = frame
+                state.source_frame_width = width
+                state.source_frame_height = height
+                state.raw_samples += 1
+                state.raw_bytes += int(frame.nbytes)
+                state.last_raw_packet_monotonic = time.monotonic()
+
+            source_time_seconds = (
+                None
+                if pts_ns is None
+                else float(pts_ns) / float(Gst.SECOND)
+            )
+
+            if self.frontend_frame_worker is not None:
+                self.frontend_frame_worker.submit_frame(
+                    source_id=source_id,
+                    frame=frame,
+                    frame_index=frame_index,
+                    source_time_seconds=source_time_seconds,
+                )
+
+
+
         except Exception:
             LOGGER.exception(
-                "Raw packet delivery failed source=%s",
+                "Raw decoded-frame delivery failed source=%s",
                 VideoFileIngestor.redact_uri(source_id),
             )
-        finally:
-            buffer.unmap(map_info)
+            return Gst.FlowReturn.ERROR
 
         return Gst.FlowReturn.OK
 
@@ -769,11 +814,8 @@ class DeepStreamIngestor:
                 )
 
             pacer.set_property("sync", False)
-
             bgrx_caps_value = (
-                f"video/x-raw,format=BGRx,"
-                f"width={record.frame_width},"
-                f"height={record.frame_height}"
+                "video/x-raw,format=BGRx,width=640,height=640"
             )
             bgrx_caps.set_property(
                 "caps",
@@ -846,8 +888,8 @@ class DeepStreamIngestor:
                 source_pad_handler_id=source_pad_handler_id,
                 decoded_sink_handler_id=decoded_sink_handler_id,
                 raw_sink_handler_id=None,
-                frame_width=record.frame_width,
-                frame_height=record.frame_height,
+                frame_width=640,
+                frame_height=640,
                 delivery_target_fps=record.fps,
             )
 
@@ -1035,11 +1077,7 @@ class DeepStreamIngestor:
                     if state.delivery_target_fps != record.fps:
                         state.next_frame_due_monotonic = 0.0
                     state.delivery_target_fps = record.fps
-            if state is not None and (
-                state.source_uri != record.source_uri
-                or state.frame_width != record.frame_width
-                or state.frame_height != record.frame_height
-            ):
+            if state is not None and state.source_uri != record.source_uri:
                 self._close_source(record.source_uri)
                 state = None
                 closing = True
@@ -1070,8 +1108,13 @@ class DeepStreamIngestor:
             ]
             # Frames are already at frame_width x frame_height from the
             # GPU capsfilter — no CPU resize needed.
-            source_frames = [state.latest_frame for state in selected]
-            frames = source_frames
+            frames = [state.latest_frame for state in selected]
+            source_frames = [
+                state.latest_source_frame
+                if state.latest_source_frame is not None
+                else state.latest_frame
+                for state in selected
+            ]
             source_ids = [state.source_id for state in selected]
             frame_indexes = [state.frame_index for state in selected]
             source_times = [state.source_time_seconds for state in selected]
@@ -1079,10 +1122,10 @@ class DeepStreamIngestor:
                 {
                     "source_uri": state.display_uri,
                     "source_type": state.source_type,
-                    "frame_width": state.frame_width,
-                    "frame_height": state.frame_height,
-                    "source_frame_width": state.source_frame_width,
-                    "source_frame_height": state.source_frame_height,
+                    "frame_width": 640,
+                    "frame_height": 640,
+                    "source_frame_width": int(source_frame.shape[1]),
+                    "source_frame_height": int(source_frame.shape[0]),
                     "source_frame": source_frame,
                     "ingest_backend": "deepstream",
                 }

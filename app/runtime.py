@@ -56,7 +56,7 @@ from app.processors.mock import MockProcessor
 from app.processors.plate import PlateRecognitionProcessor, PlateSettings
 from app.processors.ultralytics_loader import preload_model_dependencies
 from app.core.raw_stream_router import RawStreamRouter
-
+from app.core.frontend_frame_worker import FrontendFrameWorker
 LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -101,6 +101,7 @@ class Runtime:
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
+    frontend_frame_worker: FrontendFrameWorker | None = None
 
     raw_stream_router: RawStreamRouter | None = None
 
@@ -303,6 +304,9 @@ class Runtime:
         try:
             if self.raw_stream_router is not None:
                 self.raw_stream_router.start()
+            if self.frontend_frame_worker is not None:
+                self.frontend_frame_worker.start()
+
             if self.media_preview is not None:
                 try:
                     self.media_preview.start()
@@ -320,6 +324,9 @@ class Runtime:
                 self.static_video_ingestor.close()
             if self.video_ingestor is not None:
                 self.video_ingestor.close()
+            if self.frontend_frame_worker is not None:
+                self.frontend_frame_worker.close()
+
             if self.raw_stream_router is not None:
                 self.raw_stream_router.close()
             self.router.close()
@@ -336,8 +343,11 @@ class Runtime:
             self.static_video_ingestor.close()
         if self.video_ingestor is not None:
             self.video_ingestor.close()
+        if self.frontend_frame_worker is not None:
+            self.frontend_frame_worker.close()
         if self.raw_stream_router is not None:
             self.raw_stream_router.close()
+
         self.router.close()
         self.fire_smoke_logs.close()
         self.plate_logs.close()
@@ -347,6 +357,17 @@ class Runtime:
 
     def status(self) -> dict:
         value = self.router.status()
+
+        value["frontend_frame_worker"] = (
+            self.frontend_frame_worker.status()
+            if self.frontend_frame_worker is not None
+            else {
+                "running": False,
+                "enabled": False,
+            }
+        )
+
+        
         value["video_ingestor"] = (
             self.video_ingestor.status()
             if self.video_ingestor is not None
@@ -874,6 +895,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     video_ingestor = None
     static_video_ingestor = None
     raw_stream_router = None
+    frontend_frame_worker = None
     if app_settings.video_ingestion_enabled:
         common_ingestor_settings = {
             "registry": registry,
@@ -906,12 +928,34 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             #     ),
             #     skip_taskless_sources=app_settings.skip_taskless_sources,
             # )
+            def publish_frontend_frame(
+                source_id: str,
+                frame,
+                frame_index: int,
+                source_time_seconds: float | None,
+            ) -> None:
+                broadcast.publish_source_frame(
+                    source_id=source_id,
+                    frame=frame,
+                    frame_index=frame_index,
+                    source_time_seconds=source_time_seconds,
+                )
+
+            frontend_frame_worker = FrontendFrameWorker(
+                publish_callback=publish_frontend_frame,
+                queue_capacity=32,
+            )
+
+
+
             video_ingestor = DeepStreamIngestor(
                 **common_ingestor_settings,
                 raw_stream_router=raw_stream_router,
                 source_type_filter="rtsp",
                 loop=operational.video_loop,
                 max_sources=operational.rtsp_source_count,
+                # Original decoded frame path
+                frontend_frame_worker=frontend_frame_worker,
                 rtsp_enabled=app_settings.rtsp_ingestion_enabled,
                 rtsp_latency_ms=operational.deepstream_rtsp_latency_ms,
                 rtsp_stall_timeout_seconds=(
@@ -963,6 +1007,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         settings=app_settings,
         database=database,
         raw_stream_router=raw_stream_router,
+        frontend_frame_worker=frontend_frame_worker,
         registry=registry,
         results=results,
         router=router,

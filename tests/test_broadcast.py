@@ -924,3 +924,27 @@ def test_source_only_renderer_uses_configured_bounded_worker_pool() -> None:
         assert state["render_threads"] == 2
     finally:
         hub.close()
+
+
+def test_publish_source_frame_builds_complete_packet_for_async_render() -> None:
+    hub = AnnotatedBroadcastHub(enabled=True, async_render=True)
+    subscriber_id, _ = hub.subscribe_source_only(wall=True)
+    try:
+        hub.publish_source_frame(
+            source_id="camera-07",
+            frame=np.zeros((180, 320, 3), dtype=np.uint8),
+            frame_index=27,
+            source_time_seconds=1.25,
+        )
+
+        deadline = time.monotonic() + 2.0
+        while (
+            "camera-07" not in hub._source_only_latest
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        assert hub._source_only_latest["camera-07"].frame_index == 27
+    finally:
+        hub.unsubscribe_source_only(subscriber_id)
+        hub.close()

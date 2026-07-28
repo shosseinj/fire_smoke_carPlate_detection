@@ -7,6 +7,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import cv2
@@ -1035,6 +1036,60 @@ class AnnotatedBroadcastHub:
             if self._subscribers and not self._source_only_subscribers:
                 return
         self._render_source_only(packet.source_id, packet.frame_index, packet.frame)
+
+
+
+    def publish_source_frame(
+        self,
+        *,
+        source_id: str,
+        frame: np.ndarray,
+        frame_index: int,
+        source_time_seconds: float | None = None,
+    ) -> None:
+        self._source_only_submitted += 1
+
+        if self._async_render:
+            with self._condition:
+                if not self._enabled:
+                    return
+
+                if self._subscribers and not self._source_only_subscribers:
+                    return
+
+            packet = FramePacket(
+                source_id=source_id,
+                frame=frame,
+                round_sequence=frame_index,
+                frame_index=frame_index,
+                captured_monotonic=time.monotonic(),
+                captured_at_utc=datetime.now(timezone.utc).isoformat(),
+                source_time_seconds=source_time_seconds,
+                metadata={
+                    "source_uri": source_id,
+                    "source_type": "rtsp",
+                    "source_frame_width": int(frame.shape[1]),
+                    "source_frame_height": int(frame.shape[0]),
+                    "ingest_backend": "deepstream",
+                },
+            )
+
+            if not self._source_only_render_buffer.put(packet):
+                self._source_only_dropped += 1
+
+            return
+
+        with self._condition:
+            if self._subscribers and not self._source_only_subscribers:
+                return
+
+        self._render_source_only(
+            source_id,
+            frame_index,
+            frame,
+        )
+
+
 
     def _render_source_only(
         self, source_id: str, frame_index: int, frame: np.ndarray
