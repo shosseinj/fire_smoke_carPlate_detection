@@ -5,15 +5,16 @@ from pathlib import Path
 
 import numpy as np
 
+from app.api.plate_logs import PlateLogCreate
 from app.core.plate_log_store import PlateLogStore
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database, metadata
 
 
-def plate_result() -> TaskResult:
+def plate_result(source_id: str = "camera-01") -> TaskResult:
     return TaskResult(
         task=TaskName.PLATE_RECOGNITION,
-        source_id="camera-01",
+        source_id=source_id,
         round_sequence=1,
         frame_index=6908,
         captured_at_utc="2026-07-15T08:00:00+00:00",
@@ -21,86 +22,175 @@ def plate_result() -> TaskResult:
         processing_ms=12.0,
         data={
             "plate_count": 1,
-            "plates": [{"plate": "23ن92917"}],
+            "plate_ocr_results": [
+                {
+                    "raw_plate_text": "23 ن 92917",
+                    "plate_number": "23ن92917",
+                    "is_valid_plate": True,
+                    "recognizer_confidence": 0.91,
+                }
+            ],
+            "plates": [
+                {
+                    "plate": "23ن92917",
+                    "recognizer_confidence": 0.91,
+                    "detector_confidence": 0.88,
+                }
+            ],
         },
     )
 
 
-def test_plate_log_table_saves_detection_and_snapshot_url(
-    tmp_path: Path,
-    postgres_database: Database,
-) -> None:
-    store = PlateLogStore(
-        postgres_database,
-        draw_info=False,
-        save_plate_snapshot=False,
-        media_root=tmp_path / "media",
-    )
-
-    source_packet = FramePacket(
-        source_id="camera-01",
+def packet(source_id: str = "camera-01") -> FramePacket:
+    return FramePacket(
+        source_id=source_id,
         frame=np.zeros((24, 32, 3), dtype=np.uint8),
         round_sequence=1,
         frame_index=6908,
         captured_monotonic=time.monotonic(),
         captured_at_utc="2026-07-15T08:00:00+00:00",
     )
-    assert store.insert_result(source_packet, plate_result()) == 1
-    rows = store.list()
-    assert rows[0]["camera"] == "camera-01"
-    assert rows[0]["time"] == "2026-07-15T08:00:01Z"
-    assert rows[0]["plate"] == "23ن92917"
-    assert rows[0]["snapshot_url"].startswith("/media/plate/snapshots/")
-    assert rows[0]["video_url"].startswith("/media/plate/videos/")
-    video = tmp_path / "media" / rows[0]["video_url"].removeprefix("/media/")
-    assert video.is_file()
+
+
+def test_camera_detection_uses_normalized_fields_and_capture_time(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    with postgres_database.connection() as connection:
+        registered = connection.execute(
+            """
+            INSERT INTO car_plates (
+                left_digits, plate_alphabet, right_digits, iran_code,
+                usage_type, vehicle_type, owner_name, owner_phone
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+            """,
+            ("23", "ن", "929", "17", "personal", "sedan", "Test", "+989121234567"),
+        ).fetchone()
+        connection.commit()
+    store = PlateLogStore(
+        postgres_database,
+        draw_info=False,
+        save_plate_snapshot=True,
+        media_root=tmp_path / "media",
+    )
+    try:
+        assert store.insert_result(packet(), plate_result()) == 1
+        row = store.list_logs()[0]
+        assert row["source_type"] == "camera"
+        assert row["source_uri"] == "camera-01"
+        assert row["static_video_id"] is None
+        assert row["plate_id"] == int(registered["id"])
+        assert row["plate_number"] == "23ن92917"
+        assert row["raw_plate_text"] == "23 ن 92917"
+        assert row["confidence"] == 0.91
+        assert str(row["detection_time"]).startswith("2026-07-15 08:00:00")
+        assert row["snapshot_key"].startswith("plate/snapshots/")
+        assert row["snapshot_url"].startswith("/media/plate/snapshots/")
+        assert row["video_key"].startswith("plate/videos/")
+        assert (tmp_path / "media" / row["snapshot_key"]).is_file()
+        assert (tmp_path / "media" / row["video_key"]).is_file()
+    finally:
+        store.close()
 
     assert set(metadata.tables["plate_logs"].c.keys()) == {
-        "id", "camera", "time", "plate", "snapshot_url", "video_url", "details_json"
+        "id", "source_type", "source_uri", "static_video_id",
+        "created_by_user_id", "updated_by_user_id", "plate_id",
+        "plate_number", "raw_plate_text", "confidence", "detection_time",
+        "snapshot_key", "video_key", "notes", "created_at", "updated_at",
     }
 
 
-def test_manual_plate_log_insert_and_filters(postgres_database: Database) -> None:
+def test_static_video_detection_uses_static_video_id(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    source_uri = "/media/static/plate.mp4"
+    with postgres_database.connection() as connection:
+        row = connection.execute(
+            "INSERT INTO static_videos (name, source_uri) VALUES (?, ?) RETURNING id",
+            ("plate video", source_uri),
+        ).fetchone()
     store = PlateLogStore(
         postgres_database,
         draw_info=False,
         save_plate_snapshot=False,
+        media_root=tmp_path / "media",
     )
-    store.insert(
-        camera="camera-02",
-        time="2026-07-15T08:00:00+00:00",
-        plate="A1",
-        snapshot_url="/media/plate/snapshots/a1.jpg",
-    )
-    store.insert(
-        camera="camera-03",
-        time="2026-07-15T08:00:01+00:00",
-        plate="B2",
-        snapshot_url="/media/plate/snapshots/b2.jpg",
-    )
-
-    assert store.count() == 2
-    assert store.list(camera="camera-03")[0]["plate"] == "B2"
-    assert store.list(plate="A1")[0]["camera"] == "camera-02"
+    try:
+        assert store.insert_result(packet(source_uri), plate_result(source_uri)) == 1
+        saved = store.list_logs()[0]
+        assert saved["source_type"] == "static_video"
+        assert saved["source_uri"] is None
+        assert saved["static_video_id"] == int(row["id"])
+        assert saved["snapshot_key"] is None
+    finally:
+        store.close()
 
 
-def test_serialize_plate_log_maps_legacy_detection_columns() -> None:
-    row = PlateLogStore._serialize_plate_log(
+def test_manual_log_and_update_record_user_ids(postgres_database: Database) -> None:
+    store = PlateLogStore(postgres_database, draw_info=False, save_plate_snapshot=False)
+    try:
+        created = store.create_log(
+            {
+                "source_type": "manual",
+                "source_uri": None,
+                "static_video_id": None,
+                "created_by_user_id": 7,
+                "plate_number": "23ن92917",
+                "detection_time": "2026-07-15T08:00:00+00:00",
+            }
+        )
+        assert created["created_by_user_id"] == 7
+        assert created["source_uri"] is None
+        updated = store.update_log(
+            created["id"], {"notes": "reviewed", "updated_by_user_id": 9}
+        )
+        assert updated is not None
+        assert updated["updated_by_user_id"] == 9
+        assert updated["notes"] == "reviewed"
+    finally:
+        store.close()
+
+
+def test_manual_api_schema_rejects_automated_source_type() -> None:
+    try:
+        PlateLogCreate(
+            source_type="camera",
+            plate_number="23ن92917",
+            detection_time="2026-07-15T08:00:00+00:00",
+        )
+    except ValueError as exc:
+        assert "manual" in str(exc).lower() or "دستی" in str(exc)
+    else:
+        raise AssertionError("camera source type must not be accepted by manual API")
+
+
+def test_invalid_ocr_text_is_saved_without_plate_number(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    result = plate_result()
+    result.data["plates"] = []
+    result.data["plate_count"] = 0
+    result.data["plate_ocr_results"] = [
         {
-            "plate_full_number": None,
-            "camera_id": None,
-            "detection_time": None,
-            "snapshot_path": None,
-            "plate": "23ن92917",
-            "camera": "camera-01",
-            "time": "2026-07-15T08:00:01+00:00",
-            "snapshot_url": "/media/plate_snapshots/plate.jpg",
-            "is_verified": 0,
+            "raw_plate_text": " 12 ب 3456 ",
+            "plate_number": None,
+            "is_valid_plate": False,
+            "recognizer_confidence": 0.84,
         }
+    ]
+    store = PlateLogStore(
+        postgres_database,
+        draw_info=False,
+        save_plate_snapshot=False,
+        media_root=tmp_path / "media",
     )
-
-    assert row["plate_full_number"] == "23ن92917"
-    assert row["camera_id"] == "camera-01"
-    assert row["detection_time"] == "2026-07-15T08:00:01+00:00"
-    assert row["snapshot_path"] == "/media/plate_snapshots/plate.jpg"
-    assert row["is_verified"] is False
+    try:
+        assert store.insert_result(packet(), result) == 1
+        saved = store.list_logs()[0]
+        assert saved["raw_plate_text"] == " 12 ب 3456 "
+        assert saved["plate_number"] is None
+        assert saved["plate_id"] is None
+    finally:
+        store.close()

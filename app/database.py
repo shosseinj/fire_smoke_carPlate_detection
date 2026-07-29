@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260729_0042"
+ALEMBIC_HEAD_REVISION = "20260729_0045"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -343,38 +343,42 @@ Index("idx_car_plates_vehicle_type", car_plates.c.vehicle_type)
 plate_logs = Table(
     "plate_logs", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("camera", Text, nullable=False),
-    Column("time", UTC_TS, nullable=False),
-    Column("plate", Text, nullable=False),
-    Column("snapshot_url", Text, nullable=False, server_default=""),
-    Column("video_url", Text, nullable=False, server_default=""),
-    Column("details_json", Text, nullable=False, server_default="{}"),
-    Column("plate_id", Integer),
-    Column("plate_full_number", String(32)),
-    Column("raw_plate_text", String(64)),
-    Column("detection_time", UTC_TS),
-    Column("camera_id", String(200)),
-    Column("confidence", Float),
-    Column("direction", String(16), server_default="unknown"),
-    Column("source_type", String(16), server_default="camera"),
-    Column("snapshot_path", String(512)),
-    Column("plate_crop_path", String(512)),
-    Column("is_verified", Integer, server_default="0"),
+    Column("source_type", String(16), nullable=False, server_default="camera"),
+    Column("source_uri", Text),
+    Column("static_video_id", Integer),
     Column("created_by_user_id", Integer),
-    Column("verified_by_user_id", Integer),
-    Column("verified_at", UTC_TS),
+    Column("updated_by_user_id", Integer),
+    Column("plate_id", Integer, ForeignKey("car_plates.id", ondelete="SET NULL")),
+    Column("plate_number", String(32)),
+    Column("raw_plate_text", String(64)),
+    Column("confidence", Float),
+    Column("detection_time", UTC_TS, nullable=False),
+    Column("snapshot_key", Text),
+    Column("video_key", Text),
     Column("notes", Text),
-    Column("created_at", UTC_TS),
-    Column("updated_at", UTC_TS),
+    Column("created_at", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("updated_at", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    CheckConstraint(
+        "(source_type = 'camera' AND source_uri IS NOT NULL AND static_video_id IS NULL AND created_by_user_id IS NULL) OR "
+        "(source_type = 'static_video' AND source_uri IS NULL AND static_video_id IS NOT NULL AND created_by_user_id IS NULL) OR "
+        "(source_type = 'manual' AND source_uri IS NULL AND static_video_id IS NULL AND created_by_user_id IS NOT NULL)",
+        name="ck_plate_logs_source_identity",
+    ),
+    CheckConstraint(
+        "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+        name="ck_plate_logs_confidence",
+    ),
+    CheckConstraint(
+        "plate_number IS NOT NULL OR raw_plate_text IS NOT NULL",
+        name="ck_plate_logs_has_ocr_text",
+    ),
 )
-Index("idx_plate_logs_time", plate_logs.c.time)
-Index("idx_plate_logs_camera", plate_logs.c.camera)
-Index("idx_plate_logs_plate", plate_logs.c.plate)
 Index("idx_plate_logs_plate_id", plate_logs.c.plate_id)
-Index("idx_plate_logs_full_number", plate_logs.c.plate_full_number)
-Index("idx_plate_logs_camera_id", plate_logs.c.camera_id)
+Index("idx_plate_logs_plate_number", plate_logs.c.plate_number)
+Index("idx_plate_logs_source_uri", plate_logs.c.source_uri)
+Index("idx_plate_logs_static_video_id", plate_logs.c.static_video_id)
 Index("idx_plate_logs_detection_time", plate_logs.c.detection_time)
-Index("idx_plate_logs_direction", plate_logs.c.direction)
+Index("idx_plate_logs_source_type", plate_logs.c.source_type)
 
 plate_general_settings = Table(
     "plate_general_settings", metadata,

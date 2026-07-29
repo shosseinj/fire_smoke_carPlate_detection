@@ -44,14 +44,9 @@ class VehicleType(str, Enum):
     OTHER = "other"
 
 
-class PlateLogDirection(str, Enum):
-    ENTRY = "entry"
-    EXIT = "exit"
-    UNKNOWN = "unknown"
-
-
 class PlateLogSourceType(str, Enum):
     CAMERA = "camera"
+    STATIC_VIDEO = "static_video"
     MANUAL = "manual"
 
 

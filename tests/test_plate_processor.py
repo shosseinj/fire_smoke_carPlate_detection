@@ -156,6 +156,8 @@ def test_vehicle_plate_and_ocr_stages_are_batched(tmp_path: Path) -> None:
     assert plate_detector.kwargs["quantize"] == 16
     assert "half" not in plate_detector.kwargs
     assert results[0].data["plates"][0]["plate"] == "12ب34567"
+    assert results[0].data["plates"][0]["raw_plate_text"] == "12 ب 34567"
+    assert results[0].data["plate_ocr_results"][0]["plate_number"] == "12ب34567"
     assert results[0].data["plates"][0]["bbox"] == [3, 3, 21, 11]
     assert results[0].data["plates"][0]["vehicle_bbox"] == [1, 1, 30, 22]
     assert results[0].data["vehicle_count"] == 1
@@ -210,6 +212,18 @@ def test_partial_ocr_is_rejected(tmp_path: Path) -> None:
 
     assert result.data["plates"] == []
     assert result.data["rejected_plate_formats"] == 1
+    assert result.data["plate_ocr_results"] == [
+        {
+            "raw_plate_text": "12 ب 3456",
+            "plate_number": None,
+            "is_valid_plate": False,
+            "detector_confidence": 0.9,
+            "recognizer_confidence": 0.95,
+            "bbox": [3, 3, 21, 11],
+            "vehicle_bbox": [1, 1, 30, 22],
+            "vehicle_confidence": 0.9,
+        }
+    ]
 
 
 def test_small_vehicle_is_rejected_before_plate_inference(tmp_path: Path) -> None:

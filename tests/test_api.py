@@ -499,22 +499,23 @@ def test_source_control_api_uses_persistent_registry(tmp_path: Path) -> None:
             response = client.post(
                 "/api/v1/plate-logs",
                 json={
-                    "camera_id": "camera-01",
-                    "time": "2026-07-15T08:15:30+03:30",
-                    "plate": "23ن92917",
+                    "detection_time": "2026-07-15T08:15:30+03:30",
+                    "plate_number": "23ن92917",
                 },
             )
             assert response.status_code == 201
-            assert response.json()["camera"] == "camera-01"
-            assert response.json()["plate"] == "23ن92917"
+            assert response.json()["source_type"] == "manual"
+            assert response.json()["source_uri"] is None
+            assert response.json()["plate_number"] == "23ن92917"
+            assert response.json()["created_by_user_id"] is not None
 
             response = client.get(
                 "/api/v1/plate-logs",
-                params={"camera_id": "camera-01", "limit": 10},
+                params={"source_type": "manual", "plate_number": "23ن92917", "limit": 10},
             )
             assert response.status_code == 200
             assert len(response.json()) == 1
-            assert response.json()[0]["plate"] == "23ن92917"
+            assert response.json()[0]["plate_number"] == "23ن92917"
 
             response = client.get("/api/v1/broadcast/state")
             assert response.status_code == 200

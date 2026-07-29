@@ -1,41 +1,41 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.auth import get_current_user, require_role
 from app.core.auth_store import UserRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
+from app.core.detection_media import DetectionMediaStorage, InvalidMediaKey
 from app.core.plate_constants import (
-    PlateLogDirection,
     PlateLogSourceType,
     normalize_persian_text,
     normalize_plate_full_number,
 )
 from app.runtime import Runtime
-from app.time_utils import utc_now
 
 
 router = APIRouter(prefix="/api/v1/plate-logs", tags=["plate-logs"])
 
 
 class PlateLogCreate(BaseModel):
-    plate_id: Optional[int] = Field(default=None, ge=1)
-    plate_full_number: str = Field(..., max_length=32)
-    raw_plate_text: Optional[str] = Field(default=None, max_length=64)
-    detection_time: datetime = Field()
-    camera_id: str = Field(..., min_length=1, max_length=200)
-    confidence: Optional[float] = Field(default=None, ge=0, le=1)
-    direction: PlateLogDirection = Field(default=PlateLogDirection.UNKNOWN)
-    source_type: PlateLogSourceType = Field(default=PlateLogSourceType.CAMERA)
-    snapshot_path: Optional[str] = Field(default=None, max_length=512)
-    video_url: Optional[str] = Field(default=None, max_length=512)
-    plate_crop_path: Optional[str] = Field(default=None, max_length=512)
-    notes: Optional[str] = None
+    plate_id: int | None = Field(default=None, ge=1)
+    plate_number: str = Field(max_length=32)
+    raw_plate_text: str | None = Field(default=None, max_length=64)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    detection_time: datetime
+    source_type: PlateLogSourceType = PlateLogSourceType.MANUAL
+    snapshot_key: str | None = Field(default=None, max_length=512)
+    video_key: str | None = Field(default=None, max_length=512)
+    notes: str | None = None
 
-    @field_validator("plate_full_number", mode="before")
+    @field_validator("plate_number", mode="before")
     @classmethod
     def normalize_plate_number(cls, value: object) -> object:
         return normalize_plate_full_number(value)
@@ -47,32 +47,32 @@ class PlateLogCreate(BaseModel):
 
     @field_validator("detection_time")
     @classmethod
-    def validate_detection_time_timezone(cls, value: datetime) -> datetime:
+    def validate_timezone(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("زمان تشخیص باید همراه با منطقه زمانی ارسال شود")
         return value
 
+    @model_validator(mode="after")
+    def manual_only(self) -> "PlateLogCreate":
+        if self.source_type != PlateLogSourceType.MANUAL:
+            raise ValueError("ثبت API فقط برای لاگ دستی مجاز است")
+        return self
+
 
 class PlateLogUpdate(BaseModel):
-    plate_id: Optional[int] = Field(default=None, ge=1)
-    plate_full_number: Optional[str] = Field(default=None, max_length=32)
-    raw_plate_text: Optional[str] = Field(default=None, max_length=64)
-    detection_time: Optional[datetime] = None
-    camera_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    confidence: Optional[float] = Field(default=None, ge=0, le=1)
-    direction: Optional[PlateLogDirection] = None
-    snapshot_path: Optional[str] = Field(default=None, max_length=512)
-    video_url: Optional[str] = Field(default=None, max_length=512)
-    plate_crop_path: Optional[str] = Field(default=None, max_length=512)
-    is_verified: Optional[bool] = None
-    notes: Optional[str] = None
+    plate_id: int | None = Field(default=None, ge=1)
+    plate_number: str | None = Field(default=None, max_length=32)
+    raw_plate_text: str | None = Field(default=None, max_length=64)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    detection_time: datetime | None = None
+    snapshot_key: str | None = Field(default=None, max_length=512)
+    video_key: str | None = Field(default=None, max_length=512)
+    notes: str | None = None
 
-    @field_validator("plate_full_number", mode="before")
+    @field_validator("plate_number", mode="before")
     @classmethod
     def normalize_plate_number(cls, value: object) -> object:
-        if value is None:
-            return None
-        return normalize_plate_full_number(value)
+        return None if value is None else normalize_plate_full_number(value)
 
     @field_validator("raw_plate_text", "notes", mode="before")
     @classmethod
@@ -81,7 +81,7 @@ class PlateLogUpdate(BaseModel):
 
     @field_validator("detection_time")
     @classmethod
-    def validate_detection_time_timezone(cls, value: Optional[datetime]) -> Optional[datetime]:
+    def validate_timezone(cls, value: datetime | None) -> datetime | None:
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("زمان تشخیص باید همراه با منطقه زمانی ارسال شود")
         return value
@@ -89,32 +89,106 @@ class PlateLogUpdate(BaseModel):
 
 class PlateLogResponse(BaseModel):
     id: int
-    plate_id: Optional[int] = None
-    plate_full_number: str
-    raw_plate_text: Optional[str] = None
-    detection_time: Optional[datetime] = None
-    camera_id: Optional[str] = None
-    confidence: Optional[float] = None
-    direction: Optional[str] = None
-    source_type: Optional[str] = None
-    snapshot_path: Optional[str] = None
-    video_url: Optional[str] = None
-    plate_crop_path: Optional[str] = None
-    is_verified: bool = False
-    created_by_user_id: Optional[int] = None
-    verified_by_user_id: Optional[int] = None
-    verified_at: Optional[datetime] = None
-    notes: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    model_config = {"from_attributes": True}
+    source_type: PlateLogSourceType
+    source_uri: str | None = None
+    static_video_id: int | None = None
+    created_by_user_id: int | None = None
+    updated_by_user_id: int | None = None
+    plate_id: int | None = None
+    plate_number: str | None = None
+    raw_plate_text: str | None = None
+    confidence: float | None = None
+    detection_time: datetime
+    detection_time_local: str
+    detection_time_jalali: str
+    snapshot_thumbnail: str | None = None
+    snap_shot_url: str | None = None
+    video_url: str | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 def get_runtime() -> Runtime:
     from app.main import runtime
 
     return runtime
+
+
+def _time_text(value: Any) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _media_storage(runtime: Runtime) -> DetectionMediaStorage:
+    return DetectionMediaStorage(runtime.plate_logs.media_root)
+
+
+def _response(
+    value: dict[str, Any],
+    media: DetectionMediaStorage,
+    *,
+    check_media: bool = True,
+) -> dict[str, Any]:
+    result = dict(value)
+    detected = result["detection_time"]
+    if not isinstance(detected, datetime):
+        detected = datetime.fromisoformat(str(detected).replace("Z", "+00:00"))
+    result["detection_time_local"] = detected.astimezone(
+        ZoneInfo("Asia/Tehran")
+    ).isoformat()
+    result["detection_time_jalali"] = (
+        utc_iso_to_jalali_datetime(_time_text(detected)) or ""
+    )
+    snapshot_key = result.pop("snapshot_key", None)
+    video_key = result.pop("video_key", None)
+    result.pop("snapshot_url", None)
+    snapshot_ready = bool(snapshot_key) and (
+        not check_media or media.exists(snapshot_key)
+    )
+    video_ready = bool(video_key) and (
+        not check_media or media.exists(video_key)
+    )
+    result["snapshot_thumbnail"] = (
+        media.thumbnail_data_uri(None, snapshot_key) if snapshot_key else None
+    )
+    result["snap_shot_url"] = (
+        f"/api/v1/plate-logs/{result['id']}/snapshot" if snapshot_ready else None
+    )
+    result["video_url"] = (
+        f"/api/v1/plate-logs/{result['id']}/video" if video_ready else None
+    )
+    return result
+
+
+def _media_path(
+    log_id: int,
+    kind: str,
+    runtime: Runtime,
+) -> tuple[Path, DetectionMediaStorage]:
+    record = _get_log_or_404(log_id, runtime)
+    key = record.get("snapshot_key" if kind == "snapshot" else "video_key")
+    media = _media_storage(runtime)
+    try:
+        path = media.resolve(key, require_file=True)
+    except InvalidMediaKey as exc:
+        raise HTTPException(status_code=404, detail="پرونده رسانه یافت نشد") from exc
+    if path is None or path.stat().st_size <= 0:
+        raise HTTPException(status_code=404, detail="پرونده رسانه یافت نشد")
+    return path, media
+
+
+def _serve_media(path: Path, media: DetectionMediaStorage, download: bool) -> FileResponse:
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        str(path),
+        media_type=media.content_type(path),
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'{disposition}; filename="{path.name}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 def _get_log_or_404(log_id: int, runtime: Runtime) -> dict[str, Any]:
@@ -124,25 +198,23 @@ def _get_log_or_404(log_id: int, runtime: Runtime) -> dict[str, Any]:
     return value
 
 
-def _validate_references(runtime: Runtime, plate_id: int | None, camera_id: str) -> None:
-    if plate_id is not None:
-        plate = runtime.car_plates.get(plate_id)
-        if plate is None:
-            raise HTTPException(status_code=404, detail="پلاک ثبت‌شده انتخاب‌شده یافت نشد")
+def _validate_plate(runtime: Runtime, plate_id: int | None) -> None:
+    if plate_id is not None and runtime.car_plates.get(plate_id) is None:
+        raise HTTPException(status_code=404, detail="پلاک ثبت‌شده یافت نشد")
 
 
 @router.get("", response_model=list[PlateLogResponse])
 def list_plate_logs(
-    plate_id: Optional[int] = Query(default=None, ge=1),
-    plate_full_number: Optional[str] = Query(default=None, max_length=32),
-    camera_id: Optional[str] = Query(default=None, max_length=200),
-    direction: Optional[PlateLogDirection] = None,
-    source_type: Optional[PlateLogSourceType] = None,
-    is_verified: Optional[bool] = None,
-    detected_from: Optional[str] = Query(default=None),
-    detected_to: Optional[str] = Query(default=None),
+    plate_id: int | None = Query(default=None, ge=1),
+    plate_number: str | None = Query(default=None, max_length=32),
+    source_uri: str | None = Query(default=None, max_length=500),
+    static_video_id: int | None = Query(default=None, ge=1),
+    source_type: PlateLogSourceType | None = None,
+    detected_from: str | None = None,
+    detected_to: str | None = None,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
+    _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
     try:
@@ -150,24 +222,23 @@ def list_plate_logs(
             datetime.fromisoformat(detected_from.replace("Z", "+00:00"))
         if detected_to:
             datetime.fromisoformat(detected_to.replace("Z", "+00:00"))
-    except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail="بازه زمانی باید با قالب معتبر ISO 8601 و همراه با منطقه زمانی ارسال شود",
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="بازه زمانی ISO 8601 نامعتبر است") from exc
+    media = _media_storage(runtime)
+    return [
+        _response(item, media, check_media=False)
+        for item in runtime.plate_logs.list_logs(
+            plate_id=plate_id,
+            plate_number=plate_number,
+            source_uri=source_uri,
+            static_video_id=static_video_id,
+            source_type=source_type.value if source_type else None,
+            detected_from=detected_from,
+            detected_to=detected_to,
+            skip=skip,
+            limit=limit,
         )
-
-    return runtime.plate_logs.list_logs(
-        plate_id=plate_id,
-        plate_full_number=plate_full_number,
-        camera_id=camera_id,
-        direction=direction.value if direction else None,
-        source_type=source_type.value if source_type else None,
-        is_verified=is_verified,
-        detected_from=detected_from,
-        detected_to=detected_to,
-        skip=skip,
-        limit=limit,
-    )
+    ]
 
 
 @router.get("/{log_id}", response_model=PlateLogResponse)
@@ -176,69 +247,96 @@ def get_plate_log(
     _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    return _get_log_or_404(log_id, runtime)
+    return _response(_get_log_or_404(log_id, runtime), _media_storage(runtime))
 
 
 @router.post("", response_model=PlateLogResponse, status_code=status.HTTP_201_CREATED)
-@router.post("/", response_model=PlateLogResponse, status_code=status.HTTP_201_CREATED)
 def create_plate_log(
     log_data: PlateLogCreate,
     admin_user: UserRecord = Depends(require_role("admin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     payload = log_data.model_dump(mode="python")
-    source_type = payload["source_type"]
-    created_by_user_id: int | None = admin_user.id if source_type == PlateLogSourceType.MANUAL.value else None
-    _validate_references(runtime, payload.get("plate_id"), payload["camera_id"])
-
-    data = dict(payload)
-    data["created_by_user_id"] = created_by_user_id
-    data["plate_full_number"] = normalize_plate_full_number(payload["plate_full_number"])
-    try:
-        return runtime.plate_logs.create_log(data)
-    except Exception as exc:
-        if "UNIQUE" in str(exc).upper():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="تشخیص مشابه این پلاک برای همین دوربین و جهت، در بازه یک دقیقه‌ای قبلاً ثبت شده است",
-            ) from exc
-        raise
+    _validate_plate(runtime, payload.get("plate_id"))
+    payload.update(
+        source_type="manual",
+        source_uri=None,
+        static_video_id=None,
+        created_by_user_id=admin_user.id,
+    )
+    return _response(
+        runtime.plate_logs.create_log(payload), _media_storage(runtime)
+    )
 
 
 @router.patch("/{log_id}", response_model=PlateLogResponse)
 def update_plate_log(
     log_id: int,
     log_data: PlateLogUpdate,
-    superuser: UserRecord = Depends(require_role("superuser")),
+    user: UserRecord = Depends(require_role("admin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    plate_log = _get_log_or_404(log_id, runtime)
+    _get_log_or_404(log_id, runtime)
     updates = log_data.model_dump(exclude_unset=True, mode="python")
-
-    final_plate_id = updates.get("plate_id", plate_log.get("plate_id"))
-    final_camera_id = updates.get("camera_id", plate_log.get("camera_id", ""))
-    _validate_references(runtime, final_plate_id, final_camera_id)
-
-    requested_verification = updates.pop("is_verified", None)
-    if requested_verification is True:
-        updates["is_verified"] = True
-        updates["verified_by_user_id"] = superuser.id
-        updates["verified_at"] = utc_now().isoformat()
-    elif requested_verification is False:
-        updates["is_verified"] = False
-        updates["verified_by_user_id"] = None
-        updates["verified_at"] = None
-
+    _validate_plate(runtime, updates.get("plate_id"))
+    updates["updated_by_user_id"] = user.id
     result = runtime.plate_logs.update_log(log_id, updates)
     if result is None:
         raise HTTPException(status_code=404, detail="لاگ تشخیص پلاک یافت نشد")
-    return result
+    return _response(result, _media_storage(runtime))
+
+
+@router.get("/{log_id}/snapshot")
+def get_plate_snapshot(
+    log_id: int,
+    request: Request,
+    download: bool = Query(default=False),
+    _: UserRecord = Depends(get_current_user),
+    runtime: Runtime = Depends(get_runtime),
+) -> FileResponse:
+    del request  # FileResponse handles range requests in the active Starlette runtime.
+    path, media = _media_path(log_id, "snapshot", runtime)
+    return _serve_media(path, media, download)
+
+
+@router.get("/{log_id}/thumbnail")
+def get_plate_thumbnail(
+    log_id: int,
+    _: UserRecord = Depends(get_current_user),
+    runtime: Runtime = Depends(get_runtime),
+) -> Response:
+    record = _get_log_or_404(log_id, runtime)
+    media = _media_storage(runtime)
+    data = media.thumbnail_bytes(None, record.get("snapshot_key"))
+    if not data:
+        raise HTTPException(status_code=404, detail="تصویر بندانگشتی یافت نشد")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/{log_id}/video")
+def get_plate_video(
+    log_id: int,
+    request: Request,
+    download: bool = Query(default=False),
+    _: UserRecord = Depends(get_current_user),
+    runtime: Runtime = Depends(get_runtime),
+) -> FileResponse:
+    del request  # FileResponse handles range requests in the active Starlette runtime.
+    path, media = _media_path(log_id, "video", runtime)
+    return _serve_media(path, media, download)
 
 
 @router.delete("/{log_id}")
 def delete_plate_log(
     log_id: int,
-    superuser: UserRecord = Depends(require_role("superuser")),
+    _: UserRecord = Depends(require_role("superadmin")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_log_or_404(log_id, runtime)

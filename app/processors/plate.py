@@ -403,7 +403,9 @@ class PlateRecognitionProcessor(BatchProcessor):
             confidence = 0.0
         return str(text), confidence
 
-    def _recognize_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
+    def _recognize_crops(
+        self, crops: list[np.ndarray]
+    ) -> list[tuple[str, str, float]]:
         if not crops:
             return []
         self._ensure_recognizer()
@@ -428,12 +430,15 @@ class PlateRecognitionProcessor(BatchProcessor):
                 if isinstance(value, (list, tuple)):
                     value = value[0] if value else None
                 outputs.append(value)
-        recognized: list[tuple[str, float]] = []
+        recognized: list[tuple[str, str, float]] = []
         for output in outputs:
-            text, score = self._read_output(output)
+            raw_text, score = self._read_output(output)
             recognized.append(
                 (
-                    normalize_plate_text(text, self.settings.output_persian_digits),
+                    raw_text,
+                    normalize_plate_text(
+                        raw_text, self.settings.output_persian_digits
+                    ),
                     score,
                 )
             )
@@ -589,7 +594,12 @@ class PlateRecognitionProcessor(BatchProcessor):
 
         recognized = self._recognize_crops([item[3] for item in crop_records])
         by_frame: dict[int, list[dict[str, Any]]] = {index: [] for index in range(len(packets))}
-        for record, (plate, recognizer_confidence) in zip(crop_records, recognized):
+        ocr_results_by_frame: dict[int, list[dict[str, Any]]] = {
+            index: [] for index in range(len(packets))
+        }
+        for record, (raw_plate_text, plate, recognizer_confidence) in zip(
+            crop_records, recognized
+        ):
             (
                 frame_position,
                 bbox,
@@ -602,12 +612,25 @@ class PlateRecognitionProcessor(BatchProcessor):
             if recognizer_confidence < policy.ocr_confidence:
                 rejected_ocr_scores[frame_position] += 1
                 continue
-            if not is_valid_iranian_plate(plate):
+            valid_plate = is_valid_iranian_plate(plate)
+            ocr_result = {
+                "raw_plate_text": raw_plate_text,
+                "plate_number": plate if valid_plate else None,
+                "is_valid_plate": valid_plate,
+                "detector_confidence": round(detector_confidence, 5),
+                "recognizer_confidence": round(recognizer_confidence, 5),
+                "bbox": bbox,
+                "vehicle_bbox": vehicle_bbox,
+                "vehicle_confidence": round(vehicle_confidence, 5),
+            }
+            ocr_results_by_frame[frame_position].append(ocr_result)
+            if not valid_plate:
                 rejected_plate_formats[frame_position] += 1
                 continue
             by_frame[frame_position].append(
                 {
                     "plate": plate,
+                    "raw_plate_text": raw_plate_text,
                     "detector_confidence": round(detector_confidence, 5),
                     "recognizer_confidence": round(recognizer_confidence, 5),
                     "bbox": bbox,
@@ -643,6 +666,7 @@ class PlateRecognitionProcessor(BatchProcessor):
                     processing_ms=self._last_inference_ms,
                     data={
                         "plates": predictions,
+                        "plate_ocr_results": ocr_results_by_frame[index],
                         "plate_count": len(predictions),
                         "vehicle_count": vehicle_counts[index],
                         "rejected_small_vehicles": rejected_small_vehicles[index],

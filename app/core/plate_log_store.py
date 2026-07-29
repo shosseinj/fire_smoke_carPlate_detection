@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
-
 import logging
 import queue
 import threading
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone
-from app.core.types import TaskName, TaskResult
-from fastapi import APIRouter, Depends, HTTPException, status
-from app.core.types import FramePacket
 from uuid import uuid4
 
 import cv2
 
-from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.media_utils import save_single_frame_video
+from app.core.plate_constants import normalize_plate_full_number
+from app.core.types import FramePacket, TaskName, TaskResult
+from app.database import Connection, Database, ensure_database
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,9 +26,8 @@ class _PendingPlateEvent:
     result: TaskResult
 
 
-
 class PlateLogStore:
-    """Persistent plate detection logs backed by PostgreSQL."""
+    """Bounded asynchronous persistence for normalized plate detections."""
 
     def __init__(
         self,
@@ -53,238 +50,180 @@ class PlateLogStore:
         self._last_error: str | None = None
         self._closed = False
         self._thread = threading.Thread(
-            target=self._run,
-            name="plate-log-writer",
-            daemon=True,
+            target=self._run, name="plate-log-writer", daemon=True
         )
-        self._initialize()
         self._thread.start()
 
     def _connect(self) -> Connection:
         return self.database.connection()
 
-    def _initialize(self) -> None:
-        # Alembic owns the PostgreSQL schema; runtime startup validates it.
-        return None
+    @staticmethod
+    def _now_utc() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
-    def insert(
-        self,
-        *,
-        camera: str,
-        time: str,
-        plate: str,
-        snapshot_url: str,
-        video_url: str = "",
-    ) -> dict[str, str]:
-        camera = camera.strip()
-        detected_at = time.strip()
-        plate = plate.strip()
-        snapshot_url = snapshot_url.strip()
+    @staticmethod
+    def _media_key(value: str | None) -> str | None:
+        text = str(value or "").strip().replace("\\", "/")
+        if not text:
+            return None
+        if text.startswith("/media/"):
+            return text[len("/media/") :]
+        return text.lstrip("/")
 
-        if not camera:
-            raise ValueError("camera must not be empty")
+    @staticmethod
+    def _media_url(value: str | None) -> str | None:
+        key = PlateLogStore._media_key(value)
+        return f"/media/{key}" if key else None
 
-        if not detected_at:
-            raise ValueError("time must not be empty")
+    def _source_identity(self, source_uri: str) -> tuple[str, str | None, int | None]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM static_videos WHERE source_uri = ?", (source_uri,)
+            ).fetchone()
+        if row is not None:
+            return "static_video", None, int(row["id"])
+        return "camera", source_uri, None
 
-        if not plate:
-            raise ValueError("plate must not be empty")
-
-        if not snapshot_url:
-            raise ValueError("snapshot_url must not be empty")
-
-        with self._lock, self._connect() as connection:
-            connection.execute(
+    def _registered_plate_id(self, plate_number: str) -> int | None:
+        """Resolve an exact normalized OCR value to one active registered plate."""
+        with self._connect() as connection:
+            row = connection.execute(
                 """
-                INSERT INTO plate_logs (
-                    camera,
-                    time,
-                    plate,
-                    snapshot_url,
-                    video_url
-                )
-                VALUES (?, ?, ?, ?, ?)
+                SELECT id
+                FROM car_plates
+                WHERE deleted_at_utc IS NULL
+                  AND is_active = 1
+                  AND CONCAT(left_digits, plate_alphabet, right_digits, iran_code) = ?
+                ORDER BY id
+                LIMIT 1
                 """,
-                (
-                    camera,
-                    detected_at,
-                    plate,
-                    snapshot_url,
-                    video_url,
-                ),
-            )
+                (plate_number,),
+            ).fetchone()
+        return int(row["id"]) if row is not None else None
 
-            connection.commit()
-
-        return {
-            "camera": camera,
-            "time": detected_at,
-            "plate": plate,
-            "snapshot_url": snapshot_url,
-            "video_url": video_url,
-        }
-
-    
-    
-
-    def insert_result(
-        self,
-        packet: FramePacket,
-        result: TaskResult,
-    ) -> int:
-        if result.error:
+    def insert_result(self, packet: FramePacket, result: TaskResult) -> int:
+        if result.error or result.task != TaskName.PLATE_RECOGNITION:
             return 0
-
-        if result.task != TaskName.PLATE_RECOGNITION:
+        ocr_results = result.data.get("plate_ocr_results")
+        candidates = ocr_results if ocr_results is not None else result.data.get("plates", [])
+        if not candidates:
             return 0
-
-        plates = result.data.get("plates", [])
-
-        if not plates:
-            return 0
-
-        detected_datetime = datetime.fromisoformat(
-            result.processed_at_utc.replace("Z", "+00:00")
-        )
-        timestamp = detected_datetime.strftime("%Y%m%d_%H%M%S_%f")
-
-        safe_camera_id = "".join(
-            character
-            if character.isalnum() or character in "-_"
-            else "_"
-            for character in str(result.source_id)
-        )
-
-        file_name = (
-            f"{safe_camera_id}_"
-            f"{result.frame_index}_"
-            f"{timestamp}_"
-            f"{uuid4().hex[:8]}.jpg"
-        )
-
-        plate_media_directory = self.media_root / "plate"
-        snapshot_directory = plate_media_directory / "snapshots"
-        video_directory = plate_media_directory / "videos"
-        snapshot_directory.mkdir(parents=True, exist_ok=True)
-
-        snapshot_path = snapshot_directory / file_name
-        snapshot_url = f"/media/plate/snapshots/{file_name}"
-        video_path = video_directory / f"{Path(file_name).stem}.mp4"
-        video_url = f"/media/plate/videos/{video_path.name}"
-
         if packet.frame is None or packet.frame.size == 0:
             raise ValueError("فریم تصویر خالی است")
 
-        # Copy prevents changing the original frame.
+        source_type, source_uri, static_video_id = self._source_identity(result.source_id)
+        captured_at = packet.captured_at_utc
+        detected_datetime = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        timestamp = detected_datetime.strftime("%Y%m%d_%H%M%S_%f")
+        safe_source = "".join(
+            char if char.isalnum() or char in "-_" else "_"
+            for char in str(result.source_id)
+        )
+        stem = f"{safe_source}_{result.frame_index}_{timestamp}_{uuid4().hex[:8]}"
+        snapshot_dir = self.media_root / "plate" / "snapshots"
+        video_dir = self.media_root / "plate" / "videos"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        video_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_dir / f"{stem}.jpg"
+        video_path = video_dir / f"{stem}.mp4"
+        snapshot_key = f"plate/snapshots/{snapshot_path.name}" if self.save_plate_snapshot else None
+        video_key = f"plate/videos/{video_path.name}"
         snapshot_frame = packet.frame.copy()
 
-        records: list[tuple[str, str, str, str, str]] = []
-
-        for item in plates:
+        records: list[tuple[Any, ...]] = []
+        now = self._now_utc()
+        for item in candidates:
             if isinstance(item, dict):
-                plate = str(item.get("plate") or "").strip()
+                plate_value = (
+                    item.get("plate_number")
+                    if "plate_number" in item
+                    else item.get("plate")
+                )
+                raw_value = (
+                    item.get("raw_plate_text")
+                    if "raw_plate_text" in item
+                    else item.get("plate")
+                )
+                raw_text = None if raw_value is None else str(raw_value)
                 bbox = item.get("bbox")
+                confidence = item.get("recognizer_confidence")
             else:
-                plate = str(item or "").strip()
+                plate_value = item
+                raw_text = str(item) if item is not None else None
                 bbox = None
-
-            if not plate:
+                confidence = None
+            plate_number = (
+                normalize_plate_full_number(str(plate_value))
+                if plate_value is not None and str(plate_value).strip()
+                else None
+            )
+            if plate_number is None and raw_text is None:
                 continue
-
+            plate_id = (
+                self._registered_plate_id(plate_number) if plate_number else None
+            )
             if self.draw_info and bbox and len(bbox) == 4:
                 x1, y1, x2, y2 = map(int, bbox)
-
-                frame_height, frame_width = snapshot_frame.shape[:2]
-
-                x1 = max(0, min(x1, frame_width - 1))
-                y1 = max(0, min(y1, frame_height - 1))
-                x2 = max(0, min(x2, frame_width - 1))
-                y2 = max(0, min(y2, frame_height - 1))
-
-                cv2.rectangle(
-                    snapshot_frame,
-                    (x1, y1),
-                    (x2, y2),
-                    (0, 255, 0),
-                    2,
-                )
-
+                height, width = snapshot_frame.shape[:2]
+                x1, x2 = sorted((max(0, min(x1, width - 1)), max(0, min(x2, width - 1))))
+                y1, y2 = sorted((max(0, min(y1, height - 1)), max(0, min(y2, height - 1))))
+                cv2.rectangle(snapshot_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     snapshot_frame,
-                    plate,
+                    plate_number or raw_text or "",
                     (x1, max(25, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA,
                 )
-
             records.append(
                 (
-                    result.source_id,
-                    result.processed_at_utc,
-                    plate,
-                    snapshot_url,
-                    video_url,
+                    source_type, source_uri, static_video_id, plate_id,
+                    plate_number, raw_text,
+                    float(confidence) if confidence is not None else None, captured_at,
+                    snapshot_key, video_key, now, now,
                 )
             )
-
         if not records:
             return 0
-        if self.save_plate_snapshot:
-            snapshot_saved = cv2.imwrite(
-                str(snapshot_path),
-                snapshot_frame,
-                [cv2.IMWRITE_JPEG_QUALITY, 90],
-            )
-            print('Plate snapshot saved')
-            if not snapshot_saved:
-                raise RuntimeError(
-                    f"Plate snapshot could not be saved: {snapshot_path}"
-                )
+
+        if self.save_plate_snapshot and not cv2.imwrite(
+            str(snapshot_path), snapshot_frame, [cv2.IMWRITE_JPEG_QUALITY, 90]
+        ):
+            raise RuntimeError(f"Plate snapshot could not be saved: {snapshot_path}")
         try:
             save_single_frame_video(snapshot_frame, video_path)
-        except Exception:
-            snapshot_path.unlink(missing_ok=True)
-            raise
-
-        try:
             with self._lock, self._connect() as connection:
                 connection.executemany(
                     """
                     INSERT INTO plate_logs (
-                        camera,
-                        time,
-                        plate,
-                        snapshot_url,
-                        video_url
-                    )
-                    VALUES (?, ?, ?, ?, ?)
+                        source_type, source_uri, static_video_id, plate_id,
+                        plate_number, raw_plate_text, confidence, detection_time,
+                        snapshot_key, video_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     records,
                 )
                 connection.commit()
-
         except Exception:
             snapshot_path.unlink(missing_ok=True)
             video_path.unlink(missing_ok=True)
             raise
-
         return len(records)
 
     def observe_result(self, packet: FramePacket, result: TaskResult) -> None:
-        """Queue plate persistence without blocking the inference worker."""
         if (
             self._closed
             or result.error
             or result.task != TaskName.PLATE_RECOGNITION
-            or not result.data.get("plates")
+            or not (
+                result.data.get("plate_ocr_results")
+                or result.data.get("plates")
+            )
         ):
             return
         try:
-            queued_packet = replace(packet, frame=packet.frame.copy())
-            self._queue.put_nowait(_PendingPlateEvent(queued_packet, result))
+            self._queue.put_nowait(
+                _PendingPlateEvent(replace(packet, frame=packet.frame.copy()), result)
+            )
         except queue.Full:
             self._dropped += 1
             LOGGER.warning("Plate log queue is full; newest result was dropped")
@@ -296,6 +235,7 @@ class PlateLogStore:
                 if pending is None:
                     return
                 self._saved += self.insert_result(pending.packet, pending.result)
+                self._last_error = None
             except Exception:
                 self._last_error = "plate persistence failed"
                 LOGGER.exception("Plate persistence failed")
@@ -310,112 +250,35 @@ class PlateLogStore:
             "dropped": self._dropped,
             "last_error": self._last_error,
         }
-    def list(
-        self,
-        *,
-        camera: str | None = None,
-        plate: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, str]]:
-        clauses: list[str] = []
-        parameters: list[Any] = []
-
-        if camera:
-            clauses.append("camera = ?")
-            parameters.append(camera.strip())
-
-        if plate:
-            clauses.append("plate LIKE ?")
-            parameters.append(f"%{plate.strip()}%")
-
-        where_clause = (
-            f" WHERE {' AND '.join(clauses)}"
-            if clauses
-            else ""
-        )
-
-        safe_limit = max(1, min(int(limit), 1000))
-        parameters.append(safe_limit)
-
-        with self._lock, self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT
-                    camera,
-                    time,
-                    plate,
-                    snapshot_url,
-                    video_url
-                FROM plate_logs
-                {where_clause}
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                parameters,
-            ).fetchall()
-
-        return [dict(row) for row in rows]
 
     def count(self) -> int:
         with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM plate_logs
-                """
-            ).fetchone()
-
-        return int(
-            row["count"]
-            if row is not None
-            else 0
-        )
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._queue.put(None)
-        self._thread.join(timeout=10.0)
-
-    @staticmethod
-    def _now_utc() -> str:
-        return datetime.now(timezone.utc).isoformat()
+            row = connection.execute("SELECT COUNT(*) AS count FROM plate_logs").fetchone()
+        return int(row["count"] if row is not None else 0)
 
     def list_logs(
         self,
         *,
         plate_id: int | None = None,
-        plate_full_number: str | None = None,
-        camera_id: str | None = None,
-        direction: str | None = None,
+        plate_number: str | None = None,
+        source_uri: str | None = None,
+        static_video_id: int | None = None,
         source_type: str | None = None,
-        is_verified: bool | None = None,
         detected_from: str | None = None,
         detected_to: str | None = None,
         skip: int = 0,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        clauses: list[str] = ["1=1"]
+        clauses = ["1=1"]
         params: list[Any] = []
-        if plate_id is not None:
-            clauses.append("plate_id = ?")
-            params.append(plate_id)
-        if plate_full_number:
-            clauses.append("plate_full_number = ?")
-            params.append(plate_full_number)
-        if camera_id:
-            clauses.append("camera_id = ?")
-            params.append(camera_id)
-        if direction:
-            clauses.append("direction = ?")
-            params.append(direction)
-        if source_type:
-            clauses.append("source_type = ?")
-            params.append(source_type)
-        if is_verified is not None:
-            clauses.append("is_verified = ?")
-            params.append(1 if is_verified else 0)
+        for column, value in (
+            ("plate_id", plate_id), ("plate_number", plate_number),
+            ("source_uri", source_uri), ("static_video_id", static_video_id),
+            ("source_type", source_type),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
         if detected_from:
             clauses.append("detection_time >= ?")
             params.append(detected_from)
@@ -425,66 +288,92 @@ class PlateLogStore:
         params.extend([max(0, skip), max(1, min(limit, 500))])
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM plate_logs WHERE " + " AND ".join(clauses) + " ORDER BY detection_time DESC, id DESC OFFSET ? LIMIT ?",
+                "SELECT * FROM plate_logs WHERE " + " AND ".join(clauses)
+                + " ORDER BY detection_time DESC, id DESC OFFSET ? LIMIT ?",
                 params,
             ).fetchall()
-        return [self._serialize_plate_log(dict(row)) for row in rows]
+        return [self._serialize(dict(row)) for row in rows]
 
     def get_log(self, log_id: int) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
-            row = connection.execute("SELECT * FROM plate_logs WHERE id = ?", (log_id,)).fetchone()
-        return self._serialize_plate_log(dict(row)) if row else None
+            row = connection.execute(
+                "SELECT * FROM plate_logs WHERE id = ?", (log_id,)
+            ).fetchone()
+        return self._serialize(dict(row)) if row else None
+
+    @staticmethod
+    def _validate_source_identity(fields: dict[str, Any]) -> None:
+        source_type = fields.get("source_type")
+        source_uri = fields.get("source_uri")
+        static_video_id = fields.get("static_video_id")
+        created_by = fields.get("created_by_user_id")
+        valid = (
+            source_type == "camera" and bool(source_uri) and static_video_id is None and created_by is None
+        ) or (
+            source_type == "static_video" and not source_uri and static_video_id is not None and created_by is None
+        ) or (
+            source_type == "manual" and not source_uri and static_video_id is None and created_by is not None
+        )
+        if not valid:
+            raise ValueError("Invalid plate log source identity")
 
     def create_log(self, values: dict[str, Any]) -> dict[str, Any]:
-        now = self._now_utc()
         fields = dict(values)
-        fields.setdefault("source_type", "camera")
-        fields.setdefault("direction", "unknown")
+        self._validate_source_identity(fields)
+        now = self._now_utc()
         fields.setdefault("created_at", now)
         fields.setdefault("updated_at", now)
+        fields["snapshot_key"] = self._media_key(fields.get("snapshot_key"))
+        fields["video_key"] = self._media_key(fields.get("video_key"))
         columns = list(fields)
-        params = [fields[name] for name in fields]
         with self._lock, self._connect() as connection:
-            cursor = connection.execute(
-                f"INSERT INTO plate_logs ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) RETURNING id",
-                params,
-            )
-            log_id = int(cursor.fetchone()[0])
+            row = connection.execute(
+                f"INSERT INTO plate_logs ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)}) RETURNING id",
+                [fields[name] for name in columns],
+            ).fetchone()
             connection.commit()
-        return self.get_log(log_id) or {}
+        return self.get_log(int(row["id"])) or {}
 
     def update_log(self, log_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         if not values:
             return self.get_log(log_id)
-        assignments = [f"{name} = ?" for name in values] + ["updated_at = ?"]
-        params = [values[name] for name in values] + [self._now_utc(), log_id]
+        allowed = {
+            "plate_id", "plate_number", "raw_plate_text", "confidence",
+            "detection_time", "snapshot_key", "video_key", "notes",
+            "updated_by_user_id",
+        }
+        unexpected = set(values) - allowed
+        if unexpected:
+            raise ValueError(f"Unsupported plate-log fields: {sorted(unexpected)}")
+        fields = dict(values)
+        for name in ("snapshot_key", "video_key"):
+            if name in fields:
+                fields[name] = self._media_key(fields[name])
+        assignments = [f"{name} = ?" for name in fields] + ["updated_at = ?"]
+        params = [fields[name] for name in fields] + [self._now_utc(), log_id]
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                f"UPDATE plate_logs SET {', '.join(assignments)} WHERE id = ?",
-                params,
+                f"UPDATE plate_logs SET {', '.join(assignments)} WHERE id = ?", params
             )
             connection.commit()
-            if cursor.rowcount == 0:
-                return None
-        return self.get_log(log_id)
+        return self.get_log(log_id) if cursor.rowcount else None
 
     def delete_log(self, log_id: int) -> bool:
         with self._lock, self._connect() as connection:
             cursor = connection.execute("DELETE FROM plate_logs WHERE id = ?", (log_id,))
             connection.commit()
-            return cursor.rowcount > 0
+        return cursor.rowcount > 0
 
-    @staticmethod
-    def _serialize_plate_log(value: dict[str, Any]) -> dict[str, Any]:
-        legacy_aliases = {
-            "plate_full_number": "plate",
-            "camera_id": "camera",
-            "detection_time": "time",
-            "snapshot_path": "snapshot_url",
-        }
-        for target, source in legacy_aliases.items():
-            if value.get(target) is None:
-                value[target] = value.get(source)
-        if "is_verified" in value:
-            value["is_verified"] = bool(value["is_verified"])
+    @classmethod
+    def _serialize(cls, value: dict[str, Any]) -> dict[str, Any]:
+        value["snapshot_url"] = cls._media_url(value.get("snapshot_key"))
+        value["video_url"] = cls._media_url(value.get("video_key"))
         return value
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        self._thread.join(timeout=10.0)
