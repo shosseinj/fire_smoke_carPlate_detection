@@ -180,11 +180,10 @@ def retry_static_video_by_id(
 async def update_static_video_by_id(
     video_id: int,
     payload: StaticVideoUpdate,
-    file: UploadFile | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     record = _require_video_by_id(video_id, runtime)
-    return await update_static_video(record.source_uri, payload, file, runtime)
+    return await update_static_video(record.source_uri, payload, runtime)
 
 
 @router.delete("/{video_id:int}", status_code=status.HTTP_204_NO_CONTENT)
@@ -221,10 +220,9 @@ def retry_static_video(
 async def update_static_video(
     source_uri: str,
     payload: StaticVideoUpdate,
-    file: UploadFile | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    """Update a static video's metadata or replace its file."""
+    """Update static-video metadata without changing its uploaded file."""
     current = runtime.static_video_store.get(source_uri)
     if current is None:
         raise HTTPException(
@@ -239,11 +237,6 @@ async def update_static_video(
         changes["loop"] = payload.loop
 
     old_source_uri = source_uri
-    was_attached = runtime.registry.get(old_source_uri) is not None
-    if file is not None:
-        upload = await _save_upload(file, runtime)
-        changes["source_uri"] = upload["source_uri"]
-
     if not changes:
         return _api_response(current)
 

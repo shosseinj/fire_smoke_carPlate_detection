@@ -261,7 +261,7 @@ def test_disappeared_track_is_visible_in_detection_log_filter(
             log_type="camera_rtsp",
         )
         assert len(records) == 1
-        assert records[0].person == "Test First Test Last"
+        assert records[0].person == national_code
         assert records[0].personnel_id is not None
         assert records[0].source_human_log_id is not None
         assert records[0].source_event_key == "human-track:session-a:camera-01:13"
@@ -328,6 +328,7 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
             log_type="camera_rtsp",
         )
         assert len(records) == 1
+        assert records[0].person == "Unknown"
         assert records[0].face_image
         assert records[0].room_id == room_id
         assert records[0].camera_id == "camera-01"

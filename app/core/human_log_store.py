@@ -230,6 +230,20 @@ class HumanLogStore:
         self._reference_image_cache[ref_text] = image.copy()
         return image
 
+    def _detection_person(self, personnel_id: int | None) -> str:
+        """Return the canonical identity persisted in detection_logs.person."""
+        if personnel_id is None:
+            return "Unknown"
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT national_code FROM personnel WHERE id = ?",
+                (int(personnel_id),),
+            ).fetchone()
+        if row is None:
+            return "Unknown"
+        national_code = normalize_national_code(str(row["national_code"] or ""))
+        return national_code or "Unknown"
+
     @staticmethod
     def _concat_reference_and_face(
         reference_image: np.ndarray,
@@ -921,6 +935,7 @@ class HumanLogStore:
             and self.detection_log_store is not None
             and face_image_key
         ):
+            detection_person = self._detection_person(event.personnel_id)
             # Release writers before exposing video URLs. MP4 metadata is not
             # guaranteed to be readable until VideoWriter.release() completes.
             self._release_state(state)
@@ -944,7 +959,7 @@ class HumanLogStore:
                     source_event_key=source_event_key,
                     source_human_log_id=(int(human_row["id"]) if human_row else None),
                     personnel_id=event.personnel_id,
-                    person=event.name,
+                    person=detection_person,
                     confidence=event.recognition_score,
                     detection_time=event.evidence_captured_at_utc,
                     ref_img_id=(
@@ -967,6 +982,7 @@ class HumanLogStore:
                 )
             else:
                 updates: dict[str, Any] = {
+                    "person": detection_person,
                     "video_status": video_status,
                     "face_video_status": face_video_status,
                     "media_finalized_at": media_finalized_at,
