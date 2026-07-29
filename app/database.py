@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260728_0040"
+ALEMBIC_HEAD_REVISION = "20260729_0041"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -535,7 +535,7 @@ static_videos = Table(
     Column("source_uri", Text, primary_key=True),
     Column("name", Text, nullable=False),
     Column("source_type", String(16), nullable=False, server_default="static_video"),
-    Column("processing_status", String(16), nullable=False, server_default="queued"),
+    Column("processing_status", String(16), nullable=False, server_default="uploaded"),
     Column("processing_error", Text),
     Column("processing_started_at", UTC_TS),
     Column("processing_completed_at", UTC_TS),
@@ -544,7 +544,8 @@ static_videos = Table(
     Column("loop", Integer, nullable=False, server_default="0"),
     Column("source_config_json", Text),
     CheckConstraint(
-        "processing_status IN ('queued', 'processing', 'completed', 'failed')",
+        "processing_status IN "
+        "('uploaded', 'queued', 'processing', 'completed', 'failed')",
         name="ck_static_videos_processing_status",
     ),
     CheckConstraint("processing_attempts >= 0", name="ck_static_videos_processing_attempts"),
