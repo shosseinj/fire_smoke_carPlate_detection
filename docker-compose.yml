@@ -59,6 +59,7 @@ services:
     env_file: ./app/.env
     environment:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-real}
+      SEED_SAMPLE_DETECTIONS: ${SEED_SAMPLE_DETECTIONS:-false}
       VIDEO_INGEST_BACKEND: deepstream
       VIDEO_INGESTION_ENABLED: "true"
       TASK_QUEUE_POLICY: ${TASK_QUEUE_POLICY:-latest_per_source}

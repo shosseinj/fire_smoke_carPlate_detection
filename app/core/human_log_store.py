@@ -31,6 +31,7 @@ class HumanMediaEvent:
     track_id: int
     name: str
     captured_at_utc: str
+    evidence_captured_at_utc: str
     recognition_score: float
     ref_img_id: str | int | None
     personnel_id: int | None
@@ -56,6 +57,19 @@ class TrackMediaState:
     last_event_monotonic: float = 0.0
 
 
+@dataclass(slots=True)
+class StillEvidenceBundle:
+    """One frame's atomic still-image evidence for a tracked human."""
+
+    captured_at_utc: str
+    frame_index: int
+    body_frame: np.ndarray
+    full_frame: np.ndarray
+    face_frame: np.ndarray | None
+    quality: float
+    face_quality: float
+
+
 class HumanLogStore:
     """Non-blocking per-ByteTrack best snapshot and independent video recorder."""
 
@@ -73,8 +87,8 @@ class HumanLogStore:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
         self.media_storage = DetectionMediaStorage(media_root)
-        self.snapshot_dir = media_root / "human_snapshots"
-        self.whole_snapshot_dir = media_root / "whole_snapshots"
+        self.snapshot_dir = media_root / "body_images"
+        self.whole_snapshot_dir = media_root / "full_frame_images"
         self.detected_face_dir = media_root / "detected_faces"
         self.face_thumbnail_dir = media_root / "face_thumbnails"
         self.video_dir = media_root / "human_videos"
@@ -103,7 +117,9 @@ class HumanLogStore:
         self._last_face_video_at: dict[tuple[str, str, int], float] = {}
         self._best_face_scores: dict[tuple[str, str, int], float] = {}
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
-        self._last_face_images: dict[tuple[str, str, int], np.ndarray] = {}
+        self._still_evidence: dict[
+            tuple[str, str, int], StillEvidenceBundle
+        ] = {}
         self._lock = threading.RLock()
         self._dropped_events = 0
         self._saved_snapshots = 0
@@ -367,20 +383,11 @@ class HumanLogStore:
                             )[:4]
                         ],
                     )
-            with self._lock:
-                remembered_face = self._last_face_images.get(key)
-            face_image_frame = (
-                face_frame
-                if face_frame is not None
-                else remembered_face
-                if remembered_face is not None
-                else None
-            )
             if human_crop is None and disappeared:
                 human_crop = source_frame.copy()
             if human_crop is None:
                 continue
-            if not persist_human_log and (disappeared or face_frame is None):
+            if not persist_human_log and disappeared:
                 continue
             # body_image is a real crop of the tracked person. Face evidence is
             # stored separately and only its small thumbnail is embedded in JSON.
@@ -395,13 +402,27 @@ class HumanLogStore:
                     key, float("-inf")
                 )
                 previous_best_face = self._best_face_scores.get(key, -1.0)
-                previous_best_face_image = self._last_face_images.get(key)
+                previous_evidence = self._still_evidence.get(key)
                 identity_changed = previous_name is None or (
                     previous_name == "Unknown" and name != "Unknown"
                 )
-                better_snapshot = (
-                    snapshot_quality
-                    >= previous_score + self.snapshot_min_improvement
+                candidate_evidence = (
+                    StillEvidenceBundle(
+                        captured_at_utc=packet.captured_at_utc,
+                        frame_index=packet.frame_index,
+                        body_frame=snapshot_image.copy(),
+                        full_frame=source_frame.copy(),
+                        face_frame=face_frame.copy(),
+                        quality=snapshot_quality,
+                        face_quality=face_quality,
+                    )
+                    if face_frame is not None
+                    else None
+                )
+                better_snapshot = candidate_evidence is not None and (
+                    previous_evidence is None
+                    or candidate_evidence.quality
+                    >= previous_evidence.quality + self.snapshot_min_improvement
                 )
                 full_frame_due = not disappeared and (
                     now - previous_full_frame_at >= 1.0 / self.video_fps
@@ -422,23 +443,24 @@ class HumanLogStore:
                 self._observed_names[key] = name
                 if better_snapshot:
                     self._candidate_scores[key] = snapshot_quality
+                    self._still_evidence[key] = candidate_evidence
                 if full_frame_due:
                     self._last_full_frame_at[key] = now
                 if face_due:
                     self._last_face_video_at[key] = now
                 if better_face:
                     self._best_face_scores[key] = face_quality
-                    self._last_face_images[key] = face_frame.copy()
+                selected_evidence = (
+                    candidate_evidence
+                    if better_snapshot and candidate_evidence is not None
+                    else previous_evidence
+                )
 
-            # Persist the highest-quality face seen for the track, not merely
-            # the last face visible on the disappearance frame.
-            face_image_frame = (
-                face_frame
-                if better_face
-                else previous_best_face_image
-                if previous_best_face_image is not None
-                else face_frame
-            )
+            # Evidence-only observations populate the atomic bundle without
+            # enqueueing a no-op persistence event. A later admitted transition
+            # or expiry consumes the same-frame bundle.
+            if not persist_human_log:
+                continue
 
             raw_personnel_id = resolved_personnel_id
             if raw_personnel_id is None and raw_ref is not None:
@@ -454,34 +476,55 @@ class HumanLogStore:
                 track_id=track_id,
                 name=name,
                 captured_at_utc=packet.captured_at_utc,
+                evidence_captured_at_utc=(
+                    selected_evidence.captured_at_utc
+                    if selected_evidence is not None
+                    else packet.captured_at_utc
+                ),
                 recognition_score=float(human.get("recognition_score", 0.0) or 0.0),
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
                 snapshot_frame=(
-                    snapshot_image
-                    if persist_human_log and (better_snapshot or disappeared)
+                    selected_evidence.body_frame.copy()
+                    if disappeared and selected_evidence is not None
                     else None
                 ),
                 whole_snapshot_frame=(
-                    source_frame.copy()
-                    if persist_human_log and (better_snapshot or disappeared)
+                    selected_evidence.full_frame.copy()
+                    if disappeared and selected_evidence is not None
                     else None
                 ),
-                face_image_frame=face_image_frame,
-                snapshot_quality=snapshot_quality,
+                face_image_frame=(
+                    selected_evidence.face_frame.copy()
+                    if disappeared
+                    and selected_evidence is not None
+                    and selected_evidence.face_frame is not None
+                    else None
+                ),
+                snapshot_quality=(
+                    selected_evidence.quality
+                    if selected_evidence is not None
+                    else snapshot_quality
+                ),
                 full_frame_video_frame=(
                     source_frame.copy() if persist_human_log and full_frame_due else None
                 ),
                 face_video_frame=face_frame if persist_human_log and face_due else None,
-                face_quality=face_quality,
+                face_quality=(
+                    selected_evidence.face_quality
+                    if selected_evidence is not None
+                    else face_quality
+                ),
                 finalize_detection_log=persist_human_log and disappeared,
                 persist_human_log=persist_human_log,
             )
             try:
-                self._queue.put_nowait(event)
                 if disappeared:
-                    with self._lock:
-                        self._last_face_images.pop(key, None)
+                    # Finalization is lossless within the bounded queue: apply
+                    # backpressure rather than dropping the only expiry event.
+                    self._queue.put(event)
+                else:
+                    self._queue.put_nowait(event)
             except queue.Full:
                 with self._lock:
                     self._dropped_events += 1
@@ -494,6 +537,10 @@ class HumanLogStore:
                             self._candidate_scores.pop(key, None)
                         else:
                             self._candidate_scores[key] = previous_score
+                        if previous_evidence is None:
+                            self._still_evidence.pop(key, None)
+                        else:
+                            self._still_evidence[key] = previous_evidence
                     if full_frame_due:
                         if previous_full_frame_at == float("-inf"):
                             self._last_full_frame_at.pop(key, None)
@@ -509,12 +556,10 @@ class HumanLogStore:
                             self._best_face_scores.pop(key, None)
                         else:
                             self._best_face_scores[key] = previous_best_face
-                        if previous_best_face_image is None:
-                            self._last_face_images.pop(key, None)
-                        else:
-                            self._last_face_images[key] = previous_best_face_image
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
-            if disappeared and face_image_frame is None:
+            if disappeared and (
+                selected_evidence is None or selected_evidence.face_frame is None
+            ):
                 LOGGER.warning(
                     "HUMAN_FACE_IMAGE_UNAVAILABLE camera=%s track_id=%s",
                     packet.source_id,
@@ -581,10 +626,12 @@ class HumanLogStore:
             self._created_face_videos += 1
         return state
 
-    def _save_snapshot(self, event: HumanMediaEvent) -> tuple[str, Path]:
+    def _save_snapshot(
+        self, event: HumanMediaEvent, stem: str
+    ) -> tuple[str, Path]:
         assert event.snapshot_frame is not None
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{self._safe_stem(event.camera, event.track_id)}.jpg"
+        filename = f"{stem}_body.jpg"
         path = self.snapshot_dir / filename
         if not cv2.imwrite(
             str(path),
@@ -594,10 +641,12 @@ class HumanLogStore:
             raise RuntimeError(f"Could not save human snapshot: {path}")
         return self.media_storage.key_for_path(path), path
 
-    def _save_whole_snapshot(self, event: HumanMediaEvent) -> tuple[str, Path]:
+    def _save_whole_snapshot(
+        self, event: HumanMediaEvent, stem: str
+    ) -> tuple[str, Path]:
         assert event.whole_snapshot_frame is not None
         self.whole_snapshot_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{self._safe_stem(event.camera, event.track_id)}.jpg"
+        filename = f"{stem}_full.jpg"
         path = self.whole_snapshot_dir / filename
         if not cv2.imwrite(
             str(path),
@@ -607,9 +656,10 @@ class HumanLogStore:
             raise RuntimeError(f"Could not save whole snapshot: {path}")
         return self.media_storage.key_for_path(path), path
 
-    def _save_face_image(self, event: HumanMediaEvent) -> tuple[str, str, Path]:
+    def _save_face_image(
+        self, event: HumanMediaEvent, stem: str
+    ) -> tuple[str, str, Path]:
         assert event.face_image_frame is not None
-        stem = self._safe_stem(event.camera, event.track_id)
         face_key, path = self.media_storage.save_jpeg(
             event.face_image_frame,
             directory="detected_faces",
@@ -640,15 +690,43 @@ class HumanLogStore:
         state = self._media_state(event)
         wrote_full_frame = False
         wrote_face = False
-        face_image_key = ""
-        face_thumbnail_key = ""
-        whole_snapshot_key = ""
+        source_event_key = (
+            f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
+        )
+        existing_detection = (
+            self.detection_log_store.get_by_source_event_key(source_event_key)
+            if event.finalize_detection_log and self.detection_log_store is not None
+            else None
+        )
+        face_image_key = (
+            str(existing_detection.face_image or "") if existing_detection else ""
+        )
+        face_thumbnail_key = (
+            str(existing_detection.face_thumbnail or "") if existing_detection else ""
+        )
+        whole_snapshot_key = (
+            str(existing_detection.snapshot_image or "") if existing_detection else ""
+        )
+        evidence_stem = self._safe_stem(event.camera, event.track_id)
         # Detection evidence is persisted once, when the track is finalized.
         # This avoids creating an orphan face/whole-frame file on every frame.
-        if event.finalize_detection_log and event.face_image_frame is not None:
-            face_image_key, face_thumbnail_key, _ = self._save_face_image(event)
-        if event.finalize_detection_log and event.whole_snapshot_frame is not None:
-            whole_snapshot_key, _ = self._save_whole_snapshot(event)
+        if (
+            event.finalize_detection_log
+            and not face_image_key
+            and event.face_image_frame is not None
+        ):
+            face_image_key, face_thumbnail_key, _ = self._save_face_image(
+                event, evidence_stem
+            )
+        if (
+            event.finalize_detection_log
+            and not whole_snapshot_key
+            and event.face_image_frame is not None
+            and event.whole_snapshot_frame is not None
+        ):
+            whole_snapshot_key, _ = self._save_whole_snapshot(
+                event, evidence_stem
+            )
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -669,8 +747,9 @@ class HumanLogStore:
             state.face_writer.write(face_frame)
             wrote_face = True
 
-        old_snapshot_url = ""
-        new_snapshot_url = ""
+        new_snapshot_url = (
+            str(existing_detection.body_image or "") if existing_detection else ""
+        )
         new_snapshot_path: Path | None = None
         with self._connect() as connection:
             existing = connection.execute(
@@ -685,16 +764,17 @@ class HumanLogStore:
             current_snapshot_quality = (
                 float(existing["snapshot_quality"] or 0.0) if existing else -1.0
             )
-            should_replace_snapshot = (
-                event.snapshot_frame is not None
-                and event.snapshot_quality
-                >= current_snapshot_quality + self.snapshot_min_improvement
+            should_save_snapshot = (
+                event.finalize_detection_log
+                and event.face_image_frame is not None
+                and event.snapshot_frame is not None
+                and not new_snapshot_url
+                and not (str(existing["snapshot_url"] or "") if existing else "")
             )
-            if existing is None and event.snapshot_frame is not None:
-                should_replace_snapshot = True
-            if should_replace_snapshot:
-                old_snapshot_url = str(existing["snapshot_url"] or "") if existing else ""
-                new_snapshot_url, new_snapshot_path = self._save_snapshot(event)
+            if should_save_snapshot:
+                new_snapshot_url, new_snapshot_path = self._save_snapshot(
+                    event, evidence_stem
+                )
             snapshot_url = (
                 new_snapshot_url
                 if new_snapshot_url
@@ -711,7 +791,7 @@ class HumanLogStore:
             )
             snapshot_quality = (
                 event.snapshot_quality
-                if should_replace_snapshot
+                if should_save_snapshot
                 else max(current_snapshot_quality, 0.0)
             )
             current_face_quality = (
@@ -796,7 +876,11 @@ class HumanLogStore:
                 "FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
                 (event.session_id, event.camera, event.track_id),
             ).fetchone()
-        if event.finalize_detection_log and self.detection_log_store is not None:
+        if (
+            event.finalize_detection_log
+            and self.detection_log_store is not None
+            and face_image_key
+        ):
             # Release writers before exposing video URLs. MP4 metadata is not
             # guaranteed to be readable until VideoWriter.release() completes.
             self._release_state(state)
@@ -813,13 +897,7 @@ class HumanLogStore:
             )
             video_status = self._finalized_video_status(finalized_video_key)
             face_video_status = self._finalized_video_status(finalized_face_video_key)
-            source_event_key = (
-                f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
-            )
-            existing_detection = self.detection_log_store.get_by_source_event_key(
-                source_event_key
-            )
-            media_finalized_at = event.captured_at_utc
+            media_finalized_at = event.evidence_captured_at_utc
             if existing_detection is None:
                 self.detection_log_store.create(
                     source_system="face_recognition",
@@ -828,7 +906,7 @@ class HumanLogStore:
                     personnel_id=event.personnel_id,
                     person=event.name,
                     confidence=event.recognition_score,
-                    detection_time=event.captured_at_utc,
+                    detection_time=event.evidence_captured_at_utc,
                     ref_img_id=(
                         None if event.ref_img_id is None else str(event.ref_img_id)
                     ),
@@ -852,6 +930,8 @@ class HumanLogStore:
                     "face_video_status": face_video_status,
                     "media_finalized_at": media_finalized_at,
                 }
+                # Finalized still evidence is immutable. Duplicate expiry
+                # notifications may fill a missing key, but never rewrite media.
                 candidates = {
                     "face_image": face_image_key,
                     "face_thumbnail": face_thumbnail_key,
@@ -860,21 +940,18 @@ class HumanLogStore:
                     "video": finalized_video_key,
                     "face_video_or_unknown_faces": finalized_face_video_key,
                 }
-                replaced_keys: list[str] = []
                 for field, value in candidates.items():
-                    previous = getattr(existing_detection, field)
-                    if value and value != previous:
+                    if value and not getattr(existing_detection, field):
                         updates[field] = value
-                        if previous:
-                            replaced_keys.append(previous)
                 self.detection_log_store.update(existing_detection.id, **updates)
-                self.media_storage.delete_many(replaced_keys)
-        if old_snapshot_url and old_snapshot_url != new_snapshot_url:
-            self.media_storage.delete(old_snapshot_url)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
             self._full_frame_video_frames += int(wrote_full_frame)
             self._accepted_face_video_frames += int(wrote_face)
+            if event.finalize_detection_log:
+                self._still_evidence.pop(
+                    (event.session_id, event.camera, event.track_id), None
+                )
             self._last_error = None
 
     def _finalized_video_status(self, key: str) -> str:

@@ -138,7 +138,7 @@ class PersonnelStore:
     def __init__(self, database: Database | str, saved_media_path: Path) -> None:
         self._database = ensure_database(database)
         self._media_root = saved_media_path.resolve()
-        self._snapshot_dir = self._media_root / "personnel_snapshots"
+        self._snapshot_dir = self._media_root / "reference_images"
         self._cropped_face_dir = self._media_root / "personnel_cropped_faces"
         self._zip_errors_dir = self._media_root / "personnel_zip_errors"
         self._cropped_face_dir.mkdir(parents=True, exist_ok=True)
@@ -1507,17 +1507,17 @@ class PersonnelStore:
         }
 
     def _save_image_file(self, personnel_id: int, data: bytes, original_filename: str, national_code: str = "") -> str:
-        """Save an image to personnel_snapshots/{national_code}/ and return the relative storage_key.
+        """Save an image to reference_images/{national_code}/ and return the relative storage key.
 
-        When national_code is empty the file is saved directly under personnel_snapshots/
+        When national_code is empty the file is saved directly under reference_images/
         for backward compatibility.
         """
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
         unique_name = f"{personnel_id}_{uuid.uuid4().hex}{ext}"
         if national_code:
-            relative_path = f"personnel_snapshots/{national_code}/{unique_name}"
+            relative_path = f"reference_images/{national_code}/{unique_name}"
         else:
-            relative_path = f"personnel_snapshots/{unique_name}"
+            relative_path = f"reference_images/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

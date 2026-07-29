@@ -124,9 +124,19 @@ def test_delete_many_deduplicates_and_stays_inside_root(tmp_path: Path) -> None:
 
 
 def test_static_compatibility_mount_blocks_private_person_media(tmp_path: Path) -> None:
-    private = tmp_path / "detected_faces" / "secret.jpg"
-    private.parent.mkdir(parents=True)
-    private.write_bytes(b"secret")
+    private_directories = (
+        "detected_faces",
+        "body_images",
+        "full_frame_images",
+        "reference_images",
+        "human_snapshots",
+        "whole_snapshots",
+        "personnel_snapshots",
+    )
+    for directory in private_directories:
+        private = tmp_path / directory / "secret.jpg"
+        private.parent.mkdir(parents=True)
+        private.write_bytes(b"secret")
     public = tmp_path / "plate_snapshots" / "plate.jpg"
     public.parent.mkdir(parents=True)
     public.write_bytes(b"plate")
@@ -135,7 +145,8 @@ def test_static_compatibility_mount_blocks_private_person_media(tmp_path: Path) 
     app.mount("/media", RestrictedMediaStaticFiles(directory=tmp_path), name="media")
     client = TestClient(app)
 
-    assert client.get("/media/detected_faces/secret.jpg").status_code == 404
+    for directory in private_directories:
+        assert client.get(f"/media/{directory}/secret.jpg").status_code == 404
     response = client.get("/media/plate_snapshots/plate.jpg")
     assert response.status_code == 200
     assert response.content == b"plate"

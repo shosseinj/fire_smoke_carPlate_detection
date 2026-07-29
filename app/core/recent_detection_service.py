@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import cv2
+import numpy as np
 
 from app.core.detection_media import DetectionMediaStorage, InvalidMediaKey
 
@@ -77,24 +78,69 @@ def _read_image(path: Path | None):
     return cv2.imread(str(path))
 
 
+def _as_bgr(image: np.ndarray | None) -> np.ndarray | None:
+    if image is None or image.size == 0:
+        return None
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim != 3:
+        return None
+    if image.shape[2] == 1:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    if image.shape[2] != 3:
+        return None
+    return image
+
+
+def _fit_with_padding(
+    image: np.ndarray,
+    *,
+    width: int = 224,
+    height: int = 224,
+) -> np.ndarray | None:
+    image = _as_bgr(image)
+    if image is None:
+        return None
+    source_height, source_width = image.shape[:2]
+    scale = min(width / source_width, height / source_height)
+    resized_width = max(1, int(round(source_width * scale)))
+    resized_height = max(1, int(round(source_height * scale)))
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(
+        image,
+        (resized_width, resized_height),
+        interpolation=interpolation,
+    )
+    canvas = np.full((height, width, 3), 24, dtype=np.uint8)
+    x_offset = (width - resized_width) // 2
+    y_offset = (height - resized_height) // 2
+    canvas[
+        y_offset : y_offset + resized_height,
+        x_offset : x_offset + resized_width,
+    ] = resized
+    return canvas
+
+
 def _concat_if_needed(image, reference):
     if image is None or reference is None:
         return image
-    if len(image.shape) != len(reference.shape):
-        if len(image.shape) == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        if len(reference.shape) == 2:
-            reference = cv2.cvtColor(reference, cv2.COLOR_GRAY2BGR)
-    elif len(image.shape) == 3 and image.shape[2] != reference.shape[2]:
-        if image.shape[2] == 1:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        if reference.shape[2] == 1:
-            reference = cv2.cvtColor(reference, cv2.COLOR_GRAY2BGR)
-    if image.dtype != reference.dtype:
-        reference = reference.astype(image.dtype)
-    image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
-    reference = cv2.resize(reference, (224, 224), interpolation=cv2.INTER_AREA)
-    return cv2.hconcat([image, reference])
+    reference_panel = _fit_with_padding(reference)
+    body_panel = _fit_with_padding(image)
+    if reference_panel is None or body_panel is None:
+        return image
+    return cv2.hconcat([reference_panel, body_panel])
+
+
+def _jpeg_base64(image: np.ndarray | None) -> str | None:
+    image = _as_bgr(image)
+    if image is None:
+        return None
+    encoded, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not encoded:
+        return None
+    return base64.b64encode(jpeg.tobytes()).decode("ascii")
 
 
 def _upper_section(image):
@@ -204,7 +250,23 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
         thumbnail = None
     if thumbnail:
         face_image_b64 = base64.b64encode(thumbnail).decode("ascii")
-    image_kind = "face" if face_image_b64 else "placeholder"
+
+    body_path = _media_path(
+        runtime,
+        row.get("body_image") or row.get("snapshot_image"),
+    )
+    body_image = _upper_section(_read_image(body_path))
+    if body_image is not None:
+        if concatenate:
+            reference_image = _read_image(_reference_path(runtime, row))
+            body_image = _concat_if_needed(body_image, reference_image)
+        body_image_b64 = _jpeg_base64(body_image)
+
+    if body_image_b64:
+        face_image_b64 = None
+        image_kind = "body"
+    else:
+        image_kind = "face" if face_image_b64 else "placeholder"
 
     return {
         "id": row["id"],

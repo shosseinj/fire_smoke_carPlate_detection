@@ -17,8 +17,8 @@ Detection-log rows now store private root-relative keys such as:
 ```text
 detected_faces/<file>.jpg
 face_thumbnails/<file>.jpg
-human_snapshots/<file>.jpg
-whole_snapshots/<file>.jpg
+body_images/<file>.jpg
+full_frame_images/<file>.jpg
 human_videos/<file>.mp4
 human_face_videos/<file>.mp4
 ```

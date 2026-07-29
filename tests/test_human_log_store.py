@@ -23,6 +23,20 @@ def packet(frame_index: int) -> FramePacket:
     )
 
 
+def colored_packet(frame_index: int, bgr: tuple[int, int, int]) -> FramePacket:
+    return replace(
+        packet(frame_index),
+        frame=np.full((120, 160, 3), bgr, dtype=np.uint8),
+    )
+
+
+def assert_jpeg_has_dominant_channel(path: Path, channel: int) -> None:
+    image = cv2.imread(str(path))
+    assert image is not None, path
+    means = image.mean(axis=(0, 1))
+    assert int(np.argmax(means)) == channel, (path, means)
+
+
 def result(
     source: FramePacket,
     name: str,
@@ -80,6 +94,21 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(
             later_lower_quality,
             result(later_lower_quality, "Alice", 0.80, face_quality=0.60),
         )
+        expired = packet(4)
+        expired_result = result(expired, "Alice", 0.80)
+        expired_result.data["humans"] = []
+        expired_result.data["faces"] = []
+        expired_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "bbox": [10, 10, 100, 110],
+                "person": "Alice",
+                "recognition_score": 0.80,
+                "ref_img_id": "reference-1",
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(expired, expired_result)
         store.flush()
         store.close()
 
@@ -87,27 +116,34 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice"
         assert rows[0]["first_seen"] == "2026-07-18T00:00:01Z"
-        assert rows[0]["last_seen"] == "2026-07-18T00:00:03Z"
+        assert rows[0]["last_seen"] == "2026-07-18T00:00:04Z"
         assert rows[0]["recognition_score"] == 0.93
         assert rows[0]["snapshot_quality"] == 0.97
         assert rows[0]["best_face_quality"] == 0.90
         assert "best_face_yaw" not in rows[0]
         assert "best_face_pitch" not in rows[0]
         assert "best_face_roll" not in rows[0]
-        assert rows[0]["snapshot_url"].startswith("/media/human_snapshots/")
-        assert rows[0]["video_url"].startswith("/media/human_videos/")
-        assert rows[0]["face_video_url"].startswith("/media/human_face_videos/")
+        with postgres_database.connection() as connection:
+            media_row = connection.execute(
+                "SELECT snapshot_url, video_url, face_video_url FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert media_row is not None
+        assert str(media_row["snapshot_url"]).startswith("body_images/")
+        assert str(media_row["video_url"]).startswith("human_videos/")
+        assert str(media_row["face_video_url"]).startswith("human_face_videos/")
         assert rows[0]["full_frame_video_frames"] == 3
         assert rows[0]["accepted_face_frames"] == 2
-        snapshot = tmp_path / "media" / "human_snapshots" / Path(
-            rows[0]["snapshot_url"]
+        snapshot = tmp_path / "media" / "body_images" / Path(
+            str(media_row["snapshot_url"])
         ).name
         assert snapshot.is_file()
         human_video = tmp_path / "media" / "human_videos" / Path(
-            rows[0]["video_url"]
+            str(media_row["video_url"])
         ).name
         face_video = tmp_path / "media" / "human_face_videos" / Path(
-            rows[0]["face_video_url"]
+            str(media_row["face_video_url"])
         ).name
         for video in (human_video, face_video):
             assert video.is_file()
@@ -123,7 +159,7 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(
                     assert frame.shape[:2] == (112, 112)
             finally:
                 capture.release()
-        assert store.status()["saved_snapshots"] == 2
+        assert store.status()["saved_snapshots"] == 1
     finally:
         store.close()
 
@@ -149,12 +185,26 @@ def test_best_face_is_saved_when_full_frame_sample_is_not_due(
         store.flush()
         store.close()
 
-        row = store.list(track_id=13)[0]
+        with postgres_database.connection() as connection:
+            row = connection.execute(
+                "SELECT snapshot_url, video_url, face_video_url, "
+                "full_frame_video_frames, accepted_face_frames FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert row is not None
         assert row["full_frame_video_frames"] == 1
         assert row["accepted_face_frames"] == 1
-        assert row["face_video_url"].startswith("/media/human_face_videos/")
+        with postgres_database.connection() as connection:
+            media_row = connection.execute(
+                "SELECT face_video_url FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert media_row is not None
+        assert str(media_row["face_video_url"]).startswith("human_face_videos/")
         face_video = tmp_path / "media" / "human_face_videos" / Path(
-            row["face_video_url"]
+            str(media_row["face_video_url"])
         ).name
         capture = cv2.VideoCapture(str(face_video))
         try:
@@ -191,7 +241,7 @@ def test_disappeared_track_is_visible_in_detection_log_filter(
         detection_log_store=detection_logs,
     )
     disappeared = packet(4)
-    final_result = result(disappeared, "Alice", 0.93)
+    final_result = result(disappeared, "Alice", 0.93, face_quality=0.90)
     final_result.data["humans"] = []
     final_result.data["disappeared_humans"] = [
         {
@@ -276,6 +326,43 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
         store.close()
 
 
+def test_track_without_valid_face_does_not_create_detection_media(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    detection_logs = DetectionLogStore(postgres_database)
+    media_root = tmp_path / "media"
+    store = HumanLogStore(
+        postgres_database,
+        media_root,
+        detection_log_store=detection_logs,
+    )
+    disappeared = packet(4)
+    final_result = result(disappeared, "Unknown", 0.0)
+    final_result.data["humans"] = []
+    final_result.data["faces"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": "Unknown",
+            "recognition_score": 0.0,
+            "ref_img_id": None,
+            "confidence": 0.0,
+        }
+    ]
+    try:
+        store.observe_result(disappeared, final_result)
+        store.flush()
+        assert detection_logs.get_by_source_event_key(
+            "human-track:session-a:camera-01:13"
+        ) is None
+        for directory in ("detected_faces", "body_images", "full_frame_images"):
+            assert not list((media_root / directory).glob("*.jpg"))
+    finally:
+        store.close()
+
+
 def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
     tmp_path: Path,
     postgres_database: Database,
@@ -283,7 +370,7 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
     national_code = "1234567892"
     media_root = tmp_path / "media"
     media_root.mkdir(parents=True, exist_ok=True)
-    reference_path = media_root / "personnel_snapshots" / "reference.jpg"
+    reference_path = media_root / "reference_images" / "reference.jpg"
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(reference_path), np.full((40, 30, 3), (20, 80, 160), dtype=np.uint8))
     with postgres_database.connection() as connection:
@@ -294,13 +381,15 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
         image_cursor = connection.execute(
             "INSERT INTO personnel_images "
             "(personnel_id, storage_key, is_primary) VALUES (?, ?, 1)",
-            (person_cursor.lastrowid, "personnel_snapshots/reference.jpg"),
+            (person_cursor.lastrowid, "reference_images/reference.jpg"),
         )
         ref_img_id = int(image_cursor.lastrowid)
 
     store = HumanLogStore(postgres_database, media_root)
     disappeared = packet(5)
-    final_result = result(disappeared, national_code, 0.94)
+    final_result = result(
+        disappeared, national_code, 0.94, face_quality=0.90
+    )
     final_result.data["humans"] = []
     final_result.data["disappeared_humans"] = [
         {
@@ -317,8 +406,15 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
         store.flush()
         row = store.list(track_id=13)[0]
         assert row["name"] == "Known Person"
-        snapshot_path = media_root / "human_snapshots" / Path(
-            row["snapshot_url"]
+        with postgres_database.connection() as connection:
+            media_row = connection.execute(
+                "SELECT snapshot_url FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert media_row is not None
+        snapshot_path = media_root / "body_images" / Path(
+            str(media_row["snapshot_url"])
         ).name
         saved = cv2.imread(str(snapshot_path))
         assert saved is not None
@@ -361,12 +457,33 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
     store = HumanLogStore(postgres_database, tmp_path / "media")
     try:
         store.observe_result(inference, detected)
+        expired = replace(packet(2), metadata={"source_frame": source_frame})
+        expired_result = result(expired, "Alice", 0.95)
+        expired_result.data["humans"] = []
+        expired_result.data["faces"] = []
+        expired_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "source_bbox": [30, 30, 330, 330],
+                "person": "Alice",
+                "recognition_score": 0.95,
+                "ref_img_id": "reference-1",
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(expired, expired_result)
         store.flush()
         store.close()
 
-        row = store.list(track_id=13)[0]
-        snapshot_path = tmp_path / "media" / "human_snapshots" / Path(
-            row["snapshot_url"]
+        with postgres_database.connection() as connection:
+            row = connection.execute(
+                "SELECT snapshot_url, video_url, face_video_url FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert row is not None
+        snapshot_path = tmp_path / "media" / "body_images" / Path(
+            str(row["snapshot_url"])
         ).name
         snapshot = cv2.imread(str(snapshot_path))
         assert snapshot is not None
@@ -374,11 +491,11 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
         assert snapshot.shape[1] > inference.frame.shape[1]
 
         full_video = tmp_path / "media" / "human_videos" / Path(
-            row["video_url"]
+            str(row["video_url"])
         ).name
         full_capture = cv2.VideoCapture(str(full_video))
         face_video = tmp_path / "media" / "human_face_videos" / Path(
-            row["face_video_url"]
+            str(row["face_video_url"])
         ).name
         face_capture = cv2.VideoCapture(str(face_video))
         try:
@@ -391,5 +508,86 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
         finally:
             full_capture.release()
             face_capture.release()
+    finally:
+        store.close()
+
+
+def test_finalized_still_evidence_is_atomic_and_idempotent(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    """Face, body, and full frame must be one save-once evidence bundle."""
+    media_root = tmp_path / "media"
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        media_root,
+        detection_log_store=detection_logs,
+    )
+
+    # Blue is an earlier, lower-quality candidate. Green is the selected best
+    # frame. The red disappearance frame must not be mixed into its evidence.
+    earlier = colored_packet(1, (255, 0, 0))
+    selected = colored_packet(2, (0, 255, 0))
+    disappeared = colored_packet(3, (0, 0, 255))
+    final_result = result(disappeared, "Alice", 0.93)
+    final_result.data["humans"] = []
+    final_result.data["faces"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": "Alice",
+            "recognition_score": 0.93,
+            "ref_img_id": None,
+            "confidence": 0.0,
+        }
+    ]
+
+    try:
+        store.observe_result(
+            earlier,
+            result(earlier, "Alice", 0.80, face_quality=0.60),
+        )
+        store.observe_result(
+            selected,
+            result(selected, "Alice", 0.93, face_quality=0.95),
+        )
+        store.observe_result(disappeared, final_result)
+        store.flush()
+
+        records, _ = detection_logs.list_filter(
+            camera_id="camera-01",
+            log_type="camera_rtsp",
+        )
+        assert len(records) == 1
+        record = records[0]
+        first_keys = (record.face_image, record.body_image, record.snapshot_image)
+        assert all(first_keys)
+        expected_directories = (
+            media_root / "detected_faces",
+            media_root / "body_images",
+            media_root / "full_frame_images",
+        )
+        for key, directory in zip(first_keys, expected_directories, strict=True):
+            path = directory / Path(str(key)).name
+            assert_jpeg_has_dominant_channel(path, 1)
+            assert len(list(directory.glob("*.jpg"))) == 1
+
+        # A duplicate tracker-expiry notification must reuse the same database
+        # keys and must not create or replace any still-image files.
+        store.observe_result(disappeared, final_result)
+        store.flush()
+        duplicate = detection_logs.get_by_source_event_key(
+            "human-track:session-a:camera-01:13"
+        )
+        assert duplicate is not None
+        assert (
+            duplicate.face_image,
+            duplicate.body_image,
+            duplicate.snapshot_image,
+        ) == first_keys
+        for directory in expected_directories:
+            assert len(list(directory.glob("*.jpg"))) == 1
     finally:
         store.close()

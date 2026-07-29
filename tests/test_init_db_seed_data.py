@@ -149,6 +149,7 @@ def test_init_database_seeds_everything_when_empty(
         location_store=location_store,
         shift_store=shift_store,
         target_log_count=50,
+        seed_sample_detections=True,
     )
     assert result is True
 
@@ -169,6 +170,23 @@ def test_init_database_seeds_everything_when_empty(
 
 
 @pytest.mark.postgresql
+def test_init_database_does_not_seed_detection_logs_by_default(
+    postgres_database: Database,
+) -> None:
+    personnel_store = _make_personnel_store(postgres_database)
+    log_store = _make_log_store(postgres_database)
+
+    result = init_database(
+        personnel_store=personnel_store,
+        detection_log_store=log_store,
+    )
+
+    assert result is True
+    assert personnel_store.count() == len(DEFAULT_PERSONNEL_SEED_DATA)
+    assert log_store.count_by_status().get("log_type:camera_rtsp", 0) == 0
+
+
+@pytest.mark.postgresql
 def test_init_database_is_idempotent(
     postgres_database: Database,
 ) -> None:
@@ -184,6 +202,7 @@ def test_init_database_is_idempotent(
         location_store=location_store,
         shift_store=shift_store,
         target_log_count=50,
+        seed_sample_detections=True,
     )
     assert result1 is True
 
@@ -194,6 +213,7 @@ def test_init_database_is_idempotent(
         location_store=location_store,
         shift_store=shift_store,
         target_log_count=50,
+        seed_sample_detections=True,
     )
     assert result2 is False
 

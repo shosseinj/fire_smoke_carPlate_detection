@@ -172,11 +172,11 @@ for media_directory in (
     "detected_faces",
     "face_thumbnails",
     "human_face_videos",
-    "human_snapshots",
-    "whole_snapshots",
+    "body_images",
+    "full_frame_images",
     "human_videos",
     "personnel_cropped_faces",
-    "personnel_snapshots",
+    "reference_images",
     "personnel_zip_errors",
 ):
     (settings.saved_media_path / media_directory).mkdir(parents=True, exist_ok=True)

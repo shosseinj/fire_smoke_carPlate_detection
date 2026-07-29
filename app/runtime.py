@@ -529,6 +529,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             holiday_store=holiday_store,
             registry=registry,
             cam_store=cam_store,
+            seed_sample_detections=app_settings.seed_sample_detections,
         )
     except Exception as exc:
         LOGGER.warning("INIT_DB seeding failed: %s", exc)

@@ -95,10 +95,10 @@ def test_response_embeds_only_face_thumbnail_and_generates_protected_urls(
         max_size=224,
     )
     body_key, _ = storage.save_jpeg(
-        image, directory="human_snapshots", filename="body.jpg", quality=92
+        image, directory="body_images", filename="body.jpg", quality=92
     )
     snapshot_key, _ = storage.save_jpeg(
-        image, directory="whole_snapshots", filename="snapshot.jpg", quality=92
+        image, directory="full_frame_images", filename="snapshot.jpg", quality=92
     )
     video_path = tmp_path / "human_videos" / "clip.mp4"
     video_path.parent.mkdir(parents=True)
@@ -133,7 +133,7 @@ def test_response_embeds_only_face_thumbnail_and_generates_protected_urls(
     assert response["video_url"] == "/api/v1/logs/7/video"
     assert response["body_thumbnail"] is None
     assert "detected_faces/face.jpg" not in str(response)
-    assert "human_snapshots/body.jpg" not in str(response)
+    assert "body_images/body.jpg" not in str(response)
 
     without_thumbnail = api._build_response(
         _record(face_image=face_key, face_thumbnail=thumb_key),

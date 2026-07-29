@@ -30,6 +30,10 @@ PRIVATE_DETECTION_MEDIA_DIRS = frozenset(
     {
         "detected_faces",
         "face_thumbnails",
+        "body_images",
+        "full_frame_images",
+        "reference_images",
+        # Legacy names remain private while older development media exists.
         "human_snapshots",
         "whole_snapshots",
         "human_videos",

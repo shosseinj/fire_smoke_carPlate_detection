@@ -538,6 +538,7 @@ def init_database(
     registry: SourceRegistry | None = None,
     cam_store: CamStore | None = None,
     target_log_count: int = 100,
+    seed_sample_detections: bool = False,
 ) -> bool:
     """Seed the database with foundational records and sample data.
 
@@ -557,6 +558,9 @@ def init_database(
         Any store that is ``None`` is skipped.
     target_log_count:
         Desired number of detection logs when seeding from empty.
+    seed_sample_detections:
+        Create development-only sample detection logs when true. Disabled by
+        default so production startup never invents detection history.
 
     Returns
     -------
@@ -686,7 +690,11 @@ def init_database(
             seeded = True
 
     # ── Seed sample detection logs ──────────────────────────────────
-    if detection_log_store is not None and personnel_store is not None:
+    if (
+        seed_sample_detections
+        and detection_log_store is not None
+        and personnel_store is not None
+    ):
         personnel_records, _ = personnel_store.list(limit=1000)
         personnel_ids = [p.id for p in personnel_records]
         room_id = room.id if room is not None else None

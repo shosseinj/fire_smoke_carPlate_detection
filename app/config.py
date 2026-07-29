@@ -71,6 +71,7 @@ class Settings:
     database_echo: bool = _env_bool("DATABASE_ECHO", False)
     database_pool_size: int = _env_int("DATABASE_POOL_SIZE", 10)
     database_max_overflow: int = _env_int("DATABASE_MAX_OVERFLOW", 20)
+    seed_sample_detections: bool = _env_bool("SEED_SAMPLE_DETECTIONS", False)
     data_path: Path = _path("DATA_PATH", "data")
     business_timezone_name: str = os.getenv("BUSINESS_TIMEZONE", "Asia/Tehran")
     recent_results_limit: int = _env_int("RECENT_RESULTS_LIMIT", 2000)

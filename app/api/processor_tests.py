@@ -430,7 +430,7 @@ async def personnel_smoke_test(
             steps["list"] = {"status": "PASS", "total": total}
 
         # 6. Create image record
-        storage_key = f"personnel_snapshots/test-{test_id}.jpg"
+        storage_key = f"reference_images/test-{test_id}.jpg"
         img = store.create_image(
             personnel_id=person_id,
             storage_key=storage_key,

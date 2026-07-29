@@ -141,6 +141,7 @@ Two ingestion backends are available:
 The controls are:
 
 ```text
+SEED_SAMPLE_DETECTIONS=false
 VIDEO_INGESTION_ENABLED=true
 VIDEO_INGEST_BACKEND=deepstream
 VIDEO_LOOP=true
@@ -152,6 +153,10 @@ RTSP_RECONNECT_SECONDS=3
 DEEPSTREAM_RTSP_LATENCY_MS=500
 DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS=30
 ```
+
+`SEED_SAMPLE_DETECTIONS` defaults to `false`. Set it to `true` only in a
+development environment that should populate an empty detection-log table with
+sample recent-detection records.
 
 With `VIDEO_INGEST_BACKEND=deepstream`, RTSP is opened by GStreamer/DeepStream and local paths are converted to file URIs automatically. The nullable `sources.fps` column is the only delivery-rate control: `NULL` uses native pacing, while a positive value applies a per-source override. Raising an RTSP value cannot exceed the frames produced by the camera. TCP is the default for reliable LAN camera delivery. `RTSP_RECONNECT_SECONDS` controls the application retry delay after a failed pipeline, while `DEEPSTREAM_RTSP_STALL_TIMEOUT_SECONDS` controls how long DeepStream waits without receiving data before forcing its internal RTSP reconnection. Credentials remain in the persisted registry but are redacted from source API responses, status output, packet metadata, and connection errors. The OpenCV timeout settings apply only to the fallback backend.
 
