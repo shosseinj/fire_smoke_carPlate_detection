@@ -222,6 +222,32 @@ class Runtime:
             else:
                 self.broadcast.clear_source_zones(source.source_uri)
 
+    def _synchronize_source_room_assignments(self) -> int:
+        """Bridge legacy room.cam_id ownership to SourceRecord.room_id.
+
+        Rooms are returned newest-first, so recreating a room for a camera makes
+        that room the active polygon source for the camera after a restart.
+        """
+        rooms, _ = self.location_store.list_rooms(limit=1000)
+        newest_active_room_by_cam: dict[int, int] = {}
+        for room in rooms:
+            if room.cam_id is None or not room.is_active:
+                continue
+            newest_active_room_by_cam.setdefault(int(room.cam_id), int(room.id))
+
+        cameras, _ = self.cam_store.list(limit=1000)
+        updated = 0
+        for camera in cameras:
+            room_id = newest_active_room_by_cam.get(camera.id)
+            if room_id is None:
+                continue
+            source = self.registry.get(camera.url)
+            if source is None or source.room_id == room_id:
+                continue
+            self.registry.update(camera.url, room_id=room_id)
+            updated += 1
+        return updated
+
     def _refresh_all_source_draw_settings(self) -> None:
         for source in self.registry.list():
             self.broadcast.set_source_draw_settings(
@@ -729,15 +755,15 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         reg: SourceRegistry,
         human_log_store: HumanLogStore,
     ) -> Callable[[FramePacket, TaskResult], None]:
-        """Combined observer for FACE_RECOGNITION that gates human log saving on polygon transitions.
+        """Gate face logs on containment in the camera's explicit room polygon.
 
         Flow:
         1. Computes human foot point ((x1+x2)/2, y2)
-        2. If the camera's section has custom polygon rooms → calls match_detection_to_rooms
-        3. If no custom polygons → uses the default full-frame polygon
-        4. Records polygon zone matches in the database (if custom) or in-memory (if default)
-        5. Calls human_log_store.observe_result() for zone transitions and expired tracks
-        6. No transition or expired track → human log is NOT saved (reduces noise and storage)
+        2. Checks the polygon of the room assigned to the source camera.
+        3. Caches evidence only for tracks currently inside that polygon.
+        4. Remembers the admitting room until the track expires.
+        5. Finalizes only admitted tracks with room_id and camera_id.
+        6. Missing/invalid polygons and the default fallback never admit logs.
         """
         def face_observer(packet: FramePacket, result: TaskResult) -> None:
             if result.error:
@@ -749,22 +775,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             if cam is None:
                 return
 
-            # Face evidence is retained independently of polygon-gated human
-            # log admission so an expiry result can finalize a log even when
-            # the face is no longer visible in the camera frame.
-            try:
-                human_log_store.observe_result(
-                    packet,
-                    result,
-                    persist_human_log=False,
-                )
-            except Exception:
-                LOGGER.exception(
-                    "Face evidence observer failed: source=%s", source_id
-                )
+            # Only an explicitly configured room polygon can admit evidence.
             room_id = cam.room_id
             has_polygons = ls.room_has_polygon(room_id)
-            has_transition = False
+            valid_room_ids_by_track: dict[int, int] = {}
             has_disappeared = bool(result.data.get("disappeared_humans"))
 
             for human in result.data.get("humans", []):
@@ -786,23 +800,34 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         camera_id=source_id,
                         track_id=track_id,
                     )
-                    if any(m.transition_type is not None for m in matches):
-                        has_transition = True
-                else:
-                    # No custom polygons — use default full-frame polygon
-                    transition = ls.get_default_polygon_entry_state(
-                        camera_id=source_id,
-                        track_id=track_id,
-                        foot_x=foot_x,
-                        foot_y=foot_y,
+                    inside_match = next(
+                        (match for match in matches if match.transition_type != "exited"),
+                        None,
                     )
-                    if transition is not None:
-                        has_transition = True
+                    if inside_match is not None and track_id is not None:
+                        valid_room_ids_by_track[int(track_id)] = int(
+                            inside_match.room_id
+                        )
+            # Cache only evidence captured while the track is inside the room.
+            try:
+                human_log_store.observe_result(
+                    packet,
+                    result,
+                    persist_human_log=False,
+                    room_ids_by_track=valid_room_ids_by_track,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Face evidence observer failed: source=%s", source_id
+                )
 
-            # Save on a polygon transition or when the tracker has expired a track.
-            if has_transition or has_disappeared:
+            if valid_room_ids_by_track or has_disappeared:
                 try:
-                    human_log_store.observe_result(packet, result)
+                    human_log_store.observe_result(
+                        packet,
+                        result,
+                        room_ids_by_track=valid_room_ids_by_track,
+                    )
                 except Exception:
                     LOGGER.exception(
                         "Human log observer failed: source=%s", source_id
@@ -981,6 +1006,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
     )
+    synchronized_rooms = runtime_obj._synchronize_source_room_assignments()
+    if synchronized_rooms:
+        LOGGER.info(
+            "Synchronized %d source room assignment(s) from camera-owned rooms",
+            synchronized_rooms,
+        )
     registry.add_listener(lambda _change: runtime_obj._refresh_all_source_zones())
     registry.add_listener(lambda _change: runtime_obj._refresh_all_source_draw_settings())
     def _on_source_change(change: SourceChange) -> None:

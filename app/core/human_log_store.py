@@ -35,6 +35,7 @@ class HumanMediaEvent:
     recognition_score: float
     ref_img_id: str | int | None
     personnel_id: int | None
+    room_id: int | None
     snapshot_frame: np.ndarray | None
     whole_snapshot_frame: np.ndarray | None
     face_image_frame: np.ndarray | None
@@ -121,6 +122,7 @@ class HumanLogStore:
         # Video recording is admitted by the first valid face for a track, but
         # remains independent from polygon-gated human-log persistence.
         self._video_enabled_tracks: set[tuple[str, str, int]] = set()
+        self._track_room_ids: dict[tuple[str, str, int], int] = {}
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
         self._still_evidence: dict[
             tuple[str, str, int], StillEvidenceBundle
@@ -311,6 +313,7 @@ class HumanLogStore:
         result: TaskResult,
         *,
         persist_human_log: bool = True,
+        room_ids_by_track: dict[int, int] | None = None,
     ) -> None:
         if result.error:
             return
@@ -340,6 +343,18 @@ class HumanLogStore:
                 continue
             track_id = int(track_id)
             key = (session_id, packet.source_id, track_id)
+            require_valid_room = room_ids_by_track is not None
+            admitted_room_id = (
+                room_ids_by_track.get(track_id)
+                if room_ids_by_track is not None
+                else None
+            )
+            with self._lock:
+                if admitted_room_id is not None:
+                    self._track_room_ids[key] = int(admitted_room_id)
+                stored_room_id = self._track_room_ids.get(key)
+            if persist_human_log and require_valid_room and stored_room_id is None:
+                continue
             raw_name = str(human.get("person") or "Unknown").strip() or "Unknown"
             raw_ref = human.get("ref_img_id")
             name, resolved_personnel_id = self._resolve_personnel_identity(
@@ -353,6 +368,13 @@ class HumanLogStore:
             ]
             human_crop = self._human_crop(source_frame, bbox)
             face = faces_by_track.get(track_id)
+            valid_room_frame = (
+                room_ids_by_track is None or admitted_room_id is not None
+            )
+            if not valid_room_frame and not disappeared:
+                # Do not let an outside-polygon face become the immutable still
+                # evidence or activate video recording for a persisted log.
+                face = None
             face_quality = float(face.get("quality_score", 0.0)) if face else 0.0
             frame_area = max(1.0, float(source_frame.shape[0] * source_frame.shape[1]))
             human_area = max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
@@ -431,8 +453,11 @@ class HumanLogStore:
                     or candidate_evidence.quality
                     >= previous_evidence.quality + self.snapshot_min_improvement
                 )
-                full_frame_due = video_enabled and not disappeared and (
-                    now - previous_full_frame_at >= 1.0 / self.video_fps
+                full_frame_due = (
+                    video_enabled
+                    and valid_room_frame
+                    and not disappeared
+                    and now - previous_full_frame_at >= 1.0 / self.video_fps
                 )
                 better_face = (
                     face_frame is not None
@@ -491,6 +516,7 @@ class HumanLogStore:
                 recognition_score=float(human.get("recognition_score", 0.0) or 0.0),
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
+                room_id=stored_room_id,
                 snapshot_frame=(
                     selected_evidence.body_frame.copy()
                     if disappeared and selected_evidence is not None
@@ -522,7 +548,11 @@ class HumanLogStore:
                     if selected_evidence is not None
                     else face_quality
                 ),
-                finalize_detection_log=persist_human_log and disappeared,
+                finalize_detection_log=(
+                    persist_human_log
+                    and disappeared
+                    and stored_room_id is not None
+                ),
                 persist_human_log=persist_human_log,
             )
             try:
@@ -920,6 +950,7 @@ class HumanLogStore:
                     ref_img_id=(
                         None if event.ref_img_id is None else str(event.ref_img_id)
                     ),
+                    room_id=event.room_id,
                     camera_id=event.camera,
                     access_granted=event.personnel_id is not None,
                     counts_for_attendance=True,
@@ -953,6 +984,10 @@ class HumanLogStore:
                 for field, value in candidates.items():
                     if value and not getattr(existing_detection, field):
                         updates[field] = value
+                if event.room_id is not None and existing_detection.room_id is None:
+                    updates["room_id"] = event.room_id
+                if event.camera and not existing_detection.camera_id:
+                    updates["camera_id"] = event.camera
                 self.detection_log_store.update(existing_detection.id, **updates)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
@@ -964,6 +999,9 @@ class HumanLogStore:
                 )
                 self._video_enabled_tracks.discard(
                     (event.session_id, event.camera, event.track_id)
+                )
+                self._track_room_ids.pop(
+                    (event.session_id, event.camera, event.track_id), None
                 )
             self._last_error = None
 

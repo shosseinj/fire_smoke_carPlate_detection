@@ -30,6 +30,28 @@ def _store(runtime: Runtime) -> LocationStore:
     return runtime.location_store
 
 
+def _assign_created_room_to_source(
+    runtime: Runtime,
+    *,
+    room_id: int,
+    camera_id: int,
+) -> None:
+    camera = runtime.cam_store.get(camera_id)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
+    source = runtime.registry.get(camera.url)
+    if source is None:
+        LOGGER.warning(
+            "Room %s owns camera %s but no source exists for %s",
+            room_id,
+            camera_id,
+            camera.url,
+        )
+        return
+    runtime.registry.update(camera.url, room_id=room_id)
+    runtime._refresh_all_source_zones()
+
+
 # ── Building schemas ────────────────────────────────────────────────
 
 
@@ -662,6 +684,11 @@ def create_new_room(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    _assign_created_room_to_source(
+        runtime,
+        room_id=r.id,
+        camera_id=payload.camera_id,
+    )
     return _room_response(r, _store(runtime))
 
 

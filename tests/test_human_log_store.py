@@ -300,14 +300,25 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
             "confidence": 0.0,
         }
     ]
+    with postgres_database.connection() as connection:
+        room_row = connection.execute(
+            "SELECT id FROM rooms ORDER BY id LIMIT 1"
+        ).fetchone()
+    assert room_row is not None
+    room_id = int(room_row["id"])
     try:
-        # This represents a regular frame rejected by the polygon log gate.
+        # This represents a regular frame admitted by an explicit room polygon.
         store.observe_result(
             observed,
             result(observed, "Alice", 0.93, face_quality=0.90),
             persist_human_log=False,
+            room_ids_by_track={13: room_id},
         )
-        store.observe_result(disappeared, final_result)
+        store.observe_result(
+            disappeared,
+            final_result,
+            room_ids_by_track={},
+        )
         store.flush()
 
         row = store.list(track_id=13)[0]
@@ -318,6 +329,8 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
         )
         assert len(records) == 1
         assert records[0].face_image
+        assert records[0].room_id == room_id
+        assert records[0].camera_id == "camera-01"
         assert records[0].video
         assert records[0].face_video_or_unknown_faces
         face_path = tmp_path / "media" / "human" / "detected_faces" / Path(
@@ -337,6 +350,53 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
                 assert video_frame is not None
             finally:
                 capture.release()
+    finally:
+        store.close()
+
+
+def test_outside_polygon_track_does_not_create_human_or_detection_log(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        detection_log_store=detection_logs,
+    )
+    observed = packet(8)
+    disappeared = packet(9)
+    final_result = result(disappeared, "Alice", 0.93)
+    final_result.data["humans"] = []
+    final_result.data["faces"] = []
+    final_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": "Alice",
+            "recognition_score": 0.93,
+            "ref_img_id": None,
+            "confidence": 0.0,
+        }
+    ]
+    try:
+        store.observe_result(
+            observed,
+            result(observed, "Alice", 0.93, face_quality=0.90),
+            persist_human_log=False,
+            room_ids_by_track={},
+        )
+        store.observe_result(
+            disappeared,
+            final_result,
+            room_ids_by_track={},
+        )
+        store.flush()
+
+        assert store.list(track_id=13) == []
+        records, total = detection_logs.list_filter(camera_id="camera-01")
+        assert total == 0
+        assert records == []
     finally:
         store.close()
 
