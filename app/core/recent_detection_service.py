@@ -233,9 +233,10 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     classification, _ = _classification(confidence, face_rec, confirmation)
     person = row.get("person") or "Unknown"
     known_identity = bool(row.get("personnel_id")) or str(person).strip().lower() != "unknown"
-    # A tentative/low-confidence name is still an unknown recent detection for
-    # presentation purposes. Only confirmed known logs get reference+body.
-    concatenate = classification == "known" and known_identity
+    # Both confirmed and unsure matches point to a candidate personnel identity.
+    # Present them consistently by combining the personnel reference image with
+    # the detected body crop whenever that identity has a resolvable reference.
+    concatenate = classification in {"known", "unsure"} and known_identity
     fname = row.get("fname")
     lname = row.get("lname")
     if fname or lname:
