@@ -40,8 +40,8 @@ class _Store:
     def _save_image_file(self, personnel_id: int, raw: bytes, filename: str, national_code: str = "") -> str:
         self.saved_files += 1
         if national_code:
-            return f"reference_images/{national_code}/{filename}"
-        return f"reference_images/{personnel_id}/{filename}"
+            return f"human/reference_images/{national_code}/{filename}"
+        return f"human/reference_images/{personnel_id}/{filename}"
 
     def create_image(
         self,

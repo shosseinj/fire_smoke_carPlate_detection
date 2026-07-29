@@ -165,19 +165,19 @@ app.include_router(import_progress_router)
 app.include_router(static_videos_router)
 settings.saved_media_path.mkdir(parents=True, exist_ok=True)
 for media_directory in (
-    "fire_smoke_snapshots",
-    "fire_smoke_videos",
-    "plate_snapshots",
-    "plate_videos",
-    "detected_faces",
-    "face_thumbnails",
-    "human_face_videos",
-    "body_images",
-    "full_frame_images",
-    "human_videos",
-    "personnel_cropped_faces",
-    "reference_images",
-    "personnel_zip_errors",
+    "fire/snapshots",
+    "fire/videos",
+    "plate/snapshots",
+    "plate/videos",
+    "human/detected_faces",
+    "human/face_thumbnails",
+    "human/face_videos",
+    "human/body_images",
+    "human/full_frame_images",
+    "human/videos",
+    "human/personnel_cropped_faces",
+    "human/reference_images",
+    "human/personnel_zip_errors",
 ):
     (settings.saved_media_path / media_directory).mkdir(parents=True, exist_ok=True)
 settings.static_video_upload_path.mkdir(parents=True, exist_ok=True)

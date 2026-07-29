@@ -47,8 +47,9 @@ class FireSmokeLogStore:
     ) -> None:
         self.database = ensure_database(database)
         self.media_root = media_root.resolve()
-        self.snapshot_dir = self.media_root / "fire_smoke_snapshots"
-        self.video_dir = self.media_root / "fire_smoke_videos"
+        self.fire_media_dir = self.media_root / "fire"
+        self.snapshot_dir = self.fire_media_dir / "snapshots"
+        self.video_dir = self.fire_media_dir / "videos"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.video_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -265,7 +266,7 @@ class FireSmokeLogStore:
             video_filename = f"{camera_stem}_{timestamp}_{uuid4().hex[:8]}.mp4"
             video_path = self.video_dir / video_filename
             save_video_frames(pending.video_frames, video_path, self.video_fps)
-            video_url = f"/media/fire_smoke_videos/{video_filename}"
+            video_url = f"/media/fire/videos/{video_filename}"
             with self._lock, self._connect() as connection:
                 connection.execute(
                     "UPDATE fire_smoke_logs SET video_url = ? WHERE id = ?",
@@ -292,7 +293,7 @@ class FireSmokeLogStore:
         snapshot_path = self.snapshot_dir / filename
         if not cv2.imwrite(str(snapshot_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 88]):
             raise RuntimeError(f"Could not save fire/smoke snapshot: {snapshot_path}")
-        snapshot_url = f"/media/fire_smoke_snapshots/{filename}"
+        snapshot_url = f"/media/fire/snapshots/{filename}"
         video_filename = f"{Path(filename).stem}.mp4"
         video_path = self.video_dir / video_filename
         try:
@@ -300,7 +301,7 @@ class FireSmokeLogStore:
         except Exception:
             snapshot_path.unlink(missing_ok=True)
             raise
-        video_url = f"/media/fire_smoke_videos/{video_filename}"
+        video_url = f"/media/fire/videos/{video_filename}"
         values = (
             result.source_id,
             result.processed_at_utc,

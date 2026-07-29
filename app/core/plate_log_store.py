@@ -162,14 +162,15 @@ class PlateLogStore:
             f"{uuid4().hex[:8]}.jpg"
         )
 
-        snapshot_directory = self.media_root / "plate_snapshots"
-        video_directory = self.media_root / "plate_videos"
+        plate_media_directory = self.media_root / "plate"
+        snapshot_directory = plate_media_directory / "snapshots"
+        video_directory = plate_media_directory / "videos"
         snapshot_directory.mkdir(parents=True, exist_ok=True)
 
         snapshot_path = snapshot_directory / file_name
-        snapshot_url = f"/media/plate_snapshots/{file_name}"
+        snapshot_url = f"/media/plate/snapshots/{file_name}"
         video_path = video_directory / f"{Path(file_name).stem}.mp4"
-        video_url = f"/media/plate_videos/{video_path.name}"
+        video_url = f"/media/plate/videos/{video_path.name}"
 
         if packet.frame is None or packet.frame.size == 0:
             raise ValueError("فریم تصویر خالی است")

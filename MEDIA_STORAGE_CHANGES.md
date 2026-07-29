@@ -15,12 +15,16 @@ Migration `20260728_0039_detection_media_storage.py` adds the face-thumbnail and
 Detection-log rows now store private root-relative keys such as:
 
 ```text
-detected_faces/<file>.jpg
-face_thumbnails/<file>.jpg
-body_images/<file>.jpg
-full_frame_images/<file>.jpg
-human_videos/<file>.mp4
-human_face_videos/<file>.mp4
+human/detected_faces/<file>.jpg
+human/face_thumbnails/<file>.jpg
+human/body_images/<file>.jpg
+human/full_frame_images/<file>.jpg
+human/videos/<file>.mp4                  # full frames associated with one person track
+human/face_videos/<file>.mp4
+fire/snapshots/<file>.jpg
+fire/videos/<file>.mp4
+plate/snapshots/<file>.jpg
+plate/videos/<file>.mp4
 ```
 
 Raw storage keys are not returned by detection-log API responses. Responses may embed only `face_thumbnail`; all original media is accessed through authenticated API routes:

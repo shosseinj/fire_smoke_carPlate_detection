@@ -97,10 +97,10 @@ def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     assert len(rows) == 1
     assert rows[0]["fire_count"] == 20
     assert rows[0]["severity"] == "high"
-    assert rows[0]["snapshot_url"].startswith("/media/fire_smoke_snapshots/")
+    assert rows[0]["snapshot_url"].startswith("/media/fire/snapshots/")
     snapshot = tmp_path / "media" / rows[0]["snapshot_url"].removeprefix("/media/")
     assert snapshot.is_file()
-    assert rows[0]["video_url"].startswith("/media/fire_smoke_videos/")
+    assert rows[0]["video_url"].startswith("/media/fire/videos/")
     video = tmp_path / "media" / rows[0]["video_url"].removeprefix("/media/")
     assert video.is_file()
     capture = cv2.VideoCapture(str(video))

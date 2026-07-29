@@ -39,6 +39,7 @@ class HumanMediaEvent:
     whole_snapshot_frame: np.ndarray | None
     face_image_frame: np.ndarray | None
     snapshot_quality: float
+    # A sampled full camera frame associated with this person's track.
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
@@ -87,12 +88,13 @@ class HumanLogStore:
         self.database = ensure_database(database)
         media_root = saved_media_path.resolve()
         self.media_storage = DetectionMediaStorage(media_root)
-        self.snapshot_dir = media_root / "body_images"
-        self.whole_snapshot_dir = media_root / "full_frame_images"
-        self.detected_face_dir = media_root / "detected_faces"
-        self.face_thumbnail_dir = media_root / "face_thumbnails"
-        self.video_dir = media_root / "human_videos"
-        self.face_video_dir = media_root / "human_face_videos"
+        human_media_root = media_root / "human"
+        self.snapshot_dir = human_media_root / "body_images"
+        self.whole_snapshot_dir = human_media_root / "full_frame_images"
+        self.detected_face_dir = human_media_root / "detected_faces"
+        self.face_thumbnail_dir = human_media_root / "face_thumbnails"
+        self.video_dir = human_media_root / "videos"
+        self.face_video_dir = human_media_root / "face_videos"
         for directory in (
             self.snapshot_dir,
             self.whole_snapshot_dir,
@@ -116,6 +118,9 @@ class HumanLogStore:
         self._last_full_frame_at: dict[tuple[str, str, int], float] = {}
         self._last_face_video_at: dict[tuple[str, str, int], float] = {}
         self._best_face_scores: dict[tuple[str, str, int], float] = {}
+        # Video recording is admitted by the first valid face for a track, but
+        # remains independent from polygon-gated human-log persistence.
+        self._video_enabled_tracks: set[tuple[str, str, int]] = set()
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
         self._still_evidence: dict[
             tuple[str, str, int], StillEvidenceBundle
@@ -214,9 +219,8 @@ class HumanLogStore:
             if row is None:
                 return None
         storage_key = Path(str(row["storage_key"])).as_posix()
-        path = (self.snapshot_dir.parent / storage_key).resolve()
-        media_root = self.snapshot_dir.parent.resolve()
-        if media_root not in path.parents or not path.is_file():
+        path = self.media_storage.resolve(storage_key, require_file=True)
+        if path is None:
             return None
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image is None or image.size == 0:
@@ -393,6 +397,9 @@ class HumanLogStore:
             # stored separately and only its small thumbnail is embedded in JSON.
             snapshot_image = human_crop
             with self._lock:
+                if face_frame is not None:
+                    self._video_enabled_tracks.add(key)
+                video_enabled = key in self._video_enabled_tracks
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
                 previous_full_frame_at = self._last_full_frame_at.get(
@@ -424,7 +431,7 @@ class HumanLogStore:
                     or candidate_evidence.quality
                     >= previous_evidence.quality + self.snapshot_min_improvement
                 )
-                full_frame_due = not disappeared and (
+                full_frame_due = video_enabled and not disappeared and (
                     now - previous_full_frame_at >= 1.0 / self.video_fps
                 )
                 better_face = (
@@ -456,10 +463,10 @@ class HumanLogStore:
                     else previous_evidence
                 )
 
-            # Evidence-only observations populate the atomic bundle without
-            # enqueueing a no-op persistence event. A later admitted transition
-            # or expiry consumes the same-frame bundle.
-            if not persist_human_log:
+            # Evidence-only observations do not create/update human-log rows,
+            # but after a valid face admits the track they still feed sampled
+            # person/face crops to the video writer.
+            if not persist_human_log and not (full_frame_due or face_due):
                 continue
 
             raw_personnel_id = resolved_personnel_id
@@ -507,9 +514,9 @@ class HumanLogStore:
                     else snapshot_quality
                 ),
                 full_frame_video_frame=(
-                    source_frame.copy() if persist_human_log and full_frame_due else None
+                    source_frame.copy() if full_frame_due else None
                 ),
-                face_video_frame=face_frame if persist_human_log and face_due else None,
+                face_video_frame=face_frame if face_due else None,
                 face_quality=(
                     selected_evidence.face_quality
                     if selected_evidence is not None
@@ -609,7 +616,7 @@ class HumanLogStore:
             state.full_frame_size = (width, height)
             state.full_frame_writer, state.video_key = self._new_writer(
                 self.video_dir,
-                "human_videos",
+                "human/videos",
                 stem,
                 state.full_frame_size,
             )
@@ -619,7 +626,7 @@ class HumanLogStore:
             state.face_size = (face_width, face_height)
             state.face_writer, state.face_video_key = self._new_writer(
                 self.face_video_dir,
-                "human_face_videos",
+                "human/face_videos",
                 f"{stem}_faces",
                 state.face_size,
             )
@@ -662,13 +669,13 @@ class HumanLogStore:
         assert event.face_image_frame is not None
         face_key, path = self.media_storage.save_jpeg(
             event.face_image_frame,
-            directory="detected_faces",
+            directory="human/detected_faces",
             filename=f"{stem}_face.jpg",
             quality=92,
         )
         thumbnail_key, _ = self.media_storage.save_jpeg(
             event.face_image_frame,
-            directory="face_thumbnails",
+            directory="human/face_thumbnails",
             filename=f"{stem}_thumbnail.jpg",
             quality=72,
             max_size=224,
@@ -683,10 +690,6 @@ class HumanLogStore:
         return face_key, thumbnail_key, path
 
     def _write(self, event: HumanMediaEvent) -> None:
-        if not event.persist_human_log:
-            with self._lock:
-                self._last_error = None
-            return
         state = self._media_state(event)
         wrote_full_frame = False
         wrote_face = False
@@ -746,6 +749,13 @@ class HumanLogStore:
                 face_frame = cv2.resize(face_frame, state.face_size)
             state.face_writer.write(face_frame)
             wrote_face = True
+
+        if not event.persist_human_log:
+            with self._lock:
+                self._full_frame_video_frames += int(wrote_full_frame)
+                self._accepted_face_video_frames += int(wrote_face)
+                self._last_error = None
+            return
 
         new_snapshot_url = (
             str(existing_detection.body_image or "") if existing_detection else ""
@@ -951,6 +961,9 @@ class HumanLogStore:
             if event.finalize_detection_log:
                 self._still_evidence.pop(
                     (event.session_id, event.camera, event.track_id), None
+                )
+                self._video_enabled_tracks.discard(
+                    (event.session_id, event.camera, event.track_id)
                 )
             self._last_error = None
 

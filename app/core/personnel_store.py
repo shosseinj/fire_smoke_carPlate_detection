@@ -138,9 +138,9 @@ class PersonnelStore:
     def __init__(self, database: Database | str, saved_media_path: Path) -> None:
         self._database = ensure_database(database)
         self._media_root = saved_media_path.resolve()
-        self._snapshot_dir = self._media_root / "reference_images"
-        self._cropped_face_dir = self._media_root / "personnel_cropped_faces"
-        self._zip_errors_dir = self._media_root / "personnel_zip_errors"
+        self._snapshot_dir = self._media_root / "human" / "reference_images"
+        self._cropped_face_dir = self._media_root / "human" / "personnel_cropped_faces"
+        self._zip_errors_dir = self._media_root / "human" / "personnel_zip_errors"
         self._cropped_face_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_db()
@@ -1134,7 +1134,7 @@ class PersonnelStore:
         face is detected, the aligned face crop is saved to disk.
 
         Failed images (no face, multiple faces, enrollment errors) are
-        saved to the personnel_zip_errors/ folder for manual review.
+        saved to the human/personnel_zip_errors/ folder for manual review.
         Faces whose person name is "Unknown Unknown" are NOT enrolled
         in the vector store to avoid polluting Qdrant with unknowns.
 
@@ -1507,34 +1507,34 @@ class PersonnelStore:
         }
 
     def _save_image_file(self, personnel_id: int, data: bytes, original_filename: str, national_code: str = "") -> str:
-        """Save an image to reference_images/{national_code}/ and return the relative storage key.
+        """Save an image to human/reference_images/{national_code}/ and return its storage key.
 
-        When national_code is empty the file is saved directly under reference_images/
-        for backward compatibility.
+        When national_code is empty the file is saved directly under the reference
+        image subfolder.
         """
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
         unique_name = f"{personnel_id}_{uuid.uuid4().hex}{ext}"
         if national_code:
-            relative_path = f"reference_images/{national_code}/{unique_name}"
+            relative_path = f"human/reference_images/{national_code}/{unique_name}"
         else:
-            relative_path = f"reference_images/{unique_name}"
+            relative_path = f"human/reference_images/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         return relative_path
 
     def _save_cropped_face_file(self, personnel_id: int, data: bytes, original_filename: str, national_code: str = "") -> str:
-        """Save a cropped face image to personnel_cropped_faces/{national_code}/ and return the storage_key.
+        """Save a crop to human/personnel_cropped_faces/{national_code}/ and return its key.
 
-        When national_code is empty the file is saved directly under personnel_cropped_faces/
-        for backward compatibility.
+        When national_code is empty the file is saved directly under the cropped-face
+        subfolder.
         """
         ext = Path(original_filename).suffix if "." in original_filename else ".jpg"
         unique_name = f"{personnel_id}_{uuid.uuid4().hex}{ext}"
         if national_code:
-            relative_path = f"personnel_cropped_faces/{national_code}/{unique_name}"
+            relative_path = f"human/personnel_cropped_faces/{national_code}/{unique_name}"
         else:
-            relative_path = f"personnel_cropped_faces/{unique_name}"
+            relative_path = f"human/personnel_cropped_faces/{unique_name}"
         dest = self._media_root / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

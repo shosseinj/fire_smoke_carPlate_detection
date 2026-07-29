@@ -289,7 +289,7 @@ class TestVectorEnrollmentContract:
             response = _upload_single(client, token, person["id"])
             assert response.status_code == 422
             assert runtime.personnel_store.list_images(person["id"]) == []
-            snapshot_dir = tmp_path / "saved_media" / "reference_images"
+            snapshot_dir = tmp_path / "saved_media" / "human" / "reference_images"
             assert not list(snapshot_dir.glob("*"))
         finally:
             _teardown(runtime, old_runtime)
@@ -710,7 +710,7 @@ class TestImageValidation:
             _teardown(runtime, old_runtime)
 
     def test_storage_key_generated(self, tmp_path: Path) -> None:
-        """Verify the storage key starts with reference_images/ and does not
+        """Verify the storage key starts with human/reference_images/ and does not
         contain raw filename."""
         runtime, old_runtime, client = _setup_client(tmp_path)
         try:
@@ -719,7 +719,7 @@ class TestImageValidation:
             resp = _upload_single(client, token, person["id"], "myphoto.jpg")
             body = resp.json()
             key = body["results"][0]["image"]["storage_key"]
-            assert key.startswith("reference_images/")
+            assert key.startswith("human/reference_images/")
             assert "myphoto" not in key  # UUID-based, not raw filename
         finally:
             _teardown(runtime, old_runtime)

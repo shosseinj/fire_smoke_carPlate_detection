@@ -28,12 +28,13 @@ VALID_MEDIA_STATUSES = {
 # exposed by the compatibility /media static mount.
 PRIVATE_DETECTION_MEDIA_DIRS = frozenset(
     {
+        "human",
+        # Legacy flat names remain private while older development media exists.
         "detected_faces",
         "face_thumbnails",
         "body_images",
         "full_frame_images",
         "reference_images",
-        # Legacy names remain private while older development media exists.
         "human_snapshots",
         "whole_snapshots",
         "human_videos",
@@ -63,7 +64,7 @@ class RestrictedMediaStaticFiles(StaticFiles):
 class DetectionMediaStorage:
     """Resolve and manage detection media using root-relative storage keys.
 
-    Database values are storage keys such as ``detected_faces/a.jpg``.  Legacy
+    Database values are storage keys such as ``human/detected_faces/a.jpg``. Legacy
     ``/media/...`` values and absolute paths inside the configured root are
     accepted and normalized, but paths outside the root are rejected.
     """
@@ -254,7 +255,7 @@ class DetectionMediaStorage:
         )
         key, _ = self.save_jpeg(
             image,
-            directory="face_thumbnails",
+            directory="human/face_thumbnails",
             filename=target_name,
             quality=quality,
             max_size=max_size,

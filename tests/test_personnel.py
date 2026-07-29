@@ -382,7 +382,9 @@ def test_upload_image(tmp_path: Path) -> None:
         assert body["results"][0]["success"] is True
         assert body["results"][0]["image"]["personnel_id"] == person_id
         assert body["results"][0]["image"]["is_primary"] is True
-        assert body["results"][0]["image"]["storage_key"].startswith("reference_images/")
+        assert body["results"][0]["image"]["storage_key"].startswith(
+            "human/reference_images/"
+        )
         # Personnel in response should have images
         assert len(body["personnel"]["images"]) >= 1
     finally:

@@ -55,8 +55,8 @@ class _TestPersonnelStore(PersonnelStore):
         personnel_exists: bool = True,
     ) -> None:
         self._media_root = media_root
-        self._snapshot_dir = media_root / "reference_images"
-        self._cropped_face_dir = media_root / "personnel_cropped_faces"
+        self._snapshot_dir = media_root / "human" / "reference_images"
+        self._cropped_face_dir = media_root / "human" / "personnel_cropped_faces"
         self._snapshot_dir.mkdir(parents=True)
         self._cropped_face_dir.mkdir(parents=True)
         self._connection_value = _Connection(
@@ -71,7 +71,7 @@ class _TestPersonnelStore(PersonnelStore):
 
 
 def test_delete_removes_personnel_snapshot_and_cropped_files(tmp_path: Path) -> None:
-    snapshot_key = "reference_images/personnel_7_snapshot.jpg"
+    snapshot_key = "human/reference_images/personnel_7_snapshot.jpg"
     store = _TestPersonnelStore(tmp_path, snapshot_key)
     snapshot = tmp_path / snapshot_key
     cropped = store._cropped_face_dir / "personnel_7_face.jpg"
@@ -89,7 +89,7 @@ def test_delete_removes_personnel_snapshot_and_cropped_files(tmp_path: Path) -> 
 
 
 def test_delete_missing_personnel_does_not_remove_orphan_files(tmp_path: Path) -> None:
-    snapshot_key = "reference_images/personnel_7_snapshot.jpg"
+    snapshot_key = "human/reference_images/personnel_7_snapshot.jpg"
     store = _TestPersonnelStore(tmp_path, snapshot_key, personnel_exists=False)
     snapshot = tmp_path / snapshot_key
     cropped = store._cropped_face_dir / "personnel_7_face.jpg"

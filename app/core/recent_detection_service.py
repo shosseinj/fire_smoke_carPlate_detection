@@ -203,7 +203,9 @@ def _detected_face_path(runtime: Runtime, row: dict[str, Any]) -> Path | None:
         return None
     camera = str(human["camera"]).replace("/", "_").replace("\\", "_")
     prefix = f"{camera}_{int(human['track_id'])}_"
-    directory = runtime.settings.saved_media_path.resolve() / "detected_faces"
+    directory = (
+        runtime.settings.saved_media_path.resolve() / "human" / "detected_faces"
+    )
     matches = sorted(
         directory.glob(f"{prefix}*_face.jpg"),
         key=lambda path: path.stat().st_mtime,
@@ -231,7 +233,9 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     classification, _ = _classification(confidence, face_rec, confirmation)
     person = row.get("person") or "Unknown"
     known_identity = bool(row.get("personnel_id")) or str(person).strip().lower() != "unknown"
-    concatenate = known_identity
+    # A tentative/low-confidence name is still an unknown recent detection for
+    # presentation purposes. Only confirmed known logs get reference+body.
+    concatenate = classification == "known" and known_identity
     fname = row.get("fname")
     lname = row.get("lname")
     if fname or lname:

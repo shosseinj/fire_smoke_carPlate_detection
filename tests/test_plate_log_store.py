@@ -50,8 +50,8 @@ def test_plate_log_table_saves_detection_and_snapshot_url(
     assert rows[0]["camera"] == "camera-01"
     assert rows[0]["time"] == "2026-07-15T08:00:01Z"
     assert rows[0]["plate"] == "23ن92917"
-    assert rows[0]["snapshot_url"].startswith("/media/plate_snapshots/")
-    assert rows[0]["video_url"].startswith("/media/plate_videos/")
+    assert rows[0]["snapshot_url"].startswith("/media/plate/snapshots/")
+    assert rows[0]["video_url"].startswith("/media/plate/videos/")
     video = tmp_path / "media" / rows[0]["video_url"].removeprefix("/media/")
     assert video.is_file()
 
@@ -70,13 +70,13 @@ def test_manual_plate_log_insert_and_filters(postgres_database: Database) -> Non
         camera="camera-02",
         time="2026-07-15T08:00:00+00:00",
         plate="A1",
-        snapshot_url="/media/plate_snapshots/a1.jpg",
+        snapshot_url="/media/plate/snapshots/a1.jpg",
     )
     store.insert(
         camera="camera-03",
         time="2026-07-15T08:00:01+00:00",
         plate="B2",
-        snapshot_url="/media/plate_snapshots/b2.jpg",
+        snapshot_url="/media/plate/snapshots/b2.jpg",
     )
 
     assert store.count() == 2

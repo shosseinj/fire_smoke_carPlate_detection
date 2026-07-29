@@ -130,19 +130,19 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(
                 ("session-a", "camera-01", 13),
             ).fetchone()
         assert media_row is not None
-        assert str(media_row["snapshot_url"]).startswith("body_images/")
-        assert str(media_row["video_url"]).startswith("human_videos/")
-        assert str(media_row["face_video_url"]).startswith("human_face_videos/")
+        assert str(media_row["snapshot_url"]).startswith("human/body_images/")
+        assert str(media_row["video_url"]).startswith("human/videos/")
+        assert str(media_row["face_video_url"]).startswith("human/face_videos/")
         assert rows[0]["full_frame_video_frames"] == 3
         assert rows[0]["accepted_face_frames"] == 2
-        snapshot = tmp_path / "media" / "body_images" / Path(
+        snapshot = tmp_path / "media" / "human" / "body_images" / Path(
             str(media_row["snapshot_url"])
         ).name
         assert snapshot.is_file()
-        human_video = tmp_path / "media" / "human_videos" / Path(
+        human_video = tmp_path / "media" / "human" / "videos" / Path(
             str(media_row["video_url"])
         ).name
-        face_video = tmp_path / "media" / "human_face_videos" / Path(
+        face_video = tmp_path / "media" / "human" / "face_videos" / Path(
             str(media_row["face_video_url"])
         ).name
         for video in (human_video, face_video):
@@ -202,8 +202,8 @@ def test_best_face_is_saved_when_full_frame_sample_is_not_due(
                 ("session-a", "camera-01", 13),
             ).fetchone()
         assert media_row is not None
-        assert str(media_row["face_video_url"]).startswith("human_face_videos/")
-        face_video = tmp_path / "media" / "human_face_videos" / Path(
+        assert str(media_row["face_video_url"]).startswith("human/face_videos/")
+        face_video = tmp_path / "media" / "human" / "face_videos" / Path(
             str(media_row["face_video_url"])
         ).name
         capture = cv2.VideoCapture(str(face_video))
@@ -318,10 +318,25 @@ def test_polygon_gated_face_evidence_is_reused_when_track_disappears(
         )
         assert len(records) == 1
         assert records[0].face_image
-        face_path = tmp_path / "media" / "detected_faces" / Path(
+        assert records[0].video
+        assert records[0].face_video_or_unknown_faces
+        face_path = tmp_path / "media" / "human" / "detected_faces" / Path(
             records[0].face_image
         ).name
         assert face_path.is_file()
+        person_video = tmp_path / "media" / Path(records[0].video)
+        face_video = tmp_path / "media" / Path(
+            records[0].face_video_or_unknown_faces
+        )
+        for video_path in (person_video, face_video):
+            assert video_path.is_file()
+            capture = cv2.VideoCapture(str(video_path))
+            try:
+                ok, video_frame = capture.read()
+                assert ok is True
+                assert video_frame is not None
+            finally:
+                capture.release()
     finally:
         store.close()
 
@@ -358,7 +373,7 @@ def test_track_without_valid_face_does_not_create_detection_media(
             "human-track:session-a:camera-01:13"
         ) is None
         for directory in ("detected_faces", "body_images", "full_frame_images"):
-            assert not list((media_root / directory).glob("*.jpg"))
+            assert not list((media_root / "human" / directory).glob("*.jpg"))
     finally:
         store.close()
 
@@ -370,7 +385,7 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
     national_code = "1234567892"
     media_root = tmp_path / "media"
     media_root.mkdir(parents=True, exist_ok=True)
-    reference_path = media_root / "reference_images" / "reference.jpg"
+    reference_path = media_root / "human" / "reference_images" / "reference.jpg"
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(reference_path), np.full((40, 30, 3), (20, 80, 160), dtype=np.uint8))
     with postgres_database.connection() as connection:
@@ -381,7 +396,7 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
         image_cursor = connection.execute(
             "INSERT INTO personnel_images "
             "(personnel_id, storage_key, is_primary) VALUES (?, ?, 1)",
-            (person_cursor.lastrowid, "reference_images/reference.jpg"),
+            (person_cursor.lastrowid, "human/reference_images/reference.jpg"),
         )
         ref_img_id = int(image_cursor.lastrowid)
 
@@ -413,7 +428,7 @@ def test_disappeared_known_track_saves_reference_and_current_image_side_by_side(
                 ("session-a", "camera-01", 13),
             ).fetchone()
         assert media_row is not None
-        snapshot_path = media_root / "body_images" / Path(
+        snapshot_path = media_root / "human" / "body_images" / Path(
             str(media_row["snapshot_url"])
         ).name
         saved = cv2.imread(str(snapshot_path))
@@ -482,7 +497,7 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
                 ("session-a", "camera-01", 13),
             ).fetchone()
         assert row is not None
-        snapshot_path = tmp_path / "media" / "body_images" / Path(
+        snapshot_path = tmp_path / "media" / "human" / "body_images" / Path(
             str(row["snapshot_url"])
         ).name
         snapshot = cv2.imread(str(snapshot_path))
@@ -490,11 +505,11 @@ def test_media_is_cropped_and_encoded_from_native_source_resolution(
         assert snapshot.shape[0] > inference.frame.shape[0]
         assert snapshot.shape[1] > inference.frame.shape[1]
 
-        full_video = tmp_path / "media" / "human_videos" / Path(
+        full_video = tmp_path / "media" / "human" / "videos" / Path(
             str(row["video_url"])
         ).name
         full_capture = cv2.VideoCapture(str(full_video))
-        face_video = tmp_path / "media" / "human_face_videos" / Path(
+        face_video = tmp_path / "media" / "human" / "face_videos" / Path(
             str(row["face_video_url"])
         ).name
         face_capture = cv2.VideoCapture(str(face_video))
@@ -565,9 +580,9 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
         first_keys = (record.face_image, record.body_image, record.snapshot_image)
         assert all(first_keys)
         expected_directories = (
-            media_root / "detected_faces",
-            media_root / "body_images",
-            media_root / "full_frame_images",
+            media_root / "human" / "detected_faces",
+            media_root / "human" / "body_images",
+            media_root / "human" / "full_frame_images",
         )
         for key, directory in zip(first_keys, expected_directories, strict=True):
             path = directory / Path(str(key)).name
