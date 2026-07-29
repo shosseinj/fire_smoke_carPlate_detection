@@ -148,16 +148,16 @@ def calculate_time(
     end_time_str = body.get("end_time")
 
     if request_type not in LEGACY_REQUEST_TYPES:
-        raise HTTPException(400, f"Invalid request type: {request_type!r}")
+        raise HTTPException(400, f"نوع درخواست معتبر نیست: {request_type!r}")
     if duration_type not in LEGACY_DURATION_TYPES:
-        raise HTTPException(400, f"Invalid duration type: {duration_type!r}")
+        raise HTTPException(400, f"نوع مدت معتبر نیست: {duration_type!r}")
 
     personnel = _get_personnel(personnel_id)
     if personnel is None:
-        raise HTTPException(404, f"Personnel not found: {personnel_id}")
+        raise HTTPException(404, f"پرسنل با شناسه {personnel_id} یافت نشد")
     shift = _get_shift(personnel)
     if shift is None:
-        raise HTTPException(400, f"Personnel {personnel_id} has no shift assignment")
+        raise HTTPException(400, f"برای پرسنل با شناسه {personnel_id} شیفتی تعیین نشده است")
 
     try:
         s = validate_jalali_date(start_date_str)
@@ -172,10 +172,10 @@ def calculate_time(
 
     if duration_type == "daily":
         if start_time_str or end_time_str:
-            raise HTTPException(400, "Daily requests must not include start_time or end_time")
+            raise HTTPException(400, "درخواست روزانه نباید شامل start_time یا end_time باشد")
     elif duration_type == "hourly":
         if not start_time_str or not end_time_str:
-            raise HTTPException(400, "Hourly requests require start_time and end_time")
+            raise HTTPException(400, "درخواست ساعتی به start_time و end_time نیاز دارد")
         try:
             validate_clock_time(start_time_str)
             validate_clock_time(end_time_str)
@@ -186,9 +186,9 @@ def calculate_time(
         st = time(st_h, st_m)
         et = time(et_h, et_m)
         if s != e:
-            raise HTTPException(400, "Hourly requests must have the same start and end date")
+            raise HTTPException(400, "تاریخ شروع و پایان درخواست ساعتی باید یکسان باشد")
         if et <= st:
-            raise HTTPException(400, "end_time must be later than start_time")
+            raise HTTPException(400, "end_time باید بعد از start_time باشد")
 
     calc = calculate_request_duration(
         personnel, shift, get_holiday_store(), s, e, duration_type, st, et,
@@ -279,16 +279,16 @@ def create_request(
     description = body.get("description")
 
     if request_type not in LEGACY_REQUEST_TYPES:
-        raise HTTPException(400, f"Invalid request type: {request_type!r}")
+        raise HTTPException(400, f"نوع درخواست معتبر نیست: {request_type!r}")
     if duration_type not in LEGACY_DURATION_TYPES:
-        raise HTTPException(400, f"Invalid duration type: {duration_type!r}")
+        raise HTTPException(400, f"نوع مدت معتبر نیست: {duration_type!r}")
 
     personnel = _get_personnel(personnel_id)
     if personnel is None:
-        raise HTTPException(404, f"Personnel not found: {personnel_id}")
+        raise HTTPException(404, f"پرسنل با شناسه {personnel_id} یافت نشد")
     shift = _get_shift(personnel)
     if shift is None:
-        raise HTTPException(400, f"Personnel {personnel_id} has no shift assignment")
+        raise HTTPException(400, f"برای پرسنل با شناسه {personnel_id} شیفتی تعیین نشده است")
 
     try:
         s = validate_jalali_date(start_date_str)
@@ -303,10 +303,10 @@ def create_request(
 
     if duration_type == "daily":
         if start_time_str or end_time_str:
-            raise HTTPException(400, "Daily requests must not include start_time or end_time")
+            raise HTTPException(400, "درخواست روزانه نباید شامل start_time یا end_time باشد")
     elif duration_type == "hourly":
         if not start_time_str or not end_time_str:
-            raise HTTPException(400, "Hourly requests require start_time and end_time")
+            raise HTTPException(400, "درخواست ساعتی به start_time و end_time نیاز دارد")
         try:
             validate_clock_time(start_time_str)
             validate_clock_time(end_time_str)
@@ -317,9 +317,9 @@ def create_request(
         st = time(st_h, st_m)
         et = time(et_h, et_m)
         if s != e:
-            raise HTTPException(400, "Hourly requests must have the same start and end date")
+            raise HTTPException(400, "تاریخ شروع و پایان درخواست ساعتی باید یکسان باشد")
         if et <= st:
-            raise HTTPException(400, "end_time must be later than start_time")
+            raise HTTPException(400, "end_time باید بعد از start_time باشد")
 
     calc = calculate_request_duration(
         personnel, shift, get_holiday_store(), s, e, duration_type, st, et,
@@ -455,7 +455,7 @@ def patch_request(
     status_str = body.get("status")
     if status_str is not None:
         if status_str not in LEGACY_STATUSES:
-            raise HTTPException(400, f"Invalid status: {status_str!r}")
+            raise HTTPException(400, f"وضعیت معتبر نیست: {status_str!r}")
         int_status = internal_status(status_str)
     else:
         int_status = record.status

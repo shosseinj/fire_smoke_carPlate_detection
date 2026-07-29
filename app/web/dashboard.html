@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="fa" dir="rtl">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Video AI Operations Wall</title>
+    <title>دیوار عملیات هوش مصنوعی ویدیو</title>
     <style>
       :root {
         color-scheme: dark;
@@ -27,7 +27,7 @@
         background: radial-gradient(circle at 15% -10%, rgba(39, 211, 255, 0.12), transparent 32rem), radial-gradient(circle at 95% 0%, rgba(56, 220, 134, 0.08), transparent 28rem), var(--bg);
         color: var(--text);
         font:
-          14px/1.45 Inter,
+          14px/1.45 Tahoma,
           ui-sans-serif,
           system-ui,
           -apple-system,
@@ -526,34 +526,34 @@
       <div class="brand">
         <div class="brand-mark">AI</div>
         <div>
-          <h1>Video AI Operations Wall</h1>
-          <div class="subtitle">Server-rendered fire, smoke, and plate annotations</div>
+          <h1>دیوار عملیات هوش مصنوعی ویدیو</h1>
+          <div class="subtitle">نمایش برچسب‌های آتش، دود و پلاک پردازش‌شده در سرور</div>
         </div>
       </div>
       <div class="controls">
-        <div class="state" id="broadcastState"><span class="state-dot"></span><span>Connecting</span></div>
-        <a class="docs-link" href="/docs" target="_blank" rel="noopener">API / Swagger</a>
-        <a class="docs-link" href="/api/v1/diagnostics/fps?sample_seconds=5" target="_blank" rel="noopener">FPS diagnostics</a>
-        <button id="wallFullscreenButton" type="button">Fullscreen wall</button>
-        <button id="streamModeButton" type="button">AI stream</button>
-        <button id="toggleButton" type="button" disabled>Loading…</button>
+        <div class="state" id="broadcastState"><span class="state-dot"></span><span>در حال اتصال</span></div>
+        <a class="docs-link" href="/docs" target="_blank" rel="noopener">مستندات API</a>
+        <a class="docs-link" href="/api/v1/diagnostics/fps?sample_seconds=5" target="_blank" rel="noopener">عیب‌یابی نرخ فریم</a>
+        <button id="wallFullscreenButton" type="button">نمایش تمام‌صفحه دیوار</button>
+        <button id="streamModeButton" type="button">جریان هوش مصنوعی</button>
+        <button id="toggleButton" type="button" disabled>در حال بارگذاری…</button>
       </div>
     </header>
     <main>
       <div class="summary">
-        <span id="cameraCount">Loading cameras…</span>
-        <span id="receiverStats">Browser RX: 0.0 FPS · 0 frames</span>
-        <span id="syncStatus">Synchronizing with API…</span>
+        <span id="cameraCount">در حال بارگذاری دوربین‌ها…</span>
+        <span id="receiverStats">دریافت مرورگر: ۰٫۰ فریم‌برثانیه · ۰ فریم</span>
+        <span id="syncStatus">در حال همگام‌سازی با API…</span>
       </div>
       <div class="dashboard-layout">
         <section class="camera-grid" id="cameraGrid" aria-live="polite"></section>
         <aside class="recent-panel" id="recentPanel">
           <div class="recent-header">
-            <h2>Recent Detections</h2>
+            <h2>تشخیص‌های اخیر</h2>
             <span class="count" id="recentCount">0</span>
           </div>
           <div class="recent-list" id="recentList">
-            <div class="recent-empty">Waiting for detections…</div>
+            <div class="recent-empty">در انتظار تشخیص…</div>
           </div>
         </aside>
       </div>
@@ -623,14 +623,14 @@
           const elements = metricElements.get(source.source_uri);
           if (elements) {
             elements.fps.textContent = `${fps.toFixed(1)} FPS`;
-            elements.frames.textContent = `Received: ${stats.total.toLocaleString()}`;
-            elements.index.textContent = stats.frameIndex === null ? "Source frame: —" : `Source frame: ${stats.frameIndex.toLocaleString()}`;
+            elements.frames.textContent = `دریافت‌شده: ${stats.total.toLocaleString("fa-IR")}`;
+            elements.index.textContent = stats.frameIndex === null ? "فریم منبع: —" : `فریم منبع: ${stats.frameIndex.toLocaleString("fa-IR")}`;
           }
         }
-        receiverStats.textContent = `Browser RX: ${totalFps.toFixed(1)} FPS · ` + `${sessionReceivedFrames.toLocaleString()} frames`;
+        receiverStats.textContent = `دریافت مرورگر: ${totalFps.toFixed(1)} فریم‌برثانیه · ` + `${sessionReceivedFrames.toLocaleString("fa-IR")} فریم`;
       }
 
-      const taskLabel = (task) => (task === "fire_smoke" ? "Fire / Smoke" : task === "face_recognition" ? "Face Recognition" : "Plate Recognition");
+      const taskLabel = (task) => (task === "fire_smoke" ? "آتش / دود" : task === "face_recognition" ? "تشخیص چهره" : "تشخیص پلاک");
 
       function clearJpegBlobs() {
         for (const [, entry] of jpegBlobUrls) {
@@ -653,17 +653,17 @@
           const chips = source.tasks.map((task) => `<span class="task-chip ${task === "fire_smoke" ? "fire" : ""}">${taskLabel(task)}</span>`).join("");
           card.innerHTML = `
           <div class="stream-shell">
-            <video aria-label="Live preview for ${escapedSourceName}" data-source-id="${escapedSourceId}" autoplay muted playsinline></video>
+            <video aria-label="پیش‌نمایش زنده ${escapedSourceName}" data-source-id="${escapedSourceId}" autoplay muted playsinline></video>
             <canvas data-overlay-for="${escapedSourceId}"></canvas>
-            <img class="jpeg-fallback" data-jpeg-for="${escapedSourceId}" alt="JPEG fallback for ${escapedSourceName}" />
+            <img class="jpeg-fallback" data-jpeg-for="${escapedSourceId}" alt="نمای جایگزین JPEG برای ${escapedSourceName}" />
             <div class="stream-toolbar">
               <div class="stream-profile">
                 <span class="fps-badge" data-fps-for="${escapedSourceId}">0.0 FPS</span>
-                <span class="resolution-badge" data-resolution-for="${escapedSourceId}">Wall · waiting</span>
+                <span class="resolution-badge" data-resolution-for="${escapedSourceId}">دیوار · در انتظار</span>
               </div>
-              <button class="camera-fullscreen" type="button" data-fullscreen-source="${escapedSourceId}">Fullscreen</button>
+              <button class="camera-fullscreen" type="button" data-fullscreen-source="${escapedSourceId}">تمام‌صفحه</button>
             </div>
-            <div class="stream-status" data-status-for="${escapedSourceId}">Waiting for source frames…</div>
+            <div class="stream-status" data-status-for="${escapedSourceId}">در انتظار فریم‌های منبع…</div>
           </div>
           <div class="card-info">
             <div class="camera-row">
@@ -671,8 +671,8 @@
               <span class="camera-id">${escapedSourceId}</span>
             </div>
             <div class="frame-metrics">
-              <span data-frames-for="${escapedSourceId}">Received: 0</span>
-              <span data-index-for="${escapedSourceId}">Source frame: —</span>
+              <span data-frames-for="${escapedSourceId}">دریافت‌شده: ۰</span>
+              <span data-index-for="${escapedSourceId}">فریم منبع: —</span>
             </div>
             <div class="task-list">${chips}</div>
           </div>`;
@@ -695,7 +695,7 @@
           });
           cameraGrid.appendChild(card);
         }
-        cameraCount.textContent = `${sources.filter((source) => source.enabled).length} active cameras · ${sources.length} configured`;
+        cameraCount.textContent = `${sources.filter((source) => source.enabled).length.toLocaleString("fa-IR")} دوربین فعال · ${sources.length.toLocaleString("fa-IR")} دوربین تنظیم‌شده`;
         applyStreams();
         updateFrameMetrics();
       }
@@ -708,7 +708,7 @@
         countEl.textContent = detections.length;
 
         if (!detections.length) {
-          list.innerHTML = '<div class="recent-empty">No detections</div>';
+          list.innerHTML = '<div class="recent-empty">تشخیصی وجود ندارد</div>';
           return;
         }
 
@@ -744,7 +744,7 @@
           item.innerHTML = `
             ${faceHtml}
             <div class="recent-info">
-              <div class="name">${escHtml(d.full_name || d.person || "Unknown")}</div>
+              <div class="name">${escHtml(d.full_name || d.person || "ناشناس")}</div>
               <div class="meta">
                 <span>${escHtml(timeStr)}</span>
                 <span>${escHtml(confidenceStr)}</span>
@@ -752,7 +752,7 @@
                 <span class="${accessClass}">${accessIcon}</span>
               </div>
               <div>
-                <span class="classification ${classification}">${classification}</span>
+                <span class="classification ${classification}">${classification === "known" ? "شناخته‌شده" : classification === "unsure" ? "نامطمئن" : "ناشناس"}</span>
               </div>
             </div>`;
           // Replace empty state, or prepend
@@ -802,7 +802,7 @@
         stats.frameIndex = incomingFrameIndex;
         const elements = metricElements.get(header.source_id);
         if (elements && Number.isFinite(header.frame_width) && Number.isFinite(header.frame_height)) {
-          const profile = header.render_profile === "full" ? "Full" : "Wall";
+          const profile = header.render_profile === "full" ? "کامل" : "دیوار";
           elements.resolution.textContent = `${profile} · ${header.frame_width}×${header.frame_height}`;
         }
         sessionReceivedFrames += 1;
@@ -823,7 +823,7 @@
       function waitForIceGatheringBounded(peer) {
         return Promise.race([
           waitForIceGathering(peer),
-          new Promise((_, reject) => window.setTimeout(() => reject(new Error("ICE gathering timed out")), 5000)),
+          new Promise((_, reject) => window.setTimeout(() => reject(new Error("زمان گردآوری اطلاعات اتصال به پایان رسید")), 5000)),
         ]);
       }
 
@@ -937,13 +937,13 @@
             signal: controller.signal,
           });
           window.clearTimeout(requestTimeout);
-          if (!response.ok) throw new Error(`Preview HTTP ${response.status}`);
+          if (!response.ok) throw new Error(`پیش‌نمایش با کد ${response.status} پاسخ داد`);
           const location = response.headers.get("Location");
           if (location) state.sessionUrl = new URL(location, response.url).href;
           await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
           scheduleOverlayFrame(video, () => drawOverlays(source.source_uri));
         } catch (error) {
-          status.textContent = `Preview unavailable: ${error.message}`;
+          status.textContent = `پیش‌نمایش در دسترس نیست: ${error.message}`;
           status.classList.remove("hidden");
           await closePreview(source.source_uri);
           schedulePreviewRetry(source.source_uri);
@@ -977,7 +977,7 @@
         if (!resultSocket) return;
         const socket = resultSocket;
         resultSocket = null;
-        socket.close(1000, "Preview disabled");
+        socket.close(1000, "پیش‌نمایش غیرفعال شد");
       }
 
       function connectBroadcastSocket() {
@@ -1047,7 +1047,7 @@
               // Update resolution badge
               const elements = metricElements.get(header.source_id);
               if (elements && Number.isFinite(header.frame_width) && Number.isFinite(header.frame_height)) {
-                elements.resolution.textContent = `${header.render_profile || "Annotated"} · ${header.frame_width}×${header.frame_height}`;
+                elements.resolution.textContent = `${header.render_profile === "full" ? "کامل" : header.render_profile === "wall" ? "دیوار" : "حاشیه‌نویسی‌شده"} · ${header.frame_width}×${header.frame_height}`;
               }
 
               // Display JPEG on fallback img element
@@ -1118,7 +1118,7 @@
         if (broadcastSocket) {
           const socket = broadcastSocket;
           broadcastSocket = null;
-          socket.close(1000, "Broadcast disabled");
+          socket.close(1000, "پخش غیرفعال شد");
         }
       }
 
@@ -1144,7 +1144,7 @@
             closePreview(sourceId);
             video.style.display = "none";
             if (img) img.style.display = "none";
-            status.textContent = "Source disabled in task manager";
+            status.textContent = "منبع در مدیریت وظایف غیرفعال است";
             status.classList.remove("hidden");
             continue;
           }
@@ -1153,13 +1153,13 @@
             closePreview(sourceId);
             video.style.display = "";
             if (img) img.style.display = "none";
-            status.textContent = "Frontend broadcast disabled";
+            status.textContent = "پخش برای رابط کاربری غیرفعال است";
             status.classList.remove("hidden");
             continue;
           }
           // JPEG fallback is the primary display - annotated frames from broadcast hub
           if (img) img.style.display = "block";
-          status.textContent = "Waiting for source frames…";
+          status.textContent = "در انتظار فریم‌های منبع…";
           status.classList.remove("hidden");
           // JPEG and WebRTC are alternative wall transports. Do not decode
           // both for every tile while the JPEG wall covers the video element.
@@ -1185,18 +1185,18 @@
         const changed = broadcasting !== enabled;
         broadcasting = enabled;
         stateElement.classList.toggle("live", enabled);
-        stateElement.querySelector("span:last-child").textContent = enabled ? "Broadcast live" : "Broadcast stopped";
+        stateElement.querySelector("span:last-child").textContent = enabled ? "پخش زنده است" : "پخش متوقف است";
         toggleButton.disabled = false;
-        toggleButton.textContent = enabled ? "Stop frontend broadcast" : "Start frontend broadcast";
+        toggleButton.textContent = enabled ? "توقف پخش رابط کاربری" : "شروع پخش رابط کاربری";
         toggleButton.classList.toggle("stop", enabled);
         if (changed) applyStreams();
       }
 
       function updateStreamModeButton() {
-        streamModeButton.textContent = sourceOnlyWall ? "AI stream" : "Source-only wall";
+        streamModeButton.textContent = sourceOnlyWall ? "جریان هوش مصنوعی" : "دیوار فقط منبع";
         streamModeButton.title = sourceOnlyWall
-          ? "Switch to the AI-processed broadcast"
-          : "Switch to the source-only video wall";
+          ? "تغییر به پخش پردازش‌شده با هوش مصنوعی"
+          : "تغییر به دیوار ویدیویی فقط منبع";
       }
 
       function signatureFor(items) {
@@ -1218,7 +1218,7 @@
         synchronizationRunning = true;
         try {
           const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/sources/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
-          if (!sourcesResponse.ok || !stateResponse.ok) throw new Error("API unavailable");
+          if (!sourcesResponse.ok || !stateResponse.ok) throw new Error("API در دسترس نیست");
           const previewConfig = await sourcesResponse.json();
           previewBaseUrl = previewConfig.whep_base_url;
           previewAvailable = previewConfig.enabled;
@@ -1235,10 +1235,10 @@
             sourcesSignature = nextSignature;
             renderSources();
           }
-          syncStatus.textContent = `API synchronized · ${new Date().toLocaleTimeString()} · ${useJpegFallback ? "JPEG fallback" : "WebRTC"}`;
+          syncStatus.textContent = `API همگام شد · ${new Date().toLocaleTimeString("fa-IR")} · ${useJpegFallback ? "نمای جایگزین JPEG" : "WebRTC"}`;
         } catch (error) {
-          stateElement.querySelector("span:last-child").textContent = "API unavailable";
-          syncStatus.textContent = `Synchronization failed: ${error.message}`;
+          stateElement.querySelector("span:last-child").textContent = "API در دسترس نیست";
+          syncStatus.textContent = `همگام‌سازی با خطا مواجه شد: ${error.message}`;
         } finally {
           synchronizationRunning = false;
         }
@@ -1252,7 +1252,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ enabled: !broadcasting }),
           });
-          if (!response.ok) throw new Error("Could not change broadcast state");
+          if (!response.ok) throw new Error("تغییر وضعیت پخش امکان‌پذیر نیست");
           const state = await response.json();
           showState(state.enabled);
         } catch (error) {
@@ -1282,9 +1282,9 @@
           fullscreenSourceId = nextFullscreenSourceId;
           reconnectBroadcastSocket();
         }
-        wallFullscreenButton.textContent = fullscreenElement === document.documentElement ? "Exit fullscreen" : "Fullscreen wall";
+        wallFullscreenButton.textContent = fullscreenElement === document.documentElement ? "خروج از تمام‌صفحه" : "نمایش تمام‌صفحه دیوار";
         for (const button of document.querySelectorAll("[data-fullscreen-source]")) {
-          button.textContent = fullscreenElement === button.closest(".camera-card") ? "Exit fullscreen" : "Fullscreen";
+          button.textContent = fullscreenElement === button.closest(".camera-card") ? "خروج از تمام‌صفحه" : "تمام‌صفحه";
         }
       });
 

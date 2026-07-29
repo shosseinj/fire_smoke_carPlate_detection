@@ -97,7 +97,7 @@ class TaskResult:
             frame_width=int(packet.frame.shape[1]),
             frame_height=int(packet.frame.shape[0]),
             source_time_seconds=packet.source_time_seconds,
-            error=str(error),
+            error="پردازش فریم با خطا مواجه شد",
         )
 
     def to_dict(self) -> dict[str, Any]:

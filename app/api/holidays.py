@@ -112,13 +112,13 @@ def import_official_holidays_excel(
     """Validate the entire workbook, then atomically replace one official year."""
     filename = file.filename or ""
     if not filename.casefold().endswith((".xlsx", ".xlsm")):
-        raise HTTPException(400, "Only .xlsx and .xlsm files are accepted")
+        raise HTTPException(400, "فقط فایل‌های .xlsx و .xlsm پذیرفته می‌شوند")
 
     contents = file.file.read()
     if not contents:
-        raise HTTPException(400, "The uploaded Excel file is empty")
+        raise HTTPException(400, "فایل اکسل بارگذاری‌شده خالی است")
     if len(contents) > 5 * 1024 * 1024:
-        raise HTTPException(413, "The uploaded Excel file exceeds the 5 MB limit")
+        raise HTTPException(413, "حجم فایل اکسل بارگذاری‌شده بیشتر از ۵ مگابایت است")
 
     try:
         rows = parse_holiday_excel(contents, year=year)
@@ -145,7 +145,7 @@ def import_official_holidays_excel(
                 "file_errors": [
                     {
                         "code": "invalid_workbook",
-                        "message": str(exc),
+                        "message": "فایل اکسل معتبر نیست یا قابل خواندن نیست.",
                     }
                 ],
                 "failed_rows": [],

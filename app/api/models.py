@@ -17,10 +17,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from app.core.frontend_messages import LocalizedJSONRoute
 from app.runtime import Runtime
 
 
-router = APIRouter(prefix="/api/v1/models", tags=["model-management"])
+router = APIRouter(
+    prefix="/api/v1/models",
+    tags=["model-management"],
+    route_class=LocalizedJSONRoute,
+)
 
 
 def get_runtime() -> Runtime:

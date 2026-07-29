@@ -402,13 +402,13 @@ def _period_to_utc_range(
         return None, None
     if period == "custom":
         if not from_date_jalali or not to_date_jalali:
-            raise HTTPException(400, "from_date_jalali and to_date_jalali are required for period=custom")
+            raise HTTPException(400, "برای بازه سفارشی، from_date_jalali و to_date_jalali الزامی هستند")
         from_g = parse_jalali_date(from_date_jalali)
         to_g = parse_jalali_date(to_date_jalali)
         utc_start, _ = local_day_utc_range(from_g)
         _, utc_end = local_day_utc_range(to_g)
         return utc_start.isoformat(), utc_end.isoformat()
-    raise HTTPException(400, f"Unknown period: {period!r}")
+    raise HTTPException(400, f"بازه زمانی ناشناخته است: {period!r}")
 
 
 # ── Static routes (before /{log_id}) ──────────────────────────────────
@@ -821,14 +821,14 @@ def import_excel(
     current_user: dict = Depends(require_role("operator")),
 ) -> dict:
     if file.filename and not (file.filename.endswith(".xlsx") or file.filename.endswith(".xlsm")):
-        raise HTTPException(400, "Only .xlsx or .xlsm files are accepted")
+        raise HTTPException(400, "فقط فایل‌های .xlsx یا .xlsm پذیرفته می‌شوند")
 
     import io
     contents = file.file.read()
     wb = openpyxl.load_workbook(io.BytesIO(contents))
     ws = wb.active
     if ws is None:
-        raise HTTPException(400, "Workbook has no active sheet")
+        raise HTTPException(400, "فایل اکسل برگه فعالی ندارد")
 
     store = get_detection_log_store()
     ls = get_location_store()

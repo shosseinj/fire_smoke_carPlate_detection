@@ -70,13 +70,13 @@ class StaticVideoLifecycle:
             source_config = source.to_dict() if source is not None else None
             if error is None:
                 if not self.router.wait_for_source_idle(source_uri, timeout_seconds=60.0):
-                    error = "Timed out while waiting for submitted video frames to finish processing"
+                    error = "زمان انتظار برای پایان پردازش فریم‌های ویدیو به پایان رسید"
                 else:
                     with self._lock:
                         baseline = self._failure_baselines.get(source_uri, 0)
                     failed_frames = self.router.source_failed_frames(source_uri) - baseline
                     if failed_frames > 0:
-                        error = f"{failed_frames} submitted task frame(s) failed processing"
+                        error = f"پردازش {failed_frames} فریم ارسال‌شده با خطا مواجه شد"
             if error is None:
                 self.store.mark_completed(source_uri, source_config=source_config)
             else:
@@ -131,7 +131,10 @@ class StaticVideoLifecycle:
 
     @staticmethod
     def _safe_error(source_uri: str, error: str) -> str:
-        return str(error).replace(source_uri, "<static-video>")[:2000]
+        text = str(error).replace(source_uri, "<static-video>")[:2000]
+        if any("\u0600" <= character <= "\u06ff" for character in text):
+            return text
+        return "پردازش ویدیوی ایستا با خطا مواجه شد؛ گزارش سرویس را بررسی کنید"
 
     def close(self) -> None:
         with self._lock:

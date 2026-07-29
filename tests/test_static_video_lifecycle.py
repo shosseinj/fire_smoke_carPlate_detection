@@ -105,6 +105,6 @@ def test_task_failure_marks_video_failed_and_removes_source(
     assert failed is not None
     assert failed.processing_status == "failed"
     assert failed.is_processed is False
-    assert "2 submitted task frame(s) failed" in (failed.processing_error or "")
+    assert "پردازش 2 فریم ارسال‌شده با خطا مواجه شد" in (failed.processing_error or "")
     assert registry.get(uri) is None
     registry.close()

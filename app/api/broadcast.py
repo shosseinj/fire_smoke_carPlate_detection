@@ -70,10 +70,10 @@ async def annotated_broadcast_websocket(
 ) -> None:
     await websocket.accept()
     if not runtime.broadcast.enabled:
-        await websocket.close(code=1013, reason="پخش frontend غیرفعال است")
+        await websocket.close(code=1013, reason="پخش برای رابط کاربری غیرفعال است")
         return
     if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
-        await websocket.close(code=1008, reason="Fullscreen source not found")
+        await websocket.close(code=1008, reason="منبع نمایش تمام‌صفحه یافت نشد")
         return
 
     subscriber_id, target = runtime.broadcast.subscribe(
@@ -160,10 +160,10 @@ async def source_video_wall_websocket(
     """Stream source frames without AI overlays or result dependencies."""
     await websocket.accept()
     if not runtime.broadcast.enabled:
-        await websocket.close(code=1013, reason="Video wall is disabled")
+        await websocket.close(code=1013, reason="دیوار ویدیویی غیرفعال است")
         return
     if fullscreen_source is not None and runtime.registry.get(fullscreen_source) is None:
-        await websocket.close(code=1008, reason="Fullscreen source not found")
+        await websocket.close(code=1008, reason="منبع نمایش تمام‌صفحه یافت نشد")
         return
 
     subscriber_id, target = runtime.broadcast.subscribe_source_only(
@@ -292,7 +292,7 @@ def annotated_stream(
     if runtime.registry.get(source_id) is None:
         raise HTTPException(status_code=404, detail="منبع یافت نشد")
     if not runtime.broadcast.enabled:
-        raise HTTPException(status_code=503, detail="پخش frontend غیرفعال است")
+        raise HTTPException(status_code=503, detail="پخش برای رابط کاربری غیرفعال است")
     return StreamingResponse(
         _mjpeg_stream(runtime.broadcast, source_id),
         media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
@@ -310,7 +310,7 @@ def annotated_snapshot(
     runtime: Runtime = Depends(get_runtime),
 ) -> Response:
     if not runtime.broadcast.enabled:
-        raise HTTPException(status_code=503, detail="پخش frontend غیرفعال است")
+        raise HTTPException(status_code=503, detail="پخش برای رابط کاربری غیرفعال است")
     frame = runtime.broadcast.latest(source_id)
     if frame is None:
         if runtime.registry.get(source_id) is None:

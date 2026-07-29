@@ -10,6 +10,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.types import FramePacket, TaskName, TaskResult
+from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.holiday_store import HolidayStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
@@ -23,6 +24,7 @@ from app.runtime import Runtime
 router = APIRouter(
     prefix="/api/v1/tests",
     tags=["processor-tests"],
+    route_class=LocalizedJSONRoute,
 )
 
 
@@ -37,7 +39,7 @@ def _decode_frames(files: list[UploadFile]) -> list[np.ndarray]:
         content = upload.file.read()
         frame = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
-            raise HTTPException(status_code=415, detail=f"Could not decode {upload.filename}")
+            raise HTTPException(status_code=415, detail=f"رمزگشایی فایل {upload.filename} امکان‌پذیر نیست")
         frames.append(frame)
     return frames
 

@@ -236,7 +236,7 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'parameters.set("fullscreen_source", fullscreenSourceId)' in dashboard
     assert 'fullscreenElement?.classList.contains("camera-card")' in dashboard
     assert "reconnectBroadcastSocket()" in dashboard
-    assert 'header.render_profile || "Annotated"' in dashboard
+    assert 'header.render_profile === "full" ? "کامل"' in dashboard
     assert "if (broadcastSocket !== socket) return;" in dashboard
     assert "event.data instanceof ArrayBuffer" in dashboard
     assert "incomingFrameIndex < stats.frameIndex" in dashboard
@@ -279,7 +279,7 @@ def test_dashboard_uses_source_uri_task_manager_identity() -> None:
     assert "item.source_id" not in dashboard
     assert 'card.dataset.sourceId = source.source_uri' in dashboard
     assert 'item.source_uri === sourceId' in dashboard
-    assert 'status.textContent = "Source disabled in task manager"' in dashboard
+    assert 'status.textContent = "منبع در مدیریت وظایف غیرفعال است"' in dashboard
 
 
 def test_websocket_sends_fullscreen_source_full_and_other_sources_as_wall() -> None:
