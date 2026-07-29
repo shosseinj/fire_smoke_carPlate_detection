@@ -95,6 +95,13 @@ class StaticVideoLifecycle:
                 self._failure_baselines.pop(source_uri, None)
 
     def retry(self, source_uri: str, *, loop: bool | None = None) -> StaticVideoRecord:
+        current = self.store.get(source_uri)
+        if current is None:
+            raise KeyError(source_uri)
+        if current.processing_status not in {"completed", "failed"}:
+            raise ValueError(
+                "Only completed or failed videos can be retried"
+            )
         record = self.store.reset_for_retry(source_uri, loop=loop)
         if record is None:
             raise KeyError(source_uri)

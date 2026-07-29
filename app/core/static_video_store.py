@@ -8,9 +8,11 @@ from app.database import Database, Row, ensure_database
 from app.time_utils import utc_now_text
 
 
-STATIC_VIDEO_STATUSES = frozenset({"queued", "processing", "completed", "failed"})
+STATIC_VIDEO_STATUSES = frozenset(
+    {"uploaded", "queued", "processing", "completed", "failed"}
+)
 STATIC_VIDEO_COLUMNS = (
-    "source_uri, name, source_type, processing_status, processing_error, "
+    "id, source_uri, name, source_type, processing_status, processing_error, "
     "processing_started_at, processing_completed_at, processing_attempts, "
     "is_processed, loop, source_config_json"
 )
@@ -18,10 +20,11 @@ STATIC_VIDEO_COLUMNS = (
 
 @dataclass(frozen=True, slots=True)
 class StaticVideoRecord:
+    id: int
     source_uri: str
     name: str
     source_type: str = "static_video"
-    processing_status: str = "queued"
+    processing_status: str = "uploaded"
     processing_error: str | None = None
     processing_started_at: str | None = None
     processing_completed_at: str | None = None
@@ -41,7 +44,7 @@ class StaticVideoStore:
     def list(self) -> list[StaticVideoRecord]:
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos ORDER BY source_uri ASC"
+                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos ORDER BY id ASC"
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
@@ -50,6 +53,14 @@ class StaticVideoStore:
             row = connection.execute(
                 f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos WHERE source_uri = ?",
                 (source_uri,),
+            ).fetchone()
+        return self._row_to_record(row) if row else None
+
+    def get_by_id(self, video_id: int) -> StaticVideoRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos WHERE id = ?",
+                (int(video_id),),
             ).fetchone()
         return self._row_to_record(row) if row else None
 
@@ -66,7 +77,7 @@ class StaticVideoStore:
             connection.execute(
                 "INSERT INTO static_videos "
                 "(name, source_uri, source_type, processing_status, processing_attempts, loop, source_config_json) "
-                "VALUES (?, ?, ?, 'queued', 0, ?, ?)",
+                "VALUES (?, ?, ?, 'uploaded', 0, ?, ?)",
                 (name, source_uri, source_type, int(loop), self._encode_config(source_config)),
             )
         record = self.get(source_uri)
@@ -106,8 +117,36 @@ class StaticVideoStore:
                 "UPDATE static_videos SET processing_status = 'processing', "
                 "is_processed = FALSE, processing_error = NULL, processing_started_at = ?, "
                 "processing_completed_at = NULL, processing_attempts = processing_attempts + 1 "
-                "WHERE source_uri = ? AND processing_status <> 'processing'",
+                "WHERE source_uri = ? AND processing_status = 'queued'",
                 (now, source_uri),
+            )
+        return self.get(source_uri)
+
+    def mark_queued(
+        self,
+        source_uri: str,
+        *,
+        source_config: dict[str, Any] | None = None,
+    ) -> StaticVideoRecord | None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE static_videos SET processing_status = 'queued', "
+                "processing_error = NULL, processing_started_at = NULL, "
+                "processing_completed_at = NULL, is_processed = FALSE, "
+                "source_config_json = COALESCE(?, source_config_json) "
+                "WHERE source_uri = ? AND processing_status = 'uploaded'",
+                (self._encode_config(source_config), source_uri),
+            )
+        return self.get(source_uri)
+
+    def mark_uploaded(self, source_uri: str) -> StaticVideoRecord | None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE static_videos SET processing_status = 'uploaded', "
+                "processing_error = NULL, processing_started_at = NULL, "
+                "processing_completed_at = NULL, is_processed = FALSE "
+                "WHERE source_uri = ?",
+                (source_uri,),
             )
         return self.get(source_uri)
 
@@ -176,10 +215,11 @@ class StaticVideoStore:
     def _row_to_record(row: Row) -> StaticVideoRecord:
         raw_config = row.get("source_config_json")
         return StaticVideoRecord(
+            id=int(row["id"]),
             source_uri=str(row["source_uri"]),
             name=str(row["name"]),
             source_type=str(row["source_type"]),
-            processing_status=str(row.get("processing_status") or "queued"),
+            processing_status=str(row.get("processing_status") or "uploaded"),
             processing_error=str(row["processing_error"]) if row.get("processing_error") else None,
             processing_started_at=str(row["processing_started_at"]) if row.get("processing_started_at") else None,
             processing_completed_at=str(row["processing_completed_at"]) if row.get("processing_completed_at") else None,
