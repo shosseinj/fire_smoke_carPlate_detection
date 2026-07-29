@@ -630,33 +630,33 @@ def init_database(
             )
             if cams_created:
                 seeded = True
-        if location_store is not None and seed_cameras:
-            rooms_created = create_rooms_for_cameras(
-                location_store,
-                seed_cameras,
-                section_id=section.id,
-                cam_records=seed_cam_records,
-            )
-            if rooms_created > 0:
-                LOGGER.info("INIT_DB created %d room(s) for seed cameras", rooms_created)
-                seeded = True
-            rooms, _ = location_store.list_rooms(section_id=section.id, limit=1000)
-            rooms_by_name = {item.name: item for item in rooms}
-            cams_by_url = {item.url: item for item in seed_cam_records}
-            for source in seed_cameras:
-                room = rooms_by_name.get(source.name)
-                cam = cams_by_url.get(source.source_uri)
-                if room is None:
-                    continue
-                if cam is not None and room.cam_id != cam.id:
-                    LOGGER.warning(
-                        "INIT_DB skip source room assignment for '%s': cam ownership mismatch",
-                        source.name,
-                    )
-                    continue
-                if source.room_id != room.id:
-                    registry.update(source.source_uri, room_id=room.id)
-                    seeded = True
+        # if location_store is not None and seed_cameras:
+        #     rooms_created = create_rooms_for_cameras(
+        #         location_store,
+        #         seed_cameras,
+        #         section_id=section.id,
+        #         cam_records=seed_cam_records,
+        #     )
+        #     if rooms_created > 0:
+        #         LOGGER.info("INIT_DB created %d room(s) for seed cameras", rooms_created)
+        #         seeded = True
+        #     rooms, _ = location_store.list_rooms(section_id=section.id, limit=1000)
+        #     rooms_by_name = {item.name: item for item in rooms}
+        #     cams_by_url = {item.url: item for item in seed_cam_records}
+        #     for source in seed_cameras:
+        #         room = rooms_by_name.get(source.name)
+        #         cam = cams_by_url.get(source.source_uri)
+        #         if room is None:
+        #             continue
+        #         if cam is not None and room.cam_id != cam.id:
+        #             LOGGER.warning(
+        #                 "INIT_DB skip source room assignment for '%s': cam ownership mismatch",
+        #                 source.name,
+        #             )
+        #             continue
+        #         if source.room_id != room.id:
+        #             registry.update(source.source_uri, room_id=room.id)
+        #             seeded = True
 
     # ── Seed all default shifts ─────────────────────────────────────
     shifts = _create_all_default_shifts(shift_store) if shift_store is not None else []
