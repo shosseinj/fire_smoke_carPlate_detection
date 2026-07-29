@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260729_0041"
+ALEMBIC_HEAD_REVISION = "20260729_0042"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -532,7 +532,8 @@ Index("idx_import_progress_created_by", import_progress.c.created_by)
 
 static_videos = Table(
     "static_videos", metadata,
-    Column("source_uri", Text, primary_key=True),
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("source_uri", Text, nullable=False, unique=True),
     Column("name", Text, nullable=False),
     Column("source_type", String(16), nullable=False, server_default="static_video"),
     Column("processing_status", String(16), nullable=False, server_default="uploaded"),

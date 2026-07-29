@@ -33,6 +33,8 @@ class FailedRouter(IdleRouter):
 def test_static_video_store_lifecycle(postgres_database: Database) -> None:
     store = StaticVideoStore(postgres_database)
     record = store.create("clip", "/media/clip.mp4", loop=False)
+    assert record.id > 0
+    assert store.get_by_id(record.id) == record
     assert record.processing_status == "uploaded"
     assert record.is_processed is False
     assert record.processing_attempts == 0
@@ -151,6 +153,38 @@ def test_uploaded_video_is_queued_only_when_added_to_sources(
     assert queued is not None and queued.processing_status == "queued"
     assert registry.require(uri).source_type == STATIC_VIDEO
     registry.close()
+
+
+def test_uploaded_video_can_be_added_to_sources_by_stable_id(
+    postgres_database: Database,
+) -> None:
+    store = StaticVideoStore(postgres_database)
+    uploaded = store.create("by-id", "/media/by-id.mp4", loop=False)
+    runtime = type("RuntimeStub", (), {"static_video_store": store})()
+
+    source, was_uploaded = _source_record_for_create(
+        SourceCreate(
+            static_video_id=uploaded.id,
+            name="by-id",
+            source_type=STATIC_VIDEO,
+            loop=False,
+        ),
+        runtime,  # type: ignore[arg-type]
+    )
+
+    assert was_uploaded is True
+    assert source.source_uri == uploaded.source_uri
+    assert store.get_by_id(uploaded.id).processing_status == "queued"  # type: ignore[union-attr]
+
+
+def test_static_video_id_survives_uri_replacement(postgres_database: Database) -> None:
+    store = StaticVideoStore(postgres_database)
+    original = store.create("replace", "/media/original.mp4")
+
+    replaced = store.update(original.source_uri, source_uri="/media/replaced.mp4")
+
+    assert replaced.id == original.id
+    assert store.get_by_id(original.id).source_uri == "/media/replaced.mp4"  # type: ignore[union-attr]
 
 
 def test_uploaded_video_cannot_use_retry_to_bypass_sources(

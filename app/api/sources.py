@@ -58,7 +58,24 @@ def _source_record_for_create(
     payload: SourceCreate,
     runtime: Runtime,
 ) -> tuple[SourceRecord, bool]:
-    static_record = runtime.static_video_store.get(payload.source_uri)
+    static_record = None
+    if payload.static_video_id is not None:
+        static_record = runtime.static_video_store.get_by_id(payload.static_video_id)
+        if static_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="ویدیوی ایستا یافت نشد",
+            )
+        if payload.source_uri is not None and payload.source_uri != static_record.source_uri:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="شناسه و آدرس ویدیوی ایستا با یکدیگر مطابقت ندارند",
+            )
+    elif payload.source_uri is not None:
+        static_record = runtime.static_video_store.get(payload.source_uri)
+    source_uri = static_record.source_uri if static_record is not None else payload.source_uri
+    if source_uri is None:
+        raise HTTPException(status_code=422, detail="آدرس منبع الزامی است")
     source_type = STATIC_VIDEO if static_record is not None else payload.source_type
     if source_type == STATIC_VIDEO and static_record is None:
         raise HTTPException(
@@ -74,7 +91,7 @@ def _source_record_for_create(
             detail="برای پردازش دوباره ویدیو از عملیات تلاش مجدد استفاده کنید",
         )
     record = SourceRecord(
-        source_uri=payload.source_uri,
+        source_uri=source_uri,
         name=payload.name,
         enabled=payload.enabled,
         tasks=set(payload.tasks),
@@ -98,7 +115,7 @@ def _source_record_for_create(
     )
     if static_record is not None:
         runtime.static_video_store.mark_queued(
-            payload.source_uri,
+            source_uri,
             source_config=record.to_dict(),
         )
     return record, was_uploaded
@@ -117,6 +134,9 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> SourceRes
     value = record.to_dict()
     # Ensure id is always an int
     value["id"] = value.get("id") or 0
+    if runtime is not None and record.source_type == STATIC_VIDEO:
+        static_record = runtime.static_video_store.get(record.source_uri)
+        value["static_video_id"] = static_record.id if static_record is not None else None
     if value.get("source_uri"):
         value["source_uri"] = VideoFileIngestor.redact_uri(value["source_uri"])
     # Resolve per-source confidence thresholds from the `sources` table
@@ -194,7 +214,7 @@ def create_source(payload: SourceCreate, runtime: Runtime = Depends(get_runtime)
     try:
         record = runtime.registry.create(source_record)
     except ValueError as exc:
-        _rollback_static_queue(runtime, payload.source_uri, was_uploaded)
+        _rollback_static_queue(runtime, source_record.source_uri, was_uploaded)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     # Save per-source confidence overrides if provided
     _save_source_overrides(payload, record, runtime)
@@ -217,7 +237,7 @@ def bulk_create_sources(
         try:
             record = runtime.registry.create(source_record)
         except ValueError as exc:
-            _rollback_static_queue(runtime, item.source_uri, was_uploaded)
+            _rollback_static_queue(runtime, source_record.source_uri, was_uploaded)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         _save_source_overrides(item, record, runtime)
         results.append(_response(record, runtime))

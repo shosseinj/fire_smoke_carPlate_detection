@@ -103,6 +103,7 @@ async def _save_upload(
 
 def _api_response(record: StaticVideoRecord) -> dict[str, Any]:
     return {
+        "id": record.id,
         "source_uri": record.source_uri,
         "name": record.name,
         "source_type": record.source_type,
@@ -114,6 +115,13 @@ def _api_response(record: StaticVideoRecord) -> dict[str, Any]:
         "processing_completed_at": record.processing_completed_at,
         "processing_attempts": record.processing_attempts,
     }
+
+
+def _require_video_by_id(video_id: int, runtime: Runtime) -> StaticVideoRecord:
+    record = runtime.static_video_store.get_by_id(video_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="ویدیوی ایستا یافت نشد")
+    return record
 
 
 @router.get("")
@@ -153,7 +161,42 @@ async def create_static_video(
     }
 
 
-@router.post("/{source_uri:path}/retry")
+@router.get("/{video_id:int}")
+def get_static_video(video_id: int, runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+    return _api_response(_require_video_by_id(video_id, runtime))
+
+
+@router.post("/{video_id:int}/retry")
+def retry_static_video_by_id(
+    video_id: int,
+    loop: bool | None = None,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    record = _require_video_by_id(video_id, runtime)
+    return retry_static_video(record.source_uri, loop, runtime)
+
+
+@router.patch("/{video_id:int}")
+async def update_static_video_by_id(
+    video_id: int,
+    payload: StaticVideoUpdate,
+    file: UploadFile | None = None,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    record = _require_video_by_id(video_id, runtime)
+    return await update_static_video(record.source_uri, payload, file, runtime)
+
+
+@router.delete("/{video_id:int}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_static_video_by_id(
+    video_id: int,
+    runtime: Runtime = Depends(get_runtime),
+) -> Response:
+    record = _require_video_by_id(video_id, runtime)
+    return delete_static_video(record.source_uri, runtime)
+
+
+@router.post("/{source_uri:path}/retry", deprecated=True)
 def retry_static_video(
     source_uri: str,
     loop: bool | None = None,
@@ -174,7 +217,7 @@ def retry_static_video(
     return _api_response(record)
 
 
-@router.patch("/{source_uri:path}")
+@router.patch("/{source_uri:path}", deprecated=True)
 async def update_static_video(
     source_uri: str,
     payload: StaticVideoUpdate,
@@ -205,13 +248,10 @@ async def update_static_video(
         return _api_response(current)
 
     if "source_uri" in changes:
-        # Primary-key change: delete old row, insert new
-        record = runtime.static_video_store.create(
-            name=changes.get("name", current.name),
-            source_uri=changes["source_uri"],
-            loop=bool(changes.get("loop", current.loop)),
-        )
-        runtime.static_video_store.delete(old_source_uri)
+        # Preserve the stable numeric ID while changing the internal URI.
+        record = runtime.static_video_store.update(old_source_uri, **changes)
+        runtime.static_video_store.mark_uploaded(record.source_uri)
+        record = runtime.static_video_store.get_by_id(current.id) or record
         if was_attached:
             runtime.registry.delete(old_source_uri)
             source_record = SourceRecord(
@@ -244,7 +284,7 @@ async def update_static_video(
     return _api_response(record)
 
 
-@router.delete("/{source_uri:path}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{source_uri:path}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 def delete_static_video(
     source_uri: str,
     runtime: Runtime = Depends(get_runtime),

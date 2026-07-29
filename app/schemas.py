@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.source_registry import RTSP, SOURCE_TYPES
 from app.core.types import TaskName
 
 
 class SourceCreate(BaseModel):
-    source_uri: str = Field(min_length=1, max_length=500)
+    source_uri: str | None = Field(default=None, min_length=1, max_length=500)
+    static_video_id: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=300)
     enabled: bool = True
     tasks: set[TaskName] = Field(default_factory=set)
@@ -47,11 +48,19 @@ class SourceCreate(BaseModel):
 
     @field_validator("source_uri")
     @classmethod
-    def clean_source_uri(cls, value: str) -> str:
+    def clean_source_uri(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value:
             raise ValueError("source_uri cannot be blank")
         return value
+
+    @model_validator(mode="after")
+    def require_source_identity(self) -> "SourceCreate":
+        if self.source_uri is None and self.static_video_id is None:
+            raise ValueError("source_uri or static_video_id is required")
+        return self
 
     @field_validator("source_type")
     @classmethod
@@ -173,6 +182,7 @@ class FrameRoundResponse(BaseModel):
 class SourceResponse(BaseModel):
     id: int = 0
     source_uri: str
+    static_video_id: int | None = None
     name: str
     enabled: bool
     tasks: list[TaskName]

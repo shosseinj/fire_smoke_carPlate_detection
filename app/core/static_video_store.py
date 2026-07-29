@@ -12,7 +12,7 @@ STATIC_VIDEO_STATUSES = frozenset(
     {"uploaded", "queued", "processing", "completed", "failed"}
 )
 STATIC_VIDEO_COLUMNS = (
-    "source_uri, name, source_type, processing_status, processing_error, "
+    "id, source_uri, name, source_type, processing_status, processing_error, "
     "processing_started_at, processing_completed_at, processing_attempts, "
     "is_processed, loop, source_config_json"
 )
@@ -20,6 +20,7 @@ STATIC_VIDEO_COLUMNS = (
 
 @dataclass(frozen=True, slots=True)
 class StaticVideoRecord:
+    id: int
     source_uri: str
     name: str
     source_type: str = "static_video"
@@ -43,7 +44,7 @@ class StaticVideoStore:
     def list(self) -> list[StaticVideoRecord]:
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos ORDER BY source_uri ASC"
+                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos ORDER BY id ASC"
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
@@ -52,6 +53,14 @@ class StaticVideoStore:
             row = connection.execute(
                 f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos WHERE source_uri = ?",
                 (source_uri,),
+            ).fetchone()
+        return self._row_to_record(row) if row else None
+
+    def get_by_id(self, video_id: int) -> StaticVideoRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT {STATIC_VIDEO_COLUMNS} FROM static_videos WHERE id = ?",
+                (int(video_id),),
             ).fetchone()
         return self._row_to_record(row) if row else None
 
@@ -206,6 +215,7 @@ class StaticVideoStore:
     def _row_to_record(row: Row) -> StaticVideoRecord:
         raw_config = row.get("source_config_json")
         return StaticVideoRecord(
+            id=int(row["id"]),
             source_uri=str(row["source_uri"]),
             name=str(row["name"]),
             source_type=str(row["source_type"]),
