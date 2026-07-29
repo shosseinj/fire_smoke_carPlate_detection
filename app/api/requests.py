@@ -72,7 +72,7 @@ def get_request(
     store = get_request_store()
     record = store.get(request_id)
     if record is None:
-        raise HTTPException(404, "Request not found")
+        raise HTTPException(404, "درخواست یافت نشد")
     return {"request": _record_to_dict(record)}
 
 
@@ -93,7 +93,7 @@ def approve_request(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if record is None:
-        raise HTTPException(404, "Request not found")
+        raise HTTPException(404, "درخواست یافت نشد")
     return {"request": _record_to_dict(record)}
 
 
@@ -108,7 +108,7 @@ def cancel_request(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if record is None:
-        raise HTTPException(404, "Request not found")
+        raise HTTPException(404, "درخواست یافت نشد")
     return {"request": _record_to_dict(record)}
 
 
@@ -120,7 +120,7 @@ def delete_request(
     store = get_request_store()
     deleted = store.delete(request_id)
     if not deleted:
-        raise HTTPException(404, "Request not found")
+        raise HTTPException(404, "درخواست یافت نشد")
     return {"deleted": True}
 
 

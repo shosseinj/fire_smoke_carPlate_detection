@@ -11,6 +11,7 @@ from app.core.auth import require_role
 from app.core.auth_store import UserRecord
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.fps_diagnostics import build_fps_report
+from app.core.frontend_messages import localize_frontend_payload
 from app.core.video_ingestor import VideoFileIngestor
 from app.core.types import TaskName
 from app.runtime import Runtime
@@ -91,7 +92,7 @@ async def fps_diagnostics(
         camera_tasks=camera_tasks,
     )
     report["sampled_at_utc"] = datetime.now(timezone.utc).isoformat()
-    return report
+    return localize_frontend_payload(report)
 
 
 @router.get(
@@ -105,7 +106,7 @@ async def fps_diagnostics(
 def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     status = runtime.status()
     cameras = runtime.registry.list()
-    return {
+    return localize_frontend_payload({
         "camera_registry": {
             "total": len(cameras),
             "enabled": sum(1 for camera in cameras if camera.enabled),
@@ -142,7 +143,7 @@ def diagnostics_overview(runtime: Runtime = Depends(get_runtime)) -> dict[str, A
         "plate_log_count": status["plate_log_count"],
         "broadcast": status["broadcast"],
         "workers": status["workers"],
-    }
+    })
 
 
 @router.get(
@@ -249,7 +250,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
             },
         },
     ]
-    return {
+    return localize_frontend_payload({
         "overall": (
             "fail"
             if any(item["status"] == "fail" for item in checks)
@@ -258,7 +259,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
             else "pass"
         ),
         "checks": checks,
-    }
+    })
 
 
 @router.post(

@@ -67,12 +67,12 @@ class ShiftUpdate(BaseModel):
 
 
 SHIFT_TYPES = [
-    {"value": "morning", "label": "Morning Shift"},
-    {"value": "evening", "label": "Evening Shift"},
-    {"value": "night", "label": "Night Shift"},
-    {"value": "remote", "label": "Remote Work"},
-    {"value": "flexible", "label": "Flexible Hours"},
-    {"value": "rotating", "label": "Rotating Shifts"},
+    {"value": "morning", "label": "شیفت صبح"},
+    {"value": "evening", "label": "شیفت عصر"},
+    {"value": "night", "label": "شیفت شب"},
+    {"value": "remote", "label": "دورکاری"},
+    {"value": "flexible", "label": "ساعت کاری شناور"},
+    {"value": "rotating", "label": "شیفت چرخشی"},
 ]
 
 

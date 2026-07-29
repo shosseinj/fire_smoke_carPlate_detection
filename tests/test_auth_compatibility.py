@@ -231,7 +231,7 @@ def test_logout_current_and_legacy_modes(auth_context):
         json={"refresh_token": current["refresh_token"]},
     )
     assert body_logout.status_code == 200
-    assert body_logout.json()["message"] == "Logged out successfully"
+    assert body_logout.json()["message"] == "خروج با موفقیت انجام شد"
     repeated = client.post(
         "/api/v1/auth/logout",
         json={"refresh_token": current["refresh_token"]},

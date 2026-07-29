@@ -4,10 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.auth import get_current_user, normalize_role, require_role
 from app.core.auth_store import UserRecord
+from app.core.frontend_messages import LocalizedJSONRoute
 from app.runtime import Runtime
 
 
-router = APIRouter(prefix="/api/v1/import-progress", tags=["import-progress"])
+router = APIRouter(
+    prefix="/api/v1/import-progress",
+    tags=["import-progress"],
+    route_class=LocalizedJSONRoute,
+)
 
 
 def get_runtime() -> Runtime:

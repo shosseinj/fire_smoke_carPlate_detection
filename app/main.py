@@ -46,6 +46,7 @@ from app.api.static_videos import router as static_videos_router
 
 from app.config import settings
 from app.core.detection_media import RestrictedMediaStaticFiles
+from app.core.frontend_messages import install_frontend_exception_handlers, localize_frontend_payload
 from app.runtime import build_runtime
 
 runtime = build_runtime(settings)
@@ -104,6 +105,7 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
     docs_url=None,
 )
+install_frontend_exception_handlers(app)
 app.mount(
     "/docs-assets",
     StaticFiles(directory=SWAGGER_UI_DIRECTORY),
@@ -202,7 +204,7 @@ def root() -> RedirectResponse:
 @app.get("/health", tags=["system-diagnostics"], summary="Health and runtime counters")
 def health() -> dict:
     status = runtime.status()
-    return {
+    return localize_frontend_payload({
         "status": "ok",
         "processor_mode": settings.processor_mode,
         "registered_sources": len(runtime.registry.list()),
@@ -218,4 +220,4 @@ def health() -> dict:
         "request_count": status["request_count"],
         "detection_log_count": status["detection_log_count"],
         "workers": status["workers"],
-    }
+    })

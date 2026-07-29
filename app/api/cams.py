@@ -156,33 +156,33 @@ def check_cam_health(
         if not capture.isOpened():
             return CamHealthCheckResponse(
                 status="unhealthy",
-                message="Unable to connect to the camera",
+                message="اتصال به دوربین امکان‌پذیر نیست",
                 snapshot=None,
             )
         ok, frame = capture.read()
         if not ok or frame is None:
             return CamHealthCheckResponse(
                 status="unhealthy",
-                message="Connected, but no frame could be read",
+                message="اتصال برقرار شد، اما هیچ فریمی خوانده نشد",
                 snapshot=None,
             )
         encoded, buffer = cv2.imencode(".jpg", frame)
         if not encoded:
             return CamHealthCheckResponse(
                 status="unhealthy",
-                message="The frame could not be encoded as JPEG",
+                message="تبدیل فریم به تصویر JPEG امکان‌پذیر نیست",
                 snapshot=None,
             )
         image_base64 = base64.b64encode(buffer).decode("ascii")
         return CamHealthCheckResponse(
             status="healthy",
-            message="Camera is reachable",
+            message="دوربین در دسترس است",
             snapshot=f"data:image/jpeg;base64,{image_base64}",
         )
     except Exception as exc:
         return CamHealthCheckResponse(
             status="unhealthy",
-            message=f"Camera health check failed: {exc}",
+            message="بررسی سلامت دوربین با خطا مواجه شد",
             snapshot=None,
         )
     finally:

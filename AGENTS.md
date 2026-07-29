@@ -127,6 +127,14 @@ Model fallback priority is `.engine → .onnx → .pt` when fallbacks are enable
 
 ## Dashboard and broadcast system
 
+Frontend-facing human-readable messages must be Persian. `app/core/frontend_messages.py`
+owns framework HTTP/validation/unhandled-error localization, pattern-based public
+error sanitization, and localization helpers used by diagnostics and processor tests. Keep machine contracts
+such as JSON keys, HTTP codes, roles, task/source names, status and error codes, and
+WebSocket event types unchanged. The bundled dashboard uses `lang="fa"`, RTL layout,
+and Persian presentation labels; legacy wire values such as `Unknown` are translated
+only for display.
+
 The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 
 ### 1. JPEG fallback mode (default, always active)

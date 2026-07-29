@@ -479,7 +479,7 @@ def test_logout_revokes_refresh_token(tmp_path: Path) -> None:
             json={"refresh_token": refresh_token},
         )
         assert response.status_code == 200
-        assert response.json()["message"] == "Logged out successfully"
+        assert response.json()["message"] == "خروج با موفقیت انجام شد"
 
         # After logout, refresh fails
         r2 = client.post(
@@ -694,7 +694,7 @@ def test_create_duplicate_username(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "already exists" in response.json()["detail"]
+        assert "قبلاً" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -715,7 +715,7 @@ def test_create_duplicate_email(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "already exists" in response.json()["detail"]
+        assert "قبلاً" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -946,7 +946,7 @@ def test_cannot_deactivate_last_admin(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "last active admin" in response.json()["detail"]
+        assert "آخرین" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -962,7 +962,7 @@ def test_cannot_demote_last_admin(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "last active admin" in response.json()["detail"]
+        assert "آخرین" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -987,7 +987,7 @@ def test_change_password_success(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
-        assert response.json()["message"] == "Password changed successfully"
+        assert response.json()["message"] == "رمز عبور با موفقیت تغییر کرد"
 
         # Old password no longer works
         old_login = client.post(
@@ -1021,7 +1021,7 @@ def test_change_password_wrong_current(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "incorrect" in response.json()["detail"]
+        assert "نادرست" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -1060,7 +1060,7 @@ def test_change_password_same_as_old(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "different" in response.json()["detail"]
+        assert "متفاوت" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 

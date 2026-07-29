@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -34,7 +35,11 @@ from typing import Optional
 
 LOGGER = logging.getLogger("uvicorn.error")
 
-router = APIRouter(prefix="/api/v1/personnel", tags=["personnel"])
+router = APIRouter(
+    prefix="/api/v1/personnel",
+    tags=["personnel"],
+    route_class=LocalizedJSONRoute,
+)
 
 
 def get_runtime() -> Runtime:

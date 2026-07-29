@@ -8,11 +8,16 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from pydantic import BaseModel, Field
 
 from app.core.source_registry import SourceRecord
+from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.static_video_store import StaticVideoRecord
 from app.core.video_ingestor import VIDEO_SUFFIXES
 from app.runtime import Runtime
 
-router = APIRouter(prefix="/api/v1/static-videos", tags=["static-videos"])
+router = APIRouter(
+    prefix="/api/v1/static-videos",
+    tags=["static-videos"],
+    route_class=LocalizedJSONRoute,
+)
 
 
 def get_runtime() -> Runtime:
@@ -56,7 +61,7 @@ async def _save_upload(
     if suffix is None:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Unsupported video format. Allowed: {', '.join(sorted(VIDEO_SUFFIXES))}",
+            detail=f"قالب ویدیو پشتیبانی نمی‌شود. قالب‌های مجاز: {', '.join(sorted(VIDEO_SUFFIXES))}",
         )
 
     raw = await file.read()
@@ -70,7 +75,7 @@ async def _save_upload(
     if len(raw) > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Maximum {max_bytes // (1024*1024)} MB",
+            detail=f"حجم فایل بیش از حد مجاز {max_bytes // (1024*1024)} مگابایت است",
         )
 
     upload_dir: Path = runtime.settings.static_video_upload_path.resolve()
@@ -85,7 +90,7 @@ async def _save_upload(
     except OSError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save file: {exc}",
+            detail="ذخیره فایل با خطا مواجه شد",
         ) from exc
 
     return {

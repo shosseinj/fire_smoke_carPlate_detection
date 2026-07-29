@@ -751,6 +751,27 @@
       "notes": "Personnel request CRUD with approve/reject workflow."
     },
     {
+      "id": "frontend-message-localization",
+      "name": "Persian Frontend Message Localization",
+      "enabled": true,
+      "critical": true,
+      "runtime_required": true,
+      "owner_paths": ["app/core/frontend_messages.py", "app/core/types.py", "app/main.py", "app/api/diagnostics.py", "app/api/processor_tests.py", "app/api/broadcast.py", "app/web/dashboard.html"],
+      "dependencies": ["configuration", "api-auth", "broadcast"],
+      "consumers": ["user-interface", "REST clients", "WebSocket clients"],
+      "commands": [
+        "python -m pytest tests/test_frontend_message_localization.py tests/test_broadcast.py tests/test_auth_compatibility.py -q",
+        "python -m py_compile app/core/frontend_messages.py app/main.py"
+      ],
+      "metrics": [],
+      "acceptance": {
+        "human_readable_messages": "Persian",
+        "machine_protocol_values": "unchanged for covered contracts",
+        "representative_stream_delivery": "runtime validation required"
+      },
+      "notes": "Central handlers localize HTTP and validation errors. Dashboard presentation labels are Persian and RTL; wire enums, event types, task names, roles, and status codes remain stable. Representative stream delivery must be validated separately from static and API checks."
+    },
+    {
       "id": "agentic-workflow",
       "name": "Agentic Workflow State",
       "enabled": true,

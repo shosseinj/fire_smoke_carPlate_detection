@@ -49,6 +49,6 @@ def read_release(version: str) -> ReleaseInfo:
     if release is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project release {version!r} was not found.",
+            detail=f"نسخه پروژه {version!r} یافت نشد.",
         )
     return release
