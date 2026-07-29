@@ -235,7 +235,7 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
     known_identity = bool(row.get("personnel_id")) or str(person).strip().lower() != "unknown"
     # A tentative/low-confidence name is still an unknown recent detection for
     # presentation purposes. Only confirmed known logs get reference+body.
-    concatenate = classification == "known" and known_identity
+    concatenate = classification in {"known", "unsure"} and known_identity
     fname = row.get("fname")
     lname = row.get("lname")
     if fname or lname:
