@@ -108,6 +108,7 @@ def _source_record_for_create(
         draw_smoke=payload.draw_smoke,
         draw_vehicle=payload.draw_vehicle,
         draw_plate=payload.draw_plate,
+        counts_for_attendance=payload.counts_for_attendance,
     )
     was_uploaded = bool(
         static_record is not None
@@ -199,6 +200,7 @@ def get_preview_config(
                 "draw_smoke": record.draw_smoke,
                 "draw_vehicle": record.draw_vehicle,
                 "draw_plate": record.draw_plate,
+                "counts_for_attendance": record.counts_for_attendance,
                 "preview_path": preview_stream_path(record.source_uri),
             }
             for record in runtime.registry.list()

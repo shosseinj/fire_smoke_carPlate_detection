@@ -30,10 +30,14 @@ def _record(face_video: str | None, video: str | None = None) -> DetectionLogRec
         log_type="test",
         import_source_parts=None,
         face_image=None,
+        face_thumbnail=None,
         body_image=None,
         snapshot_image=None,
         video=video,
         face_video_or_unknown_faces=face_video,
+        video_status="ready" if video else "missing",
+        face_video_status="ready" if face_video else "missing",
+        media_finalized_at=None,
         created_by=None,
         updated_by=None,
         created_at_utc="2026-07-26T12:00:00Z",
@@ -77,6 +81,7 @@ def test_extract_frames_returns_exact_response_shape(tmp_path: Path, monkeypatch
     }
     assert response["success"] is True
     assert response["detection_id"] == 7
+    assert response["video_path"] == "/api/v1/logs/7/face-video"
     assert response["frames_extracted"] == 1
     assert response["frame_interval"] == 2
     assert set(response["frames"][0]) == {

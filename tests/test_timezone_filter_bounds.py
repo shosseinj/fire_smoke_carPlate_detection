@@ -19,7 +19,7 @@ def test_local_day_bounds_use_half_open_utc_range_for_tehran_day() -> None:
 
 
 def test_local_date_range_bounds_rejects_reverse_ranges() -> None:
-    with pytest.raises(ValueError, match="end_date"):
+    with pytest.raises(ValueError, match="تاریخ پایان"):
         local_date_range_bounds_utc(date(2024, 3, 21), date(2024, 3, 20))
 
 

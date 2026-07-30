@@ -21,6 +21,18 @@ def test_camera_and_source_contracts_accept_room_id() -> None:
     assert SourceCreate(source_uri="camera://two", name="Two", room_id=4).room_id == 4
 
 
+def test_camera_attendance_defaults_true_and_can_be_disabled() -> None:
+    assert CameraCreate(source_uri="camera://one", name="One").counts_for_attendance is True
+    assert SourceCreate(source_uri="camera://two", name="Two").counts_for_attendance is True
+    record = SourceRecord.from_dict({
+        "source_uri": "camera://three",
+        "name": "Three",
+        "counts_for_attendance": False,
+    })
+    assert record.counts_for_attendance is False
+    assert record.to_dict()["counts_for_attendance"] is False
+
+
 def test_camera_update_can_explicitly_unassign_room() -> None:
     update = CameraUpdate.model_validate({"room_id": None})
     assert update.model_dump(exclude_unset=True) == {"room_id": None}

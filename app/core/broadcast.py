@@ -309,6 +309,7 @@ class AnnotatedBroadcastHub:
                 "draw_smoke": record.draw_smoke,
                 "draw_vehicle": record.draw_vehicle,
                 "draw_plate": record.draw_plate,
+                "counts_for_attendance": record.counts_for_attendance,
                 "updated_at_utc": record.updated_at_utc,
             }
         previous_source_uri = change.previous_source_uri

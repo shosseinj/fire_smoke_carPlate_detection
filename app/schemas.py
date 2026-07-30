@@ -35,6 +35,7 @@ class SourceCreate(BaseModel):
     draw_smoke: bool = True
     draw_vehicle: bool = True
     draw_plate: bool = True
+    counts_for_attendance: bool = True
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -95,6 +96,7 @@ class SourceUpdate(BaseModel):
     draw_smoke: bool | None = None
     draw_vehicle: bool | None = None
     draw_plate: bool | None = None
+    counts_for_attendance: bool | None = None
     # Per-source confidence overrides (stored in the `sources` table)
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -142,6 +144,7 @@ class BulkSourceUpdateItem(BaseModel):
     draw_smoke: bool | None = None
     draw_vehicle: bool | None = None
     draw_plate: bool | None = None
+    counts_for_attendance: bool | None = None
     fire_confidence: float | None = Field(default=None, ge=0, le=1)
     smoke_confidence: float | None = Field(default=None, ge=0, le=1)
     plate_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -202,6 +205,7 @@ class SourceResponse(BaseModel):
     draw_smoke: bool = True
     draw_vehicle: bool = True
     draw_plate: bool = True
+    counts_for_attendance: bool = True
     created_at_utc: str
     updated_at_utc: str
     # Resolved per-source confidence thresholds (from the `sources` table)
@@ -224,6 +228,7 @@ class CameraCreate(BaseModel):
     source_type: str = RTSP
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    counts_for_attendance: bool = True
 
     @field_validator("source_uri")
     @classmethod
@@ -249,6 +254,7 @@ class CameraUpdate(BaseModel):
     source_type: str | None = None
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] | None = None
+    counts_for_attendance: bool | None = None
 
     @field_validator("source_type")
     @classmethod
@@ -278,6 +284,7 @@ class CameraReplace(BaseModel):
     source_type: str = RTSP
     room_id: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    counts_for_attendance: bool = True
 
     @field_validator("source_type")
     @classmethod
@@ -296,6 +303,7 @@ class CameraResponse(BaseModel):
     source_type: str = RTSP
     room_id: int | None = None
     metadata: dict[str, Any]
+    counts_for_attendance: bool = True
     created_at_utc: str
     updated_at_utc: str
     settings_overrides: dict[str, Any] = Field(default_factory=dict)

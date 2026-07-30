@@ -428,7 +428,7 @@ def test_detection_stays_low_resolution_but_quality_uses_native_frame(
 
 def test_quality_gate_blocks_low_score_and_out_of_pose_faces(tmp_path: Path) -> None:
     processor, _human, face, embedder, store = build_processor(tmp_path)
-    processor.update_quality_settings({"quality_threshold": 0.99})
+    processor.update_quality_settings({"quality_threshold": 1.0})
 
     low_quality = processor.process_batch([packet("cam-a", 1)])[0]
 

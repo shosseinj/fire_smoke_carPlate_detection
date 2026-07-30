@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,7 @@ from app.core.personnel_store import PersonnelImageRecord, PersonnelRecord
 class _Store:
     def __init__(self) -> None:
         self.saved_files = 0
+        self.images: dict[int, PersonnelImageRecord] = {}
 
     def get(self, personnel_id: int) -> PersonnelRecord | None:
         return PersonnelRecord(
@@ -51,7 +53,7 @@ class _Store:
         embedding_id: str | None,
         is_primary: bool | None = None,
     ) -> PersonnelImageRecord:
-        return PersonnelImageRecord(
+        record = PersonnelImageRecord(
             id=self.saved_files,
             personnel_id=personnel_id,
             storage_key=storage_key,
@@ -60,6 +62,18 @@ class _Store:
             uploaded_at_utc="2026-07-22T00:00:00Z",
             embedding_id=embedding_id,
         )
+        self.images[record.id] = record
+        return record
+
+    def update_image_embedding(self, image_id: int, embedding_id: str | None) -> None:
+        record = self.images[image_id]
+        self.images[image_id] = replace(record, embedding_id=embedding_id)
+
+    def get_image(self, image_id: int) -> PersonnelImageRecord | None:
+        return self.images.get(image_id)
+
+    def delete_image(self, image_id: int) -> bool:
+        return self.images.pop(image_id, None) is not None
 
 
 def _runtime(store: _Store) -> Any:

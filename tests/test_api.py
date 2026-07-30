@@ -191,6 +191,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                         "draw_smoke": True,
                         "draw_vehicle": True,
                         "draw_plate": True,
+                        "counts_for_attendance": True,
                         "updated_at_utc": event["camera"]["updated_at_utc"],
                     },
                 }
@@ -205,6 +206,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                 assert source_alias.json()["loop"] is False
                 assert source_alias.json()["draw_human"] is False
                 assert source_alias.json()["draw_zone"] is False
+                assert source_alias.json()["counts_for_attendance"] is True
 
                 updated = client.patch(
                     "/api/v1/sources/data/live.mp4",
@@ -403,6 +405,7 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
                         "frame_width": 320,
                         "frame_height": 320,
                         "draw_plate": False,
+                        "counts_for_attendance": False,
                     },
                 ],
             )
@@ -419,12 +422,16 @@ def test_bulk_update_sources(tmp_path: Path) -> None:
             assert by_id[id_b]["frame_width"] == 320
             assert by_id[id_b]["frame_height"] == 320
             assert by_id[id_b]["draw_plate"] is False
+            assert by_id[id_b]["counts_for_attendance"] is False
             # Verify persisted via GET
             get_a = client.get(f"/api/v1/sources/{id_a}")
             assert get_a.status_code == 200
             assert get_a.json()["name"] == "Bulk A"
             assert get_a.json()["fps"] == 7.5
             assert get_a.json()["draw_smoke"] is False
+            get_b = client.get(f"/api/v1/sources/{id_b}")
+            assert get_b.status_code == 200
+            assert get_b.json()["counts_for_attendance"] is False
 
             native_fps = client.patch(
                 f"/api/v1/sources/{id_a}",

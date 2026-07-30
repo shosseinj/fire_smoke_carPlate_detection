@@ -55,13 +55,13 @@ def test_protected_list_endpoints_reject_unauthenticated_requests() -> None:
 
     protected_paths = [
         "/api/v1/personnel/",
-        "/api/v1/rooms/",
-        "/api/v1/buildings/",
-        "/api/v1/sections/",
+        "/rooms/",
+        "/buildings/",
+        "/sections/",
         "/api/v1/shifts/",
         "/api/v1/personnel-requests/",
         "/api/v1/holidays/",
-        "/api/v1/general-settings/",
+        "/api/v1/settings/general",
         "/api/v1/logs/filter",
     ]
 

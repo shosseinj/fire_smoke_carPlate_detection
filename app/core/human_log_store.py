@@ -46,6 +46,7 @@ class HumanMediaEvent:
     face_quality: float
     finalize_detection_log: bool = False
     persist_human_log: bool = True
+    counts_for_attendance: bool = True
 
 
 @dataclass(slots=True)
@@ -328,6 +329,7 @@ class HumanLogStore:
         *,
         persist_human_log: bool = True,
         room_ids_by_track: dict[int, int] | None = None,
+        counts_for_attendance: bool = True,
     ) -> None:
         if result.error:
             return
@@ -531,6 +533,7 @@ class HumanLogStore:
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
                 room_id=stored_room_id,
+                counts_for_attendance=bool(counts_for_attendance),
                 snapshot_frame=(
                     selected_evidence.body_frame.copy()
                     if disappeared and selected_evidence is not None
@@ -889,7 +892,7 @@ class HumanLogStore:
                         int(wrote_full_frame),
                         int(wrote_face),
                         event.personnel_id,
-                        1,
+                        int(event.counts_for_attendance),
                     ),
                 )
             else:
@@ -968,7 +971,7 @@ class HumanLogStore:
                     room_id=event.room_id,
                     camera_id=event.camera,
                     access_granted=event.personnel_id is not None,
-                    counts_for_attendance=True,
+                    counts_for_attendance=event.counts_for_attendance,
                     log_type="camera_rtsp",
                     face_image=face_image_key or None,
                     face_thumbnail=face_thumbnail_key or None,

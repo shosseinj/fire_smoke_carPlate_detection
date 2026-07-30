@@ -815,6 +815,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                     result,
                     persist_human_log=False,
                     room_ids_by_track=valid_room_ids_by_track,
+                    counts_for_attendance=cam.counts_for_attendance,
                 )
             except Exception:
                 LOGGER.exception(
@@ -827,6 +828,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         packet,
                         result,
                         room_ids_by_track=valid_room_ids_by_track,
+                        counts_for_attendance=cam.counts_for_attendance,
                     )
                 except Exception:
                     LOGGER.exception(

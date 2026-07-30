@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260729_0045"
+ALEMBIC_HEAD_REVISION = "20260730_0046"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -437,6 +437,7 @@ sources = Table(
     Column("draw_smoke", Integer, server_default="1"),
     Column("draw_vehicle", Integer, server_default="1"),
     Column("draw_plate", Integer, server_default="1"),
+    Column("counts_for_attendance", Integer, nullable=False, server_default="1"),
 )
 UniqueConstraint("id", name="uq_sources_id")
 Index("idx_sources_enabled", sources.c.enabled)

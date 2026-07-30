@@ -624,12 +624,18 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
         store.observe_result(
             earlier,
             result(earlier, "Alice", 0.80, face_quality=0.60),
+            counts_for_attendance=False,
         )
         store.observe_result(
             selected,
             result(selected, "Alice", 0.93, face_quality=0.95),
+            counts_for_attendance=False,
         )
-        store.observe_result(disappeared, final_result)
+        store.observe_result(
+            disappeared,
+            final_result,
+            counts_for_attendance=False,
+        )
         store.flush()
 
         records, _ = detection_logs.list_filter(
@@ -638,6 +644,15 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
         )
         assert len(records) == 1
         record = records[0]
+        assert record.counts_for_attendance is False
+        with postgres_database.connection() as connection:
+            human_row = connection.execute(
+                "SELECT counts_for_attendance FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert human_row is not None
+        assert bool(human_row["counts_for_attendance"]) is False
         first_keys = (record.face_image, record.body_image, record.snapshot_image)
         assert all(first_keys)
         expected_directories = (
@@ -652,7 +667,11 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
 
         # A duplicate tracker-expiry notification must reuse the same database
         # keys and must not create or replace any still-image files.
-        store.observe_result(disappeared, final_result)
+        store.observe_result(
+            disappeared,
+            final_result,
+            counts_for_attendance=False,
+        )
         store.flush()
         duplicate = detection_logs.get_by_source_event_key(
             "human-track:session-a:camera-01:13"

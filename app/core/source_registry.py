@@ -53,6 +53,7 @@ class SourceRecord:
     draw_smoke: bool = True
     draw_vehicle: bool = True
     draw_plate: bool = True
+    counts_for_attendance: bool = True
     created_at_utc: str = field(default_factory=_utc_now)
     updated_at_utc: str = field(default_factory=_utc_now)
 
@@ -89,6 +90,7 @@ class SourceRecord:
             draw_smoke=bool(value.get("draw_smoke", True)),
             draw_vehicle=bool(value.get("draw_vehicle", True)),
             draw_plate=bool(value.get("draw_plate", True)),
+            counts_for_attendance=bool(value.get("counts_for_attendance", True)),
             created_at_utc=str(value.get("created_at_utc") or _utc_now()),
             updated_at_utc=str(value.get("updated_at_utc") or _utc_now()),
         )
@@ -132,6 +134,7 @@ class SourceRegistry:
                        frame_width, frame_height, room_id, source_type,
                        metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                        draw_smoke, draw_vehicle, draw_plate,
+                       counts_for_attendance,
                        created_at_utc, updated_at_utc
                 FROM sources
                 WHERE name IS NOT NULL
@@ -200,6 +203,11 @@ class SourceRegistry:
             draw_smoke=bool(row["draw_smoke"]) if row["draw_smoke"] is not None else True,
             draw_vehicle=bool(row["draw_vehicle"]) if row["draw_vehicle"] is not None else True,
             draw_plate=bool(row["draw_plate"]) if row["draw_plate"] is not None else True,
+            counts_for_attendance=(
+                bool(row["counts_for_attendance"])
+                if row["counts_for_attendance"] is not None
+                else True
+            ),
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
         )
@@ -228,6 +236,7 @@ class SourceRegistry:
             int(record.draw_smoke),
             int(record.draw_vehicle),
             int(record.draw_plate),
+            int(record.counts_for_attendance),
             record.created_at_utc,
             record.updated_at_utc,
         )
@@ -296,8 +305,9 @@ class SourceRegistry:
                         frame_width, frame_height, room_id, source_type,
                         metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                         draw_smoke, draw_vehicle, draw_plate,
+                        counts_for_attendance,
                         created_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_uri) DO UPDATE SET
                         id = COALESCE(sources.id, excluded.id),
                         name = excluded.name,
@@ -316,6 +326,7 @@ class SourceRegistry:
                         draw_smoke = excluded.draw_smoke,
                         draw_vehicle = excluded.draw_vehicle,
                         draw_plate = excluded.draw_plate,
+                        counts_for_attendance = excluded.counts_for_attendance,
                         updated_at_utc = excluded.updated_at_utc
                     """,
                     self._parameters(record),
@@ -377,8 +388,9 @@ class SourceRegistry:
                     frame_width, frame_height, room_id, source_type,
                     metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                     draw_smoke, draw_vehicle, draw_plate,
+                    counts_for_attendance,
                     created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -397,6 +409,7 @@ class SourceRegistry:
                     draw_smoke = excluded.draw_smoke,
                     draw_vehicle = excluded.draw_vehicle,
                     draw_plate = excluded.draw_plate,
+                    counts_for_attendance = excluded.counts_for_attendance,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),
@@ -425,8 +438,9 @@ class SourceRegistry:
                     frame_width, frame_height, room_id, source_type,
                     metadata_json, fps, loop, draw_human, draw_zone, draw_fire,
                     draw_smoke, draw_vehicle, draw_plate,
+                    counts_for_attendance,
                     created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_uri) DO UPDATE SET
                     id = COALESCE(sources.id, excluded.id),
                     name = excluded.name,
@@ -445,6 +459,7 @@ class SourceRegistry:
                     draw_smoke = excluded.draw_smoke,
                     draw_vehicle = excluded.draw_vehicle,
                     draw_plate = excluded.draw_plate,
+                    counts_for_attendance = excluded.counts_for_attendance,
                     updated_at_utc = excluded.updated_at_utc
                 """,
                 self._parameters(record),
@@ -476,6 +491,7 @@ class SourceRegistry:
         draw_smoke: bool | None = None,
         draw_vehicle: bool | None = None,
         draw_plate: bool | None = None,
+        counts_for_attendance: bool | None = None,
     ) -> SourceRecord:
         with self._lock:
             existing = self._records.get(source_uri)
@@ -529,6 +545,8 @@ class SourceRegistry:
                 record.draw_vehicle = draw_vehicle
             if draw_plate is not None:
                 record.draw_plate = draw_plate
+            if counts_for_attendance is not None:
+                record.counts_for_attendance = counts_for_attendance
             if room_id is not ...:
                 record.room_id = int(room_id) if room_id is not None else None
             record.updated_at_utc = _utc_now()
@@ -542,6 +560,7 @@ class SourceRegistry:
                     room_id = ?, source_type = ?,
                     metadata_json = ?, fps = ?, loop = ?, draw_human = ?, draw_zone = ?,
                     draw_fire = ?, draw_smoke = ?, draw_vehicle = ?, draw_plate = ?,
+                    counts_for_attendance = ?,
                     updated_at_utc = ?
                 WHERE source_uri = ?
                 """,
@@ -562,6 +581,7 @@ class SourceRegistry:
                     int(record.draw_smoke),
                     int(record.draw_vehicle),
                     int(record.draw_plate),
+                    int(record.counts_for_attendance),
                     record.updated_at_utc,
                     source_uri,
                 ),
