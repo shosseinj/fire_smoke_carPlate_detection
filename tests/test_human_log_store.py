@@ -755,6 +755,105 @@ def test_active_track_video_is_not_split_by_idle_cleanup_and_counts_are_persiste
         store.close()
 
 
+def test_full_frame_video_includes_bounded_pre_and_post_roll(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        video_fps=5.0,
+        video_pre_roll_frames=2,
+        video_post_roll_frames=2,
+        video_pre_roll_max_bytes=8 * 1024 * 1024,
+    )
+    room = LocationStore(postgres_database).create_room("Roll zone")
+    try:
+        for frame_index in (1, 2):
+            outside = colored_packet(frame_index, (frame_index * 20, 0, 0))
+            store.observe_result(
+                outside,
+                result(outside, "Unknown", 0.0),
+                persist_human_log=False,
+                room_ids_by_track={},
+            )
+
+        entered = colored_packet(3, (0, 80, 0))
+        entered_result = result(entered, "Alice", 0.93, face_quality=0.90)
+        store.observe_result(
+            entered,
+            entered_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+        )
+        store.observe_result(
+            entered,
+            entered_result,
+            room_ids_by_track={13: room.id},
+        )
+
+        inside = colored_packet(4, (0, 100, 0))
+        store.observe_result(
+            inside,
+            result(inside, "Alice", 0.93),
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+        )
+
+        for frame_index in (5, 6, 7):
+            outside = colored_packet(frame_index, (0, 0, frame_index * 20))
+            store.observe_result(
+                outside,
+                result(outside, "Alice", 0.93),
+                persist_human_log=False,
+                room_ids_by_track={},
+                exited_track_ids={13} if frame_index == 5 else set(),
+            )
+
+        disappeared = packet(8)
+        disappeared_result = result(disappeared, "Alice", 0.93)
+        disappeared_result.data["humans"] = []
+        disappeared_result.data["faces"] = []
+        disappeared_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "bbox": [10, 10, 100, 110],
+                "person": "Alice",
+                "recognition_score": 0.93,
+                "ref_img_id": "reference-1",
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={},
+        )
+        store.flush()
+
+        videos = list((tmp_path / "media" / "human" / "videos").glob("*.mp4"))
+        assert len(videos) == 1
+        capture = cv2.VideoCapture(str(videos[0]))
+        try:
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 6
+        finally:
+            capture.release()
+        with postgres_database.connection() as connection:
+            row = connection.execute(
+                "SELECT full_frame_video_frames FROM human_logs "
+                "WHERE session_id = ? AND camera = ? AND track_id = ?",
+                ("session-a", "camera-01", 13),
+            ).fetchone()
+        assert row is not None
+        assert row["full_frame_video_frames"] == 6
+        status = store.status()
+        assert status["video_pre_roll_frames"] == 2
+        assert status["video_post_roll_frames"] == 2
+        assert status["pre_roll_buffered_bytes"] <= status["pre_roll_max_bytes"]
+    finally:
+        store.close()
+
+
 def test_ranked_faces_are_bounded_and_snapshots_use_exact_best_face_frame(
     tmp_path: Path,
     postgres_database: Database,

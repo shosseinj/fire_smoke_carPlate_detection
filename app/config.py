@@ -262,6 +262,11 @@ class Settings:
     human_media_queue_size: int = _env_int("HUMAN_MEDIA_QUEUE_SIZE", 256)
     human_video_fps: float = _env_float("HUMAN_VIDEO_FPS", 5.0)
     human_video_idle_seconds: float = _env_float("HUMAN_VIDEO_IDLE_SECONDS", 5.0)
+    human_video_pre_roll_frames: int = _env_int("HUMAN_VIDEO_PRE_ROLL_FRAMES", 10)
+    human_video_post_roll_frames: int = _env_int("HUMAN_VIDEO_POST_ROLL_FRAMES", 10)
+    human_video_pre_roll_max_bytes: int = _env_int(
+        "HUMAN_VIDEO_PRE_ROLL_MAX_BYTES", 128 * 1024 * 1024
+    )
     human_snapshot_min_improvement: float = _env_float(
         "HUMAN_SNAPSHOT_MIN_IMPROVEMENT", 0.01
     )

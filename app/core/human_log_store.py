@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,7 @@ class HumanMediaEvent:
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
+    pre_roll_frames: tuple[np.ndarray, ...] = ()
     evidence_frame_index: int | None = None
     ranked_face_candidates: tuple[RankedFaceCandidate, ...] = ()
     finalize_detection_log: bool = False
@@ -98,6 +100,9 @@ class HumanLogStore:
         queue_size: int = 128,
         video_fps: float = 10.0,
         video_idle_seconds: float = 5.0,
+        video_pre_roll_frames: int = 5,
+        video_post_roll_frames: int = 5,
+        video_pre_roll_max_bytes: int = 128 * 1024 * 1024,
         snapshot_min_improvement: float = 0.01,
         face_candidate_limit: int = 5,
         detection_log_store: DetectionLogStore | None = None,
@@ -123,6 +128,9 @@ class HumanLogStore:
             directory.mkdir(parents=True, exist_ok=True)
         self.video_fps = max(1.0, float(video_fps))
         self.video_idle_seconds = max(1.0, float(video_idle_seconds))
+        self.video_pre_roll_frames = max(0, min(int(video_pre_roll_frames), 30))
+        self.video_post_roll_frames = max(0, min(int(video_post_roll_frames), 30))
+        self.video_pre_roll_max_bytes = max(0, int(video_pre_roll_max_bytes))
         self.snapshot_min_improvement = max(0.0, float(snapshot_min_improvement))
         self.face_candidate_limit = max(1, int(face_candidate_limit))
         self.detection_log_store = detection_log_store
@@ -135,6 +143,12 @@ class HumanLogStore:
         self._candidate_scores: dict[tuple[str, str, int], float] = {}
         self._last_full_frame_at: dict[tuple[str, str, int], float] = {}
         self._last_face_video_at: dict[tuple[str, str, int], float] = {}
+        self._last_pre_roll_frame_index: dict[tuple[str, str], int] = {}
+        self._pre_roll_frames: dict[
+            tuple[str, str], deque[np.ndarray]
+        ] = {}
+        self._pre_roll_buffered_bytes = 0
+        self._post_roll_remaining: dict[tuple[str, str, int], int] = {}
         self._best_face_scores: dict[tuple[str, str, int], float] = {}
         # Video recording is admitted by the first valid face for a track, but
         # remains independent from polygon-gated human-log persistence.
@@ -342,6 +356,53 @@ class HumanLogStore:
             return None
         return cv2.warpAffine(frame, transform, (side, side))
 
+    def _buffer_pre_roll_frame(
+        self,
+        session_id: str,
+        source_id: str,
+        frame_index: int,
+        source_frame: np.ndarray,
+    ) -> None:
+        if self.video_pre_roll_frames <= 0 or self.video_pre_roll_max_bytes <= 0:
+            return
+        buffer_key = (session_id, source_id)
+        with self._lock:
+            if self._last_pre_roll_frame_index.get(buffer_key) == frame_index:
+                return
+            for stale_key in [
+                key
+                for key in self._pre_roll_frames
+                if key[1] == source_id and key != buffer_key
+            ]:
+                stale = self._pre_roll_frames.pop(stale_key)
+                self._pre_roll_buffered_bytes -= sum(frame.nbytes for frame in stale)
+                self._last_pre_roll_frame_index.pop(stale_key, None)
+            frames = self._pre_roll_frames.setdefault(
+                buffer_key, deque(maxlen=self.video_pre_roll_frames + 1)
+            )
+            if frames.maxlen is not None and len(frames) >= frames.maxlen:
+                self._pre_roll_buffered_bytes -= frames[0].nbytes
+            buffered = source_frame.copy()
+            frames.append(buffered)
+            self._pre_roll_buffered_bytes += buffered.nbytes
+            self._last_pre_roll_frame_index[buffer_key] = frame_index
+            while self._pre_roll_buffered_bytes > self.video_pre_roll_max_bytes:
+                evicted = False
+                for candidate_key, candidate_frames in list(
+                    self._pre_roll_frames.items()
+                ):
+                    if not candidate_frames:
+                        continue
+                    oldest = candidate_frames.popleft()
+                    self._pre_roll_buffered_bytes -= oldest.nbytes
+                    evicted = True
+                    if not candidate_frames:
+                        self._pre_roll_frames.pop(candidate_key, None)
+                        self._last_pre_roll_frame_index.pop(candidate_key, None)
+                    break
+                if not evicted:
+                    break
+
     def observe_result(
         self,
         packet: FramePacket,
@@ -349,12 +410,20 @@ class HumanLogStore:
         *,
         persist_human_log: bool = True,
         room_ids_by_track: dict[int, int] | None = None,
+        exited_track_ids: set[int] | None = None,
         counts_for_attendance: bool = True,
     ) -> None:
         if result.error:
             return
         source_frame = packet.source_frame
         session_id = str(result.data.get("tracking_session_id") or "unknown-session")
+        if result.data.get("humans"):
+            self._buffer_pre_roll_frame(
+                session_id,
+                packet.source_id,
+                packet.frame_index,
+                source_frame,
+            )
         faces_by_track: dict[int, list[dict[str, Any]]] = {}
         for face in result.data.get("faces", []):
             # Invalid-quality faces remain excluded from recognition evidence.
@@ -482,9 +551,28 @@ class HumanLogStore:
             # stored separately and only its small thumbnail is embedded in JSON.
             snapshot_image = human_crop
             with self._lock:
+                previous_post_roll = self._post_roll_remaining.get(key, 0)
+                video_was_enabled = key in self._video_enabled_tracks
                 if face_frame is not None:
                     self._video_enabled_tracks.add(key)
                 video_enabled = key in self._video_enabled_tracks
+                starting_video = video_enabled and not video_was_enabled
+                source_pre_roll = tuple(
+                    self._pre_roll_frames.get((session_id, packet.source_id), ())
+                )
+                pre_roll_frames = (
+                    source_pre_roll[-(self.video_pre_roll_frames + 1) : -1]
+                    if starting_video and len(source_pre_roll) > 1
+                    else ()
+                )
+                if (
+                    exited_track_ids is not None
+                    and track_id in exited_track_ids
+                    and not valid_room_frame
+                    and video_enabled
+                ):
+                    self._post_roll_remaining[key] = self.video_post_roll_frames
+                post_roll_remaining = self._post_roll_remaining.get(key, 0)
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
                 previous_full_frame_at = self._last_full_frame_at.get(
@@ -533,8 +621,8 @@ class HumanLogStore:
                 )
                 full_frame_due = (
                     video_enabled
-                    and valid_room_frame
                     and not disappeared
+                    and (valid_room_frame or post_roll_remaining > 0)
                     and now - previous_full_frame_at >= 1.0 / self.video_fps
                 )
                 better_face = (
@@ -555,6 +643,12 @@ class HumanLogStore:
                     self._still_evidence[key] = candidate_evidence
                 if full_frame_due:
                     self._last_full_frame_at[key] = now
+                    if not valid_room_frame and post_roll_remaining > 0:
+                        remaining = post_roll_remaining - 1
+                        if remaining > 0:
+                            self._post_roll_remaining[key] = remaining
+                        else:
+                            self._post_roll_remaining.pop(key, None)
                 if face_due:
                     self._last_face_video_at[key] = now
                 if better_face:
@@ -627,6 +721,7 @@ class HumanLogStore:
                     if selected_evidence is not None
                     else face_quality
                 ),
+                pre_roll_frames=pre_roll_frames,
                 evidence_frame_index=(
                     selected_evidence.frame_index
                     if selected_evidence is not None
@@ -682,6 +777,12 @@ class HumanLogStore:
                         self._face_candidates[key] = previous_ranked_candidates
                     else:
                         self._face_candidates.pop(key, None)
+                    if starting_video:
+                        self._video_enabled_tracks.discard(key)
+                    if previous_post_roll > 0:
+                        self._post_roll_remaining[key] = previous_post_roll
+                    else:
+                        self._post_roll_remaining.pop(key, None)
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
             if disappeared and (
                 selected_evidence is None or selected_evidence.face_frame is None
@@ -852,7 +953,7 @@ class HumanLogStore:
 
     def _write(self, event: HumanMediaEvent) -> None:
         state = self._media_state(event)
-        wrote_full_frame = False
+        wrote_full_frame = 0
         wrote_face = False
         source_event_key = (
             f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
@@ -893,6 +994,16 @@ class HumanLogStore:
             )
         if event.finalize_detection_log and event.ranked_face_candidates:
             self._save_ranked_face_candidates(event, evidence_stem)
+        if event.pre_roll_frames and state.full_frame_writer is not None:
+            for buffered_frame in event.pre_roll_frames:
+                frame = buffered_frame
+                if (
+                    state.full_frame_size is not None
+                    and (frame.shape[1], frame.shape[0]) != state.full_frame_size
+                ):
+                    frame = cv2.resize(frame, state.full_frame_size)
+                state.full_frame_writer.write(frame)
+                wrote_full_frame += 1
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -902,7 +1013,7 @@ class HumanLogStore:
             if (frame.shape[1], frame.shape[0]) != state.full_frame_size:
                 frame = cv2.resize(frame, state.full_frame_size)
             state.full_frame_writer.write(frame)
-            wrote_full_frame = True
+            wrote_full_frame += 1
         if event.face_video_frame is not None and state.face_writer is not None:
             face_frame = event.face_video_frame
             if (
@@ -913,12 +1024,12 @@ class HumanLogStore:
             state.face_writer.write(face_frame)
             wrote_face = True
 
-        state.full_frame_frames += int(wrote_full_frame)
+        state.full_frame_frames += wrote_full_frame
         state.face_frames += int(wrote_face)
 
         if not event.persist_human_log:
             with self._lock:
-                self._full_frame_video_frames += int(wrote_full_frame)
+                self._full_frame_video_frames += wrote_full_frame
                 self._accepted_face_video_frames += int(wrote_face)
                 self._last_error = None
             return
@@ -1136,7 +1247,7 @@ class HumanLogStore:
                 self.detection_log_store.update(existing_detection.id, **updates)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
-            self._full_frame_video_frames += int(wrote_full_frame)
+            self._full_frame_video_frames += wrote_full_frame
             self._accepted_face_video_frames += int(wrote_face)
             if event.finalize_detection_log:
                 key = (event.session_id, event.camera, event.track_id)
@@ -1149,6 +1260,7 @@ class HumanLogStore:
                 self._last_full_frame_at.pop(key, None)
                 self._last_face_video_at.pop(key, None)
                 self._best_face_scores.pop(key, None)
+                self._post_roll_remaining.pop(key, None)
             self._last_error = None
 
     def _finalized_video_status(self, key: str) -> str:
@@ -1173,6 +1285,11 @@ class HumanLogStore:
         for state in self._media.values():
             self._release_state(state)
         self._media.clear()
+        with self._lock:
+            self._pre_roll_frames.clear()
+            self._last_pre_roll_frame_index.clear()
+            self._pre_roll_buffered_bytes = 0
+            self._post_roll_remaining.clear()
 
     def _run(self) -> None:
         while True:
@@ -1285,6 +1402,14 @@ class HumanLogStore:
                 "ranked_candidate_tracks": len(self._face_candidates),
                 "open_track_recorders": len(self._media),
                 "video_fps": self.video_fps,
+                "video_pre_roll_frames": self.video_pre_roll_frames,
+                "video_post_roll_frames": self.video_post_roll_frames,
+                "pre_roll_buffered_sources": len(self._pre_roll_frames),
+                "pre_roll_buffered_frames": sum(
+                    len(frames) for frames in self._pre_roll_frames.values()
+                ),
+                "pre_roll_buffered_bytes": self._pre_roll_buffered_bytes,
+                "pre_roll_max_bytes": self.video_pre_roll_max_bytes,
                 "snapshot_directory": str(self.snapshot_dir),
                 "detected_face_directory": str(self.detected_face_dir),
                 "video_directory": str(self.video_dir),
