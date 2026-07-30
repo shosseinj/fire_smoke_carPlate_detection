@@ -1325,12 +1325,12 @@ class AttendanceSummaryService:
                         "is_workday": is_workday,
                         "status": status_value,
                         "message": stats["message"],
-                        "first_detection": (
+                        "first_detection": _time_to_hhmm(stats["first_detection"]),
+                        "last_detection": (
                             None
                             if len(day_logs) == 1
-                            else _time_to_hhmm(stats["first_detection"])
+                            else _time_to_hhmm(stats["last_detection"])
                         ),
-                        "last_detection": _time_to_hhmm(stats["last_detection"]),
                         "middle_detections": [
                             _time_to_hhmm(item) for item in stats["middle_detections"]
                         ],

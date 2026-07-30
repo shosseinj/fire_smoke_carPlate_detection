@@ -9,6 +9,7 @@ and returns valid JSON. Detailed schema validation is done in module-specific te
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -777,33 +778,12 @@ class TestDetectionLogsApi:
         unauthenticated = crud.client.get(f"{base}/filter")
         assert unauthenticated.status_code == 401
 
-    def test_generate_fake_creates_logs_visible_in_filter_all(self, crud):
-        base = "/api/v1/logs"
-        count_before = len(
-            crud.client.get(
-                f"{base}/filter",
-                params={"period": "all"},
-                headers={"Authorization": f"Bearer {crud.operator_token}"},
-            ).json()
-        )
-
-        resp = crud.client.post(
-            f"{base}/generate-fake",
-            params={"count": 5},
-            headers={"Authorization": f"Bearer {crud.admin_token}"},
-        )
-        assert resp.status_code == 201
-        body = resp.json()
-        assert body["count"] == 5
-
-        count_after = len(
-            crud.client.get(
-                f"{base}/filter",
-                params={"period": "all"},
-                headers={"Authorization": f"Bearer {crud.operator_token}"},
-            ).json()
-        )
-        assert count_after >= count_before + 5
+    def test_generate_fake_does_not_expose_count_parameter(self, crud):
+        operation = crud.client.get("/openapi.json").json()["paths"][
+            "/api/v1/logs/generate-fake"
+        ]["post"]
+        parameter_names = {parameter["name"] for parameter in operation["parameters"]}
+        assert "count" not in parameter_names
 
     def test_generate_fake_single_day_pair_window_and_removal(self, crud):
         base = "/api/v1/logs/generate-fake"
@@ -813,19 +793,18 @@ class TestDetectionLogsApi:
         first = crud.client.post(
             base,
             params={
-                "count": 3,
                 "from_date": day,
                 "to_date": day,
                 "pair_logs": True,
+                "remove_existing": True,
             },
             headers=auth,
         )
         assert first.status_code == 201
-        assert first.json()["count"] == 6
-        assert first.json()["deleted_count"] == 0
 
         local_tz = ZoneInfo(settings.business_timezone_name)
         expected_date = parse_jalali_date(day)
+        personnel, _ = detection_logs_api.get_personnel_store().list(limit=1000)
         generated = [
             record
             for record in detection_logs_api.get_detection_log_store().list_all()
@@ -833,24 +812,83 @@ class TestDetectionLogsApi:
             and datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz).date()
             == expected_date
         ]
-        assert len(generated) == 6
-        for record in generated:
-            local_time = datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz)
-            assert (7, 0) <= (local_time.hour, local_time.minute) <= (18, 0)
+        assert first.json()["count"] == len(personnel) * 2
+        assert len(generated) == len(personnel) * 2
+        for person in personnel:
+            person_logs = sorted(
+                (record for record in generated if record.personnel_id == person.id),
+                key=lambda record: record.detection_time,
+            )
+            assert len(person_logs) == 2
+            first_time, second_time = (
+                datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz)
+                for record in person_logs
+            )
+            assert (6, 0) <= (first_time.hour, first_time.minute) <= (9, 0)
+            assert (14, 0) <= (second_time.hour, second_time.minute) <= (18, 0)
 
         replacement = crud.client.post(
             base,
             params={
-                "count": 1,
                 "from_date": day,
                 "to_date": day,
                 "remove_existing": True,
+                "pair_logs": True,
             },
             headers=auth,
         )
         assert replacement.status_code == 201
-        assert replacement.json()["deleted_count"] == 6
-        assert replacement.json()["count"] == 1
+        assert replacement.json()["deleted_count"] == len(generated)
+        assert replacement.json()["count"] == len(personnel) * 2
+
+    def test_generate_fake_unpaired_creates_zero_to_five_per_person_per_day(
+        self, crud, monkeypatch
+    ):
+        base = "/api/v1/logs/generate-fake"
+        auth = {"Authorization": f"Bearer {crud.admin_token}"}
+        day = "1400-02-20"
+
+        original_randint = random.randint
+
+        def deterministic_randint(start: int, end: int) -> int:
+            if (start, end) == (0, 5):
+                return 3
+            return original_randint(start, end)
+
+        monkeypatch.setattr(random, "randint", deterministic_randint)
+        response = crud.client.post(
+            base,
+            params={
+                "from_date": day,
+                "to_date": day,
+                "pair_logs": False,
+                "remove_existing": True,
+            },
+            headers=auth,
+        )
+        assert response.status_code == 201
+
+        local_tz = ZoneInfo(settings.business_timezone_name)
+        expected_date = parse_jalali_date(day)
+        personnel, _ = detection_logs_api.get_personnel_store().list(limit=1000)
+        generated = [
+            record
+            for record in detection_logs_api.get_detection_log_store().list_all()
+            if record.source_system == "generate_fake"
+            and datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz).date()
+            == expected_date
+        ]
+        assert response.json()["count"] == len(personnel) * 3
+        for person in personnel:
+            person_logs = [
+                record for record in generated if record.personnel_id == person.id
+            ]
+            assert len(person_logs) == 3
+            for record in person_logs:
+                local_time = datetime.fromisoformat(
+                    str(record.detection_time)
+                ).astimezone(local_tz)
+                assert (7, 0) <= (local_time.hour, local_time.minute) <= (18, 0)
 
     def test_generate_fake_validates_date_arguments(self, crud):
         base = "/api/v1/logs/generate-fake"

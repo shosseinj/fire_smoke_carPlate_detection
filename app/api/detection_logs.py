@@ -877,7 +877,6 @@ def delete_all_logs(
 
 @router.post("/generate-fake", status_code=201)
 def generate_fake_detections(
-    count: int = Query(10, ge=1, description="تعداد لاگ آزمایشی برای ایجاد"),
     from_date: str | None = Query(None, description="تاریخ شروع jalali"),
     to_date: str | None = Query(None, description="تاریخ پایان jalali (همراه from_date)"),
     pair_logs: bool = Query(False, description="ایجاد لاگ‌های جفتی (ورود+خروج) با فاصله چند دقیقه"),
@@ -891,8 +890,8 @@ def generate_fake_detections(
 
     Supports optional Jalali date-range filtering with from_date/to_date,
     automatic personnel/room/camera selection, and paired entry/exit log
-    generation. All generated timestamps are between 07:00 and 18:00 in the
-    configured business timezone.
+    generation. Paired logs use 06:00–09:00 for entry and 14:00–18:00 for
+    exit. Non-paired logs use 07:00–18:00 in the business timezone.
     """
     import random as _random
 
@@ -901,7 +900,6 @@ def generate_fake_detections(
     ls = get_location_store()
 
     # ── Resolve date range ──────────────────────────────────────────
-    base_time = datetime.now(timezone.utc)
     local_tz = ZoneInfo(settings.business_timezone_name)
     range_start: date | None = None
     range_end: date | None = None
@@ -921,7 +919,18 @@ def generate_fake_detections(
         if range_start > range_end:
             raise HTTPException(400, "تاریخ شروع نباید بعد از تاریخ پایان باشد")
     # ── Resolve personnel ───────────────────────────────────────────
-    selected_personnel, _ = ps.list(limit=1000)
+    selected_personnel: list[Any] = []
+    personnel_offset = 0
+    personnel_total = 1
+    while personnel_offset < personnel_total:
+        personnel_page, personnel_total = ps.list(
+            offset=personnel_offset,
+            limit=1000,
+        )
+        selected_personnel.extend(personnel_page)
+        if not personnel_page:
+            break
+        personnel_offset += len(personnel_page)
     if not selected_personnel:
         raise HTTPException(404, "هیچ پرسنلی یافت نشد")
 
@@ -949,101 +958,68 @@ def generate_fake_detections(
         span_seconds = max(0, int((end - start).total_seconds()))
         return start + timedelta(seconds=_random.randint(0, span_seconds))
 
-    def _local_day_window(day: date, *, paired: bool) -> tuple[datetime, datetime]:
-        start = datetime(day.year, day.month, day.day, 7, 0, 0, tzinfo=local_tz)
-        end_hour = 17 if paired else 18
-        end_minute = 30 if paired else 0
-        end = datetime(
-            day.year,
-            day.month,
-            day.day,
-            end_hour,
-            end_minute,
-            0,
-            tzinfo=local_tz,
+    def _window(day: date, start_hour: int, end_hour: int) -> tuple[datetime, datetime]:
+        return (
+            datetime(day.year, day.month, day.day, start_hour, tzinfo=local_tz),
+            datetime(day.year, day.month, day.day, end_hour, tzinfo=local_tz),
         )
-        return start, end
 
-    def _pick_detection_time() -> datetime:
-        if range_start is not None and range_end is not None:
-            delta_days = (range_end - range_start).days
-            det_date = range_start + timedelta(days=_random.randint(0, delta_days))
-            local_start, local_end = _local_day_window(det_date, paired=pair_logs)
-            return _random_between(local_start, local_end).astimezone(timezone.utc)
-
-        # Preserve the previous default behavior of choosing from roughly the
-        # last 24 hours, while restricting the local clock time to 07:00–18:00.
-        recent_start_utc = base_time - timedelta(hours=24)
-        recent_start_local = recent_start_utc.astimezone(local_tz)
-        recent_end_local = base_time.astimezone(local_tz)
-        candidate_windows: list[tuple[datetime, datetime]] = []
-        current_day = recent_start_local.date()
-        while current_day <= recent_end_local.date():
-            local_start, local_end = _local_day_window(current_day, paired=pair_logs)
-            bounded_start = max(local_start, recent_start_local)
-            bounded_end = min(local_end, recent_end_local)
-            if bounded_start <= bounded_end:
-                candidate_windows.append((bounded_start, bounded_end))
-            current_day += timedelta(days=1)
-
-        if not candidate_windows:
-            # Defensive fallback: the prior local business-day window.
-            fallback_day = recent_end_local.date() - timedelta(days=1)
-            candidate_windows.append(_local_day_window(fallback_day, paired=pair_logs))
-
-        local_start, local_end = _random.choice(candidate_windows)
-        return _random_between(local_start, local_end).astimezone(timezone.utc)
+    if range_start is None or range_end is None:
+        selected_days = [datetime.now(local_tz).date()]
+    else:
+        selected_days = [
+            range_start + timedelta(days=offset)
+            for offset in range((range_end - range_start).days + 1)
+        ]
 
     created = 0
 
-    for _ in range(count):
-        person = _random.choice(selected_personnel)
-        rid = _random.choice(selected_room_ids)
-        cid = _random.choice(selected_camera_ids) if selected_camera_ids else None
+    for detection_day in selected_days:
+        for person in selected_personnel:
+            rid = _random.choice(selected_room_ids)
+            cid = _random.choice(selected_camera_ids) if selected_camera_ids else None
 
-        # ── Pick detection time ──────────────────────────────────────
-        det_time = _pick_detection_time()
+            def _create_one(dt: datetime) -> bool:
+                confidence = round(_random.uniform(0.5, 1.0), 4)
+                if person.id is not None and rid is not None:
+                    access = calculate_access(person.id, rid, ls)
+                else:
+                    access = _random.random() > 0.2
+                dt_utc = dt.astimezone(timezone.utc)
+                try:
+                    store.create(
+                        source_system="generate_fake",
+                        personnel_id=person.id,
+                        person=f"{person.fname} {person.lname}",
+                        confidence=confidence,
+                        detection_time=dt_utc.isoformat(),
+                        room_id=rid,
+                        camera_id=cid,
+                        access_granted=access,
+                        counts_for_attendance=_random.random() > 0.3,
+                        log_type=_random.choice(["camera_rtsp", "tehran_door", "excel_import"]),
+                    )
+                    return True
+                except Exception:
+                    return False
 
-        confidence = round(_random.uniform(0.5, 1.0), 4)
+            if pair_logs:
+                entry_time = _random_between(*_window(detection_day, 6, 9))
+                exit_time = _random_between(*_window(detection_day, 14, 18))
+                if _create_one(entry_time):
+                    created += 1
+                if _create_one(exit_time):
+                    created += 1
+                continue
 
-        if person.id is not None and rid is not None:
-            access = calculate_access(person.id, rid, ls)
-        else:
-            access = _random.random() > 0.2
-
-        def _create_one(dt: datetime, acc: bool) -> bool:
-            try:
-                store.create(
-                    source_system="generate_fake",
-                    personnel_id=person.id,
-                    person=f"{person.fname} {person.lname}",
-                    confidence=confidence,
-                    detection_time=dt.isoformat(),
-                    room_id=rid,
-                    camera_id=cid,
-                    access_granted=acc,
-                    counts_for_attendance=_random.random() > 0.3,
-                    log_type=_random.choice(["camera_rtsp", "tehran_door", "excel_import"]),
-                )
-                return True
-            except (ValueError, Exception):
-                return False
-
-        if _create_one(det_time, access):
-            created += 1
-
-        # ── Paired (exit) log if requested ──────────────────────────
-        if pair_logs:
-            det_time_local = det_time.astimezone(local_tz)
-            local_close = det_time_local.replace(hour=18, minute=0, second=0, microsecond=0)
-            max_exit_minutes = min(
-                480,
-                int((local_close - det_time_local).total_seconds() // 60),
+            daily_count = _random.randint(0, 5)
+            day_start, day_end = _window(detection_day, 7, 18)
+            detection_times = sorted(
+                _random_between(day_start, day_end) for _ in range(daily_count)
             )
-            exit_time = det_time + timedelta(minutes=_random.randint(30, max_exit_minutes))
-            exit_access = _random.random() > 0.2
-            if _create_one(exit_time, exit_access):
-                created += 1
+            for detection_time in detection_times:
+                if _create_one(detection_time):
+                    created += 1
 
     return {
         "message": f"{created} لاگ آزمایشی ایجاد شد",

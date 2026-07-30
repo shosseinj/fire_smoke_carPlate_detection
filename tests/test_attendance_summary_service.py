@@ -86,11 +86,11 @@ def _daily_summary(monkeypatch, detection_hours: list[int]) -> dict:
     return rows[0]
 
 
-def test_daily_summary_single_detection_hides_first_and_keeps_last(monkeypatch) -> None:
+def test_daily_summary_single_detection_keeps_first_and_hides_last(monkeypatch) -> None:
     row = _daily_summary(monkeypatch, [9])
 
-    assert row["first_detection"] is None
-    assert row["last_detection"] == "09:00"
+    assert row["first_detection"] == "09:00"
+    assert row["last_detection"] is None
 
 
 def test_daily_summary_two_detections_keeps_first_and_last(monkeypatch) -> None:
