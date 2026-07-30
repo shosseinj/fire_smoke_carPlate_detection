@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import queue
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from app.core.human_log_store import HumanLogStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.location_store import LocationStore
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database, metadata
 
@@ -684,5 +687,141 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
         ) == first_keys
         for directory in expected_directories:
             assert len(list(directory.glob("*.jpg"))) == 1
+    finally:
+        store.close()
+
+
+def test_ranked_faces_are_bounded_and_snapshots_use_exact_best_face_frame(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    media_root = tmp_path / "media"
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        media_root,
+        face_candidate_limit=3,
+        snapshot_min_improvement=0.01,
+        detection_log_store=detection_logs,
+    )
+    locations = LocationStore(postgres_database)
+    building = locations.create_building("Ranked evidence building")
+    section = locations.create_section(
+        "Ranked evidence section", building_id=building.id
+    )
+    room = locations.create_room("Ranked evidence room", section_id=section.id)
+    observations = [
+        (1, (255, 0, 0), 0.90),
+        # The old snapshot-quality threshold rejected this real improvement:
+        # (0.92 - 0.90) * 0.30 is smaller than 0.01.
+        (2, (0, 255, 0), 0.92),
+        (3, (0, 0, 255), 0.70),
+        (4, (255, 255, 0), 0.80),
+    ]
+    disappeared = colored_packet(5, (255, 0, 255))
+    disappeared_result = result(disappeared, "Alice", 0.93)
+    disappeared_result.data["humans"] = []
+    disappeared_result.data["faces"] = []
+    disappeared_result.data["disappeared_humans"] = [
+        {
+            "track_id": 13,
+            "bbox": [10, 10, 100, 110],
+            "person": "Alice",
+            "recognition_score": 0.93,
+            "ref_img_id": None,
+            "confidence": 0.0,
+        }
+    ]
+
+    try:
+        for frame_index, color, quality in observations:
+            observed = colored_packet(frame_index, color)
+            store.observe_result(
+                observed,
+                result(observed, "Alice", 0.93, face_quality=quality),
+                room_ids_by_track={13: room.id},
+                counts_for_attendance=False,
+            )
+            with store._lock:
+                candidates = store._face_candidates[
+                    ("session-a", "camera-01", 13)
+                ]
+                assert len(candidates) <= 3
+
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={13: room.id},
+            counts_for_attendance=False,
+        )
+        store.flush()
+
+        record = detection_logs.get_by_source_event_key(
+            "human-track:session-a:camera-01:13"
+        )
+        assert record is not None
+        assert_jpeg_has_dominant_channel(
+            media_root / "human" / "detected_faces" / Path(record.face_image).name,
+            1,
+        )
+        assert_jpeg_has_dominant_channel(
+            media_root / "human" / "body_images" / Path(record.body_image).name,
+            1,
+        )
+        assert_jpeg_has_dominant_channel(
+            media_root
+            / "human"
+            / "full_frame_images"
+            / Path(record.snapshot_image).name,
+            1,
+        )
+
+        ranked = sorted((media_root / "human" / "face_videos").glob("*_rank_*.jpg"))
+        assert len(ranked) == 3
+        assert "frame_0000000002" in ranked[0].stem
+        assert "frame_0000000001" in ranked[1].stem
+        assert "frame_0000000004" in ranked[2].stem
+        assert_jpeg_has_dominant_channel(ranked[0], 1)
+        status = store.status()
+        assert status["saved_ranked_face_candidates"] == 3
+        assert status["ranked_candidate_tracks"] == 0
+    finally:
+        store.close()
+
+
+def test_ranked_face_state_rolls_back_when_media_queue_is_full(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        face_candidate_limit=2,
+    )
+    first = colored_packet(1, (255, 0, 0))
+    rejected = colored_packet(2, (0, 255, 0))
+    invalid = colored_packet(3, (0, 0, 255))
+    invalid_result = result(invalid, "Alice", 0.93, face_quality=0.99)
+    invalid_result.data["faces"][0]["quality_valid"] = False
+    key = ("session-a", "camera-01", 13)
+    try:
+        store.observe_result(
+            first,
+            result(first, "Alice", 0.93, face_quality=0.80),
+        )
+        store.flush()
+
+        with patch.object(store._queue, "put_nowait", side_effect=queue.Full):
+            store.observe_result(
+                rejected,
+                result(rejected, "Alice", 0.93, face_quality=0.95),
+            )
+
+        store.observe_result(invalid, invalid_result)
+        store.flush()
+        with store._lock:
+            assert [candidate.frame_index for candidate in store._face_candidates[key]] == [1]
+            assert store._still_evidence[key].frame_index == 1
+            assert store._best_face_scores[key] == 0.80
     finally:
         store.close()

@@ -44,6 +44,8 @@ class HumanMediaEvent:
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
+    evidence_frame_index: int | None = None
+    ranked_face_candidates: tuple[RankedFaceCandidate, ...] = ()
     finalize_detection_log: bool = False
     persist_human_log: bool = True
     counts_for_attendance: bool = True
@@ -73,6 +75,16 @@ class StillEvidenceBundle:
     face_quality: float
 
 
+@dataclass(slots=True)
+class RankedFaceCandidate:
+    """A bounded face crop ranked by the existing Face Quality score."""
+
+    captured_at_utc: str
+    frame_index: int
+    face_frame: np.ndarray
+    face_quality: float
+
+
 class HumanLogStore:
     """Non-blocking per-ByteTrack best snapshot and independent video recorder."""
 
@@ -85,6 +97,7 @@ class HumanLogStore:
         video_fps: float = 10.0,
         video_idle_seconds: float = 5.0,
         snapshot_min_improvement: float = 0.01,
+        face_candidate_limit: int = 5,
         detection_log_store: DetectionLogStore | None = None,
     ) -> None:
         self.database = ensure_database(database)
@@ -109,6 +122,7 @@ class HumanLogStore:
         self.video_fps = max(1.0, float(video_fps))
         self.video_idle_seconds = max(1.0, float(video_idle_seconds))
         self.snapshot_min_improvement = max(0.0, float(snapshot_min_improvement))
+        self.face_candidate_limit = max(1, int(face_candidate_limit))
         self.detection_log_store = detection_log_store
         self._personnel_identity_cache: dict[str, tuple[str, int] | None] = {}
         self._reference_image_cache: dict[str, np.ndarray | None] = {}
@@ -128,6 +142,9 @@ class HumanLogStore:
         self._still_evidence: dict[
             tuple[str, str, int], StillEvidenceBundle
         ] = {}
+        self._face_candidates: dict[
+            tuple[str, str, int], list[RankedFaceCandidate]
+        ] = {}
         self._lock = threading.RLock()
         self._dropped_events = 0
         self._saved_snapshots = 0
@@ -135,6 +152,7 @@ class HumanLogStore:
         self._accepted_face_video_frames = 0
         self._created_human_videos = 0
         self._created_face_videos = 0
+        self._saved_ranked_face_candidates = 0
         self._last_error: str | None = None
         self._closed = False
         self._create_schema()
@@ -335,18 +353,22 @@ class HumanLogStore:
             return
         source_frame = packet.source_frame
         session_id = str(result.data.get("tracking_session_id") or "unknown-session")
-        faces_by_track: dict[int, dict[str, Any]] = {}
+        faces_by_track: dict[int, list[dict[str, Any]]] = {}
         for face in result.data.get("faces", []):
+            # Invalid-quality faces remain excluded from recognition evidence.
+            # Every valid face candidate is ranked below, including multiple
+            # candidates associated with the same track in one result.
             if face.get("quality_valid") is not True:
                 continue
             track_id = face.get("track_id")
             if track_id is None:
                 continue
-            existing = faces_by_track.get(int(track_id))
-            if existing is None or float(face.get("quality_score", 0.0)) > float(
-                existing.get("quality_score", 0.0)
-            ):
-                faces_by_track[int(track_id)] = face
+            faces_by_track.setdefault(int(track_id), []).append(face)
+        for track_faces in faces_by_track.values():
+            track_faces.sort(
+                key=lambda item: float(item.get("quality_score", 0.0)),
+                reverse=True,
+            )
 
         human_entries = [
             (human, False) for human in result.data.get("humans", [])
@@ -383,48 +405,71 @@ class HumanLogStore:
                 )[:4]
             ]
             human_crop = self._human_crop(source_frame, bbox)
-            face = faces_by_track.get(track_id)
+            track_faces = faces_by_track.get(track_id, [])
             valid_room_frame = (
                 room_ids_by_track is None or admitted_room_id is not None
             )
             if not valid_room_frame and not disappeared:
                 # Do not let an outside-polygon face become the immutable still
                 # evidence or activate video recording for a persisted log.
-                face = None
+                track_faces = []
+            face = track_faces[0] if track_faces else None
             face_quality = float(face.get("quality_score", 0.0)) if face else 0.0
             frame_area = max(1.0, float(source_frame.shape[0] * source_frame.shape[1]))
             human_area = max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
-            if face is not None:
-                snapshot_quality = 0.70 + 0.30 * face_quality
-            else:
-                snapshot_quality = min(
-                    0.60,
-                    0.35 * float(human.get("confidence", 0.0) or 0.0)
-                    + 0.25 * min(1.0, human_area / frame_area * 5.0),
-                )
+            snapshot_quality = min(
+                0.60,
+                0.35 * float(human.get("confidence", 0.0) or 0.0)
+                + 0.25 * min(1.0, human_area / frame_area * 5.0),
+            )
             now = float(packet.captured_monotonic)
             face_frame = None
+            frame_face_candidates: list[RankedFaceCandidate] = []
             if face is not None:
-                face_frame = self._aligned_face(
-                    source_frame,
-                    [
-                        float(value)
-                        for value in face.get(
-                            "source_bbox", face.get("bbox", [0, 0, 0, 0])
-                        )[:4]
-                    ],
-                    list(face.get("source_landmarks", face.get("landmarks", []))),
-                )
-                if face_frame is None:
-                    face_frame = self._human_crop(
+                for observed_face in track_faces:
+                    observed_face_frame = self._aligned_face(
                         source_frame,
                         [
                             float(value)
-                            for value in face.get(
-                                "source_bbox", face.get("bbox", [0, 0, 0, 0])
+                            for value in observed_face.get(
+                                "source_bbox",
+                                observed_face.get("bbox", [0, 0, 0, 0]),
                             )[:4]
                         ],
+                        list(
+                            observed_face.get(
+                                "source_landmarks",
+                                observed_face.get("landmarks", []),
+                            )
+                        ),
                     )
+                    if observed_face_frame is None:
+                        observed_face_frame = self._human_crop(
+                            source_frame,
+                            [
+                                float(value)
+                                for value in observed_face.get(
+                                    "source_bbox",
+                                    observed_face.get("bbox", [0, 0, 0, 0]),
+                                )[:4]
+                            ],
+                        )
+                    if observed_face_frame is None:
+                        continue
+                    frame_face_candidates.append(
+                        RankedFaceCandidate(
+                            captured_at_utc=packet.captured_at_utc,
+                            frame_index=packet.frame_index,
+                            face_frame=observed_face_frame.copy(),
+                            face_quality=float(
+                                observed_face.get("quality_score", 0.0)
+                            ),
+                        )
+                    )
+                if frame_face_candidates:
+                    face_frame = frame_face_candidates[0].face_frame
+                    face_quality = frame_face_candidates[0].face_quality
+                    snapshot_quality = 0.70 + 0.30 * face_quality
             if human_crop is None and disappeared:
                 human_crop = source_frame.copy()
             if human_crop is None:
@@ -448,6 +493,9 @@ class HumanLogStore:
                 )
                 previous_best_face = self._best_face_scores.get(key, -1.0)
                 previous_evidence = self._still_evidence.get(key)
+                previous_ranked_candidates = list(
+                    self._face_candidates.get(key, ())
+                )
                 identity_changed = previous_name is None or (
                     previous_name == "Unknown" and name != "Unknown"
                 )
@@ -464,10 +512,22 @@ class HumanLogStore:
                     if face_frame is not None
                     else None
                 )
+                ranked_candidates = list(self._face_candidates.get(key, ()))
+                ranked_candidates.extend(frame_face_candidates)
+                ranked_candidates.sort(
+                    key=lambda item: (-item.face_quality, item.frame_index)
+                )
+                ranked_candidates = ranked_candidates[: self.face_candidate_limit]
+                if ranked_candidates:
+                    self._face_candidates[key] = ranked_candidates
                 better_snapshot = candidate_evidence is not None and (
                     previous_evidence is None
-                    or candidate_evidence.quality
-                    >= previous_evidence.quality + self.snapshot_min_improvement
+                    or candidate_evidence.face_quality > previous_evidence.face_quality
+                    or (
+                        candidate_evidence.face_quality
+                        == previous_evidence.face_quality
+                        and candidate_evidence.frame_index < previous_evidence.frame_index
+                    )
                 )
                 full_frame_due = (
                     video_enabled
@@ -477,8 +537,7 @@ class HumanLogStore:
                 )
                 better_face = (
                     face_frame is not None
-                    and face_quality
-                    >= previous_best_face + self.snapshot_min_improvement
+                    and face_quality > previous_best_face
                 )
                 face_due = face_frame is not None and (
                     better_face
@@ -503,6 +562,7 @@ class HumanLogStore:
                     if better_snapshot and candidate_evidence is not None
                     else previous_evidence
                 )
+                selected_candidates = tuple(ranked_candidates) if disappeared else ()
 
             # Evidence-only observations do not create/update human-log rows,
             # but after a valid face admits the track they still feed sampled
@@ -565,6 +625,12 @@ class HumanLogStore:
                     if selected_evidence is not None
                     else face_quality
                 ),
+                evidence_frame_index=(
+                    selected_evidence.frame_index
+                    if selected_evidence is not None
+                    else None
+                ),
+                ranked_face_candidates=selected_candidates,
                 finalize_detection_log=(
                     persist_human_log
                     and disappeared
@@ -610,6 +676,10 @@ class HumanLogStore:
                             self._best_face_scores.pop(key, None)
                         else:
                             self._best_face_scores[key] = previous_best_face
+                    if previous_ranked_candidates:
+                        self._face_candidates[key] = previous_ranked_candidates
+                    else:
+                        self._face_candidates.pop(key, None)
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
             if disappeared and (
                 selected_evidence is None or selected_evidence.face_frame is None
@@ -736,6 +806,48 @@ class HumanLogStore:
         )
         return face_key, thumbnail_key, path
 
+    def _save_ranked_face_candidates(
+        self,
+        event: HumanMediaEvent,
+        stem: str,
+    ) -> None:
+        if not event.ranked_face_candidates:
+            return
+        best = event.ranked_face_candidates[0]
+        if event.evidence_frame_index != best.frame_index:
+            raise RuntimeError(
+                "Best face and still snapshots must originate from the same frame"
+            )
+        pending: list[tuple[Path, Path]] = []
+        committed: list[Path] = []
+        try:
+            for rank, candidate in enumerate(event.ranked_face_candidates, start=1):
+                filename = (
+                    f"{stem}_rank_{rank:03d}_q_{candidate.face_quality:.6f}"
+                    f"_frame_{candidate.frame_index:010d}.jpg"
+                )
+                path = self.face_video_dir / filename
+                temporary = path.with_name(f".{path.stem}.pending.jpg")
+                if not cv2.imwrite(
+                    str(temporary),
+                    candidate.face_frame,
+                    [cv2.IMWRITE_JPEG_QUALITY, 92],
+                ):
+                    raise RuntimeError(
+                        f"Could not save ranked face candidate: {path}"
+                    )
+                pending.append((temporary, path))
+            for temporary, path in pending:
+                temporary.replace(path)
+                committed.append(path)
+        except Exception:
+            for temporary, _ in pending:
+                temporary.unlink(missing_ok=True)
+            for path in committed:
+                path.unlink(missing_ok=True)
+            raise
+        self._saved_ranked_face_candidates += len(event.ranked_face_candidates)
+
     def _write(self, event: HumanMediaEvent) -> None:
         state = self._media_state(event)
         wrote_full_frame = False
@@ -777,6 +889,8 @@ class HumanLogStore:
             whole_snapshot_key, _ = self._save_whole_snapshot(
                 event, evidence_stem
             )
+        if event.finalize_detection_log and event.ranked_face_candidates:
+            self._save_ranked_face_candidates(event, evidence_stem)
         if (
             event.full_frame_video_frame is not None
             and state.full_frame_writer is not None
@@ -1013,15 +1127,16 @@ class HumanLogStore:
             self._full_frame_video_frames += int(wrote_full_frame)
             self._accepted_face_video_frames += int(wrote_face)
             if event.finalize_detection_log:
-                self._still_evidence.pop(
-                    (event.session_id, event.camera, event.track_id), None
-                )
-                self._video_enabled_tracks.discard(
-                    (event.session_id, event.camera, event.track_id)
-                )
-                self._track_room_ids.pop(
-                    (event.session_id, event.camera, event.track_id), None
-                )
+                key = (event.session_id, event.camera, event.track_id)
+                self._still_evidence.pop(key, None)
+                self._face_candidates.pop(key, None)
+                self._video_enabled_tracks.discard(key)
+                self._track_room_ids.pop(key, None)
+                self._observed_names.pop(key, None)
+                self._candidate_scores.pop(key, None)
+                self._last_full_frame_at.pop(key, None)
+                self._last_face_video_at.pop(key, None)
+                self._best_face_scores.pop(key, None)
             self._last_error = None
 
     def _finalized_video_status(self, key: str) -> str:
@@ -1153,6 +1268,9 @@ class HumanLogStore:
                 "accepted_face_video_frames": self._accepted_face_video_frames,
                 "created_human_videos": self._created_human_videos,
                 "created_face_videos": self._created_face_videos,
+                "saved_ranked_face_candidates": self._saved_ranked_face_candidates,
+                "face_candidate_limit": self.face_candidate_limit,
+                "ranked_candidate_tracks": len(self._face_candidates),
                 "open_track_recorders": len(self._media),
                 "video_fps": self.video_fps,
                 "snapshot_directory": str(self.snapshot_dir),

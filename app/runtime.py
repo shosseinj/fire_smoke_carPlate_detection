@@ -529,6 +529,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_fps=app_settings.human_video_fps,
         video_idle_seconds=app_settings.human_video_idle_seconds,
         snapshot_min_improvement=app_settings.human_snapshot_min_improvement,
+        face_candidate_limit=app_settings.human_face_candidate_limit,
         detection_log_store=detection_log_store,
     )
     personnel_store = PersonnelStore(

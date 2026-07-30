@@ -265,6 +265,7 @@ class Settings:
     human_snapshot_min_improvement: float = _env_float(
         "HUMAN_SNAPSHOT_MIN_IMPROVEMENT", 0.01
     )
+    human_face_candidate_limit: int = _env_int("HUMAN_FACE_CANDIDATE_LIMIT", 5)
 
     draw_info: bool = _env_bool("draw_info", True)
     save_plate_snapshot: bool = _env_bool("save_plate_snapshot", True)

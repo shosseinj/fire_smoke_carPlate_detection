@@ -57,6 +57,8 @@ services:
         --host 0.0.0.0
         --port 9999
     env_file: ./app/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       PROCESSOR_MODE: ${PROCESSOR_MODE:-real}
       SEED_SAMPLE_DETECTIONS: ${SEED_SAMPLE_DETECTIONS:-false}
@@ -162,6 +164,7 @@ services:
       HUMAN_VIDEO_FPS: ${HUMAN_VIDEO_FPS:-5}
       HUMAN_VIDEO_IDLE_SECONDS: ${HUMAN_VIDEO_IDLE_SECONDS:-5}
       HUMAN_SNAPSHOT_MIN_IMPROVEMENT: ${HUMAN_SNAPSHOT_MIN_IMPROVEMENT:-0.01}
+      HUMAN_FACE_CANDIDATE_LIMIT: ${HUMAN_FACE_CANDIDATE_LIMIT:-5}
     ports:
       - "9999:9999"
     volumes:
@@ -188,6 +191,8 @@ services:
     stdin_open: true
     tty: true
     env_file: ./app/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       PROCESSOR_MODE: real
       VIDEO_INGEST_BACKEND: deepstream
