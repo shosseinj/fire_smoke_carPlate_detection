@@ -881,6 +881,10 @@ def generate_fake_detections(
     from_date: str | None = Query(None, description="تاریخ شروع jalali"),
     to_date: str | None = Query(None, description="تاریخ پایان jalali (همراه from_date)"),
     pair_logs: bool = Query(False, description="ایجاد لاگ‌های جفتی (ورود+خروج) با فاصله چند دقیقه"),
+    remove_existing: bool = Query(
+        False,
+        description="حذف همه تشخیص‌های موجود در بازه پیش از تولید",
+    ),
     admin_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     """Generate fake detection logs for testing/demo purposes.
@@ -902,6 +906,10 @@ def generate_fake_detections(
     range_start: date | None = None
     range_end: date | None = None
 
+    if bool(from_date) != bool(to_date):
+        raise HTTPException(400, "from_date و to_date باید با هم ارسال شوند")
+    if remove_existing and not (from_date and to_date):
+        raise HTTPException(400, "برای حذف تشخیص‌های موجود، from_date و to_date الزامی هستند")
     if from_date and to_date:
         try:
             from_g = parse_jalali_date(from_date)
@@ -910,6 +918,8 @@ def generate_fake_detections(
             range_end = to_g
         except Exception:
             raise HTTPException(400, "فرمت تاریخ نامعتبر است (jalali: YYYY-MM-DD)")
+        if range_start > range_end:
+            raise HTTPException(400, "تاریخ شروع نباید بعد از تاریخ پایان باشد")
     # ── Resolve personnel ───────────────────────────────────────────
     selected_personnel, _ = ps.list(limit=1000)
     if not selected_personnel:
@@ -922,6 +932,17 @@ def generate_fake_detections(
     # ── Resolve cameras ───────────────────────────────────────────────
     all_cams = get_runtime().registry.list()
     selected_camera_ids = [c.source_uri for c in all_cams] if all_cams else [None]
+
+    deleted_count = 0
+    if remove_existing and range_start is not None and range_end is not None:
+        utc_start, _ = local_day_utc_range(range_start, local_tz)
+        _, utc_end = local_day_utc_range(range_end, local_tz)
+        deleted_records = store.delete_in_time_range(
+            utc_start.isoformat(), utc_end.isoformat()
+        )
+        deleted_count = len(deleted_records)
+        for record in deleted_records:
+            _delete_media_files(record)
 
     def _random_between(start: datetime, end: datetime) -> datetime:
         """Return a random timezone-aware datetime in an inclusive interval."""
@@ -945,7 +966,7 @@ def generate_fake_detections(
 
     def _pick_detection_time() -> datetime:
         if range_start is not None and range_end is not None:
-            delta_days = (range_end - range_start).days or 1
+            delta_days = (range_end - range_start).days
             det_date = range_start + timedelta(days=_random.randint(0, delta_days))
             local_start, local_end = _local_day_window(det_date, paired=pair_logs)
             return _random_between(local_start, local_end).astimezone(timezone.utc)
@@ -1024,7 +1045,11 @@ def generate_fake_detections(
             if _create_one(exit_time, exit_access):
                 created += 1
 
-    return {"message": f"{created} لاگ آزمایشی ایجاد شد", "count": created}
+    return {
+        "message": f"{created} لاگ آزمایشی ایجاد شد",
+        "count": created,
+        "deleted_count": deleted_count,
+    }
 
 
 # ── Parameterized routes ──────────────────────────────────────────────
