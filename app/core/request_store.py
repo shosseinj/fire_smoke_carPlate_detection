@@ -179,6 +179,8 @@ class RequestStore:
         duration_minutes: int | None = None,
         reason: str | None = None,
         status: str = "pending",
+        reviewed_at: str | None = None,
+        rejection_reason: str | None = None,
     ) -> PersonnelRequestRecord:
         if request_type not in VALID_REQUEST_TYPES:
             raise ValueError(f"Invalid request type: {request_type!r}")
@@ -203,11 +205,12 @@ class RequestStore:
                 "INSERT INTO personnel_requests "
                 "(personnel_id, request_type, duration_type, start_date, end_date, "
                 "start_time, end_time, duration_days, duration_minutes, "
-                "reason, status, created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reason, status, reviewed_at, rejection_reason, "
+                "created_at_utc, updated_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (personnel_id, request_type, duration_type, s, e,
                  st, et, duration_days, duration_minutes,
-                 reason, status, now, now),
+                 reason, status, reviewed_at, rejection_reason, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM personnel_requests WHERE id = ?", (cursor.lastrowid,)
