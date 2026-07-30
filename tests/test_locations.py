@@ -348,6 +348,70 @@ class TestPersonnelRoomAccess:
 
 
 class TestPolygonMatching:
+    def test_camera_scoped_matching_logs_each_polygon_transition(
+        self, store: LocationStore, postgres_database: Database
+    ) -> None:
+        section = store.create_section("Camera zones")
+        cam_store = CamStore(postgres_database)
+        camera = cam_store.create(
+            camera_name="Zone camera",
+            camera_number=902,
+            width=640,
+            high=640,
+            source_type="rtsp",
+            section_id=section.id,
+            url="rtsp://localhost/zone-camera",
+        )
+        other_camera = cam_store.create(
+            camera_name="Other camera",
+            camera_number=903,
+            width=640,
+            high=640,
+            source_type="rtsp",
+            section_id=section.id,
+            url="rtsp://localhost/other-zone-camera",
+        )
+        room_a = store.create_room(
+            "Zone A", cam_id=camera.id,
+            polygon_json="[[0,0],[100,0],[100,100],[0,100]]",
+        )
+        room_b = store.create_room(
+            "Zone B", cam_id=camera.id,
+            polygon_json="[[200,0],[300,0],[300,100],[200,100]]",
+        )
+        other_room = store.create_room(
+            "Other camera zone", cam_id=other_camera.id,
+            polygon_json="[[200,0],[300,0],[300,100],[200,100]]",
+        )
+
+        entered_a = store.match_detection_to_camera_rooms(
+            anchor_room_id=room_a.id,
+            detection_type="face_recognition",
+            detection_event_id=1,
+            bbox_center_x=50,
+            bbox_center_y=50,
+            camera_id="zone-camera",
+            track_id=7,
+        )
+        moved_to_b = store.match_detection_to_camera_rooms(
+            anchor_room_id=room_a.id,
+            detection_type="face_recognition",
+            detection_event_id=2,
+            bbox_center_x=250,
+            bbox_center_y=50,
+            camera_id="zone-camera",
+            track_id=7,
+        )
+
+        assert [(m.room_id, m.transition_type) for m in entered_a] == [
+            (room_a.id, "entered")
+        ]
+        assert {(m.room_id, m.transition_type) for m in moved_to_b} == {
+            (room_a.id, "exited"),
+            (room_b.id, "entered"),
+        }
+        assert all(m.room_id != other_room.id for m in entered_a + moved_to_b)
+
     def test_match_detection_to_rooms_inside(self, store: LocationStore) -> None:
         """A point inside a room polygon should produce a match."""
         bld = store.create_building("Test")

@@ -691,6 +691,70 @@ def test_finalized_still_evidence_is_atomic_and_idempotent(
         store.close()
 
 
+def test_active_track_video_is_not_split_by_idle_cleanup_and_counts_are_persisted(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        video_fps=5.0,
+        video_idle_seconds=1.0,
+    )
+    room = LocationStore(postgres_database).create_room("Video zone")
+    key = ("session-a", "camera-01", 13)
+    try:
+        first = packet(1)
+        first_result = result(first, "Alice", 0.93, face_quality=0.90)
+        store.observe_result(
+            first,
+            first_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+        )
+        store.observe_result(
+            first,
+            first_result,
+            room_ids_by_track={13: room.id},
+        )
+        store.flush()
+
+        state = store._media[key]
+        first_video_key = state.video_key
+        state.last_event_monotonic = 0.0
+        store._close_idle_media()
+        assert store._media[key] is state
+
+        second = packet(2)
+        second_result = result(second, "Alice", 0.93, face_quality=0.85)
+        store.observe_result(
+            second,
+            second_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+        )
+        store.observe_result(
+            second,
+            second_result,
+            room_ids_by_track={13: room.id},
+        )
+        store.flush()
+
+        assert store._media[key].video_key == first_video_key
+        assert len(list((tmp_path / "media" / "human" / "videos").glob("*.mp4"))) == 1
+        with postgres_database.connection() as connection:
+            row = connection.execute(
+                "SELECT full_frame_video_frames, accepted_face_frames "
+                "FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
+                key,
+            ).fetchone()
+        assert row is not None
+        assert row["full_frame_video_frames"] == 2
+        assert row["accepted_face_frames"] == 2
+    finally:
+        store.close()
+
+
 def test_ranked_faces_are_bounded_and_snapshots_use_exact_best_face_frame(
     tmp_path: Path,
     postgres_database: Database,

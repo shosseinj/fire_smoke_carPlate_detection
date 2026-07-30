@@ -732,8 +732,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
             for det in detections:
                 try:
-                    ls.match_detection_to_room(
-                        room_id=room_id,
+                    ls.match_detection_to_camera_rooms(
+                        anchor_room_id=room_id,
                         detection_type=result.task.value,
                         detection_event_id=det["detection_event_id"],
                         bbox_center_x=det["cx"],
@@ -778,7 +778,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
             # Only an explicitly configured room polygon can admit evidence.
             room_id = cam.room_id
-            has_polygons = ls.room_has_polygon(room_id)
+            has_polygons = bool(ls.get_camera_polygon_rooms_for_room(room_id))
             valid_room_ids_by_track: dict[int, int] = {}
             has_disappeared = bool(result.data.get("disappeared_humans"))
 
@@ -791,8 +791,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
                 if has_polygons:
                     # Custom polygon zones exist — full matching with DB insert
-                    matches = ls.match_detection_to_room(
-                        room_id=room_id,
+                    matches = ls.match_detection_to_camera_rooms(
+                        anchor_room_id=room_id,
                         detection_type=TaskName.FACE_RECOGNITION.value,
                         detection_event_id=result.frame_index,
                         bbox_center_x=foot_x,
@@ -801,9 +801,18 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         camera_id=source_id,
                         track_id=track_id,
                     )
+                    inside_matches = [
+                        match
+                        for match in matches
+                        if match.transition_type != "exited"
+                    ]
                     inside_match = next(
-                        (match for match in matches if match.transition_type != "exited"),
-                        None,
+                        (
+                            match
+                            for match in inside_matches
+                            if match.transition_type == "entered"
+                        ),
+                        inside_matches[0] if inside_matches else None,
                     )
                     if inside_match is not None and track_id is not None:
                         valid_room_ids_by_track[int(track_id)] = int(

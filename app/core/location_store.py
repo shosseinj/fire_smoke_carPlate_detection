@@ -803,7 +803,9 @@ class LocationStore:
         points = parse_polygon(row["polygon_json"]) if row and row["polygon_json"] else []
         return points if len(points) >= 3 else []
 
-    def get_camera_polygons_for_room(self, room_id: int | None) -> list[list[list[float]]]:
+    def get_camera_polygon_rooms_for_room(
+        self, room_id: int | None
+    ) -> list[tuple[int, list[list[float]]]]:
         """Return every active polygon owned by the assigned room's camera.
 
         ``sources.room_id`` is singular, while ``rooms.cam_id`` intentionally
@@ -820,20 +822,55 @@ class LocationStore:
             if assigned is None or not bool(assigned["is_active"]):
                 return []
             if assigned["cam_id"] is None:
-                rows = [assigned]
+                rows = [{"id": room_id, "polygon_json": assigned["polygon_json"]}]
             else:
                 rows = conn.execute(
-                    "SELECT polygon_json FROM rooms "
+                    "SELECT id, polygon_json FROM rooms "
                     "WHERE cam_id = ? AND is_active = 1 ORDER BY id ASC",
                     (assigned["cam_id"],),
                 ).fetchall()
 
-        polygons: list[list[list[float]]] = []
+        polygon_rooms: list[tuple[int, list[list[float]]]] = []
         for row in rows:
             points = parse_polygon(row["polygon_json"]) if row["polygon_json"] else []
             if len(points) >= 3:
-                polygons.append(points)
-        return polygons
+                polygon_rooms.append((int(row["id"]), points))
+        return polygon_rooms
+
+    def get_camera_polygons_for_room(self, room_id: int | None) -> list[list[list[float]]]:
+        return [
+            polygon
+            for _, polygon in self.get_camera_polygon_rooms_for_room(room_id)
+        ]
+
+    def match_detection_to_camera_rooms(
+        self,
+        anchor_room_id: int,
+        detection_type: str,
+        detection_event_id: int,
+        bbox_center_x: float,
+        bbox_center_y: float,
+        personnel_id: int | None = None,
+        camera_id: str | None = None,
+        *,
+        track_id: int | None = None,
+    ) -> list[DetectionRoomMatchRecord]:
+        """Match one detection independently against every zone of its camera."""
+        matches: list[DetectionRoomMatchRecord] = []
+        for room_id, _polygon in self.get_camera_polygon_rooms_for_room(anchor_room_id):
+            matches.extend(
+                self.match_detection_to_room(
+                    room_id=room_id,
+                    detection_type=detection_type,
+                    detection_event_id=detection_event_id,
+                    bbox_center_x=bbox_center_x,
+                    bbox_center_y=bbox_center_y,
+                    personnel_id=personnel_id,
+                    camera_id=camera_id,
+                    track_id=track_id,
+                )
+            )
+        return matches
 
     def match_detection_to_room(
         self,

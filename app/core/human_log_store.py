@@ -60,6 +60,8 @@ class TrackMediaState:
     video_key: str = ""
     face_video_key: str = ""
     last_event_monotonic: float = 0.0
+    full_frame_frames: int = 0
+    face_frames: int = 0
 
 
 @dataclass(slots=True)
@@ -911,6 +913,9 @@ class HumanLogStore:
             state.face_writer.write(face_frame)
             wrote_face = True
 
+        state.full_frame_frames += int(wrote_full_frame)
+        state.face_frames += int(wrote_face)
+
         if not event.persist_human_log:
             with self._lock:
                 self._full_frame_video_frames += int(wrote_full_frame)
@@ -1003,8 +1008,8 @@ class HumanLogStore:
                         face_video_key,
                         snapshot_quality,
                         event.face_quality,
-                        int(wrote_full_frame),
-                        int(wrote_face),
+                        state.full_frame_frames,
+                        state.face_frames,
                         event.personnel_id,
                         int(event.counts_for_attendance),
                     ),
@@ -1017,8 +1022,12 @@ class HumanLogStore:
                         snapshot_url = ?, video_url = ?, face_video_url = ?,
                         snapshot_quality = ?,
                         best_face_quality = CASE WHEN ? THEN ? ELSE best_face_quality END,
-                        full_frame_video_frames = full_frame_video_frames + ?,
-                        accepted_face_frames = accepted_face_frames + ?,
+                        full_frame_video_frames = CASE
+                            WHEN full_frame_video_frames < ? THEN ?
+                            ELSE full_frame_video_frames END,
+                        accepted_face_frames = CASE
+                            WHEN accepted_face_frames < ? THEN ?
+                            ELSE accepted_face_frames END,
                         personnel_id = CASE WHEN ? THEN ? ELSE personnel_id END
                     WHERE session_id = ? AND camera = ? AND track_id = ?
                     """,
@@ -1033,8 +1042,10 @@ class HumanLogStore:
                         snapshot_quality,
                         bool(better_face),
                         event.face_quality,
-                        int(wrote_full_frame),
-                        int(wrote_face),
+                        state.full_frame_frames,
+                        state.full_frame_frames,
+                        state.face_frames,
+                        state.face_frames,
                         bool(event.personnel_id is not None),
                         event.personnel_id,
                         event.session_id,
@@ -1047,18 +1058,19 @@ class HumanLogStore:
                 "FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
                 (event.session_id, event.camera, event.track_id),
             ).fetchone()
-        if (
-            event.finalize_detection_log
-            and self.detection_log_store is not None
-            and face_image_key
-        ):
-            detection_person = self._detection_person(event.personnel_id)
+        if event.finalize_detection_log:
             # Release writers before exposing video URLs. MP4 metadata is not
             # guaranteed to be readable until VideoWriter.release() completes.
             self._release_state(state)
             state.full_frame_writer = None
             state.face_writer = None
             self._media.pop((event.session_id, event.camera, event.track_id), None)
+        if (
+            event.finalize_detection_log
+            and self.detection_log_store is not None
+            and face_image_key
+        ):
+            detection_person = self._detection_person(event.personnel_id)
             finalized_video_key = (
                 str(human_row["video_url"] or "") if human_row is not None else video_key
             )
@@ -1150,12 +1162,12 @@ class HumanLogStore:
             state.face_writer.release()
 
     def _close_idle_media(self) -> None:
-        now = time.monotonic()
-        for key, state in list(self._media.items()):
-            if now - state.last_event_monotonic < self.video_idle_seconds:
-                continue
-            self._release_state(state)
-            self._media.pop(key, None)
+        # A tracker can remain alive longer than ``video_idle_seconds`` while
+        # detections are temporarily missed. Closing here splits one track into
+        # multiple MP4 files and leaves the earlier segment orphaned. Writers
+        # hold no frame buffer and are bounded by active tracker state; they are
+        # released by the disappeared event or during shutdown.
+        return None
 
     def _close_all_media(self) -> None:
         for state in self._media.values():
