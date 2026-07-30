@@ -803,6 +803,38 @@ class LocationStore:
         points = parse_polygon(row["polygon_json"]) if row and row["polygon_json"] else []
         return points if len(points) >= 3 else []
 
+    def get_camera_polygons_for_room(self, room_id: int | None) -> list[list[list[float]]]:
+        """Return every active polygon owned by the assigned room's camera.
+
+        ``sources.room_id`` is singular, while ``rooms.cam_id`` intentionally
+        permits a camera to own multiple rooms/zones.  Rooms without a camera
+        link retain the legacy single-room behavior.
+        """
+        if room_id is None:
+            return []
+        with self._lock, self._connection() as conn:
+            assigned = conn.execute(
+                "SELECT cam_id, is_active, polygon_json FROM rooms WHERE id = ?",
+                (room_id,),
+            ).fetchone()
+            if assigned is None or not bool(assigned["is_active"]):
+                return []
+            if assigned["cam_id"] is None:
+                rows = [assigned]
+            else:
+                rows = conn.execute(
+                    "SELECT polygon_json FROM rooms "
+                    "WHERE cam_id = ? AND is_active = 1 ORDER BY id ASC",
+                    (assigned["cam_id"],),
+                ).fetchall()
+
+        polygons: list[list[list[float]]] = []
+        for row in rows:
+            points = parse_polygon(row["polygon_json"]) if row["polygon_json"] else []
+            if len(points) >= 3:
+                polygons.append(points)
+        return polygons
+
     def match_detection_to_room(
         self,
         room_id: int,

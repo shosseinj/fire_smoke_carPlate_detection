@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.cam_store import CamStore
 from app.core.location_store import (
     LocationStore,
     point_in_polygon,
@@ -235,6 +236,53 @@ class TestRooms:
         before = store.count_rooms()
         store.create_room("Count Test")
         assert store.count_rooms() == before + 1
+
+    def test_camera_polygons_include_all_active_rooms(
+        self, store: LocationStore, postgres_database: Database
+    ) -> None:
+        section = store.create_section("Multi-zone section")
+        camera = CamStore(postgres_database).create(
+            camera_name="Multi-zone camera",
+            camera_number=901,
+            width=640,
+            high=640,
+            source_type="rtsp",
+            section_id=section.id,
+            url="rtsp://localhost/multi-zone-test",
+        )
+        first = store.create_room(
+            "Zone A",
+            cam_id=camera.id,
+            polygon_json="[[0,0],[100,0],[100,100],[0,100]]",
+        )
+        store.create_room(
+            "Zone B",
+            cam_id=camera.id,
+            polygon_json="[[200,200],[300,200],[300,300],[200,300]]",
+        )
+        store.create_room(
+            "Disabled zone",
+            cam_id=camera.id,
+            is_active=False,
+            polygon_json="[[400,400],[500,400],[500,500],[400,500]]",
+        )
+
+        assert store.get_camera_polygons_for_room(first.id) == [
+            [[0, 0], [100, 0], [100, 100], [0, 100]],
+            [[200, 200], [300, 200], [300, 300], [200, 300]],
+        ]
+
+    def test_camera_polygons_fall_back_to_unlinked_room(
+        self, store: LocationStore
+    ) -> None:
+        room = store.create_room(
+            "Legacy zone",
+            polygon_json="[[1,1],[9,1],[9,9],[1,9]]",
+        )
+
+        assert store.get_camera_polygons_for_room(room.id) == [
+            [[1, 1], [9, 1], [9, 9], [1, 9]],
+        ]
 
 
 # ── Personnel Room Access tests ────────────────────────────────────────

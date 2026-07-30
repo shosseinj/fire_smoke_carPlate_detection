@@ -216,9 +216,9 @@ class Runtime:
             if source.room_id is None:
                 self.broadcast.clear_source_zones(source.source_uri)
                 continue
-            polygon = self.location_store.get_polygon_for_room(source.room_id)
-            if polygon:
-                self.broadcast.set_source_zones(source.source_uri, [polygon])
+            polygons = self.location_store.get_camera_polygons_for_room(source.room_id)
+            if polygons:
+                self.broadcast.set_source_zones(source.source_uri, polygons)
             else:
                 self.broadcast.clear_source_zones(source.source_uri)
 
