@@ -321,6 +321,37 @@ def test_pose_checker_rejects_missing_or_low_keypoint_confidence(tmp_path: Path)
     assert rejected[0]["reason"] == "insufficient_keypoints"
 
 
+def test_face_quality_rejects_face_box_away_from_human_head_pose(
+    tmp_path: Path,
+) -> None:
+    processor, _human, _face, _embedder, _store = build_processor(tmp_path)
+    human = {
+        "human_pose_keypoints": np.asarray(
+            [[20, 20], [17, 18], [23, 18], [14, 20], [26, 20]],
+            dtype=np.float32,
+        ),
+        "human_pose_keypoint_confidences": np.full(5, 0.95, dtype=np.float32),
+    }
+    assert processor._face_matches_human_head([70, 70, 110, 110], human) is False
+
+    frame = packet("cam-a", 1).source_frame
+    face = {
+        "bbox": [70, 70, 110, 110],
+        "landmarks": np.asarray(
+            [[78, 80], [101, 80], [90, 91], [81, 102], [99, 102]],
+            dtype=np.float32,
+        ),
+        "confidence": 0.99,
+        "human_head_consistent": False,
+    }
+    valid, _quality, reason, crop, metrics = processor._quality(frame, face)
+
+    assert valid is False
+    assert reason == "face_pose_mismatch"
+    assert crop is None
+    assert metrics["human_head_consistent"] is False
+
+
 def test_source_thresholds_are_applied_before_face_processing(tmp_path: Path) -> None:
     processor, _human, face, embedder, store = build_processor(tmp_path)
     processor._settings_provider = lambda _source: {

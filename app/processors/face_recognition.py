@@ -26,6 +26,7 @@ _FACE_QUALITY_REASON_FA: dict[str, str] = {
     "face_too_small": "چهره در تصویر بیش از حد کوچک است؛ تصویر نزدیک‌تر و واضح‌تری استفاده کنید.",
     "missing_landmarks": "نقاط کلیدی چهره (چشم‌ها، بینی و دهان) به‌طور کامل قابل تشخیص نیستند.",
     "missing_eyes_or_nose": "هر دو چشم و بینی باید به‌وضوح دیده شوند؛ تصویر پشت سر یا گردن چهره محسوب نمی‌شود.",
+    "face_pose_mismatch": "موقعیت چهره با نقاط سر انسان تطابق ندارد؛ دست، میز یا سایر اشیا چهره محسوب نمی‌شوند.",
     "blurry": "تصویر چهره تار است؛ از تصویر واضح و بدون حرکت استفاده کنید.",
     "eyes_too_close": "فاصله چشم‌ها در تصویر کم است؛ چهره باید بزرگ‌تر و نزدیک‌تر باشد.",
     "pose_unavailable": "زاویه سر قابل محاسبه نیست؛ صورت را مستقیم رو به دوربین قرار دهید.",
@@ -1192,6 +1193,8 @@ class FaceRecognitionProcessor(BatchProcessor):
                     "human_pose_score": round(pose_score, 6),
                     "human_pose_keypoint_count": keypoint_count,
                     "human_pose_reason": "ok" if valid else "insufficient_keypoints",
+                    "human_pose_keypoints": points[:, :2].copy(),
+                    "human_pose_keypoint_confidences": point_confidence.copy(),
                 }
             )
             if valid:
@@ -1229,6 +1232,49 @@ class FaceRecognitionProcessor(BatchProcessor):
                 else np.empty((0,), dtype=np.float32)
             )
         return faces
+
+    def _face_matches_human_head(
+        self,
+        face_bbox: Sequence[float],
+        human: dict[str, Any],
+    ) -> bool:
+        """Confirm a face box overlaps visible COCO head keypoints.
+
+        The face detector can hallucinate internally plausible landmarks on a
+        hand or desk.  The independent human-pose model must place at least two
+        visible nose/eye/ear points in or immediately around the face box.
+        """
+        points = np.asarray(human.get("human_pose_keypoints", []), dtype=np.float32)
+        confidences = np.asarray(
+            human.get("human_pose_keypoint_confidences", []), dtype=np.float32
+        ).reshape(-1)
+        if points.ndim != 2 or points.shape[0] < 5 or points.shape[1] < 2:
+            return False
+        head_points = points[:5, :2]
+        if len(confidences) < 5:
+            return False
+        visible = (
+            np.isfinite(head_points).all(axis=1)
+            & np.isfinite(confidences[:5])
+            & (confidences[:5] >= self.settings.human_pose_keypoint_confidence)
+        )
+        if int(np.count_nonzero(visible)) < 2:
+            return False
+        x1, y1, x2, y2 = (float(value) for value in face_bbox[:4])
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        if width <= 0.0 or height <= 0.0:
+            return False
+        margin_x = width * 0.35
+        margin_y = height * 0.35
+        inside = (
+            visible
+            & (head_points[:, 0] >= x1 - margin_x)
+            & (head_points[:, 0] <= x2 + margin_x)
+            & (head_points[:, 1] >= y1 - margin_y)
+            & (head_points[:, 1] <= y2 + margin_y)
+        )
+        return int(np.count_nonzero(inside)) >= 2
 
     @staticmethod
     def _scale_bbox(
@@ -1297,6 +1343,7 @@ class FaceRecognitionProcessor(BatchProcessor):
             "face_height": 0,
             "quality_frame_width": int(width),
             "quality_frame_height": int(height),
+            "human_head_consistent": face.get("human_head_consistent"),
         }
         if crop.size == 0:
             return False, 0.0, "empty_crop", None, metrics
@@ -1370,7 +1417,9 @@ class FaceRecognitionProcessor(BatchProcessor):
         quality = max(0.0, min(1.0, quality))
 
         reason = "ok"
-        if (
+        if face.get("human_head_consistent") is False:
+            reason = "face_pose_mismatch"
+        elif (
             face_width < self.settings.min_face_width
             or face_height < self.settings.min_face_height
         ):
@@ -1394,7 +1443,7 @@ class FaceRecognitionProcessor(BatchProcessor):
         elif quality < self.settings.quality_threshold:
             reason = "quality_below_threshold"
         valid = reason == "ok"
-        aligned = crop
+        aligned: np.ndarray | None = None
         if valid:
             corrected = self._align_face(frame, face["bbox"], landmarks)
             if corrected is None:
@@ -1833,6 +1882,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 "face_height": int(max(0, y2 - y1)),
                 "quality_frame_width": int(width),
                 "quality_frame_height": int(height),
+                "human_head_consistent": face.get("human_head_consistent"),
             }
             if crop.size == 0:
                 prepared.append(
@@ -1964,7 +2014,9 @@ class FaceRecognitionProcessor(BatchProcessor):
             )
 
             reason = "ok"
-            if (
+            if face.get("human_head_consistent") is False:
+                reason = "face_pose_mismatch"
+            elif (
                 face_width < self.settings.min_face_width
                 or face_height < self.settings.min_face_height
             ):
@@ -1989,7 +2041,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 reason = "quality_below_threshold"
 
             valid = reason == "ok"
-            aligned: np.ndarray | None = crop
+            aligned: np.ndarray | None = None
             if valid:
                 corrected = self._align_face(frame, face["bbox"], landmarks)
                 if corrected is None:
@@ -2151,6 +2203,10 @@ class FaceRecognitionProcessor(BatchProcessor):
                 human_index = int(detected["human_index"])
                 packet = packets[frame_index]
                 source_frame = packet.source_frame
+                detected["human_head_consistent"] = self._face_matches_human_head(
+                    detected["bbox"],
+                    frame_payloads[frame_index]["humans"][human_index],
+                )
                 source_face = self._source_face(detected, packet.frame, source_frame)
                 prepared = {
                     "bbox": [float(value) for value in detected["bbox"]],
@@ -2160,6 +2216,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                     "detection_confidence": float(detected.get("confidence", 0.0) or 0.0),
                     "track_id": detected.get("track_id"),
                     "human_index": human_index,
+                    "human_head_consistent": detected["human_head_consistent"],
                     "quality": 0.0,
                     "quality_score": 0.0,
                     "quality_metrics": {},
