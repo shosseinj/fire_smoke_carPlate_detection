@@ -19,11 +19,13 @@ from app.processors.base import BatchProcessor
 from app.processors.ultralytics_loader import load_yolo_class, serialized_model_load
 
 LOGGER = logging.getLogger(__name__)
+_FACE_LANDMARK_CONFIDENCE_MIN = 0.25
 
 
 _FACE_QUALITY_REASON_FA: dict[str, str] = {
     "face_too_small": "چهره در تصویر بیش از حد کوچک است؛ تصویر نزدیک‌تر و واضح‌تری استفاده کنید.",
     "missing_landmarks": "نقاط کلیدی چهره (چشم‌ها، بینی و دهان) به‌طور کامل قابل تشخیص نیستند.",
+    "missing_eyes_or_nose": "هر دو چشم و بینی باید به‌وضوح دیده شوند؛ تصویر پشت سر یا گردن چهره محسوب نمی‌شود.",
     "blurry": "تصویر چهره تار است؛ از تصویر واضح و بدون حرکت استفاده کنید.",
     "eyes_too_close": "فاصله چشم‌ها در تصویر کم است؛ چهره باید بزرگ‌تر و نزدیک‌تر باشد.",
     "pose_unavailable": "زاویه سر قابل محاسبه نیست؛ صورت را مستقیم رو به دوربین قرار دهید.",
@@ -1213,12 +1215,18 @@ class FaceRecognitionProcessor(BatchProcessor):
         )
         keypoints = getattr(result, "keypoints", None)
         values = _as_numpy(getattr(keypoints, "xy", None)) if keypoints is not None else np.empty((0,))
+        confidences = _as_numpy(getattr(keypoints, "conf", None)) if keypoints is not None else np.empty((0,))
         for face in faces:
             result_index = int(face.pop("_result_index", 0))
             face["landmarks"] = (
                 np.asarray(values[result_index], dtype=np.float32)
                 if values.ndim == 3 and result_index < len(values)
                 else np.empty((0, 2), dtype=np.float32)
+            )
+            face["landmark_confidences"] = (
+                np.asarray(confidences[result_index], dtype=np.float32).reshape(-1)
+                if confidences.ndim >= 2 and result_index < len(confidences)
+                else np.empty((0,), dtype=np.float32)
             )
         return faces
 
@@ -1281,6 +1289,7 @@ class FaceRecognitionProcessor(BatchProcessor):
             "pitch": None,
             "roll": None,
             "landmark_count": 0,
+            "facial_features_visible": False,
             "size_score": 0.0,
             "blur_score": 0.0,
             "pose_score": 0.0,
@@ -1319,6 +1328,12 @@ class FaceRecognitionProcessor(BatchProcessor):
         if len(landmarks) >= 2:
             eye_distance = float(np.linalg.norm(landmarks[0] - landmarks[1]))
         metrics["eye_distance"] = round(eye_distance, 4)
+        features_visible = self._facial_features_visible(
+            landmarks,
+            face["bbox"],
+            face.get("landmark_confidences"),
+        )
+        metrics["facial_features_visible"] = features_visible
         eye_score = min(
             1.0,
             eye_distance / max(float(self.settings.min_eye_distance * 2), 1.0),
@@ -1362,6 +1377,8 @@ class FaceRecognitionProcessor(BatchProcessor):
             reason = "face_too_small"
         elif self.settings.require_landmarks and len(landmarks) < 5:
             reason = "missing_landmarks"
+        elif not features_visible:
+            reason = "missing_eyes_or_nose"
         elif blur < self.settings.blur_threshold:
             reason = "blurry"
         elif eye_distance < self.settings.min_eye_distance:
@@ -1386,6 +1403,59 @@ class FaceRecognitionProcessor(BatchProcessor):
             else:
                 aligned = corrected
         return valid, quality, reason, aligned, metrics
+
+    @staticmethod
+    def _facial_features_visible(
+        landmarks: np.ndarray,
+        bbox: Sequence[float],
+        landmark_confidences: Any = None,
+    ) -> bool:
+        """Require plausible visible eyes and nose before accepting a face."""
+        if landmarks.ndim != 2 or landmarks.shape[0] < 5 or landmarks.shape[1] < 2:
+            return False
+        features = landmarks[:5, :2]
+        if not np.isfinite(features).all():
+            return False
+        confidences = np.asarray(landmark_confidences, dtype=np.float32).reshape(-1)
+        if len(confidences) >= 3 and (
+            not np.isfinite(confidences[:3]).all()
+            or np.any(confidences[:3] < _FACE_LANDMARK_CONFIDENCE_MIN)
+        ):
+            return False
+        x1, y1, x2, y2 = (float(value) for value in bbox[:4])
+        face_width = x2 - x1
+        face_height = y2 - y1
+        if face_width <= 0 or face_height <= 0:
+            return False
+        margin_x = face_width * 0.08
+        margin_y = face_height * 0.08
+        left_eye, right_eye, nose, left_mouth, right_mouth = features
+        if any(
+            point[0] < x1 - margin_x
+            or point[0] > x2 + margin_x
+            or point[1] < y1 - margin_y
+            or point[1] > y2 + margin_y
+            for point in (left_eye, right_eye, nose, left_mouth, right_mouth)
+        ):
+            return False
+        eye_delta = right_eye - left_eye
+        eye_distance = float(np.linalg.norm(eye_delta))
+        if eye_distance < max(2.0, face_width * 0.10):
+            return False
+        eye_center = (left_eye + right_eye) / 2.0
+        mouth_center = (left_mouth + right_mouth) / 2.0
+        if nose[1] <= eye_center[1] + face_height * 0.04:
+            return False
+        if mouth_center[1] <= nose[1] + face_height * 0.04:
+            return False
+        horizontal_allowance = eye_distance * 0.35
+        if not (
+            min(left_eye[0], right_eye[0]) - horizontal_allowance
+            <= nose[0]
+            <= max(left_eye[0], right_eye[0]) + horizontal_allowance
+        ):
+            return False
+        return True
 
     @staticmethod
     def _head_pose(
@@ -1691,6 +1761,10 @@ class FaceRecognitionProcessor(BatchProcessor):
                         "track_id": entry.track_id,
                         "bbox": [float(value) for value in frame_bbox],
                         "landmarks": frame_landmarks,
+                        "landmark_confidences": np.asarray(
+                            face.get("landmark_confidences", []),
+                            dtype=np.float32,
+                        ).reshape(-1),
                         "confidence": float(face.get("confidence", 0.0) or 0.0),
                     }
                 )
@@ -1751,6 +1825,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                 "pitch": None,
                 "roll": None,
                 "landmark_count": int(len(landmarks)) if landmarks.ndim == 2 else 0,
+                "facial_features_visible": False,
                 "size_score": 0.0,
                 "blur_score": 0.0,
                 "pose_score": 0.0,
@@ -1857,6 +1932,11 @@ class FaceRecognitionProcessor(BatchProcessor):
                 1.0,
                 eye_distance / max(float(self.settings.min_eye_distance * 2), 1.0),
             )
+            features_visible = self._facial_features_visible(
+                landmarks,
+                face["bbox"],
+                face.get("landmark_confidences"),
+            )
             confidence = float(face.get("confidence", 0.0) or 0.0)
             quality = (
                 0.30 * blur_score
@@ -1874,6 +1954,7 @@ class FaceRecognitionProcessor(BatchProcessor):
                     "pitch": None if pitch is None else round(pitch, 4),
                     "roll": None if roll is None else round(roll, 4),
                     "landmark_count": int(len(landmarks)) if landmarks.ndim == 2 else 0,
+                    "facial_features_visible": features_visible,
                     "size_score": round(size_score, 6),
                     "blur_score": round(blur_score, 6),
                     "pose_score": round(pose_score, 6),
@@ -1890,6 +1971,8 @@ class FaceRecognitionProcessor(BatchProcessor):
                 reason = "face_too_small"
             elif self.settings.require_landmarks and len(landmarks) < 5:
                 reason = "missing_landmarks"
+            elif not features_visible:
+                reason = "missing_eyes_or_nose"
             elif blur < self.settings.blur_threshold:
                 reason = "blurry"
             elif eye_distance < self.settings.min_eye_distance:

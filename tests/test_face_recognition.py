@@ -31,6 +31,7 @@ class FakeDetector:
             [[38, 38], [62, 38], [50, 50], [41, 63], [59, 63]],
             dtype=np.float32,
         )
+        self.landmark_confidences: np.ndarray | None = None
         self.calls: list[int] = []
         self.input_shapes: list[list[tuple[int, ...]]] = []
 
@@ -71,6 +72,11 @@ class FakeDetector:
                     for index in range(face_count)
                 ]
             )
+            landmark_confidences = (
+                np.stack([self.landmark_confidences] * face_count)
+                if self.face and self.landmark_confidences is not None
+                else None
+            )
             pose_points = np.stack(
                 [
                     np.asarray(
@@ -91,7 +97,7 @@ class FakeDetector:
                 SimpleNamespace(
                     boxes=boxes,
                     keypoints=(
-                        SimpleNamespace(xy=landmarks)
+                        SimpleNamespace(xy=landmarks, conf=landmark_confidences)
                         if self.face
                         else SimpleNamespace(
                             xy=pose_points,
@@ -471,6 +477,68 @@ def test_quality_gate_blocks_low_score_and_out_of_pose_faces(tmp_path: Path) -> 
     assert embedder.batch_sizes == []
 
 
+def test_quality_gate_rejects_back_of_head_without_visible_eyes_and_nose(
+    tmp_path: Path,
+) -> None:
+    processor, _human, face, embedder, store = build_processor(tmp_path)
+    processor.update_quality_settings(
+        {
+            "quality_threshold": 0.0,
+            "blur_threshold": 0.0,
+            "require_landmarks": False,
+        }
+    )
+    # A detector can emit a face box on a neck/back-of-head region. Five
+    # collapsed or implausible landmarks must not make that box a real face.
+    face.landmarks = np.asarray(
+        [[50, 38], [50, 38], [50, 35], [48, 63], [52, 63]],
+        dtype=np.float32,
+    )
+
+    output = processor.process_batch([packet("back-of-head", 1)])[0]
+    detected = output.data["faces"][0]
+
+    assert detected["quality_valid"] is False
+    assert detected["quality_reason"] == "missing_eyes_or_nose"
+    assert detected["quality_metrics"]["facial_features_visible"] is False
+    assert embedder.batch_sizes == []
+    assert store.search_batch_sizes == []
+
+
+def test_facial_feature_gate_rejects_low_confidence_eye_or_nose() -> None:
+    landmarks = np.asarray(
+        [[38, 38], [62, 38], [50, 50], [41, 63], [59, 63]],
+        dtype=np.float32,
+    )
+    assert FaceRecognitionProcessor._facial_features_visible(
+        landmarks,
+        [25, 20, 75, 75],
+        [0.95, 0.10, 0.95, 0.95, 0.95],
+    ) is False
+    assert FaceRecognitionProcessor._facial_features_visible(
+        landmarks,
+        [25, 20, 75, 75],
+        [0.95, 0.95, 0.95, 0.95, 0.95],
+    ) is True
+
+
+def test_runtime_quality_rejects_low_confidence_eye_landmark(tmp_path: Path) -> None:
+    processor, _human, face, embedder, store = build_processor(tmp_path)
+    processor.update_quality_settings(
+        {"quality_threshold": 0.0, "blur_threshold": 0.0}
+    )
+    face.landmark_confidences = np.asarray(
+        [0.95, 0.10, 0.95, 0.95, 0.95], dtype=np.float32
+    )
+
+    detected = processor.process_batch([packet("occluded-eye", 1)])[0].data["faces"][0]
+
+    assert detected["quality_valid"] is False
+    assert detected["quality_reason"] == "missing_eyes_or_nose"
+    assert embedder.batch_sizes == []
+    assert store.search_batch_sizes == []
+
+
 def test_enrollment_uses_same_detector_embedder_and_store(tmp_path: Path) -> None:
     processor, _human, face, embedder, store = build_processor(tmp_path)
     image = packet("cam-a", 1).frame
@@ -499,6 +567,31 @@ def test_enrollment_reports_persian_quality_rejection_details(tmp_path: Path) ->
     assert error.details["detected_faces"] == 1
     assert error.details["valid_faces"] == 0
     assert error.details["rejections"][0]["reason"] == "quality_below_threshold"
+
+
+def test_enrollment_rejects_back_of_head_as_missing_eyes_or_nose(
+    tmp_path: Path,
+) -> None:
+    processor, _human, face, _embedder, _store = build_processor(tmp_path)
+    processor.update_quality_settings(
+        {
+            "quality_threshold": 0.0,
+            "blur_threshold": 0.0,
+            "require_landmarks": False,
+        }
+    )
+    face.landmarks = np.asarray(
+        [[50, 38], [50, 38], [50, 35], [48, 63], [52, 63]],
+        dtype=np.float32,
+    )
+
+    with pytest.raises(FaceEnrollmentValidationError) as captured:
+        processor.enroll(packet("back-of-head", 1).frame, person="Alice")
+
+    rejection = captured.value.details["rejections"][0]
+    assert rejection["reason"] == "missing_eyes_or_nose"
+    assert "چشم" in rejection["message"]
+    assert "بینی" in rejection["message"]
 
 
 def test_enrollment_reports_persian_no_face_error(tmp_path: Path) -> None:
