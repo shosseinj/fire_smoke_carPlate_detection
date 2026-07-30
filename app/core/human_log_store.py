@@ -45,6 +45,7 @@ class HumanMediaEvent:
     full_frame_video_frame: np.ndarray | None
     face_video_frame: np.ndarray | None
     face_quality: float
+    room_ids: tuple[int, ...] = ()
     pre_roll_frames: tuple[np.ndarray, ...] = ()
     evidence_frame_index: int | None = None
     ranked_face_candidates: tuple[RankedFaceCandidate, ...] = ()
@@ -154,6 +155,9 @@ class HumanLogStore:
         # remains independent from polygon-gated human-log persistence.
         self._video_enabled_tracks: set[tuple[str, str, int]] = set()
         self._track_room_ids: dict[tuple[str, str, int], int] = {}
+        self._track_visited_room_ids: dict[
+            tuple[str, str, int], set[int]
+        ] = {}
         self._media: dict[tuple[str, str, int], TrackMediaState] = {}
         self._still_evidence: dict[
             tuple[str, str, int], StillEvidenceBundle
@@ -410,6 +414,7 @@ class HumanLogStore:
         *,
         persist_human_log: bool = True,
         room_ids_by_track: dict[int, int] | None = None,
+        observed_room_ids_by_track: dict[int, set[int]] | None = None,
         exited_track_ids: set[int] | None = None,
         counts_for_attendance: bool = True,
     ) -> None:
@@ -459,9 +464,24 @@ class HumanLogStore:
                 else None
             )
             with self._lock:
+                observed_room_ids = (
+                    observed_room_ids_by_track.get(track_id, set())
+                    if observed_room_ids_by_track is not None
+                    else set()
+                )
+                if observed_room_ids:
+                    self._track_visited_room_ids.setdefault(key, set()).update(
+                        int(room_id) for room_id in observed_room_ids
+                    )
                 if admitted_room_id is not None:
                     self._track_room_ids[key] = int(admitted_room_id)
+                    self._track_visited_room_ids.setdefault(key, set()).add(
+                        int(admitted_room_id)
+                    )
                 stored_room_id = self._track_room_ids.get(key)
+                visited_room_ids = tuple(
+                    sorted(self._track_visited_room_ids.get(key, ()))
+                )
             if persist_human_log and require_valid_room and stored_room_id is None:
                 continue
             raw_name = str(human.get("person") or "Unknown").strip() or "Unknown"
@@ -689,6 +709,7 @@ class HumanLogStore:
                 ref_img_id=raw_ref,
                 personnel_id=raw_personnel_id,
                 room_id=stored_room_id,
+                room_ids=visited_room_ids,
                 counts_for_attendance=bool(counts_for_attendance),
                 snapshot_frame=(
                     selected_evidence.body_frame.copy()
@@ -955,13 +976,32 @@ class HumanLogStore:
         state = self._media_state(event)
         wrote_full_frame = 0
         wrote_face = False
-        source_event_key = (
+        base_source_event_key = (
             f"human-track:{event.session_id}:{event.camera}:{event.track_id}"
         )
-        existing_detection = (
-            self.detection_log_store.get_by_source_event_key(source_event_key)
-            if event.finalize_detection_log and self.detection_log_store is not None
-            else None
+        logged_room_ids = event.room_ids or (
+            (event.room_id,) if event.room_id is not None else ()
+        )
+        room_event_keys = [
+            (
+                int(room_id),
+                base_source_event_key
+                if index == 0
+                else f"{base_source_event_key}:room:{int(room_id)}",
+            )
+            for index, room_id in enumerate(logged_room_ids)
+        ]
+        existing_detections = {
+            room_id: self.detection_log_store.get_by_source_event_key(event_key)
+            for room_id, event_key in room_event_keys
+        } if event.finalize_detection_log and self.detection_log_store is not None else {}
+        existing_detection = next(
+            (
+                detection
+                for detection in existing_detections.values()
+                if detection is not None
+            ),
+            None,
         )
         face_image_key = (
             str(existing_detection.face_image or "") if existing_detection else ""
@@ -1193,42 +1233,49 @@ class HumanLogStore:
             video_status = self._finalized_video_status(finalized_video_key)
             face_video_status = self._finalized_video_status(finalized_face_video_key)
             media_finalized_at = event.evidence_captured_at_utc
-            if existing_detection is None:
-                self.detection_log_store.create(
-                    source_system="face_recognition",
-                    source_event_key=source_event_key,
-                    source_human_log_id=(int(human_row["id"]) if human_row else None),
-                    personnel_id=event.personnel_id,
-                    person=detection_person,
-                    confidence=event.recognition_score,
-                    detection_time=event.evidence_captured_at_utc,
-                    ref_img_id=(
-                        None if event.ref_img_id is None else str(event.ref_img_id)
-                    ),
-                    room_id=event.room_id,
-                    camera_id=event.camera,
-                    access_granted=event.personnel_id is not None,
-                    counts_for_attendance=event.counts_for_attendance,
-                    log_type="camera_rtsp",
-                    face_image=face_image_key or None,
-                    face_thumbnail=face_thumbnail_key or None,
-                    body_image=snapshot_url or None,
-                    snapshot_image=whole_snapshot_key or None,
-                    video=finalized_video_key or None,
-                    face_video_or_unknown_faces=finalized_face_video_key or None,
-                    video_status=video_status,
-                    face_video_status=face_video_status,
-                    media_finalized_at=media_finalized_at,
-                )
-            else:
+            for room_id, source_event_key in room_event_keys:
+                room_detection = existing_detections.get(room_id)
+                if room_detection is None:
+                    self.detection_log_store.create(
+                        source_system="face_recognition",
+                        source_event_key=source_event_key,
+                        source_human_log_id=(
+                            int(human_row["id"]) if human_row else None
+                        ),
+                        personnel_id=event.personnel_id,
+                        person=detection_person,
+                        confidence=event.recognition_score,
+                        detection_time=event.evidence_captured_at_utc,
+                        ref_img_id=(
+                            None
+                            if event.ref_img_id is None
+                            else str(event.ref_img_id)
+                        ),
+                        room_id=room_id,
+                        camera_id=event.camera,
+                        access_granted=event.personnel_id is not None,
+                        counts_for_attendance=event.counts_for_attendance,
+                        log_type="camera_rtsp",
+                        face_image=face_image_key or None,
+                        face_thumbnail=face_thumbnail_key or None,
+                        body_image=snapshot_url or None,
+                        snapshot_image=whole_snapshot_key or None,
+                        video=finalized_video_key or None,
+                        face_video_or_unknown_faces=(
+                            finalized_face_video_key or None
+                        ),
+                        video_status=video_status,
+                        face_video_status=face_video_status,
+                        media_finalized_at=media_finalized_at,
+                    )
+                    continue
                 updates: dict[str, Any] = {
                     "person": detection_person,
                     "video_status": video_status,
                     "face_video_status": face_video_status,
                     "media_finalized_at": media_finalized_at,
                 }
-                # Finalized still evidence is immutable. Duplicate expiry
-                # notifications may fill a missing key, but never rewrite media.
+                # Finalized media is shared by all room logs and remains immutable.
                 candidates = {
                     "face_image": face_image_key,
                     "face_thumbnail": face_thumbnail_key,
@@ -1238,13 +1285,13 @@ class HumanLogStore:
                     "face_video_or_unknown_faces": finalized_face_video_key,
                 }
                 for field, value in candidates.items():
-                    if value and not getattr(existing_detection, field):
+                    if value and not getattr(room_detection, field):
                         updates[field] = value
-                if event.room_id is not None and existing_detection.room_id is None:
-                    updates["room_id"] = event.room_id
-                if event.camera and not existing_detection.camera_id:
+                if room_detection.room_id is None:
+                    updates["room_id"] = room_id
+                if event.camera and not room_detection.camera_id:
                     updates["camera_id"] = event.camera
-                self.detection_log_store.update(existing_detection.id, **updates)
+                self.detection_log_store.update(room_detection.id, **updates)
         with self._lock:
             self._saved_snapshots += int(bool(new_snapshot_path))
             self._full_frame_video_frames += wrote_full_frame
@@ -1255,6 +1302,7 @@ class HumanLogStore:
                 self._face_candidates.pop(key, None)
                 self._video_enabled_tracks.discard(key)
                 self._track_room_ids.pop(key, None)
+                self._track_visited_room_ids.pop(key, None)
                 self._observed_names.pop(key, None)
                 self._candidate_scores.pop(key, None)
                 self._last_full_frame_at.pop(key, None)

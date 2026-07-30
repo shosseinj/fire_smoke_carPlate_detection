@@ -854,6 +854,95 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
         store.close()
 
 
+def test_one_track_visiting_two_polygons_creates_two_detection_logs(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        detection_log_store=detection_logs,
+    )
+    locations = LocationStore(postgres_database)
+    room_a = locations.create_room("Visited zone A")
+    room_b = locations.create_room("Visited zone B")
+    try:
+        first = packet(1)
+        first_result = result(first, "Alice", 0.93, face_quality=0.90)
+        store.observe_result(
+            first,
+            first_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room_a.id},
+            observed_room_ids_by_track={13: {room_a.id}},
+        )
+        store.observe_result(
+            first,
+            first_result,
+            room_ids_by_track={13: room_a.id},
+            observed_room_ids_by_track={13: {room_a.id}},
+        )
+
+        second = packet(2)
+        second_result = result(second, "Alice", 0.93, face_quality=0.85)
+        store.observe_result(
+            second,
+            second_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room_b.id},
+            observed_room_ids_by_track={13: {room_b.id}},
+        )
+        store.observe_result(
+            second,
+            second_result,
+            room_ids_by_track={13: room_b.id},
+            observed_room_ids_by_track={13: {room_b.id}},
+        )
+
+        disappeared = packet(3)
+        disappeared_result = result(disappeared, "Alice", 0.93)
+        disappeared_result.data["humans"] = []
+        disappeared_result.data["faces"] = []
+        disappeared_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "bbox": [10, 10, 100, 110],
+                "person": "Alice",
+                "recognition_score": 0.93,
+                "ref_img_id": "reference-1",
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={},
+            observed_room_ids_by_track={},
+        )
+        store.flush()
+
+        records, total = detection_logs.list_filter(
+            camera_id="camera-01",
+            log_type="camera_rtsp",
+        )
+        assert total == 2
+        assert {record.room_id for record in records} == {room_a.id, room_b.id}
+        assert len({record.source_human_log_id for record in records}) == 1
+        assert len({record.face_image for record in records}) == 1
+        assert len({record.body_image for record in records}) == 1
+        assert len({record.snapshot_image for record in records}) == 1
+        assert len({record.video for record in records}) == 1
+        assert {
+            record.source_event_key for record in records
+        } == {
+            "human-track:session-a:camera-01:13",
+            f"human-track:session-a:camera-01:13:room:{room_b.id}",
+        }
+    finally:
+        store.close()
+
+
 def test_ranked_faces_are_bounded_and_snapshots_use_exact_best_face_frame(
     tmp_path: Path,
     postgres_database: Database,

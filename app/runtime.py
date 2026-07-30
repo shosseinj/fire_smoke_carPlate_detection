@@ -783,6 +783,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             room_id = cam.room_id
             has_polygons = bool(ls.get_camera_polygon_rooms_for_room(room_id))
             valid_room_ids_by_track: dict[int, int] = {}
+            observed_room_ids_by_track: dict[int, set[int]] = {}
             exited_track_ids: set[int] = set()
             has_disappeared = bool(result.data.get("disappeared_humans"))
 
@@ -810,6 +811,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         for match in matches
                         if match.transition_type != "exited"
                     ]
+                    if inside_matches and track_id is not None:
+                        observed_room_ids_by_track[int(track_id)] = {
+                            int(match.room_id) for match in inside_matches
+                        }
                     inside_match = next(
                         (
                             match
@@ -834,6 +839,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                     result,
                     persist_human_log=False,
                     room_ids_by_track=valid_room_ids_by_track,
+                    observed_room_ids_by_track=observed_room_ids_by_track,
                     exited_track_ids=exited_track_ids,
                     counts_for_attendance=cam.counts_for_attendance,
                 )
@@ -848,6 +854,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         packet,
                         result,
                         room_ids_by_track=valid_room_ids_by_track,
+                        observed_room_ids_by_track=observed_room_ids_by_track,
                         counts_for_attendance=cam.counts_for_attendance,
                     )
                 except Exception:
