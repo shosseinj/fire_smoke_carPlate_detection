@@ -24,6 +24,8 @@ from app.core.personnel_store import PersonnelRecord
 from app.core.shift_store import WorkShiftRecord
 
 from app.core.request_store import PersonnelRequestRecord
+from app.core.jalali_utils import parse_jalali_date
+from app.time_utils import utc_now_text
 
 LEGACY_STATUSES = frozenset({"waiting", "accepted", "rejected"})
 
@@ -350,28 +352,71 @@ def create_request(
 
 @router.post("/generate-fake", status_code=201)
 def generate_fake_requests(
-    count: int = Query(10, ge=1, le=50, description="تعداد درخواست آزمایشی برای ایجاد"),
+    count: int = Query(10, ge=1, description="تعداد درخواست آزمایشی برای ایجاد"),
+    from_date: str | None = Query(None, description="تاریخ شروع شمسی YYYY-MM-DD"),
+    to_date: str | None = Query(None, description="تاریخ پایان شمسی YYYY-MM-DD"),
     admin_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    if bool(from_date) != bool(to_date):
+        raise HTTPException(400, "from_date و to_date باید با هم ارسال شوند")
+    if from_date and to_date:
+        try:
+            generation_start = parse_jalali_date(from_date)
+            generation_end = parse_jalali_date(to_date)
+        except ValueError as exc:
+            raise HTTPException(
+                400,
+                "فرمت تاریخ نامعتبر است (شمسی: YYYY-MM-DD)",
+            ) from exc
+        if generation_start > generation_end:
+            raise HTTPException(400, "تاریخ شروع نباید بعد از تاریخ پایان باشد")
+    else:
+        generation_end = date.today()
+        generation_start = generation_end - timedelta(days=180)
+
     store = get_request_store()
     personnel_store = get_personnel_store()
-    all_personnel, _ = personnel_store.list(limit=1000)
+    all_personnel: list[PersonnelRecord] = []
+    personnel_offset = 0
+    personnel_total = 1
+    while personnel_offset < personnel_total:
+        personnel_page, personnel_total = personnel_store.list(
+            offset=personnel_offset,
+            limit=1000,
+        )
+        all_personnel.extend(personnel_page)
+        if not personnel_page:
+            break
+        personnel_offset += len(personnel_page)
     personnel_with_shift = [p for p in all_personnel if p.shift_id is not None]
     if not personnel_with_shift:
         raise HTTPException(404, "هیچ پرسنل دارای شیفتی یافت نشد")
 
     created = 0
-    request_types_list = list(LEGACY_REQUEST_TYPES)
-    start_date = date.today() - timedelta(days=180)
+    request_types_list = (
+        "earned_leave",
+        "sick_leave",
+        "unpaid_leave",
+        "mission",
+        "overtime",
+    )
+    duration_types = ("daily", "hourly")
+    request_statuses = ("pending", "approved", "rejected")
+    generation_days = (generation_end - generation_start).days
 
     for _ in range(count):
         person = _random.choice(personnel_with_shift)
-        duration_type = _random.choice(list(LEGACY_DURATION_TYPES))
+        duration_type = _random.choice(duration_types)
         req_type = _random.choice(request_types_list)
-        request_start = start_date + timedelta(days=_random.randint(0, 180))
+        request_start = generation_start + timedelta(
+            days=_random.randint(0, generation_days)
+        )
 
         if duration_type == "daily":
-            request_end = request_start + timedelta(days=_random.randint(0, 10))
+            remaining_days = (generation_end - request_start).days
+            request_end = request_start + timedelta(
+                days=_random.randint(0, min(10, remaining_days))
+            )
             st = None
             et = None
             st_str = None
@@ -397,7 +442,11 @@ def generate_fake_requests(
         except (ValueError, Exception):
             continue
 
-        int_status = _random.choice(["pending", "approved", "rejected"])
+        int_status = _random.choice(request_statuses)
+        reviewed_at = utc_now_text() if int_status != "pending" else None
+        rejection_reason = (
+            "Generated test rejection" if int_status == "rejected" else None
+        )
         try:
             store.create(
                 personnel_id=person.id,
@@ -411,6 +460,8 @@ def generate_fake_requests(
                 duration_minutes=calc["duration_minutes"] if duration_type == "hourly" else None,
                 reason=None,
                 status=int_status,
+                reviewed_at=reviewed_at,
+                rejection_reason=rejection_reason,
             )
             created += 1
         except (ValueError, Exception):

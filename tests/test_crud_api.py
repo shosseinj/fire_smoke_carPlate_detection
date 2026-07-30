@@ -814,6 +814,7 @@ class TestDetectionLogsApi:
         ]
         assert first.json()["count"] == len(personnel) * 2
         assert len(generated) == len(personnel) * 2
+        assert all(record.counts_for_attendance for record in generated)
         for person in personnel:
             person_logs = sorted(
                 (record for record in generated if record.personnel_id == person.id),
@@ -879,6 +880,7 @@ class TestDetectionLogsApi:
             == expected_date
         ]
         assert response.json()["count"] == len(personnel) * 3
+        assert all(record.counts_for_attendance for record in generated)
         for person in personnel:
             person_logs = [
                 record for record in generated if record.personnel_id == person.id

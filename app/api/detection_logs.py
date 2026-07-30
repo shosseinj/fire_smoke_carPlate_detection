@@ -278,17 +278,77 @@ def _resolve_personnel_name(personnel_id: int | None) -> str | None:
     return f"{p.fname} {p.lname}"
 
 
+def _filter_response_enrichment(
+    records: list[DetectionLogRecord],
+) -> dict[int, dict[str, str | None]] | None:
+    """Bulk-load display-only relations used by the filtered log response."""
+    if not records:
+        return {}
+    placeholders = ", ".join("?" for _ in records)
+    try:
+        rows = get_runtime().database.connection().execute(
+            "SELECT d.id, p.id AS personnel_record_id, p.fname, p.lname, "
+            "r.name AS room_name, "
+            "s.name AS section_name, b.name AS building_name, "
+            "created_user.username AS created_by_username, "
+            "updated_user.username AS updated_by_username "
+            "FROM detection_logs d "
+            "LEFT JOIN personnel p ON p.id = d.personnel_id "
+            "LEFT JOIN rooms r ON r.id = d.room_id "
+            "LEFT JOIN sections s ON s.id = r.section_id "
+            "LEFT JOIN buildings b ON b.id = s.building_id "
+            "LEFT JOIN users created_user ON created_user.id = d.created_by "
+            "LEFT JOIN users updated_user ON updated_user.id = d.updated_by "
+            f"WHERE d.id IN ({placeholders})",
+            [record.id for record in records],
+        ).fetchall()
+    except Exception:
+        return None
+
+    result: dict[int, dict[str, str | None]] = {}
+    for row in rows:
+        full_name = None
+        if row.get("personnel_record_id") is not None:
+            full_name = f"{row.get('fname')} {row.get('lname')}"
+        result[int(row["id"])] = {
+            "created_by_username": row.get("created_by_username"),
+            "updated_by_username": row.get("updated_by_username"),
+            "full_name": full_name,
+            "room_name": row.get("room_name"),
+            "section_name": row.get("section_name"),
+            "building_name": row.get("building_name"),
+        }
+    return result
+
+
 def _build_response(
     record: DetectionLogRecord,
     include_detail: bool = False,
     *,
     include_face_thumbnail: bool = True,
+    enrichment: dict[str, str | None] | None = None,
 ) -> dict:
-    c_user, u_user = _resolve_usernames(record)
-    full_name = _resolve_personnel_name(record.personnel_id)
-    room_name, camera_name, section_name, building_name = _resolve_names(
-        record.room_id, record.camera_id
-    )
+    if enrichment is None:
+        c_user, u_user = _resolve_usernames(record)
+        full_name = _resolve_personnel_name(record.personnel_id)
+        room_name, camera_name, section_name, building_name = _resolve_names(
+            record.room_id, record.camera_id
+        )
+    else:
+        c_user = enrichment.get("created_by_username")
+        u_user = enrichment.get("updated_by_username")
+        full_name = enrichment.get("full_name")
+        room_name = enrichment.get("room_name")
+        section_name = enrichment.get("section_name")
+        building_name = enrichment.get("building_name")
+        camera_name = None
+        if record.camera_id is not None:
+            try:
+                camera = get_runtime().registry.get(record.camera_id)
+                if camera is not None:
+                    camera_name = camera.name
+            except Exception:
+                pass
     response = legacy_detection_response(
         record,
         full_name=full_name,
@@ -572,10 +632,15 @@ def filter_logs(
         from_date_utc=from_date_utc,
         to_date_utc=to_date_utc,
         include_thumbnails=include_thumbnails,
+        include_total=False,
     )
+    enrichment = _filter_response_enrichment(records)
     return [
         _build_response(
-            r, include_detail=True, include_face_thumbnail=include_thumbnails
+            r,
+            include_detail=True,
+            include_face_thumbnail=include_thumbnails,
+            enrichment=(enrichment.get(r.id, {}) if enrichment is not None else None),
         )
         for r in records
     ]
@@ -996,7 +1061,7 @@ def generate_fake_detections(
                         room_id=rid,
                         camera_id=cid,
                         access_granted=access,
-                        counts_for_attendance=_random.random() > 0.3,
+                        counts_for_attendance=True,
                         log_type=_random.choice(["camera_rtsp", "tehran_door", "excel_import"]),
                     )
                     return True
