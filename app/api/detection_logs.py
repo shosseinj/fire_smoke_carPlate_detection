@@ -877,21 +877,18 @@ def delete_all_logs(
 
 @router.post("/generate-fake", status_code=201)
 def generate_fake_detections(
-    count: int = Query(10, ge=1, le=200, description="تعداد لاگ آزمایشی برای ایجاد"),
-    month: int | None = Query(None, ge=1, le=12, description="ماه (jalali) برای متمرکز کردن لاگ‌ها در یک ماه خاص"),
-    year: int | None = Query(None, ge=1300, le=1500, description="سال (jalali) همراه با month"),
-    from_date: str | None = Query(None, description="تاریخ شروع jalali (جایگزین month/year)"),
+    count: int = Query(10, ge=1, description="تعداد لاگ آزمایشی برای ایجاد"),
+    from_date: str | None = Query(None, description="تاریخ شروع jalali"),
     to_date: str | None = Query(None, description="تاریخ پایان jalali (همراه from_date)"),
-    personnel_id: int | None = Query(None, description="محدود کردن به پرسنل مشخص"),
-    room_id: int | None = Query(None, description="محدود کردن به اتاق مشخص"),
-    camera_id: str | None = Query(None, description="محدود کردن به دوربین مشخص"),
     pair_logs: bool = Query(False, description="ایجاد لاگ‌های جفتی (ورود+خروج) با فاصله چند دقیقه"),
     admin_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     """Generate fake detection logs for testing/demo purposes.
 
-    Supports date range filtering (by jalali month/year or from_date/to_date),
-    filtering by personnel/room/camera, and paired entry/exit log generation.
+    Supports optional Jalali date-range filtering with from_date/to_date,
+    automatic personnel/room/camera selection, and paired entry/exit log
+    generation. All generated timestamps are between 07:00 and 18:00 in the
+    configured business timezone.
     """
     import random as _random
 
@@ -901,6 +898,7 @@ def generate_fake_detections(
 
     # ── Resolve date range ──────────────────────────────────────────
     base_time = datetime.now(timezone.utc)
+    local_tz = ZoneInfo(settings.business_timezone_name)
     range_start: date | None = None
     range_end: date | None = None
 
@@ -912,47 +910,68 @@ def generate_fake_detections(
             range_end = to_g
         except Exception:
             raise HTTPException(400, "فرمت تاریخ نامعتبر است (jalali: YYYY-MM-DD)")
-    elif month is not None:
-        y = year or jdatetime.date.today().year
-        try:
-            from_g = parse_jalali_date(f"{y}-{month:02d}-01")
-        except Exception:
-            raise HTTPException(400, "ماه یا سال نامعتبر است")
-        to_g = from_g + timedelta(days=30)
-        range_start = from_g
-        range_end = to_g
-
     # ── Resolve personnel ───────────────────────────────────────────
-    if personnel_id is not None:
-        person = ps.get(personnel_id)
-        if person is None:
-            raise HTTPException(404, "پرسنل یافت نشد")
-        selected_personnel = [person]
-    else:
-        all_p, _ = ps.list(limit=1000)
-        if not all_p:
-            raise HTTPException(404, "هیچ پرسنلی یافت نشد")
-        selected_personnel = all_p
+    selected_personnel, _ = ps.list(limit=1000)
+    if not selected_personnel:
+        raise HTTPException(404, "هیچ پرسنلی یافت نشد")
 
     # ── Resolve rooms ────────────────────────────────────────────────
-    if room_id is not None:
-        room = ls.get_room(room_id)
-        if room is None:
-            raise HTTPException(404, "اتاق یافت نشد")
-        selected_room_ids = [room.id]
-    else:
-        all_rooms, _ = ls.list_rooms(limit=500)
-        selected_room_ids = [r.id for r in all_rooms] if all_rooms else [None]
+    all_rooms, _ = ls.list_rooms(limit=500)
+    selected_room_ids = [r.id for r in all_rooms] if all_rooms else [None]
 
     # ── Resolve cameras ───────────────────────────────────────────────
-    if camera_id is not None:
-        cam = get_runtime().registry.get(camera_id)
-        if cam is None:
-            raise HTTPException(404, "دوربین یافت نشد")
-        selected_camera_ids = [cam.source_uri]
-    else:
-        all_cams = get_runtime().registry.list()
-        selected_camera_ids = [c.source_uri for c in all_cams] if all_cams else [None]
+    all_cams = get_runtime().registry.list()
+    selected_camera_ids = [c.source_uri for c in all_cams] if all_cams else [None]
+
+    def _random_between(start: datetime, end: datetime) -> datetime:
+        """Return a random timezone-aware datetime in an inclusive interval."""
+        span_seconds = max(0, int((end - start).total_seconds()))
+        return start + timedelta(seconds=_random.randint(0, span_seconds))
+
+    def _local_day_window(day: date, *, paired: bool) -> tuple[datetime, datetime]:
+        start = datetime(day.year, day.month, day.day, 7, 0, 0, tzinfo=local_tz)
+        end_hour = 17 if paired else 18
+        end_minute = 30 if paired else 0
+        end = datetime(
+            day.year,
+            day.month,
+            day.day,
+            end_hour,
+            end_minute,
+            0,
+            tzinfo=local_tz,
+        )
+        return start, end
+
+    def _pick_detection_time() -> datetime:
+        if range_start is not None and range_end is not None:
+            delta_days = (range_end - range_start).days or 1
+            det_date = range_start + timedelta(days=_random.randint(0, delta_days))
+            local_start, local_end = _local_day_window(det_date, paired=pair_logs)
+            return _random_between(local_start, local_end).astimezone(timezone.utc)
+
+        # Preserve the previous default behavior of choosing from roughly the
+        # last 24 hours, while restricting the local clock time to 07:00–18:00.
+        recent_start_utc = base_time - timedelta(hours=24)
+        recent_start_local = recent_start_utc.astimezone(local_tz)
+        recent_end_local = base_time.astimezone(local_tz)
+        candidate_windows: list[tuple[datetime, datetime]] = []
+        current_day = recent_start_local.date()
+        while current_day <= recent_end_local.date():
+            local_start, local_end = _local_day_window(current_day, paired=pair_logs)
+            bounded_start = max(local_start, recent_start_local)
+            bounded_end = min(local_end, recent_end_local)
+            if bounded_start <= bounded_end:
+                candidate_windows.append((bounded_start, bounded_end))
+            current_day += timedelta(days=1)
+
+        if not candidate_windows:
+            # Defensive fallback: the prior local business-day window.
+            fallback_day = recent_end_local.date() - timedelta(days=1)
+            candidate_windows.append(_local_day_window(fallback_day, paired=pair_logs))
+
+        local_start, local_end = _random.choice(candidate_windows)
+        return _random_between(local_start, local_end).astimezone(timezone.utc)
 
     created = 0
 
@@ -962,22 +981,7 @@ def generate_fake_detections(
         cid = _random.choice(selected_camera_ids) if selected_camera_ids else None
 
         # ── Pick detection time ──────────────────────────────────────
-        if range_start is not None and range_end is not None:
-            delta_days = (range_end - range_start).days or 1
-            det_date = range_start + timedelta(days=_random.randint(0, delta_days))
-            det_time = datetime(
-                det_date.year, det_date.month, det_date.day,
-                hour=_random.randint(0, 23),
-                minute=_random.randint(0, 59),
-                second=_random.randint(0, 59),
-                tzinfo=timezone.utc,
-            )
-        else:
-            det_time = base_time - timedelta(
-                hours=_random.randint(0, 23),
-                minutes=_random.randint(0, 59),
-                seconds=_random.randint(0, 59),
-            )
+        det_time = _pick_detection_time()
 
         confidence = round(_random.uniform(0.5, 1.0), 4)
 
@@ -1009,7 +1013,13 @@ def generate_fake_detections(
 
         # ── Paired (exit) log if requested ──────────────────────────
         if pair_logs:
-            exit_time = det_time + timedelta(minutes=_random.randint(30, 480))
+            det_time_local = det_time.astimezone(local_tz)
+            local_close = det_time_local.replace(hour=18, minute=0, second=0, microsecond=0)
+            max_exit_minutes = min(
+                480,
+                int((local_close - det_time_local).total_seconds() // 60),
+            )
+            exit_time = det_time + timedelta(minutes=_random.randint(30, max_exit_minutes))
             exit_access = _random.random() > 0.2
             if _create_one(exit_time, exit_access):
                 created += 1

@@ -80,11 +80,17 @@ class DetectionMediaStorage:
         if not text:
             return None
 
-        parsed = urlsplit(text)
-        if parsed.scheme or parsed.netloc:
-            # file:// and remote URLs are not valid storage keys.
-            raise InvalidMediaKey("Media references must be local storage keys")
-        text = unquote(parsed.path).replace("\\", "/")
+        # Windows drive letter (e.g. "C:") is not a URI scheme
+        is_windows_path = len(text) > 1 and text[1] == ":" and text[0].isalpha()
+        if is_windows_path:
+            path = text.replace("\\", "/")
+        else:
+            parsed = urlsplit(text)
+            if parsed.scheme or parsed.netloc:
+                # file:// and remote URLs are not valid storage keys.
+                raise InvalidMediaKey("Media references must be local storage keys")
+            path = parsed.path
+        text = unquote(path).replace("\\", "/")
         if text.startswith("/media/"):
             text = text[len("/media/") :]
 
