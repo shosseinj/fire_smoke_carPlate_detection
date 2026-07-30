@@ -384,10 +384,13 @@ def _daily_summary_stats(
     early_interval: list[tuple[datetime, datetime]] = []
     if is_workday:
         effective_arrival = first_dt or shift_end
-        delay_start = shift_start + timedelta(minutes=max_delay)
-        delay_end = min(max(effective_arrival, delay_start), shift_end)
-        if delay_end > delay_start:
-            delay_interval = [(delay_start, delay_end)]
+        delay_end = min(max(effective_arrival, shift_start), shift_end)
+        actual_delay_minutes = max(
+            0,
+            int((delay_end - shift_start).total_seconds() // 60),
+        )
+        if actual_delay_minutes > max_delay:
+            delay_interval = [(shift_start, delay_end)]
 
         if last_dt is not None:
             early_start = max(min(last_dt, shift_end), shift_start)
@@ -711,9 +714,14 @@ def _compute_shift_day_stats(
     local_logs = sorted(day_logs, key=lambda log: _to_shift_local(log.detection_time, shift))
     first_dt = _to_shift_local(local_logs[0].detection_time, shift)
     last_dt = _to_shift_local(local_logs[-1].detection_time, shift)
-    delay_minutes = max(
+    actual_delay_minutes = max(
         0,
-        int((first_dt - shift_start).total_seconds() // 60) - int(max_delay or 0),
+        int((first_dt - shift_start).total_seconds() // 60),
+    )
+    delay_minutes = (
+        actual_delay_minutes
+        if actual_delay_minutes > int(max_delay or 0)
+        else 0
     )
     early_leave_minutes = max(
         0,

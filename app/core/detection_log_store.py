@@ -285,6 +285,7 @@ class DetectionLogStore:
         from_date_utc: str | None = None,
         to_date_utc: str | None = None,
         include_thumbnails: bool = False,
+        include_total: bool = True,
     ) -> tuple[list[DetectionLogRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -355,10 +356,12 @@ class DetectionLogStore:
             select_cols += ", NULL AS face_thumbnail"
 
         with self._lock, self._connection() as conn:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM detection_logs d {join_clause}{where}",
-                params,
-            ).fetchone()[0]
+            total = 0
+            if include_total:
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM detection_logs d {join_clause}{where}",
+                    params,
+                ).fetchone()[0]
             rows = conn.execute(
                 f"SELECT {select_cols} FROM detection_logs d {join_clause}{where} "
                 "ORDER BY d.detection_time DESC LIMIT ? OFFSET ?",
