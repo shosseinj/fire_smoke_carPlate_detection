@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
 from app.core.auth import require_role
+from app.core.attendance_summary_service import AttendanceSummaryService, TimePeriod
 from app.core.detection_log_store import DetectionLogRecord, DetectionLogStore
 from app.core.detection_media import (
     DetectionMediaStorage,
@@ -582,108 +583,58 @@ def filter_logs(
 
 @router.get("/daily-summary")
 def daily_summary(
-    period: str = Query("today"),
+    period: TimePeriod | None = Query(TimePeriod.TODAY),
     from_date_jalali: str | None = Query(None),
     to_date_jalali: str | None = Query(None),
     include_non_workdays: bool = Query(False),
     include_absent: bool = Query(True),
     _: dict = Depends(require_role("operator")),
 ) -> list[dict]:
-    from_date_utc, to_date_utc = _period_to_utc_range(period, from_date_jalali, to_date_jalali)
-    store = get_detection_log_store()
-    records, _ = store.list_filter(
-        from_date_utc=from_date_utc,
-        to_date_utc=to_date_utc,
+    service = AttendanceSummaryService(get_runtime().database)
+    return service.daily_summary(
+        period=period,
+        from_date_jalali=from_date_jalali,
+        to_date_jalali=to_date_jalali,
+        include_non_workdays=include_non_workdays,
+        include_absent=include_absent,
     )
-    grouped: dict[int, list[DetectionLogRecord]] = defaultdict(list)
-    for r in records:
-        if r.personnel_id is not None:
-            grouped[r.personnel_id].append(r)
-
-    result: list[dict] = []
-    for pid, logs in grouped.items():
-        full_name = _resolve_personnel_name(pid)
-        local_tz = _get_tehran_tz()
-        first_seen = None
-        last_seen = None
-        total_seconds = 0
-        for log in logs:
-            try:
-                dt_log = datetime.fromisoformat(log.detection_time.replace("Z", "+00:00"))
-                local_dt = dt_log.astimezone(local_tz)
-                if first_seen is None or local_dt < first_seen:
-                    first_seen = local_dt
-                if last_seen is None or local_dt > last_seen:
-                    last_seen = local_dt
-            except (ValueError, TypeError):
-                pass
-        if first_seen and last_seen and first_seen != last_seen:
-            total_seconds = int((last_seen - first_seen).total_seconds())
-        present = len(logs) > 0
-        if not present and not include_absent:
-            continue
-        result.append({
-            "personnel_id": pid,
-            "full_name": full_name,
-            "detection_count": len(logs),
-            "first_seen_local": first_seen.isoformat() if first_seen else None,
-            "last_seen_local": last_seen.isoformat() if last_seen else None,
-            "total_seconds": total_seconds,
-            "present": present,
-        })
-    return result
 
 
 @router.get("/monthly-summary")
 def monthly_summary(
-    jalali_year: int = Query(..., ge=1400, le=1500),
-    jalali_month: int = Query(..., ge=1, le=12),
-    personnel_id: int | None = Query(None),
+    jalali_year: int = Query(..., description="سال شمسی، مثال: ۱۴۰۴"),
+    jalali_month: int = Query(..., description="ماه شمسی، ۱ تا ۱۲"),
+    personnel_id: str | None = Query(
+        None,
+        description="شناسه پرسنل در پایگاه داده یا کد ملی",
+    ),
     section_id: int | None = Query(None),
     shift_id: int | None = Query(None),
-    include_daily_rows: bool = Query(False),
-    move_days: int = Query(10),
+    include_daily_rows: bool = Query(
+        False,
+        description="بازگرداندن جزئیات روزانه برای هر کارمند",
+    ),
+    move_days: int = Query(
+        10,
+        ge=0,
+        le=29,
+        description=(
+            "جابه‌جایی مرز ماه شمسی؛ مقدار ۱۰ بازه را از روز ۲۱ ماه قبل "
+            "تا روز ۲۰ ماه جاری محاسبه می‌کند. مقدار صفر بازه عادی ماه را برمی‌گرداند"
+        ),
+    ),
+    _: dict = Depends(require_role("operator")),
 ) -> list[dict]:
-    utc_start, utc_end = jalali_month_utc_range(jalali_year, jalali_month)
-    store = get_detection_log_store()
-    records, _ = store.list_filter(
+    service = AttendanceSummaryService(get_runtime().database)
+    return service.monthly_summary(
+        jalali_year=jalali_year,
+        jalali_month=jalali_month,
         personnel_id=personnel_id,
         section_id=section_id,
-        from_date_utc=utc_start.isoformat(),
-        to_date_utc=utc_end.isoformat(),
+        shift_id=shift_id,
+        include_daily_rows=include_daily_rows,
+        move_days=move_days,
     )
-    grouped: dict[int, list[DetectionLogRecord]] = defaultdict(list)
-    for r in records:
-        if r.personnel_id is not None:
-            grouped[r.personnel_id].append(r)
-
-    result: list[dict] = []
-    for pid, logs in grouped.items():
-        full_name = _resolve_personnel_name(pid)
-        attendance_count = sum(1 for l in logs if l.counts_for_attendance)
-        access_count = sum(1 for l in logs if l.access_granted)
-        row = {
-            "personnel_id": pid,
-            "full_name": full_name,
-            "total_detections": len(logs),
-            "attendance_count": attendance_count,
-            "access_count": access_count,
-            "year": jalali_year,
-            "month": jalali_month,
-        }
-        if include_daily_rows:
-            daily: dict[str, list[dict]] = defaultdict(list)
-            for l in logs:
-                try:
-                    dt_log = datetime.fromisoformat(l.detection_time.replace("Z", "+00:00"))
-                    j_date = jdatetime.date.fromgregorian(date=dt_log.astimezone(_get_tehran_tz()).date())
-                    day_key = f"{j_date.year:04d}-{j_date.month:02d}-{j_date.day:02d}"
-                    daily[day_key].append(_build_response(l))
-                except (ValueError, TypeError):
-                    pass
-            row["daily"] = dict(daily)
-        result.append(row)
-    return result
 
 
 @router.get("/monthly-performance")
@@ -725,31 +676,11 @@ def monthly_performance(
 
 @router.get("/yearly-leave-summary")
 def yearly_leave_summary(
-    jalali_year: int = Query(..., ge=1400, le=1500),
+    jalali_year: int = Query(..., description="سال شمسی، مثال: ۱۴۰۵"),
     _: dict = Depends(require_role("operator")),
 ) -> list[dict]:
-    store = get_detection_log_store()
-    personnel_store = get_personnel_store()
-    all_personnel = personnel_store.list(offset=0, limit=10000)[0]
-
-    result: list[dict] = []
-    for p in all_personnel:
-        monthly_leave: dict[str, int] = {}
-        for m in range(1, 13):
-            utc_s, utc_e = jalali_month_utc_range(jalali_year, m)
-            records, _ = store.list_filter(
-                personnel_id=p.id,
-                from_date_utc=utc_s.isoformat(),
-                to_date_utc=utc_e.isoformat(),
-            )
-            monthly_leave[str(m)] = len(records)
-        result.append({
-            "personnel_id": p.id,
-            "full_name": f"{p.fname} {p.lname}",
-            "year": jalali_year,
-            "monthly": monthly_leave,
-        })
-    return result
+    service = AttendanceSummaryService(get_runtime().database)
+    return service.yearly_leave_summary(jalali_year=jalali_year)
 
 
 @router.get("/import-excel/template")
