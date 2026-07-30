@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,13 @@ class TrackMediaState:
 
 
 @dataclass(slots=True)
+class PendingFinalization:
+    event: HumanMediaEvent
+    remaining_frames: int
+    last_frame_index: int | None = None
+
+
+@dataclass(slots=True)
 class StillEvidenceBundle:
     """One frame's atomic still-image evidence for a tracked human."""
 
@@ -101,8 +108,8 @@ class HumanLogStore:
         queue_size: int = 128,
         video_fps: float = 10.0,
         video_idle_seconds: float = 5.0,
-        video_pre_roll_frames: int = 5,
-        video_post_roll_frames: int = 5,
+        video_pre_roll_frames: int = 0,
+        video_post_roll_frames: int = 0,
         video_pre_roll_max_bytes: int = 128 * 1024 * 1024,
         snapshot_min_improvement: float = 0.01,
         face_candidate_limit: int = 5,
@@ -149,7 +156,9 @@ class HumanLogStore:
             tuple[str, str], deque[np.ndarray]
         ] = {}
         self._pre_roll_buffered_bytes = 0
-        self._post_roll_remaining: dict[tuple[str, str, int], int] = {}
+        self._pending_finalizations: dict[
+            tuple[str, str, int], PendingFinalization
+        ] = {}
         self._best_face_scores: dict[tuple[str, str, int], float] = {}
         # Video recording is admitted by the first valid face for a track, but
         # remains independent from polygon-gated human-log persistence.
@@ -407,6 +416,59 @@ class HumanLogStore:
                 if not evicted:
                     break
 
+    def _advance_pending_finalizations(
+        self, packet: FramePacket, session_id: str
+    ) -> None:
+        pending_events: list[tuple[tuple[str, str, int], PendingFinalization]] = []
+        with self._lock:
+            for key, pending in self._pending_finalizations.items():
+                if key[0] != session_id or key[1] != packet.source_id:
+                    continue
+                if pending.last_frame_index == packet.frame_index:
+                    continue
+                pending_events.append((key, pending))
+
+        for key, pending in pending_events:
+            is_final = pending.remaining_frames <= 1
+            event = replace(
+                pending.event,
+                full_frame_video_frame=packet.source_frame.copy(),
+                face_video_frame=None,
+                pre_roll_frames=(),
+                snapshot_frame=(
+                    pending.event.snapshot_frame if is_final else None
+                ),
+                whole_snapshot_frame=(
+                    pending.event.whole_snapshot_frame if is_final else None
+                ),
+                face_image_frame=(
+                    pending.event.face_image_frame if is_final else None
+                ),
+                ranked_face_candidates=(
+                    pending.event.ranked_face_candidates if is_final else ()
+                ),
+                finalize_detection_log=is_final,
+                persist_human_log=is_final,
+            )
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                with self._lock:
+                    self._dropped_events += 1
+                LOGGER.warning(
+                    "Human media queue is full; post-roll frame was dropped"
+                )
+                continue
+            with self._lock:
+                current = self._pending_finalizations.get(key)
+                if current is not pending:
+                    continue
+                if is_final:
+                    self._pending_finalizations.pop(key, None)
+                else:
+                    pending.remaining_frames -= 1
+                    pending.last_frame_index = packet.frame_index
+
     def observe_result(
         self,
         packet: FramePacket,
@@ -422,13 +484,13 @@ class HumanLogStore:
             return
         source_frame = packet.source_frame
         session_id = str(result.data.get("tracking_session_id") or "unknown-session")
-        if result.data.get("humans"):
-            self._buffer_pre_roll_frame(
-                session_id,
-                packet.source_id,
-                packet.frame_index,
-                source_frame,
-            )
+        self._buffer_pre_roll_frame(
+            session_id,
+            packet.source_id,
+            packet.frame_index,
+            source_frame,
+        )
+        self._advance_pending_finalizations(packet, session_id)
         faces_by_track: dict[int, list[dict[str, Any]]] = {}
         for face in result.data.get("faces", []):
             # Invalid-quality faces remain excluded from recognition evidence.
@@ -571,9 +633,8 @@ class HumanLogStore:
             # stored separately and only its small thumbnail is embedded in JSON.
             snapshot_image = human_crop
             with self._lock:
-                previous_post_roll = self._post_roll_remaining.get(key, 0)
                 video_was_enabled = key in self._video_enabled_tracks
-                if face_frame is not None:
+                if admitted_room_id is not None:
                     self._video_enabled_tracks.add(key)
                 video_enabled = key in self._video_enabled_tracks
                 starting_video = video_enabled and not video_was_enabled
@@ -585,14 +646,6 @@ class HumanLogStore:
                     if starting_video and len(source_pre_roll) > 1
                     else ()
                 )
-                if (
-                    exited_track_ids is not None
-                    and track_id in exited_track_ids
-                    and not valid_room_frame
-                    and video_enabled
-                ):
-                    self._post_roll_remaining[key] = self.video_post_roll_frames
-                post_roll_remaining = self._post_roll_remaining.get(key, 0)
                 previous_name = self._observed_names.get(key)
                 previous_score = self._candidate_scores.get(key, -1.0)
                 previous_full_frame_at = self._last_full_frame_at.get(
@@ -642,7 +695,6 @@ class HumanLogStore:
                 full_frame_due = (
                     video_enabled
                     and not disappeared
-                    and (valid_room_frame or post_roll_remaining > 0)
                     and now - previous_full_frame_at >= 1.0 / self.video_fps
                 )
                 better_face = (
@@ -663,12 +715,6 @@ class HumanLogStore:
                     self._still_evidence[key] = candidate_evidence
                 if full_frame_due:
                     self._last_full_frame_at[key] = now
-                    if not valid_room_frame and post_roll_remaining > 0:
-                        remaining = post_roll_remaining - 1
-                        if remaining > 0:
-                            self._post_roll_remaining[key] = remaining
-                        else:
-                            self._post_roll_remaining.pop(key, None)
                 if face_due:
                     self._last_face_video_at[key] = now
                 if better_face:
@@ -757,7 +803,20 @@ class HumanLogStore:
                 persist_human_log=persist_human_log,
             )
             try:
-                if disappeared:
+                if (
+                    disappeared
+                    and event.finalize_detection_log
+                    and self.video_post_roll_frames > 0
+                ):
+                    with self._lock:
+                        self._pending_finalizations.setdefault(
+                            key,
+                            PendingFinalization(
+                                event=event,
+                                remaining_frames=self.video_post_roll_frames,
+                            ),
+                        )
+                elif disappeared:
                     # Finalization is lossless within the bounded queue: apply
                     # backpressure rather than dropping the only expiry event.
                     self._queue.put(event)
@@ -800,10 +859,6 @@ class HumanLogStore:
                         self._face_candidates.pop(key, None)
                     if starting_video:
                         self._video_enabled_tracks.discard(key)
-                    if previous_post_roll > 0:
-                        self._post_roll_remaining[key] = previous_post_roll
-                    else:
-                        self._post_roll_remaining.pop(key, None)
                 LOGGER.warning("Human media queue is full; newest frame was dropped")
             if disappeared and (
                 selected_evidence is None or selected_evidence.face_frame is None
@@ -1308,7 +1363,6 @@ class HumanLogStore:
                 self._last_full_frame_at.pop(key, None)
                 self._last_face_video_at.pop(key, None)
                 self._best_face_scores.pop(key, None)
-                self._post_roll_remaining.pop(key, None)
             self._last_error = None
 
     def _finalized_video_status(self, key: str) -> str:
@@ -1337,7 +1391,7 @@ class HumanLogStore:
             self._pre_roll_frames.clear()
             self._last_pre_roll_frame_index.clear()
             self._pre_roll_buffered_bytes = 0
-            self._post_roll_remaining.clear()
+            self._pending_finalizations.clear()
 
     def _run(self) -> None:
         while True:
@@ -1458,6 +1512,7 @@ class HumanLogStore:
                 ),
                 "pre_roll_buffered_bytes": self._pre_roll_buffered_bytes,
                 "pre_roll_max_bytes": self.video_pre_roll_max_bytes,
+                "pending_post_roll_tracks": len(self._pending_finalizations),
                 "snapshot_directory": str(self.snapshot_dir),
                 "detected_face_directory": str(self.detected_face_dir),
                 "video_directory": str(self.video_dir),
@@ -1540,5 +1595,11 @@ class HumanLogStore:
             if self._closed:
                 return
             self._closed = True
+            pending_events = [
+                pending.event for pending in self._pending_finalizations.values()
+            ]
+            self._pending_finalizations.clear()
+        for event in pending_events:
+            self._queue.put(event)
         self._queue.put(_STOP)
         self._thread.join(timeout=10.0)

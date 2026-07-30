@@ -771,15 +771,18 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
     try:
         for frame_index in (1, 2):
             outside = colored_packet(frame_index, (frame_index * 20, 0, 0))
+            outside_result = result(outside, "Unknown", 0.0)
+            outside_result.data["humans"] = []
+            outside_result.data["faces"] = []
             store.observe_result(
                 outside,
-                result(outside, "Unknown", 0.0),
+                outside_result,
                 persist_human_log=False,
                 room_ids_by_track={},
             )
 
         entered = colored_packet(3, (0, 80, 0))
-        entered_result = result(entered, "Alice", 0.93, face_quality=0.90)
+        entered_result = result(entered, "Alice", 0.93)
         store.observe_result(
             entered,
             entered_result,
@@ -792,25 +795,22 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
             room_ids_by_track={13: room.id},
         )
 
-        inside = colored_packet(4, (0, 100, 0))
+        valid_face = colored_packet(4, (0, 100, 0))
         store.observe_result(
-            inside,
-            result(inside, "Alice", 0.93),
+            valid_face,
+            result(valid_face, "Alice", 0.93, face_quality=0.90),
             persist_human_log=False,
             room_ids_by_track={13: room.id},
         )
+        outside = colored_packet(5, (0, 0, 100))
+        store.observe_result(
+            outside,
+            result(outside, "Alice", 0.93),
+            persist_human_log=False,
+            room_ids_by_track={},
+        )
 
-        for frame_index in (5, 6, 7):
-            outside = colored_packet(frame_index, (0, 0, frame_index * 20))
-            store.observe_result(
-                outside,
-                result(outside, "Alice", 0.93),
-                persist_human_log=False,
-                room_ids_by_track={},
-                exited_track_ids={13} if frame_index == 5 else set(),
-            )
-
-        disappeared = packet(8)
+        disappeared = packet(6)
         disappeared_result = result(disappeared, "Alice", 0.93)
         disappeared_result.data["humans"] = []
         disappeared_result.data["faces"] = []
@@ -829,13 +829,41 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
             disappeared_result,
             room_ids_by_track={},
         )
+        assert store.status()["pending_post_roll_tracks"] == 1
+
+        for frame_index in (7, 8):
+            tail = colored_packet(frame_index, (0, 140 + frame_index * 10, 0))
+            tail_result = result(tail, "Unknown", 0.0)
+            tail_result.data["humans"] = []
+            tail_result.data["faces"] = []
+            store.observe_result(
+                tail,
+                tail_result,
+                persist_human_log=False,
+                room_ids_by_track={},
+            )
         store.flush()
 
         videos = list((tmp_path / "media" / "human" / "videos").glob("*.mp4"))
         assert len(videos) == 1
         capture = cv2.VideoCapture(str(videos[0]))
         try:
-            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 6
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 7
+            decoded: list[np.ndarray] = []
+            while True:
+                ok, decoded_frame = capture.read()
+                if not ok:
+                    break
+                decoded.append(decoded_frame)
+            assert len(decoded) == 7
+            assert all(
+                int(np.argmax(frame.mean(axis=(0, 1)))) == 0
+                for frame in decoded[:2]
+            )
+            assert all(
+                int(np.argmax(frame.mean(axis=(0, 1)))) == 1
+                for frame in decoded[-2:]
+            )
         finally:
             capture.release()
         with postgres_database.connection() as connection:
@@ -845,10 +873,11 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
                 ("session-a", "camera-01", 13),
             ).fetchone()
         assert row is not None
-        assert row["full_frame_video_frames"] == 6
+        assert row["full_frame_video_frames"] == 7
         status = store.status()
         assert status["video_pre_roll_frames"] == 2
         assert status["video_post_roll_frames"] == 2
+        assert status["pending_post_roll_tracks"] == 0
         assert status["pre_roll_buffered_bytes"] <= status["pre_roll_max_bytes"]
     finally:
         store.close()

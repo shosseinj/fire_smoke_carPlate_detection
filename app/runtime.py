@@ -784,7 +784,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             has_polygons = bool(ls.get_camera_polygon_rooms_for_room(room_id))
             valid_room_ids_by_track: dict[int, int] = {}
             observed_room_ids_by_track: dict[int, set[int]] = {}
-            exited_track_ids: set[int] = set()
             has_disappeared = bool(result.data.get("disappeared_humans"))
 
             for human in result.data.get("humans", []):
@@ -827,11 +826,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                         valid_room_ids_by_track[int(track_id)] = int(
                             inside_match.room_id
                         )
-                    if track_id is not None and any(
-                        match.transition_type == "exited" for match in matches
-                    ):
-                        exited_track_ids.add(int(track_id))
-            exited_track_ids.difference_update(valid_room_ids_by_track)
             # Cache only evidence captured while the track is inside the room.
             try:
                 human_log_store.observe_result(
@@ -840,7 +834,6 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                     persist_human_log=False,
                     room_ids_by_track=valid_room_ids_by_track,
                     observed_room_ids_by_track=observed_room_ids_by_track,
-                    exited_track_ids=exited_track_ids,
                     counts_for_attendance=cam.counts_for_attendance,
                 )
             except Exception:
