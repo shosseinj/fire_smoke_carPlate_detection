@@ -23,7 +23,7 @@ def test_legacy_http_routes_are_registered() -> None:
         "/api/v1/sources/{id:path}/enable",
         "/api/v1/sources/{id:path}/disable",
         "/api/v1/sources/bulk/task-assignment",
-        "/api/v1/car-plates",
+        "/api/v1/car-plates/",
         "/api/v1/fire-logs",
     }
     assert expected <= paths

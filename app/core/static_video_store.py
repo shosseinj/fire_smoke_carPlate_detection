@@ -85,10 +85,10 @@ class StaticVideoStore:
             raise RuntimeError("Failed to create static video")
         return record
 
-    def update(self, source_uri: str, **changes: Any) -> StaticVideoRecord:
-        current = self.get(source_uri)
+    def update(self, current_uri: str, **changes: Any) -> StaticVideoRecord:
+        current = self.get(current_uri)
         if current is None:
-            raise KeyError(source_uri)
+            raise KeyError(current_uri)
         allowed = {"name", "source_uri", "source_type", "loop", "source_config"}
         unexpected = set(changes) - allowed
         if unexpected:
@@ -101,10 +101,10 @@ class StaticVideoStore:
         if "source_config" in sql_changes:
             sql_changes["source_config_json"] = self._encode_config(sql_changes.pop("source_config"))
         set_parts = ", ".join(f"{key} = ?" for key in sql_changes)
-        values = [sql_changes[key] for key in sql_changes] + [source_uri]
+        values = [sql_changes[key] for key in sql_changes] + [current_uri]
         with self._connect() as connection:
             connection.execute(f"UPDATE static_videos SET {set_parts} WHERE source_uri = ?", values)
-        updated_uri = str(changes.get("source_uri", source_uri))
+        updated_uri = str(changes.get("source_uri", current_uri))
         record = self.get(updated_uri)
         if record is None:
             raise RuntimeError("Failed to update static video")
