@@ -962,12 +962,216 @@ def test_one_track_visiting_two_polygons_creates_two_detection_logs(
         assert len({record.body_image for record in records}) == 1
         assert len({record.snapshot_image for record in records}) == 1
         assert len({record.video for record in records}) == 1
+        assert all(record.face_image for record in records)
+        assert all(record.body_image for record in records)
+        assert all(record.snapshot_image for record in records)
         assert {
             record.source_event_key for record in records
         } == {
             "human-track:session-a:camera-01:13",
             f"human-track:session-a:camera-01:13:room:{room_b.id}",
         }
+    finally:
+        store.close()
+
+
+def test_unknown_track_uses_frames_before_first_seen_and_after_disappearance(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        tmp_path / "media",
+        video_fps=5.0,
+        video_pre_roll_frames=2,
+        video_post_roll_frames=2,
+        detection_log_store=detection_logs,
+    )
+    room = LocationStore(postgres_database).create_room("Unknown admission zone")
+
+    def blank_result(source: FramePacket) -> TaskResult:
+        item = result(source, "Unknown", 0.0)
+        item.data["humans"] = []
+        item.data["faces"] = []
+        return item
+
+    try:
+        # These frames occur before the tracker sees any human.
+        for frame_index in (1, 2):
+            before = colored_packet(frame_index, (frame_index * 30, 0, 0))
+            store.observe_result(
+                before,
+                blank_result(before),
+                persist_human_log=False,
+                room_ids_by_track={},
+            )
+
+        # Unknown and no valid face: polygon admission alone must start logging.
+        entered = colored_packet(3, (0, 90, 0))
+        entered_result = result(entered, "Unknown", 0.0)
+        store.observe_result(
+            entered,
+            entered_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+            observed_room_ids_by_track={13: {room.id}},
+        )
+        store.observe_result(
+            entered,
+            entered_result,
+            room_ids_by_track={13: room.id},
+            observed_room_ids_by_track={13: {room.id}},
+        )
+
+        disappeared = colored_packet(4, (0, 0, 90))
+        disappeared_result = blank_result(disappeared)
+        disappeared_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "bbox": [10, 10, 100, 110],
+                "person": "Unknown",
+                "recognition_score": 0.0,
+                "ref_img_id": None,
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={},
+            observed_room_ids_by_track={},
+        )
+        store.flush()
+        assert store.status()["pending_post_roll_tracks"] == 1
+        assert detection_logs.list_filter(camera_id="camera-01")[1] == 0
+
+        for frame_index in (5, 6):
+            after = colored_packet(frame_index, (0, 0, frame_index * 25))
+            store.observe_result(
+                after,
+                blank_result(after),
+                persist_human_log=False,
+                room_ids_by_track={},
+            )
+        store.flush()
+
+        records, total = detection_logs.list_filter(camera_id="camera-01")
+        assert total == 1
+        assert records[0].person == "Unknown"
+        assert records[0].room_id == room.id
+        assert records[0].face_image is None
+        assert records[0].body_image
+        assert records[0].snapshot_image
+        assert store.status()["pending_post_roll_tracks"] == 0
+        videos = list((tmp_path / "media" / "human" / "videos").glob("*.mp4"))
+        assert len(videos) == 1
+        capture = cv2.VideoCapture(str(videos[0]))
+        try:
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 5
+        finally:
+            capture.release()
+    finally:
+        store.close()
+
+
+def test_face_seen_after_polygon_exit_upgrades_identity_and_all_still_evidence(
+    tmp_path: Path,
+    postgres_database: Database,
+) -> None:
+    media_root = tmp_path / "media"
+    detection_logs = DetectionLogStore(postgres_database)
+    store = HumanLogStore(
+        postgres_database,
+        media_root,
+        video_post_roll_frames=2,
+        detection_log_store=detection_logs,
+    )
+    room = LocationStore(postgres_database).create_room("Late face zone")
+
+    def blank_result(source: FramePacket) -> TaskResult:
+        item = result(source, "Unknown", 0.0)
+        item.data["humans"] = []
+        item.data["faces"] = []
+        return item
+
+    try:
+        inside = colored_packet(1, (255, 0, 0))
+        inside_result = result(inside, "Unknown", 0.0)
+        store.observe_result(
+            inside,
+            inside_result,
+            persist_human_log=False,
+            room_ids_by_track={13: room.id},
+            observed_room_ids_by_track={13: {room.id}},
+        )
+        store.observe_result(
+            inside,
+            inside_result,
+            room_ids_by_track={13: room.id},
+            observed_room_ids_by_track={13: {room.id}},
+        )
+
+        # The face and identity become available only after polygon exit.
+        outside_face = colored_packet(2, (0, 255, 0))
+        store.observe_result(
+            outside_face,
+            result(outside_face, "Alice", 0.94, face_quality=0.95),
+            persist_human_log=False,
+            room_ids_by_track={},
+            exited_track_ids={13},
+        )
+
+        disappeared = colored_packet(3, (0, 0, 255))
+        disappeared_result = blank_result(disappeared)
+        disappeared_result.data["disappeared_humans"] = [
+            {
+                "track_id": 13,
+                "bbox": [10, 10, 100, 110],
+                "person": "Alice",
+                "recognition_score": 0.94,
+                "ref_img_id": "reference-1",
+                "confidence": 0.0,
+            }
+        ]
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={},
+        )
+        for frame_index in (4, 5):
+            tail = packet(frame_index)
+            store.observe_result(
+                tail,
+                blank_result(tail),
+                persist_human_log=False,
+                room_ids_by_track={},
+            )
+        store.flush()
+
+        records, total = detection_logs.list_filter(camera_id="camera-01")
+        assert total == 1
+        record = records[0]
+        assert record.person == "Alice"
+        assert record.room_id == room.id
+        assert record.face_image
+        assert record.body_image
+        assert record.snapshot_image
+        assert_jpeg_has_dominant_channel(
+            media_root / "human" / "detected_faces" / Path(record.face_image).name,
+            1,
+        )
+        assert_jpeg_has_dominant_channel(
+            media_root / "human" / "body_images" / Path(record.body_image).name,
+            1,
+        )
+        assert_jpeg_has_dominant_channel(
+            media_root
+            / "human"
+            / "full_frame_images"
+            / Path(record.snapshot_image).name,
+            1,
+        )
     finally:
         store.close()
 

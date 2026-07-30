@@ -278,19 +278,22 @@ class HumanLogStore:
         self._reference_image_cache[ref_text] = image.copy()
         return image
 
-    def _detection_person(self, personnel_id: int | None) -> str:
+    def _detection_person(
+        self, personnel_id: int | None, fallback_name: str = "Unknown"
+    ) -> str:
         """Return the canonical identity persisted in detection_logs.person."""
+        fallback = fallback_name.strip() or "Unknown"
         if personnel_id is None:
-            return "Unknown"
+            return fallback
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT national_code FROM personnel WHERE id = ?",
                 (int(personnel_id),),
             ).fetchone()
         if row is None:
-            return "Unknown"
+            return fallback
         national_code = normalize_national_code(str(row["national_code"] or ""))
-        return national_code or "Unknown"
+        return national_code or fallback
 
     @staticmethod
     def _concat_reference_and_face(
@@ -562,9 +565,11 @@ class HumanLogStore:
             valid_room_frame = (
                 room_ids_by_track is None or admitted_room_id is not None
             )
-            if not valid_room_frame and not disappeared:
-                # Do not let an outside-polygon face become the immutable still
-                # evidence or activate video recording for a persisted log.
+            evidence_allowed = valid_room_frame or stored_room_id is not None
+            if not evidence_allowed and not disappeared:
+                # Before the first polygon admission, face media is not attached
+                # to a log. After admission, the same track may contribute a
+                # better face from outside the polygon until it disappears.
                 track_faces = []
             face = track_faces[0] if track_faces else None
             face_quality = float(face.get("quality_score", 0.0)) if face else 0.0
@@ -668,11 +673,13 @@ class HumanLogStore:
                         frame_index=packet.frame_index,
                         body_frame=snapshot_image.copy(),
                         full_frame=source_frame.copy(),
-                        face_frame=face_frame.copy(),
+                        face_frame=(
+                            face_frame.copy() if face_frame is not None else None
+                        ),
                         quality=snapshot_quality,
                         face_quality=face_quality,
                     )
-                    if face_frame is not None
+                    if evidence_allowed and not disappeared
                     else None
                 )
                 ranked_candidates = list(self._face_candidates.get(key, ()))
@@ -683,15 +690,39 @@ class HumanLogStore:
                 ranked_candidates = ranked_candidates[: self.face_candidate_limit]
                 if ranked_candidates:
                     self._face_candidates[key] = ranked_candidates
-                better_snapshot = candidate_evidence is not None and (
-                    previous_evidence is None
-                    or candidate_evidence.face_quality > previous_evidence.face_quality
-                    or (
-                        candidate_evidence.face_quality
-                        == previous_evidence.face_quality
-                        and candidate_evidence.frame_index < previous_evidence.frame_index
-                    )
-                )
+                better_snapshot = False
+                if candidate_evidence is not None:
+                    if previous_evidence is None:
+                        better_snapshot = True
+                    elif (
+                        candidate_evidence.face_frame is not None
+                        and previous_evidence.face_frame is None
+                    ):
+                        better_snapshot = True
+                    elif (
+                        candidate_evidence.face_frame is not None
+                        and previous_evidence.face_frame is not None
+                    ):
+                        better_snapshot = (
+                            candidate_evidence.face_quality
+                            > previous_evidence.face_quality
+                            or (
+                                candidate_evidence.face_quality
+                                == previous_evidence.face_quality
+                                and candidate_evidence.frame_index
+                                < previous_evidence.frame_index
+                            )
+                        )
+                    elif previous_evidence.face_frame is None:
+                        better_snapshot = (
+                            candidate_evidence.quality > previous_evidence.quality
+                            or (
+                                candidate_evidence.quality
+                                == previous_evidence.quality
+                                and candidate_evidence.frame_index
+                                < previous_evidence.frame_index
+                            )
+                        )
                 full_frame_due = (
                     video_enabled
                     and not disappeared
@@ -1081,7 +1112,6 @@ class HumanLogStore:
         if (
             event.finalize_detection_log
             and not whole_snapshot_key
-            and event.face_image_frame is not None
             and event.whole_snapshot_frame is not None
         ):
             whole_snapshot_key, _ = self._save_whole_snapshot(
@@ -1148,7 +1178,6 @@ class HumanLogStore:
             )
             should_save_snapshot = (
                 event.finalize_detection_log
-                and event.face_image_frame is not None
                 and event.snapshot_frame is not None
                 and not new_snapshot_url
                 and not (str(existing["snapshot_url"] or "") if existing else "")
@@ -1274,9 +1303,10 @@ class HumanLogStore:
         if (
             event.finalize_detection_log
             and self.detection_log_store is not None
-            and face_image_key
         ):
-            detection_person = self._detection_person(event.personnel_id)
+            detection_person = self._detection_person(
+                event.personnel_id, event.name
+            )
             finalized_video_key = (
                 str(human_row["video_url"] or "") if human_row is not None else video_key
             )
