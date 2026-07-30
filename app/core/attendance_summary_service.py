@@ -340,6 +340,7 @@ def _daily_summary_stats(
             "first_detection": None,
             "last_detection": None,
             "middle_detections": [],
+            "first_last_span_time": None,
             "raw_worked_time": None,
             "net_worked_time": None,
             "net_worked_time_with_overtime": None,
@@ -443,7 +444,12 @@ def _daily_summary_stats(
     overtime_minutes = _interval_minutes(overtime_intervals)
 
     raw_worked_time: int | None = None
+    first_last_span_time: int | None = None
     if even_detection_count and first_dt and last_dt:
+        first_last_span_time = max(
+            0,
+            int((last_dt - first_dt).total_seconds() // 60),
+        )
         effective_first_dt = min(max(first_dt, shift_start), shift_end)
         effective_last_dt = max(min(last_dt, shift_end), shift_start)
         raw_worked_time = max(
@@ -470,6 +476,7 @@ def _daily_summary_stats(
         "first_detection": first_dt,
         "last_detection": last_dt,
         "middle_detections": middle,
+        "first_last_span_time": first_last_span_time,
         "raw_worked_time": raw_worked_time,
         "net_worked_time": net_worked_time,
         "delay_minutes": delay_minutes,
@@ -1276,6 +1283,7 @@ class AttendanceSummaryService:
                             "first_detection": None,
                             "last_detection": None,
                             "middle_detections": [],
+                            "first_last_span_time": None,
                             "raw_worked_time": None,
                             "net_worked_time": None,
                             "net_worked_time_with_overtime": None,
@@ -1342,6 +1350,9 @@ class AttendanceSummaryService:
                         "middle_detections": [
                             _time_to_hhmm(item) for item in stats["middle_detections"]
                         ],
+                        "first_last_span_time": _minutes_to_hhmm(
+                            stats["first_last_span_time"]
+                        ),
                         "raw_worked_time": _minutes_to_hhmm(stats["raw_worked_time"]),
                         "net_worked_time": _minutes_to_hhmm(stats["net_worked_time"]),
                         "net_worked_time_with_overtime": _minutes_to_hhmm(

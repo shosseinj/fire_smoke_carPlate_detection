@@ -103,6 +103,23 @@ def test_daily_summary_two_detections_keeps_first_and_last(monkeypatch) -> None:
     assert row["last_detection"] == "17:00"
 
 
+def test_daily_summary_first_last_span_is_not_clipped_to_shift(monkeypatch) -> None:
+    row = _daily_summary(monkeypatch, [6, 20])
+
+    assert row["first_last_span_time"] == "14:00"
+    assert row["raw_worked_time"] == "11:00"
+
+
+def test_daily_summary_first_last_span_is_null_for_odd_or_zero_detections(
+    monkeypatch,
+) -> None:
+    odd_row = _daily_summary(monkeypatch, [6, 12, 20])
+    empty_row = _daily_summary(monkeypatch, [])
+
+    assert odd_row["first_last_span_time"] is None
+    assert empty_row["first_last_span_time"] is None
+
+
 def _log_at(hour: int, minute: int, *, log_id: int = 1) -> SummaryLog:
     return SummaryLog(
         id=log_id,

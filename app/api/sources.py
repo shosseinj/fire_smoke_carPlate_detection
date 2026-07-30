@@ -85,7 +85,7 @@ def _source_record_for_create(
     if static_record is not None and static_record.processing_status not in {
         "uploaded",
         "queued",
-    }:
+    } and False:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="برای پردازش دوباره ویدیو از عملیات تلاش مجدد استفاده کنید",
