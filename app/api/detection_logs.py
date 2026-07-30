@@ -1061,7 +1061,7 @@ def generate_fake_detections(
                         room_id=rid,
                         camera_id=cid,
                         access_granted=access,
-                        counts_for_attendance=_random.random() > 0.3,
+                        counts_for_attendance=True,
                         log_type=_random.choice(["camera_rtsp", "tehran_door", "excel_import"]),
                     )
                     return True

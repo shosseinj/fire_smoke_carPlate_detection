@@ -347,6 +347,7 @@ def _daily_summary_stats(
             "delay_minutes": 0,
             "early_leave_minutes": 0,
             "overtime_minutes": 0,
+            "holiday_overtime_minutes": 0,
             "illegal_presence_minutes": 0,
             "in_between_absence_minutes": 0,
             "total_absence_time": 0,
@@ -432,13 +433,17 @@ def _daily_summary_stats(
 
     illegal_presence_intervals: list[tuple[datetime, datetime]] = []
     overtime_intervals: list[tuple[datetime, datetime]] = []
-    for presence_start, presence_end in paired_presence_intervals:
-        illegal_end = min(presence_end, shift_start)
-        if illegal_end > presence_start:
-            illegal_presence_intervals.append((presence_start, illegal_end))
-        overtime_start = max(presence_start, shift_end)
-        if presence_end > overtime_start:
-            overtime_intervals.append((overtime_start, presence_end))
+    holiday_overtime_minutes = 0
+    if is_workday:
+        for presence_start, presence_end in paired_presence_intervals:
+            illegal_end = min(presence_end, shift_start)
+            if illegal_end > presence_start:
+                illegal_presence_intervals.append((presence_start, illegal_end))
+            overtime_start = max(presence_start, shift_end)
+            if presence_end > overtime_start:
+                overtime_intervals.append((overtime_start, presence_end))
+    else:
+        holiday_overtime_minutes = _interval_minutes(paired_presence_intervals)
 
     illegal_presence_minutes = _interval_minutes(illegal_presence_intervals)
     overtime_minutes = _interval_minutes(overtime_intervals)
@@ -482,6 +487,7 @@ def _daily_summary_stats(
         "delay_minutes": delay_minutes,
         "early_leave_minutes": early_leave_minutes,
         "overtime_minutes": overtime_minutes,
+        "holiday_overtime_minutes": holiday_overtime_minutes,
         "illegal_presence_minutes": illegal_presence_minutes,
         "net_worked_time_with_overtime": net_worked_time_with_overtime,
         "in_between_absence_minutes": in_between_absence_minutes,
@@ -1290,6 +1296,7 @@ class AttendanceSummaryService:
                             "delay_minutes": "00:00",
                             "early_leave_minutes": "00:00",
                             "overtime_minutes": "00:00",
+                            "holiday_overtime_minutes": "00:00",
                             "illegal_presence_minutes": "00:00",
                             "in_between_absence_minutes": "00:00",
                             "total_absence_time": "00:00",
@@ -1365,6 +1372,9 @@ class AttendanceSummaryService:
                             stats["early_leave_minutes"] if is_workday else 0
                         ),
                         "overtime_minutes": _minutes_to_hhmm(stats["overtime_minutes"]),
+                        "holiday_overtime_minutes": _minutes_to_hhmm(
+                            stats["holiday_overtime_minutes"]
+                        ),
                         "illegal_presence_minutes": _minutes_to_hhmm(
                             stats["illegal_presence_minutes"]
                         ),
@@ -1570,8 +1580,8 @@ class AttendanceSummaryService:
                 "jalali_year": jalali_year,
                 "jalali_month": jalali_month,
                 "move_days": move_days,
-                "month_start": g_start.isoformat(),
-                "month_end": g_end.isoformat(),
+                "month_start": _jalali_date_string(g_start),
+                "month_end": _jalali_date_string(g_end),
                 "month_days": month_days,
                 "off_days": off_days,
                 "custom_holidays": custom_holidays,
