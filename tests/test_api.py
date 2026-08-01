@@ -22,6 +22,7 @@ from app.runtime import Runtime, build_runtime
 
 
 pytestmark = pytest.mark.usefixtures("postgres_database")
+settings = replace(settings, media_preview_enabled=False)
 
 
 def _test_database_url() -> str:

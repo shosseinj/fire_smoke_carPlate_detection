@@ -110,6 +110,21 @@ def test_openapi_declares_multiple_binary_images() -> None:
     assert files_schema["items"]["format"] == "binary"
 
 
+def test_create_with_images_declares_department_and_shift_once() -> None:
+    app = FastAPI()
+    app.include_router(personnel_router)
+
+    schema = app.openapi()
+    operation = schema["paths"]["/api/v1/personnel/with-images"]["post"]
+    body_schema = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
+    component_name = body_schema["$ref"].rsplit("/", 1)[-1]
+    properties = schema["components"]["schemas"][component_name]["properties"]
+
+    assert "department_id" in properties
+    assert "shift_id" in properties
+    assert "departmen_id" not in properties
+
+
 @pytest.mark.parametrize(
     ("data", "content_type"),
     [

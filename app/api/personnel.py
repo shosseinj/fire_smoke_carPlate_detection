@@ -207,8 +207,8 @@ async def create_personnel_with_images(
     national_code: str = Form(...),
     employee_type: str = Form(default="unknown"),
     degree: str | None = Form(default=None),
-    departmen_id: int | None = Form(default=None),
     department_id: int | None = Form(default=None),
+    shift_id: int | None = Form(default=None),
     images: list[UploadFile] = File(
         description="تصاویر JPEG، PNG یا BMP",
         media_type="image/*",
@@ -223,7 +223,6 @@ async def create_personnel_with_images(
     enable_cropping: bool = Form(default=False),
 ) -> Any:
     store = _store(runtime)
-    dept_id = department_id if department_id is not None else departmen_id
     try:
         person = store.create(
             fname=fname,
@@ -231,7 +230,8 @@ async def create_personnel_with_images(
             national_code=national_code,
             employee_type=employee_type,
             degree=degree,
-            department_id=dept_id,
+            department_id=department_id,
+            shift_id=shift_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))

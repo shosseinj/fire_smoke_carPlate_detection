@@ -37,6 +37,7 @@ def _make_test_runtime(tmp_path: Path):
 
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
+        media_preview_enabled=False,
         auth_default_admin_username="admin",
         auth_default_admin_password="admin123",
     )

@@ -41,6 +41,7 @@ def _make_test_runtime(tmp_path: Path):
         database_url=_test_database_url(),
 
         video_ingestion_enabled=False,
+        media_preview_enabled=False,
         auth_default_admin_username="admin",
         auth_default_admin_password="admin123",
     )

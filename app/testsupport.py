@@ -94,6 +94,7 @@ def build_test_settings(tmp_path: Path) -> Any:
         database_url=database_url,
         saved_media_path=tmp_path / "saved_media",
         video_ingestion_enabled=False,
+        media_preview_enabled=False,
         auth_default_admin_username=AUTH_USER,
         auth_default_admin_password=AUTH_PASS,
     )
