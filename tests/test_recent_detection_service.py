@@ -170,6 +170,8 @@ def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None
     row = _row("/media/human/body_images/body.jpg")
 
     class Connection:
+        query_count = 0
+
         def __enter__(self) -> "Connection":
             return self
 
@@ -177,10 +179,11 @@ def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None
             return None
 
         def execute(self, _query: str, _params: tuple[int]) -> "Connection":
+            self.query_count += 1
             return self
 
         def fetchall(self) -> list[dict[str, object]]:
-            return [row]
+            return [row] if self.query_count == 2 else []
 
     message = build_recent_detections_message(
         SimpleNamespace(
@@ -203,8 +206,56 @@ def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None
     assert message is not None
     assert message["type"] == "recent_detections"
     assert message["count"] == 1
-    assert message["limit"] > 0
+    assert message["limit"] == 100
     assert message["detections"][0]["body_image_base64"]
+
+
+def test_recent_detections_selects_known_and_unknown_independently(
+    tmp_path: Path,
+) -> None:
+    known = _row()
+    known.update(
+        id=2,
+        person="Alice",
+        personnel_id=7,
+        confidence=0.9,
+        detection_time="2026-07-26T12:00:00+00:00",
+    )
+    unknown = _row()
+    unknown.update(
+        id=3,
+        detection_time="2026-07-26T13:00:00+00:00",
+    )
+
+    class Result:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self.rows = rows
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return self.rows
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, query: str, params: tuple[int]) -> Result:
+            assert params == (50,)
+            if "d.personnel_id IS NOT NULL OR" in query:
+                return Result([known])
+            assert "d.personnel_id IS NULL AND" in query
+            return Result([unknown])
+
+    message = build_recent_detections_message(
+        _runtime(tmp_path, SimpleNamespace(connection=lambda: Connection()))
+    )
+
+    assert message is not None
+    assert message["count"] == 2
+    assert message["limit"] == 100
+    assert [item["id"] for item in message["detections"]] == [3, 2]
 
 
 def test_recent_detection_refresh_message_is_incremental() -> None:
@@ -221,7 +272,7 @@ def test_recent_detection_refresh_message_is_incremental() -> None:
         "type": "recent_detections",
         "detections": [payload],
         "count": 1,
-        "limit": 25,
+        "limit": 50,
         "reason": "log_created",
         "updated_log_id": 42,
     }

@@ -33,6 +33,12 @@ def _parse_datetime(value: str | datetime | None) -> datetime | None:
         return None
 
 
+def _detection_sort_key(row: Any) -> tuple[float, int]:
+    detected_at = _parse_datetime(row["detection_time"])
+    timestamp = detected_at.timestamp() if detected_at is not None else float("-inf")
+    return timestamp, int(row["id"])
+
+
 def _to_jalali_str(value: str | datetime | None) -> str | None:
     dt = _parse_datetime(value)
     if dt is None:
@@ -289,17 +295,35 @@ def _build_payload_from_enriched_row(runtime: Runtime, row: dict[str, Any]) -> d
 
 
 def get_recent_detection_payloads(runtime: Runtime, limit: int = RECENT_DETECTIONS_LIMIT) -> list[dict[str, Any]]:
+    """Return up to ``limit`` known and ``limit`` unknown recent detections."""
     if limit <= 0:
         return []
+    select = (
+        "SELECT d.*, p.fname, p.lname, p.national_code, r.name AS room_name "
+        "FROM detection_logs d "
+        "LEFT JOIN personnel p ON p.id = d.personnel_id "
+        "LEFT JOIN rooms r ON r.id = d.room_id "
+    )
+    normalized_person = "LOWER(TRIM(COALESCE(d.person, '')))"
     with runtime.database.connection() as conn:
-        rows = conn.execute(
-            "SELECT d.*, p.fname, p.lname, p.national_code, r.name AS room_name "
-            "FROM detection_logs d "
-            "LEFT JOIN personnel p ON p.id = d.personnel_id "
-            "LEFT JOIN rooms r ON r.id = d.room_id "
-            "ORDER BY d.detection_time DESC LIMIT ?",
+        known_rows = conn.execute(
+            select
+            + f"WHERE d.personnel_id IS NOT NULL OR {normalized_person} NOT IN ('', 'unknown') "
+            "ORDER BY d.detection_time DESC, d.id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+        unknown_rows = conn.execute(
+            select
+            + f"WHERE d.personnel_id IS NULL AND {normalized_person} IN ('', 'unknown') "
+            "ORDER BY d.detection_time DESC, d.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    rows = sorted(
+        (*known_rows, *unknown_rows),
+        key=_detection_sort_key,
+        reverse=True,
+    )
 
     payloads: list[dict[str, Any]] = []
     for raw_row in rows:
@@ -355,7 +379,7 @@ def build_recent_detections_message(runtime: Runtime, limit: int = RECENT_DETECT
         "type": "recent_detections",
         "detections": detections,
         "count": len(detections),
-        "limit": limit,
+        "limit": limit * 2,
     }
 
 
@@ -370,7 +394,7 @@ def build_recent_detection_refresh_message(
         "type": "recent_detections",
         "detections": [payload],
         "count": 1,
-        "limit": limit,
+        "limit": limit * 2,
         "reason": reason,
         "updated_log_id": log_id,
     }

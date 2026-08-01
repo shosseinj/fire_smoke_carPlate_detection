@@ -3,8 +3,8 @@
 ## Implemented
 
 - Added `app/core/recent_detection_service.py`.
-- Loads the latest detection logs in descending `detection_time` order.
-- Uses `WEBSOCKET_RECENT_DETECTIONS_LIMIT` with the legacy default of 50.
+- Loads the latest known and unknown detection logs independently, then merges them in descending `detection_time` order.
+- Uses `WEBSOCKET_RECENT_DETECTIONS_LIMIT` as the per-group limit, with the default yielding up to 50 known plus 50 unknown detections.
 - Resolves personnel names, room names, personnel reference images, general thresholds, and camera overrides.
 - Reproduces legacy `unknown` / `unsure` / `known` classification boundaries.
 - Concatenates the detected face with the selected reference image for `unsure` and `known` detections.
