@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import threading
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -108,6 +110,12 @@ def _excel_bool(value: Any, default: bool) -> bool:
     raise ValueError("مقدار بولی نامعتبر است")
 
 _detection_media_storage: DetectionMediaStorage | None = None
+_FILTER_MEDIA_WORKERS = 16
+_filter_media_executor = ThreadPoolExecutor(
+    max_workers=_FILTER_MEDIA_WORKERS,
+    thread_name_prefix="detection-media-check",
+)
+_filter_media_gate = threading.BoundedSemaphore(2)
 
 
 def get_runtime() -> Any:
@@ -302,12 +310,41 @@ def _filter_response_enrichment(
     return result
 
 
+def _filter_media_availability(
+    records: list[DetectionLogRecord],
+) -> dict[str, bool]:
+    """Check each referenced media key once using bounded parallel filesystem I/O."""
+    candidates: set[str] = set()
+    for record in records:
+        for value in (record.face_image, record.body_image, record.snapshot_image):
+            if value:
+                candidates.add(str(value))
+        if record.video_status == MEDIA_STATUS_READY and record.video:
+            candidates.add(str(record.video))
+        if (
+            record.face_video_status == MEDIA_STATUS_READY
+            and record.face_video_or_unknown_faces
+        ):
+            candidates.add(str(record.face_video_or_unknown_faces))
+    if not candidates:
+        return {}
+
+    media = get_detection_media_storage()
+    ordered = tuple(candidates)
+    # At most two filter requests may schedule checks concurrently. The API's
+    # 1000-row page cap also bounds each request to at most 5000 media keys.
+    with _filter_media_gate:
+        results = _filter_media_executor.map(media.exists, ordered)
+        return dict(zip(ordered, results))
+
+
 def _build_response(
     record: DetectionLogRecord,
     include_detail: bool = False,
     *,
     include_face_thumbnail: bool = True,
     enrichment: dict[str, str | None] | None = None,
+    media_availability: dict[str, bool] | None = None,
 ) -> dict:
     if enrichment is None:
         c_user, u_user = _resolve_usernames(record)
@@ -346,13 +383,20 @@ def _build_response(
     response["updated_at"] = response.get("updated_at_jalali")
 
     media = get_detection_media_storage()
-    face_ready = media.exists(record.face_image)
-    body_ready = media.exists(record.body_image)
-    snapshot_ready = media.exists(record.snapshot_image)
-    video_ready = record.video_status == MEDIA_STATUS_READY and media.exists(record.video)
+    def _media_exists(value: str | None) -> bool:
+        if not value:
+            return False
+        if media_availability is None:
+            return media.exists(value)
+        return bool(media_availability.get(str(value), False))
+
+    face_ready = _media_exists(record.face_image)
+    body_ready = _media_exists(record.body_image)
+    snapshot_ready = _media_exists(record.snapshot_image)
+    video_ready = record.video_status == MEDIA_STATUS_READY and _media_exists(record.video)
     face_video_ready = (
         record.face_video_status == MEDIA_STATUS_READY
-        and media.exists(record.face_video_or_unknown_faces)
+        and _media_exists(record.face_video_or_unknown_faces)
     )
     response.update(
         {
@@ -616,12 +660,14 @@ def filter_logs(
         include_total=False,
     )
     enrichment = _filter_response_enrichment(records)
+    media_availability = _filter_media_availability(records)
     return [
         _build_response(
             r,
             include_detail=True,
             include_face_thumbnail=include_thumbnails,
             enrichment=(enrichment.get(r.id, {}) if enrichment is not None else None),
+            media_availability=media_availability,
         )
         for r in records
     ]

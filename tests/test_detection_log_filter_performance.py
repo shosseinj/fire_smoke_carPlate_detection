@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import app.api.detection_logs as api
@@ -83,8 +84,10 @@ def test_filter_enrichment_uses_one_query_independent_of_page_size(monkeypatch):
 class _Media:
     def __init__(self) -> None:
         self.thumbnail_calls = 0
+        self.exists_calls: list[str | None] = []
 
     def exists(self, value):
+        self.exists_calls.append(value)
         return value is not None
 
     def thumbnail_data_uri(self, thumbnail, face):
@@ -150,6 +153,46 @@ def test_enriched_response_preserves_fields_order_values_and_thumbnail_toggle(mo
     )
     assert with_thumbnail["face_thumbnail"] == "data:image/jpeg;base64,thumb"
     assert media.thumbnail_calls == 1
+
+
+def test_filter_media_availability_is_deduplicated_and_reused(monkeypatch):
+    media = _Media()
+    monkeypatch.setattr(api, "get_detection_media_storage", lambda: media)
+    monkeypatch.setattr(
+        api,
+        "get_runtime",
+        lambda: SimpleNamespace(registry=SimpleNamespace(get=lambda _source: None)),
+    )
+    records = [_record(1), replace(_record(2), body_image="body/person.jpg")]
+
+    availability = api._filter_media_availability(records)
+
+    assert sorted(media.exists_calls) == ["body/person.jpg", "faces/person.jpg"]
+    assert availability == {
+        "faces/person.jpg": True,
+        "body/person.jpg": True,
+    }
+
+    media.exists_calls.clear()
+    response = api._build_response(
+        records[0],
+        include_detail=True,
+        include_face_thumbnail=False,
+        enrichment={},
+        media_availability=availability,
+    )
+    assert response["face_image_url"] == "/api/v1/logs/1/face"
+    assert media.exists_calls == []
+
+    missing = api._build_response(
+        records[0],
+        include_detail=True,
+        include_face_thumbnail=False,
+        enrichment={},
+        media_availability={"faces/person.jpg": False},
+    )
+    assert missing["face_image_url"] is None
+    assert media.exists_calls == []
 
 
 def test_filter_store_query_skips_unused_total(monkeypatch):
