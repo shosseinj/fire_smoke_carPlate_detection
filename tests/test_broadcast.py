@@ -244,6 +244,10 @@ def test_dashboard_requests_wall_profile_and_reconnects_for_fullscreen_source() 
     assert 'parameters.set("batch", "true")' in dashboard
     assert 'header.type === "source_frame_batch"' in dashboard
     assert "previewAvailable && !useJpegFallback" in dashboard
+    assert "const incremental = Boolean(message.reason);" in dashboard
+    assert "existing.remove();" in dashboard
+    assert "if (!incremental) {" in dashboard
+    assert "while (items.length > recentLimit)" in dashboard
 
 
 def test_source_frame_batch_envelope_contains_complete_frame_records() -> None:

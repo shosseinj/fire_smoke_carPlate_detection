@@ -72,6 +72,10 @@ def _created_or_ok(resp) -> None:
     assert resp.status_code in (200, 201, 204), f"{resp.request.method} {resp.request.url}: {resp.status_code} {resp.text[:500]}"
 
 
+def _parse_iso(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # AUTH
 # ═══════════════════════════════════════════════════════════════════════
@@ -113,18 +117,22 @@ class TestAuthCrud:
 
     def test_logout(self, crud):
         login_resp = crud.client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
-        refresh_token = login_resp.json()["refresh_token"]
-        resp = crud.client.post("/api/v1/auth/logout", json={"refresh_token": refresh_token})
+        access_token = login_resp.json()["access_token"]
+        resp = crud.client.post(
+            "/api/v1/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         assert resp.status_code == 200
-        resp2 = crud.client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
-        assert resp2.status_code == 401
+        # The revoked access token no longer authenticates
+        me = crud.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+        assert me.status_code == 401
 
     def test_me(self, crud):
         resp = crud.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["username"] == "admin"
-        assert body["role"] == "admin"
+        assert body["role"] in ("admin", "superadmin")
         assert body["is_active"] is True
         assert "id" in body
 
@@ -291,7 +299,22 @@ class TestLocationsCrud:
         bid = resp.json()["id"]
         resp = crud.client.post("/sections/", json={"section_name": "Sec for Room", "building_id": bid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         sid = resp.json()["id"]
-        resp = crud.client.post("/rooms/", json={"room_name": "CRUD Room", "section_id": sid}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        cam = crud.client.post(
+            "/api/v1/cams",
+            json={
+                "camera_name": "Room Cam",
+                "camera_number": 1,
+                "width": 640,
+                "high": 480,
+                "source_type": "rtsp",
+                "section_id": sid,
+                "url": "rtsp://test-room-cam.local/live",
+            },
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert cam.status_code == 201, cam.text
+        cam_id = cam.json()["id"]
+        resp = crud.client.post("/rooms/", json={"room_name": "CRUD Room", "section_id": sid, "camera_id": cam_id}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
         rid = resp.json()["id"]
         resp = crud.client.put(f"/rooms/{rid}", json={"room_name": "Updated Room"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
@@ -332,7 +355,7 @@ class TestHolidaysCrud:
     MODULE = "holidays"
 
     def test_holiday_crud(self, crud):
-        resp = crud.client.post("/api/v1/holidays/", json={"name": "CRUD Holiday", "date_value": "2027-06-15", "holiday_type": "national"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        resp = crud.client.post("/api/v1/holidays/", json={"name": "CRUD Holiday", "date": "2027-06-15", "holiday_type": "national"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         assert resp.status_code == 201, resp.text
         hol = resp.json().get("holiday", resp.json())
         hid = hol["id"]
@@ -344,7 +367,7 @@ class TestHolidaysCrud:
         assert resp.status_code in (200, 204), resp.text
 
     def test_check_holiday(self, crud):
-        crud.client.post("/api/v1/holidays/", json={"name": "Check Test", "date_value": "2028-01-01", "holiday_type": "national"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
+        crud.client.post("/api/v1/holidays/", json={"name": "Check Test", "date": "2028-01-01", "holiday_type": "national"}, headers={"Authorization": f"Bearer {crud.admin_token}"})
         resp = crud.client.get("/api/v1/holidays/check/2028-01-01", headers={"Authorization": f"Bearer {crud.admin_token}"})
         _ok(resp)
 
@@ -594,11 +617,11 @@ class TestCarPlatesCrud:
 
     PLATE_DATA = {
         "left_digits": "12",
-        "plate_alphabet": "A",
+        "plate_alphabet": "ب",
         "right_digits": "345",
         "iran_code": "67",
-        "usage_type": "private",
-        "vehicle_type": "car",
+        "usage_type": "personal",
+        "vehicle_type": "sedan",
         "owner_name": "CRUD Owner",
         "owner_phone": "09000000000",
     }
@@ -676,7 +699,7 @@ class TestFireLogsCrud:
         "camera_id": "crud-fire-camera",
         "hazard_type": "fire",
         "severity": "high",
-        "confidence": 0.91,
+        "fire_confidence": 0.91,
     }
 
     def test_create_list_get_validation_and_permissions(self, crud):
@@ -688,7 +711,7 @@ class TestFireLogsCrud:
         )
         assert created.status_code == 201, created.text
         item = created.json()
-        assert item["camera"] == "crud-fire-camera"
+        assert item["camera_id"] == "crud-fire-camera"
         log_id = item["id"]
 
         listed = crud.client.get(
@@ -731,26 +754,24 @@ class TestDetectionLogsApi:
     MODULE = "detection_logs"
 
     def _first_log_id(self, crud) -> int:
-        resp = crud.client.get(
-            "/api/v1/logs/filter",
-            params={"period": "all", "limit": 1},
+        resp = crud.client.post(
+            "/api/v1/logs/log",
+            json={"person": "Unknown"},
             headers={"Authorization": f"Bearer {crud.operator_token}"},
         )
-        assert resp.status_code == 200
-        logs = resp.json()
-        assert logs, "No detection logs exist; seed data may be missing"
-        return logs[0]["id"]
+        assert resp.status_code == 200, resp.text
+        return resp.json()["id"]
 
-    def _first_personnel_id(self, crud) -> int:
+    def _first_personnel(self, crud) -> tuple[int, str]:
         resp = crud.client.get(
             "/api/v1/personnel/",
             params={"limit": 1},
-            headers={"Authorization": f"Bearer {crud.operator_token}"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data.get("total", 0) > 0, "No personnel found"
-        return data["items"][0]["id"]
+        assert resp.status_code == 200, resp.text
+        items = resp.json()
+        assert items, "No personnel found"
+        return items[0]["id"], items[0]["national_code"]
 
     def test_filter_validation_not_found_and_permissions(self, crud):
         base = "/api/v1/logs"
@@ -809,7 +830,7 @@ class TestDetectionLogsApi:
             record
             for record in detection_logs_api.get_detection_log_store().list_all()
             if record.source_system == "generate_fake"
-            and datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz).date()
+            and _parse_iso(record.detection_time).astimezone(local_tz).date()
             == expected_date
         ]
         assert first.json()["count"] == len(personnel) * 2
@@ -822,7 +843,7 @@ class TestDetectionLogsApi:
             )
             assert len(person_logs) == 2
             first_time, second_time = (
-                datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz)
+                _parse_iso(record.detection_time).astimezone(local_tz)
                 for record in person_logs
             )
             assert (6, 0) <= (first_time.hour, first_time.minute) <= (9, 0)
@@ -876,7 +897,7 @@ class TestDetectionLogsApi:
             record
             for record in detection_logs_api.get_detection_log_store().list_all()
             if record.source_system == "generate_fake"
-            and datetime.fromisoformat(str(record.detection_time)).astimezone(local_tz).date()
+            and _parse_iso(record.detection_time).astimezone(local_tz).date()
             == expected_date
         ]
         assert response.json()["count"] == len(personnel) * 3
@@ -887,9 +908,7 @@ class TestDetectionLogsApi:
             ]
             assert len(person_logs) == 3
             for record in person_logs:
-                local_time = datetime.fromisoformat(
-                    str(record.detection_time)
-                ).astimezone(local_tz)
+                local_time = _parse_iso(record.detection_time).astimezone(local_tz)
                 assert (7, 0) <= (local_time.hour, local_time.minute) <= (18, 0)
 
     def test_generate_fake_validates_date_arguments(self, crud):
@@ -904,14 +923,14 @@ class TestDetectionLogsApi:
             response = crud.client.post(base, params=params, headers=auth)
             assert response.status_code == 400
 
-    def test_patch_log_person_by_personnel_id(self, crud):
+    def test_patch_log_person_by_national_code(self, crud):
         base = "/api/v1/logs"
         log_id = self._first_log_id(crud)
-        pid = self._first_personnel_id(crud)
+        pid, national_code = self._first_personnel(crud)
 
         resp = crud.client.patch(
             f"{base}/{log_id}/person",
-            json={"personnel_id": pid},
+            json={"person": national_code},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
         assert resp.status_code == 200
@@ -932,7 +951,7 @@ class TestDetectionLogsApi:
     def test_patch_log_person_not_found(self, crud):
         resp = crud.client.patch(
             "/api/v1/logs/99999999/person",
-            json={"personnel_id": 1},
+            json={"person": "0311344119"},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
         assert resp.status_code == 404

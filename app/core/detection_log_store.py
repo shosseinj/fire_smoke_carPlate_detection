@@ -7,7 +7,7 @@ from app.core.detection_media import VALID_MEDIA_STATUSES
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +54,33 @@ class DetectionLogStore:
     def __init__(self, database: Database | str) -> None:
         self.database = ensure_database(database)
         self._lock = threading.RLock()
+        self._listeners: set[Callable[[str, DetectionLogRecord], None]] = set()
         self._init_db()
+
+    def add_listener(
+        self, listener: Callable[[str, DetectionLogRecord], None]
+    ) -> None:
+        with self._lock:
+            self._listeners.add(listener)
+
+    def remove_listener(
+        self, listener: Callable[[str, DetectionLogRecord], None]
+    ) -> None:
+        with self._lock:
+            self._listeners.discard(listener)
+
+    def _notify(self, action: str, record: DetectionLogRecord) -> None:
+        with self._lock:
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            try:
+                listener(action, record)
+            except Exception:
+                LOGGER.exception(
+                    "Detection-log listener failed: action=%s log_id=%s",
+                    action,
+                    record.id,
+                )
 
     def _connection(self) -> Connection:
         return self.database.connection()
@@ -154,7 +180,9 @@ class DetectionLogStore:
             ).fetchone()
             if row is None:
                 raise RuntimeError("Failed to retrieve created detection log")
-            return self._row_to_log(row)
+            record = self._row_to_log(row)
+        self._notify("created", record)
+        return record
 
     def get(self, log_id: int) -> DetectionLogRecord | None:
         with self._lock, self._connection() as conn:
@@ -218,7 +246,10 @@ class DetectionLogStore:
             row = conn.execute(
                 "SELECT * FROM detection_logs WHERE id = ?", (log_id,)
             ).fetchone()
-            return self._row_to_log(row) if row is not None else None
+            record = self._row_to_log(row) if row is not None else None
+        if record is not None:
+            self._notify("updated", record)
+        return record
 
     def delete(self, log_id: int) -> bool:
         with self._lock, self._connection() as conn:

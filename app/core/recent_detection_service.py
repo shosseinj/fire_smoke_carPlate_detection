@@ -351,15 +351,27 @@ def build_recent_detections_message(runtime: Runtime, limit: int = RECENT_DETECT
     detections = get_recent_detection_payloads(runtime, limit)
     if not detections:
         return None
-    return {"type": "recent_detections", "detections": detections, "count": len(detections)}
+    return {
+        "type": "recent_detections",
+        "detections": detections,
+        "count": len(detections),
+        "limit": limit,
+    }
 
 
-def build_recent_detection_refresh_message(payload: dict[str, Any], log_id: int) -> dict[str, Any]:
+def build_recent_detection_refresh_message(
+    payload: dict[str, Any],
+    log_id: int,
+    *,
+    reason: str = "log_updated",
+    limit: int = RECENT_DETECTIONS_LIMIT,
+) -> dict[str, Any]:
     return {
         "type": "recent_detections",
         "detections": [payload],
         "count": 1,
-        "reason": "log_updated",
+        "limit": limit,
+        "reason": reason,
         "updated_log_id": log_id,
     }
 

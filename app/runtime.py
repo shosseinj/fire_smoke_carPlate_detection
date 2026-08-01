@@ -36,6 +36,10 @@ from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.recent_detection_service import (
+    build_recent_detection_refresh_message,
+    get_single_detection_payload_by_id,
+)
 from app.core.import_progress_store import ImportProgressStore
 from app.core.personnel_zip_import_manager import PersonnelZipImportManager
 from app.core.static_video_store import StaticVideoStore
@@ -1028,6 +1032,21 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
     )
+
+    def _publish_detection_change(action: str, record: object) -> None:
+        log_id = int(getattr(record, "id"))
+        payload = get_single_detection_payload_by_id(runtime_obj, log_id)
+        if payload is None:
+            return
+        runtime_obj.broadcast.publish_control_event(
+            build_recent_detection_refresh_message(
+                payload,
+                log_id,
+                reason="log_created" if action == "created" else "log_updated",
+            )
+        )
+
+    detection_log_store.add_listener(_publish_detection_change)
     synchronized_rooms = runtime_obj._synchronize_source_room_assignments()
     if synchronized_rooms:
         LOGGER.info(

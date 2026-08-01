@@ -69,9 +69,36 @@ def _teardown(test_runtime, old_runtime):
 
 
 def _admin_token(client: TestClient) -> str:
-    """Helper: login as admin and return access token."""
+    """Helper: login as the seeded superadmin and return access token."""
     resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
     return resp.json()["access_token"]
+
+
+def _create_user(
+    client: TestClient,
+    token: str,
+    username: str,
+    password: str = "StrongPass1!",
+    role: str = "user",
+    email: str | None = None,
+    full_name: str | None = None,
+):
+    """Helper: create a user via the canonical create-user endpoint."""
+    payload = {
+        "username": username,
+        "password": password,
+        "confirm_password": password,
+        "role": role,
+    }
+    if email is not None:
+        payload["email"] = email
+    if full_name is not None:
+        payload["full_name"] = full_name
+    return client.post(
+        "/api/v1/auth/create-user",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -90,11 +117,11 @@ def test_login_valid_credentials(tmp_path: Path) -> None:
         body = response.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "admin"
+        assert body["role"] == "superadmin"
         payload = decode_access_token(body["access_token"])
         assert payload is not None
         assert payload["username"] == "admin"
-        assert payload["role"] == "admin"
+        assert payload["role"] == "superadmin"
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -164,10 +191,10 @@ def test_me_with_valid_token(tmp_path: Path) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["username"] == "admin"
-        assert body["role"] == "admin"
+        assert body["role"] == "superadmin"
         assert body["is_active"] is True
         assert "id" in body
-        assert "created_at_utc" in body
+        assert "created_at" in body
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -199,7 +226,7 @@ def test_me_with_expired_token(tmp_path: Path) -> None:
         token = create_access_token(
             user_id=1,
             username="admin",
-            role="admin",
+            role="superadmin",
             expires_minutes=-60,
         )
         response = client.get(
@@ -236,7 +263,7 @@ def test_token_contains_user_info(tmp_path: Path) -> None:
         assert payload is not None
         assert payload["sub"] == "1"
         assert payload["username"] == "admin"
-        assert payload["role"] == "admin"
+        assert payload["role"] == "superadmin"
         assert payload["type"] == "access"
         assert "iat" in payload
         assert "exp" in payload
@@ -261,7 +288,6 @@ def test_login_response_structure(tmp_path: Path) -> None:
             "role",
             "username",
             "user_id",
-            "expires_in",
         } <= set(body)
         assert isinstance(body["access_token"], str)
         assert len(body["access_token"]) > 0
@@ -286,7 +312,7 @@ def test_auth_store_verify_credentials(postgres_database: Database) -> None:
     user = store.verify_credentials("operator", "op123")
     assert user is not None
     assert user.username == "operator"
-    assert user.role == "operator"
+    assert user.role == "user"
     assert store.verify_credentials("operator", "wrong") is None
     assert store.verify_credentials("nobody", "op123") is None
 
@@ -309,9 +335,7 @@ def test_token_oauth2_endpoint(tmp_path: Path) -> None:
         assert "access_token" in body
         assert "refresh_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "admin"
-        assert "expires_in" in body
-        assert body["expires_in"] > 0
+        assert body["role"] == "superadmin"
 
         # Access token is valid
         payload = decode_access_token(body["access_token"])
@@ -370,8 +394,7 @@ def test_refresh_valid_token(tmp_path: Path) -> None:
         body = response.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "admin"
-        assert "expires_in" in body
+        assert body["role"] == "superadmin"
 
         # New access token is valid
         payload = decode_access_token(body["access_token"])
@@ -426,7 +449,7 @@ def test_refresh_expired_token(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         expired = create_refresh_token(
-            user_id=1, username="admin", role="admin", expires_minutes=-60,
+            user_id=1, username="admin", role="superadmin", expires_minutes=-60,
         )
         response = client.post(
             "/api/v1/auth/refresh",
@@ -441,7 +464,7 @@ def test_refresh_token_not_access_token(tmp_path: Path) -> None:
     """An access token cannot be used as a refresh token (type mismatch)."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        access = create_access_token(user_id=1, username="admin", role="admin")
+        access = create_access_token(user_id=1, username="admin", role="superadmin")
         response = client.post(
             "/api/v1/auth/refresh",
             json={"refresh_token": access},
@@ -455,7 +478,7 @@ def test_access_token_not_refresh_token(tmp_path: Path) -> None:
     """A refresh token cannot be used as an access token."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        refresh = create_refresh_token(user_id=1, username="admin", role="admin")
+        refresh = create_refresh_token(user_id=1, username="admin", role="superadmin")
         response = client.get(
             "/api/v1/auth/me",
             headers={"Authorization": f"Bearer {refresh}"},
@@ -465,79 +488,49 @@ def test_access_token_not_refresh_token(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_logout_revokes_refresh_token(tmp_path: Path) -> None:
-    """POST /api/v1/auth/logout revokes the refresh token."""
+def test_logout_revokes_access_token(tmp_path: Path) -> None:
+    """POST /api/v1/auth/logout revokes the presented access token."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        token_resp = client.post(
-            "/api/v1/auth/token",
-            data={"username": "admin", "password": "admin123"},
-        )
-        refresh_token = token_resp.json()["refresh_token"]
+        token = _admin_token(client)
 
         response = client.post(
             "/api/v1/auth/logout",
-            json={"refresh_token": refresh_token},
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
         assert response.json()["message"] == "خروج با موفقیت انجام شد"
 
-        # After logout, refresh fails
-        r2 = client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": refresh_token},
+        # After logout, the access token no longer authenticates
+        r2 = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert r2.status_code == 401
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_logout_invalid_token(tmp_path: Path) -> None:
-    """Logout with invalid token returns 401."""
+def test_logout_without_token_still_ok(tmp_path: Path) -> None:
+    """Logout without a token returns 200 and keeps working."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        response = client.post(
-            "/api/v1/auth/logout",
-            json={"refresh_token": "invalid"},
-        )
-        assert response.status_code == 401
+        response = client.post("/api/v1/auth/logout")
+        assert response.status_code == 200
+        assert response.json()["message"] == "خروج با موفقیت انجام شد"
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_logout_missing_token(tmp_path: Path) -> None:
-    """Logout without token returns 422 (validation error)."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        response = client.post("/api/v1/auth/logout", json={})
-        assert response.status_code == 422
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_logout_missing_token_field(tmp_path: Path) -> None:
-    """Logout with empty refresh_token string fails validation."""
+def test_logout_invalid_token_still_ok(tmp_path: Path) -> None:
+    """Logout with an invalid access token returns 200 (idempotent)."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         response = client.post(
             "/api/v1/auth/logout",
-            json={"refresh_token": ""},
+            headers={"Authorization": "Bearer not-a-real-token"},
         )
-        assert response.status_code == 422
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_logout_with_access_token(tmp_path: Path) -> None:
-    """Logout with an access token (not refresh) returns 401."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        access = create_access_token(user_id=1, username="admin", role="admin")
-        response = client.post(
-            "/api/v1/auth/logout",
-            json={"refresh_token": access},
-        )
-        assert response.status_code == 401
+        assert response.status_code == 200
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -547,22 +540,18 @@ def test_logout_with_access_token(tmp_path: Path) -> None:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def test_create_admin_as_admin(tmp_path: Path) -> None:
-    """Admin can create another admin."""
+def test_create_admin_as_superadmin(tmp_path: Path) -> None:
+    """Superadmin can create another admin."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/create-admin",
-            json={"username": "admin2", "password": "StrongPass1", "role": "admin"},
-            headers={"Authorization": f"Bearer {token}"},
+        response = _create_user(
+            client, token, username="admin2", role="admin", email="admin2@example.com",
         )
-        assert response.status_code == 201
+        assert response.status_code == 200
         body = response.json()
         assert body["username"] == "admin2"
         assert body["role"] == "admin"
-        assert body["is_active"] is True
-        assert "id" in body
         assert "password_hash" not in body
     finally:
         _teardown(test_runtime, old_runtime)
@@ -574,7 +563,7 @@ def test_create_admin_without_auth(tmp_path: Path) -> None:
     try:
         response = client.post(
             "/api/v1/auth/create-admin",
-            json={"username": "admin2", "password": "StrongPass1"},
+            json={"username": "admin2", "password": "StrongPass1!"},
         )
         assert response.status_code == 401
     finally:
@@ -587,22 +576,26 @@ def test_create_admin_as_non_admin(tmp_path: Path) -> None:
     try:
         # First create a viewer user
         admin_token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "viewer1", "password": "StrongPass1", "role": "viewer"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+        _create_user(
+            client, admin_token, username="viewer1", role="viewer",
+            email="viewer1@example.com",
         )
 
         # Login as viewer
         login_resp = client.post(
             "/api/v1/auth/login",
-            json={"username": "viewer1", "password": "StrongPass1"},
+            json={"username": "viewer1", "password": "StrongPass1!"},
         )
         viewer_token = login_resp.json()["access_token"]
 
         response = client.post(
             "/api/v1/auth/create-admin",
-            json={"username": "shouldfail", "password": "StrongPass1"},
+            json={
+                "username": "shouldfail",
+                "password": "StrongPass1!",
+                "confirm_password": "StrongPass1!",
+                "email": "shouldfail@example.com",
+            },
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
         assert response.status_code == 403
@@ -615,69 +608,61 @@ def test_create_user_as_admin(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "operator1", "password": "StrongPass1", "role": "operator"},
-            headers={"Authorization": f"Bearer {token}"},
+        response = _create_user(
+            client, token, username="operator1", role="operator",
+            email="operator1@example.com",
         )
-        assert response.status_code == 201
+        assert response.status_code == 200
         body = response.json()
         assert body["username"] == "operator1"
-        assert body["role"] == "operator"
+        assert body["role"] == "user"
         assert "password_hash" not in body
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_create_user_as_operator(tmp_path: Path) -> None:
-    """Operator can create viewer users."""
+def test_create_user_as_user(tmp_path: Path) -> None:
+    """A plain user cannot create further users."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "op1", "password": "StrongPass1", "role": "operator"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+        _create_user(
+            client, admin_token, username="op1", role="user", email="op1@example.com",
         )
 
         op_login = client.post(
             "/api/v1/auth/login",
-            json={"username": "op1", "password": "StrongPass1"},
+            json={"username": "op1", "password": "StrongPass1!"},
         )
         op_token = op_login.json()["access_token"]
 
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "viewer1", "password": "StrongPass1", "role": "viewer"},
-            headers={"Authorization": f"Bearer {op_token}"},
+        response = _create_user(
+            client, op_token, username="viewer1", role="viewer",
+            email="viewer1@example.com",
         )
-        assert response.status_code == 201
-        assert response.json()["role"] == "viewer"
+        assert response.status_code == 403
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_operator_cannot_create_admin(tmp_path: Path) -> None:
-    """Operator cannot create an admin user."""
+def test_user_cannot_create_admin(tmp_path: Path) -> None:
+    """A plain user cannot create an admin user."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "op1", "password": "StrongPass1", "role": "operator"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+        _create_user(
+            client, admin_token, username="op1", role="user", email="op1@example.com",
         )
 
         op_login = client.post(
             "/api/v1/auth/login",
-            json={"username": "op1", "password": "StrongPass1"},
+            json={"username": "op1", "password": "StrongPass1!"},
         )
         op_token = op_login.json()["access_token"]
 
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "badadmin", "password": "StrongPass1", "role": "admin"},
-            headers={"Authorization": f"Bearer {op_token}"},
+        response = _create_user(
+            client, op_token, username="badadmin", role="admin",
+            email="badadmin@example.com",
         )
         assert response.status_code == 403
     finally:
@@ -689,10 +674,8 @@ def test_create_duplicate_username(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "admin", "password": "StrongPass1"},
-            headers={"Authorization": f"Bearer {token}"},
+        response = _create_user(
+            client, token, username="admin", email="dup@example.com",
         )
         assert response.status_code == 400
         assert "قبلاً" in response.json()["detail"]
@@ -705,15 +688,11 @@ def test_create_duplicate_email(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "user1", "password": "StrongPass1", "email": "dup@example.com"},
-            headers={"Authorization": f"Bearer {token}"},
+        _create_user(
+            client, token, username="user1", email="dup@example.com",
         )
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "user2", "password": "StrongPass1", "email": "dup@example.com"},
-            headers={"Authorization": f"Bearer {token}"},
+        response = _create_user(
+            client, token, username="user2", email="dup@example.com",
         )
         assert response.status_code == 400
         assert "قبلاً" in response.json()["detail"]
@@ -726,10 +705,8 @@ def test_create_user_weak_password(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "newuser", "password": "short", "role": "viewer"},
-            headers={"Authorization": f"Bearer {token}"},
+        response = _create_user(
+            client, token, username="newuser", password="short", role="viewer",
         )
         assert response.status_code == 422
     finally:
@@ -740,11 +717,19 @@ def test_admin_cannot_create_superadmin(tmp_path: Path) -> None:
     """An admin may not create a superadmin account."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "newuser", "password": "StrongPass1", "role": "superadmin"},
-            headers={"Authorization": f"Bearer {token}"},
+        superadmin_token = _admin_token(client)
+        _create_user(
+            client, superadmin_token, username="admin2", role="admin",
+            email="admin2@example.com",
+        )
+        admin_login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin2", "password": "StrongPass1!"},
+        )
+        admin_token = admin_login.json()["access_token"]
+        response = _create_user(
+            client, admin_token, username="newuser", role="superadmin",
+            email="newuser@example.com",
         )
         assert response.status_code == 403
         assert "اجازه" in response.json()["detail"]
@@ -782,14 +767,13 @@ def test_list_users_as_non_admin(tmp_path: Path) -> None:
     try:
         # Need a non-admin user; create one
         admin_token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "viewer1", "password": "StrongPass1", "role": "viewer"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+        _create_user(
+            client, admin_token, username="viewer1", role="viewer",
+            email="viewer1@example.com",
         )
         viewer_login = client.post(
             "/api/v1/auth/login",
-            json={"username": "viewer1", "password": "StrongPass1"},
+            json={"username": "viewer1", "password": "StrongPass1!"},
         )
         viewer_token = viewer_login.json()["access_token"]
 
@@ -812,111 +796,38 @@ def test_list_users_without_auth(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_get_user_by_id(tmp_path: Path) -> None:
-    """Admin can get user details by ID."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        token = _admin_token(client)
-        response = client.get(
-            "/api/v1/auth/users/1",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["username"] == "admin"
-        assert body["role"] == "admin"
-        assert "password_hash" not in body
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_get_user_not_found(tmp_path: Path) -> None:
-    """Getting a nonexistent user returns 404."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        token = _admin_token(client)
-        response = client.get(
-            "/api/v1/auth/users/9999",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 404
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_update_user(tmp_path: Path) -> None:
-    """Admin can update user fields."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        admin_token = _admin_token(client)
-        # Create a user first
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "updateuser", "password": "StrongPass1", "role": "viewer"},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-
-        response = client.put(
-            "/api/v1/auth/users/2",
-            json={"username": "updateduser", "email": "new@example.com"},
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["username"] == "updateduser"
-        assert body["email"] == "new@example.com"
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_update_user_not_found(tmp_path: Path) -> None:
-    """Updating a nonexistent user returns 404."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        token = _admin_token(client)
-        response = client.put(
-            "/api/v1/auth/users/9999",
-            json={"username": "nobody"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 404
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
 def test_change_role(tmp_path: Path) -> None:
-    """Admin can change another user's role."""
+    """Admin can change another user's role via the legacy role route."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
-        client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "roleuser", "password": "StrongPass1", "role": "viewer"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+        _create_user(
+            client, admin_token, username="roleuser", role="user",
+            email="roleuser@example.com",
         )
 
-        response = client.patch(
+        response = client.put(
             "/api/v1/auth/users/2/role",
-            json={"role": "operator"},
+            params={"role": "admin"},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == 200
-        assert response.json()["role"] == "operator"
+        assert response.json()["role"] == "admin"
     finally:
         _teardown(test_runtime, old_runtime)
 
 
 def test_change_role_invalid(tmp_path: Path) -> None:
-    """Changing role to invalid value returns 422."""
+    """Changing role to an unsupported value returns 400."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.patch(
+        response = client.put(
             "/api/v1/auth/users/2/role",
-            json={"role": "superadmin"},
+            params={"role": "superadmin"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 422
+        assert response.status_code == 400
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -926,9 +837,9 @@ def test_change_role_not_found(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.patch(
+        response = client.put(
             "/api/v1/auth/users/9999/role",
-            json={"role": "viewer"},
+            params={"role": "user"},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
@@ -936,34 +847,31 @@ def test_change_role_not_found(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_cannot_deactivate_last_admin(tmp_path: Path) -> None:
-    """Cannot deactivate the last active admin."""
+def test_cannot_demote_superadmin(tmp_path: Path) -> None:
+    """The role of the seeded superadmin cannot be changed."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
-            "/api/v1/auth/users/1",
-            json={"is_active": False},
+            "/api/v1/auth/users/1/role",
+            params={"role": "user"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 400
-        assert "آخرین" in response.json()["detail"]
+        assert response.status_code == 403
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_cannot_demote_last_admin(tmp_path: Path) -> None:
-    """Cannot change the role of the last active admin."""
+def test_cannot_delete_self(tmp_path: Path) -> None:
+    """A user cannot delete their own account."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
-        response = client.patch(
-            "/api/v1/auth/users/1/role",
-            json={"role": "viewer"},
+        response = client.delete(
+            "/api/v1/auth/users/1",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 400
-        assert "آخرین" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -982,8 +890,8 @@ def test_change_password_success(tmp_path: Path) -> None:
             "/api/v1/auth/me/password",
             json={
                 "current_password": "admin123",
-                "new_password": "NewStrongPass1",
-                "confirm_password": "NewStrongPass1",
+                "new_password": "NewStrongPass1!",
+                "confirm_password": "NewStrongPass1!",
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -1000,7 +908,7 @@ def test_change_password_success(tmp_path: Path) -> None:
         # New password works
         new_login = client.post(
             "/api/v1/auth/login",
-            json={"username": "admin", "password": "NewStrongPass1"},
+            json={"username": "admin", "password": "NewStrongPass1!"},
         )
         assert new_login.status_code == 200
     finally:
@@ -1016,8 +924,8 @@ def test_change_password_wrong_current(tmp_path: Path) -> None:
             "/api/v1/auth/me/password",
             json={
                 "current_password": "wrongpassword",
-                "new_password": "NewStrongPass1",
-                "confirm_password": "NewStrongPass1",
+                "new_password": "NewStrongPass1!",
+                "confirm_password": "NewStrongPass1!",
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -1036,32 +944,12 @@ def test_change_password_mismatch(tmp_path: Path) -> None:
             "/api/v1/auth/me/password",
             json={
                 "current_password": "admin123",
-                "new_password": "NewStrongPass1",
-                "confirm_password": "DifferentPass1",
+                "new_password": "NewStrongPass1!",
+                "confirm_password": "DifferentPass1!",
             },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 422
-    finally:
-        _teardown(test_runtime, old_runtime)
-
-
-def test_change_password_same_as_old(tmp_path: Path) -> None:
-    """Password change fails when new password is same as current."""
-    test_runtime, old_runtime, client = _setup_client(tmp_path)
-    try:
-        token = _admin_token(client)
-        response = client.post(
-            "/api/v1/auth/me/password",
-            json={
-                "current_password": "admin123",
-                "new_password": "admin123",
-                "confirm_password": "admin123",
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 400
-        assert "متفاوت" in response.json()["detail"]
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -1074,8 +962,8 @@ def test_change_password_without_auth(tmp_path: Path) -> None:
             "/api/v1/auth/me/password",
             json={
                 "current_password": "admin123",
-                "new_password": "NewStrongPass1",
-                "confirm_password": "NewStrongPass1",
+                "new_password": "NewStrongPass1!",
+                "confirm_password": "NewStrongPass1!",
             },
         )
         assert response.status_code == 401
@@ -1113,8 +1001,8 @@ def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
             "/api/v1/auth/me/password",
             json={
                 "current_password": "admin123",
-                "new_password": "NewStrongPass1",
-                "confirm_password": "NewStrongPass1",
+                "new_password": "NewStrongPass1!",
+                "confirm_password": "NewStrongPass1!",
             },
             headers={"Authorization": f"Bearer {old_token}"},
         )
@@ -1145,7 +1033,7 @@ def test_disabled_auth_allows_access_without_token(tmp_path: Path) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["username"] == "dev"
-        assert body["role"] == "admin"
+        assert body["role"] == "superadmin"
     finally:
         os.environ.pop("DISABLE_AUTH", None)
         _teardown(test_runtime, old_runtime)

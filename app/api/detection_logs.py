@@ -33,10 +33,6 @@ from app.core.legacy_detection_service import (
     calculate_access,
     legacy_detection_response,
 )
-from app.core.recent_detection_service import (
-    build_recent_detection_refresh_message,
-    get_single_detection_payload_by_id,
-)
 
 
 # ── PATCH request schemas ──────────────────────────────────────────────────
@@ -111,7 +107,6 @@ def _excel_bool(value: Any, default: bool) -> bool:
         return False
     raise ValueError("مقدار بولی نامعتبر است")
 
-_detection_log_store: DetectionLogStore | None = None
 _detection_media_storage: DetectionMediaStorage | None = None
 
 
@@ -121,10 +116,7 @@ def get_runtime() -> Any:
 
 
 def get_detection_log_store() -> DetectionLogStore:
-    global _detection_log_store
-    if _detection_log_store is None:
-        _detection_log_store = DetectionLogStore(get_runtime().database)
-    return _detection_log_store
+    return get_runtime().detection_log_store
 
 
 def get_detection_media_storage() -> DetectionMediaStorage:
@@ -136,17 +128,6 @@ def get_detection_media_storage() -> DetectionMediaStorage:
 
 def get_location_store() -> Any:
     return get_runtime().location_store
-
-
-def _push_refresh_for_log(runtime: Any, log_id: int) -> None:
-    broadcast = getattr(runtime, "broadcast", None)
-    if broadcast is None:
-        return
-    payload = get_single_detection_payload_by_id(runtime, log_id)
-    if payload is not None:
-        broadcast.publish_control_event(
-            build_recent_detection_refresh_message(payload, log_id)
-        )
 
 
 def get_personnel_store() -> Any:
@@ -1045,7 +1026,6 @@ def generate_fake_detections(
             cid = _random.choice(selected_camera_ids) if selected_camera_ids else None
 
             def _create_one(dt: datetime) -> bool:
-                confidence = round(_random.uniform(0.5, 1.0), 4)
                 if person.id is not None and rid is not None:
                     access = calculate_access(person.id, rid, ls)
                 else:
@@ -1056,7 +1036,7 @@ def generate_fake_detections(
                         source_system="generate_fake",
                         personnel_id=person.id,
                         person=f"{person.fname} {person.lname}",
-                        confidence=confidence,
+                        confidence=1,
                         detection_time=dt_utc.isoformat(),
                         room_id=rid,
                         camera_id=cid,
@@ -1171,7 +1151,6 @@ def patch_log_person(
     if updated is None:
         raise HTTPException(404, "لاگ تشخیص یافت نشد")
 
-    _push_refresh_for_log(get_runtime(), log_id)
     return _build_response(updated, include_detail=True)
 
 

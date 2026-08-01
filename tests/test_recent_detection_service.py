@@ -9,6 +9,7 @@ import numpy as np
 
 from app.core.recent_detection_service import (
     _build_payload_from_enriched_row,
+    build_recent_detection_refresh_message,
     build_recent_detections_message,
 )
 
@@ -202,4 +203,25 @@ def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None
     assert message is not None
     assert message["type"] == "recent_detections"
     assert message["count"] == 1
+    assert message["limit"] > 0
     assert message["detections"][0]["body_image_base64"]
+
+
+def test_recent_detection_refresh_message_is_incremental() -> None:
+    payload = {"id": 42, "person": "Unknown"}
+
+    message = build_recent_detection_refresh_message(
+        payload,
+        42,
+        reason="log_created",
+        limit=25,
+    )
+
+    assert message == {
+        "type": "recent_detections",
+        "detections": [payload],
+        "count": 1,
+        "limit": 25,
+        "reason": "log_created",
+        "updated_log_id": 42,
+    }
