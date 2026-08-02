@@ -519,6 +519,14 @@
           max-height: 260px;
         }
       }
+      .live-branch-section { padding: 24px; }
+      .live-branch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+      .live-branch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 260px)); gap: 16px; }
+      .live-branch-card { width: 260px; cursor: pointer; background: #152536; border-radius: 10px; padding: 8px; }
+      .live-branch-card video { display: block; width: 260px; height: 260px; object-fit: contain; background: #000; }
+      .live-branch-card h3 { margin: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .live-branch-card [data-live-status] { color: #ffd166; min-height: 1.5em; padding: 4px; }
+      .live-branch-error { color: #ff8b8b; background: #421d28; padding: 10px; margin-bottom: 12px; }
     </style>
   </head>
   <body>
@@ -534,7 +542,8 @@
         <div class="state" id="broadcastState"><span class="state-dot"></span><span>در حال اتصال</span></div>
         <a class="docs-link" href="/docs" target="_blank" rel="noopener">مستندات API</a>
         <a class="docs-link" href="/api/v1/diagnostics/fps?sample_seconds=5" target="_blank" rel="noopener">عیب‌یابی نرخ فریم</a>
-        <button id="wallFullscreenButton" type="button">نمایش تمام‌صفحه دیوار</button>
+          <button id="wallFullscreenButton" type="button">نمایش تمام‌صفحه دیوار</button>
+          <button id="liveBranchButton" type="button">See live branch</button>
         <button id="streamModeButton" type="button">جریان هوش مصنوعی</button>
         <button id="toggleButton" type="button" disabled>در حال بارگذاری…</button>
       </div>
@@ -558,6 +567,14 @@
         </aside>
       </div>
     </main>
+    <section id="liveBranchSection" class="live-branch-section" hidden aria-live="polite">
+      <div class="live-branch-header">
+        <h2>شاخه زنده GPU</h2>
+        <button id="liveBranchBack" type="button">بازگشت به پیش‌نمایش</button>
+      </div>
+      <div id="liveBranchError" class="live-branch-error" role="alert" hidden></div>
+      <div id="liveBranchGrid" class="live-branch-grid"></div>
+    </section>
     <script>
       const stateElement = document.getElementById("broadcastState");
       const toggleButton = document.getElementById("toggleButton");
@@ -567,6 +584,11 @@
       const syncStatus = document.getElementById("syncStatus");
       const wallFullscreenButton = document.getElementById("wallFullscreenButton");
       const streamModeButton = document.getElementById("streamModeButton");
+      const liveBranchButton = document.getElementById("liveBranchButton");
+      const liveBranchSection = document.getElementById("liveBranchSection");
+      const liveBranchGrid = document.getElementById("liveBranchGrid");
+      const liveBranchError = document.getElementById("liveBranchError");
+      const liveBranchBack = document.getElementById("liveBranchBack");
       let sources = [];
       let broadcasting = false;
       let sourcesSignature = "";
@@ -586,6 +608,128 @@
       const frameStats = new Map();
       const metricElements = new Map();
       let sessionReceivedFrames = 0;
+      let liveBranchView = false;
+      let liveBranchFullscreen = null;
+      const liveBranchStates = new Map();
+      let liveBranchHeartbeatTimer = null;
+
+      function showLiveBranchError(message) {
+        liveBranchError.textContent = message;
+        liveBranchError.hidden = false;
+      }
+
+      function clearLiveBranchError() {
+        liveBranchError.textContent = "";
+        liveBranchError.hidden = true;
+      }
+
+      function liveBranchStatus(card, message) {
+        const status = card.querySelector("[data-live-status]");
+        if (status) { status.textContent = message; status.hidden = false; }
+      }
+
+      async function releaseLiveBranch(state) {
+        if (!state || state.released) return;
+        state.released = true;
+        if (state.peer) state.peer.close();
+        state.video.srcObject = null;
+        try {
+          await fetch(`/api/v1/live-branch/${state.profile}/release`, {
+            method: "DELETE", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source_uri: state.sourceUri, session_id: state.sessionId }),
+            keepalive: true,
+          });
+        } catch (_) { /* unload/network cleanup is best effort */ }
+      }
+
+      async function acquireLiveBranch(source, profile, video, card) {
+        const previous = liveBranchStates.get(`${source.source_uri}:${profile}`);
+        if (previous) await releaseLiveBranch(previous);
+        const state = { sourceUri: source.source_uri, profile, video, card, peer: null, sessionId: null, released: false };
+        liveBranchStates.set(`${source.source_uri}:${profile}`, state);
+        try {
+          const response = await fetch(`/api/v1/live-branch/${profile}/acquire`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source_uri: source.source_uri, client_id: `dashboard-${location.pathname}` }),
+          });
+          const result = await response.json();
+          if (!response.ok || result.enabled === false) throw new Error(result.detail || "شاخه زنده غیرفعال است");
+          state.sessionId = result.session_id;
+          const peer = new RTCPeerConnection();
+          state.peer = peer;
+          peer.addTransceiver("video", { direction: "recvonly" });
+          peer.addEventListener("track", (event) => { video.srcObject = event.streams[0]; });
+          peer.addEventListener("connectionstatechange", () => {
+            if (["failed", "disconnected", "closed"].includes(peer.connectionState) && !state.released) {
+              liveBranchStatus(card, `اتصال شاخه زنده قطع شد (${peer.connectionState})`);
+            }
+          });
+          await peer.setLocalDescription(await peer.createOffer());
+          await waitForIceGatheringBounded(peer);
+          const whep = await fetch(result.whep_url, {
+            method: "POST", headers: { "Content-Type": "application/sdp" }, body: peer.localDescription.sdp,
+          });
+          if (!whep.ok) throw new Error(`مذاکره WHEP با کد ${whep.status} شکست خورد`);
+          await peer.setRemoteDescription({ type: "answer", sdp: await whep.text() });
+          try { await video.play(); } catch (error) { throw new Error(`پخش ویدیو رد شد: ${error.message}`); }
+          liveBranchStatus(card, "در حال پخش زنده");
+          return state;
+        } catch (error) {
+          liveBranchStatus(card, `خطای بارگذاری منبع: ${error.message}`);
+          showLiveBranchError(error.message);
+          await releaseLiveBranch(state);
+          return null;
+        }
+      }
+
+      function renderLiveBranch() {
+        liveBranchGrid.innerHTML = "";
+        clearLiveBranchError();
+        for (const source of sources.filter((item) => item.enabled)) {
+           const card = document.createElement("article");
+           card.className = "live-branch-card";
+           card.dataset.nativeWidth = String(source.frame_width || 0);
+           card.dataset.nativeHeight = String(source.frame_height || 0);
+          const title = document.createElement("h3"); title.textContent = source.name || source.source_uri;
+          const video = document.createElement("video");
+          video.autoplay = true; video.muted = true; video.playsInline = true;
+          video.dataset.sourceUri = source.source_uri;
+          const status = document.createElement("div"); status.dataset.liveStatus = "true"; status.textContent = "در حال دریافت…";
+          card.append(title, video, status); liveBranchGrid.appendChild(card);
+          card.addEventListener("click", () => openLiveBranchFullscreen(source, card, video));
+          acquireLiveBranch(source, "wall", video, card);
+        }
+        if (!liveBranchGrid.children.length) showLiveBranchError("منبع فعالی برای شاخه زنده وجود ندارد");
+      }
+
+      async function openLiveBranchFullscreen(source, card, video) {
+        if (liveBranchFullscreen && liveBranchFullscreen.sourceUri === source.source_uri) return;
+        if (document.fullscreenElement) await document.exitFullscreen();
+        const wall = liveBranchStates.get(`${source.source_uri}:wall`);
+        if (wall) await releaseLiveBranch(wall);
+        const state = await acquireLiveBranch(source, "fullscreen", video, card);
+        if (!state) return;
+        liveBranchFullscreen = state;
+        try { await video.requestFullscreen(); } catch (error) { liveBranchStatus(card, `تمام‌صفحه رد شد: ${error.message}`); }
+      }
+
+      async function closeLiveBranchView() {
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        for (const state of liveBranchStates.values()) await releaseLiveBranch(state);
+        liveBranchStates.clear(); liveBranchFullscreen = null;
+        if (liveBranchHeartbeatTimer) window.clearInterval(liveBranchHeartbeatTimer);
+        liveBranchHeartbeatTimer = null;
+      }
+
+      function setLiveBranchView(enabled) {
+        liveBranchView = enabled;
+        liveBranchSection.hidden = !enabled;
+        document.querySelector("main").hidden = enabled;
+        liveBranchButton.setAttribute("aria-pressed", String(enabled));
+        if (enabled) { history.replaceState(null, "", "#live-branch"); renderLiveBranch(); liveBranchHeartbeatTimer = window.setInterval(() => {
+          for (const state of liveBranchStates.values()) if (state.sessionId && !state.released) fetch(`/api/v1/live-branch/${state.profile}/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_uri: state.sourceUri, session_id: state.sessionId }) }).catch(() => liveBranchStatus(state.card, "خطای heartbeat شاخه زنده"));
+        }, 5000); } else { history.replaceState(null, "", "/dashboard"); closeLiveBranchView(); }
+      }
 
       function statsFor(sourceId) {
         if (!frameStats.has(sourceId)) {
@@ -1289,6 +1433,9 @@
         reconnectBroadcastSocket();
       });
 
+      liveBranchButton.addEventListener("click", () => setLiveBranchView(!liveBranchView));
+      liveBranchBack.addEventListener("click", () => setLiveBranchView(false));
+
       document.addEventListener("fullscreenchange", () => {
         const fullscreenElement = document.fullscreenElement;
         const nextFullscreenSourceId = fullscreenElement?.classList.contains("camera-card") ? fullscreenElement.dataset.sourceId : null;
@@ -1300,6 +1447,14 @@
         for (const button of document.querySelectorAll("[data-fullscreen-source]")) {
           button.textContent = fullscreenElement === button.closest(".camera-card") ? "خروج از تمام‌صفحه" : "تمام‌صفحه";
         }
+        if (!document.fullscreenElement && liveBranchFullscreen) {
+          const state = liveBranchFullscreen;
+          liveBranchFullscreen = null;
+          releaseLiveBranch(state);
+          const source = sources.find((item) => item.source_uri === state.sourceUri);
+          const card = state.card;
+          if (source && liveBranchView) acquireLiveBranch(source, "wall", state.video, card);
+        }
       });
 
       window.addEventListener("beforeunload", () => {
@@ -1307,7 +1462,10 @@
         clearJpegBlobs();
         disconnectBroadcastSocket();
         disconnectResultSocket();
+        closeLiveBranchView();
       });
+
+      if (location.hash === "#live-branch") setLiveBranchView(true);
 
       synchronizeDashboard();
       updateStreamModeButton();

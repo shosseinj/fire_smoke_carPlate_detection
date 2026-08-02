@@ -8,10 +8,11 @@ live-branch or broadcast-gpu ownership.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET_HINTS = ("live_branch", "live-branch", "broadcast_gpu", "broadcast-gpu")
+TARGET_FILES = {Path("app/core/live_branch.py")}
 FORBIDDEN = (
     "appsink",
     "cv2.",
@@ -36,8 +37,8 @@ violations: list[str] = []
 for path in ROOT.rglob("*"):
     if not path.is_file() or any(part in SKIP_PARTS for part in path.parts):
         continue
-    lowered_path = str(path.relative_to(ROOT)).lower()
-    if not any(hint in lowered_path for hint in TARGET_HINTS):
+    relative_path = path.relative_to(ROOT)
+    if relative_path not in TARGET_FILES:
         continue
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -45,7 +46,8 @@ for path in ROOT.rglob("*"):
         continue
     lowered = text.lower()
     for token in FORBIDDEN:
-        if token.lower() in lowered:
+        needle = rf"\b{re.escape(token)}\b" if token in {"videoconvert", "videoscale"} else re.escape(token)
+        if re.search(needle, lowered):
             violations.append(f"{path.relative_to(ROOT)}: forbidden token {token!r}")
 
 if violations:

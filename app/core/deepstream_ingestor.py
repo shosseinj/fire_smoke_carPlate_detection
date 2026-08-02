@@ -21,6 +21,7 @@ from app.core.source_registry import (
     canonical_source_type,
 )
 from app.core.video_ingestor import VideoFileIngestor
+from app.core.live_branch import GpuLiveBranchManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
+    tee: Any = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
@@ -88,6 +90,7 @@ class DeepStreamIngestor:
         "identity",
         "capsfilter",
         "appsink",
+        "tee",
     )
 
     def __init__(
@@ -110,6 +113,7 @@ class DeepStreamIngestor:
         on_source_started: Callable[[str], None] | None = None,
         on_source_eos: Callable[[str, bool], None] | None = None,
         on_source_failed: Callable[[str, str], None] | None = None,
+        live_branch_manager: GpuLiveBranchManager | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -140,6 +144,7 @@ class DeepStreamIngestor:
         self.on_source_started = on_source_started
         self.on_source_eos = on_source_eos
         self.on_source_failed = on_source_failed
+        self.live_branch_manager = live_branch_manager
         self._started_sources: set[str] = set()
 
         self._gst: Any | None = None
@@ -226,17 +231,38 @@ class DeepStreamIngestor:
             raise RuntimeError(f"Required GStreamer element is unavailable: {factory}")
         return element
 
-    def _on_pad_added(self, _: Any, pad: Any, queue: Any) -> None:
+    def _on_decoded_pad_added(
+        self, _: Any, pad: Any, tee: Any, ai_queue: Any, source_id: str
+    ) -> None:
         Gst, _ = self._require_runtime()
         caps = pad.get_current_caps() or pad.query_caps(None)
-        if caps is None or not caps.to_string().startswith("video/"):
+        caps_text = caps.to_string() if caps is not None else ""
+        if "video/x-raw" not in caps_text or "memory:NVMM" not in caps_text:
+            if caps_text.startswith("video/"):
+                LOGGER.error("Refusing non-NVMM decoded pad for %s: %s", source_id, caps_text)
             return
-        sink_pad = queue.get_static_pad("sink")
+        sink_pad = tee.get_static_pad("sink")
         if sink_pad is None or sink_pad.is_linked():
             return
         result = pad.link(sink_pad)
         if result != Gst.PadLinkReturn.OK:
-            LOGGER.error("DeepStream source pad could not be linked: %s", result)
+            LOGGER.error("DeepStream NVMM source pad could not be linked: %s", result)
+            return
+        ai_pad = tee.get_request_pad("src_%u")
+        ai_sink = ai_queue.get_static_pad("sink")
+        if ai_pad is None or ai_sink is None or ai_pad.link(ai_sink) != Gst.PadLinkReturn.OK:
+            if ai_pad is not None:
+                tee.release_request_pad(ai_pad)
+            LOGGER.error("DeepStream AI tee branch could not be linked: %s", source_id)
+            return
+        if self.live_branch_manager is not None:
+            try:
+                state = self._states.get(source_id)
+                if state is not None:
+                    self.live_branch_manager.set_runtime(Gst, self._glib)
+                    self.live_branch_manager.attach_source(source_id, tee, state.pipeline)
+            except Exception:
+                LOGGER.exception("GPU live branch attachment failed without stopping AI: %s", source_id)
 
     @staticmethod
     def _on_autoplug_continue(_: Any, __: Any, caps: Any) -> bool:
@@ -472,6 +498,7 @@ class DeepStreamIngestor:
             source = self._make("nvurisrcbin", f"source_{safe_id}")
             queue = self._make("queue", f"queue_{safe_id}")
             pacer = self._make("identity", f"pacer_{safe_id}")
+            tee = self._make("tee", f"decode_tee_{safe_id}")
             gpu_convert = self._make("nvvideoconvert", f"gpu_convert_{safe_id}")
             bgrx_caps = self._make("capsfilter", f"bgrx_caps_{safe_id}")
             sink = self._make("appsink", f"appsink_{safe_id}")
@@ -534,6 +561,7 @@ class DeepStreamIngestor:
 
             for element in (
                 source,
+                tee,
                 queue,
                 pacer,
                 gpu_convert,
@@ -550,7 +578,7 @@ class DeepStreamIngestor:
             if not bgrx_caps.link(sink):
                 raise RuntimeError("Could not link BGRx caps to appsink")
             source_pad_handler_id = source.connect(
-                "pad-added", self._on_pad_added, pacer
+                "pad-added", self._on_decoded_pad_added, tee, queue, record.source_uri
             )
             sink_handler_id = sink.connect(
                 "new-sample", self._on_new_sample, record.source_uri
@@ -566,6 +594,7 @@ class DeepStreamIngestor:
                 source_type="rtsp" if is_rtsp else "video_file",
                 pipeline=pipeline,
                 source=source,
+                tee=tee,
                 sink=sink,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
@@ -613,6 +642,8 @@ class DeepStreamIngestor:
             state.bus.remove_signal_watch()
         except Exception:
             pass
+        if self.live_branch_manager is not None:
+            self.live_branch_manager.detach_source(state.source_id)
         state.pipeline.set_state(Gst.State.NULL)
         try:
             # Wait until NVDEC and nvurisrcbin have actually released their

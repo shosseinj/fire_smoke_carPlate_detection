@@ -26,6 +26,7 @@ from app.core.model_management import (
     ModelSelectionConfig,
 )
 from app.core.media_preview_publisher import MediaPreviewPublisher
+from app.core.live_branch import GpuLiveBranchManager
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
@@ -109,6 +110,7 @@ class Runtime:
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
+    live_branch: GpuLiveBranchManager | None = None
 
     def operational_settings(self):
         gs = self.general_settings.get()
@@ -338,6 +340,8 @@ class Runtime:
                     self.media_preview.start()
                 except Exception as exc:
                     LOGGER.warning("MEDIA_PREVIEW_NOT_READY %s", exc)
+            if self.live_branch is not None:
+                self.live_branch.start()
             if self.video_ingestor is not None:
                 self.video_ingestor.start()
             if self.static_video_ingestor is not None:
@@ -345,6 +349,8 @@ class Runtime:
         except Exception:
             if self.media_preview is not None:
                 self.media_preview.close()
+            if self.live_branch is not None:
+                self.live_branch.close()
             if self.static_video_ingestor is not None:
                 self.static_video_ingestor.close()
             if self.video_ingestor is not None:
@@ -360,6 +366,8 @@ class Runtime:
         self.model_conversions.close()
         if self.media_preview is not None:
             self.media_preview.close()
+        if self.live_branch is not None:
+            self.live_branch.close()
         if self.static_video_ingestor is not None:
             self.static_video_ingestor.close()
         if self.video_ingestor is not None:
@@ -389,6 +397,11 @@ class Runtime:
             self.media_preview.status()
             if self.media_preview is not None
             else {"enabled": False, "running": False}
+        )
+        value["live_branch"] = (
+            self.live_branch.status()
+            if self.live_branch is not None
+            else {"enabled": False, "branches": {}}
         )
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
@@ -919,6 +932,13 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     project_root = Path(__file__).resolve().parents[1]
     video_ingestor = None
     static_video_ingestor = None
+    live_branch = GpuLiveBranchManager(
+        publish_base=app_settings.live_branch_publish_base,
+        browser_base=app_settings.live_branch_browser_base,
+        enabled=app_settings.live_branch_enabled,
+        grace_seconds=app_settings.live_branch_grace_seconds,
+        heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
+    )
     if app_settings.video_ingestion_enabled:
         common_ingestor_settings = {
             "registry": registry,
@@ -927,6 +947,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             "gpu_resize_enabled": app_settings.gpu_resize_enabled,
             "rtsp_transport": operational.rtsp_transport,
             "rtsp_reconnect_seconds": operational.rtsp_reconnect_seconds,
+            "live_branch_manager": live_branch,
         }
         if app_settings.video_ingest_backend == "deepstream":
             print('\n\n\n\ningest video with deepstream\n\n')
@@ -1031,6 +1052,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         video_ingestor=video_ingestor,
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
+        live_branch=live_branch,
     )
 
     def _publish_detection_change(action: str, record: object) -> None:
