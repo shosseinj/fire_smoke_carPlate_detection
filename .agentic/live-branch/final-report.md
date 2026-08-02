@@ -60,7 +60,7 @@ The currently running container predates the worktree changes and had `LIVE_BRAN
 
 ## Commits
 
-`d3ec5d2` (`Add GPU decode tee live branch`) contains the implementation and tests. A follow-up topology/host-WHEP/native-capability fix is pending as a separate local commit. No push or merge performed.
+`d3ec5d2` (`Add GPU decode tee live branch`) and `824b37a` (`Correct live branch topology and WHEP host URL`) are local implementation commits. No push or merge performed.
 
 ## Merge recommendation
 
