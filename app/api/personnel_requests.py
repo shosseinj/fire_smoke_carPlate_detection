@@ -7,6 +7,7 @@ from datetime import date, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.core.auth import require_role, get_current_user
 from app.core.legacy_service import (
@@ -30,6 +31,21 @@ from app.time_utils import utc_now_text
 LEGACY_STATUSES = frozenset({"waiting", "accepted", "rejected"})
 
 router = APIRouter(prefix="/api/v1/personnel-requests", tags=["Personnel Requests"])
+
+
+class BulkPersonnelRequestItem(BaseModel):
+    request_type: str = "earned_leave"
+    duration_type: str = "daily"
+    start_date: str = Field(min_length=1)
+    end_date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    description: str | None = None
+
+
+class BulkPersonnelRequestCreate(BaseModel):
+    personnel_id: int = Field(gt=0)
+    requests: list[BulkPersonnelRequestItem] = Field(min_length=1, max_length=200)
 
 
 def get_runtime() -> Any:
@@ -69,6 +85,88 @@ def _get_shift(personnel: PersonnelRecord) -> WorkShiftRecord | None:
 
 def _full_name(personnel: PersonnelRecord) -> str:
     return f"{personnel.fname} {personnel.lname}"
+
+
+def _prepare_bulk_request(
+    personnel: PersonnelRecord,
+    shift: WorkShiftRecord,
+    item: BulkPersonnelRequestItem,
+) -> dict[str, Any]:
+    request_type = item.request_type
+    duration_type = item.duration_type
+    if request_type not in LEGACY_REQUEST_TYPES:
+        raise HTTPException(400, f"نوع درخواست معتبر نیست: {request_type!r}")
+    if duration_type not in LEGACY_DURATION_TYPES:
+        raise HTTPException(400, f"نوع مدت معتبر نیست: {duration_type!r}")
+
+    try:
+        start = validate_jalali_date(item.start_date)
+        end = validate_jalali_date(item.end_date) if item.end_date else start
+        if end < start:
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    start_clock: time | None = None
+    end_clock: time | None = None
+    if duration_type == "daily":
+        if item.start_time or item.end_time:
+            raise HTTPException(
+                400,
+                "درخواست روزانه نباید شامل start_time یا end_time باشد",
+            )
+    else:
+        if not item.start_time or not item.end_time:
+            raise HTTPException(
+                400,
+                "درخواست ساعتی به start_time و end_time نیاز دارد",
+            )
+        try:
+            validate_clock_time(item.start_time)
+            validate_clock_time(item.end_time)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        start_hour, start_minute = map(int, item.start_time.split(":")[:2])
+        end_hour, end_minute = map(int, item.end_time.split(":")[:2])
+        start_clock = time(start_hour, start_minute)
+        end_clock = time(end_hour, end_minute)
+        if start != end:
+            raise HTTPException(
+                400,
+                "تاریخ شروع و پایان درخواست ساعتی باید یکسان باشد",
+            )
+        if end_clock <= start_clock:
+            raise HTTPException(400, "end_time باید بعد از start_time باشد")
+
+    try:
+        calculation = calculate_request_duration(
+            personnel,
+            shift,
+            get_holiday_store(),
+            start,
+            end,
+            duration_type,
+            start_clock,
+            end_clock,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "request_type": request_type,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "duration_type": duration_type,
+        "start_time": start_clock.strftime("%H:%M") if start_clock else None,
+        "end_time": end_clock.strftime("%H:%M") if end_clock else None,
+        "duration_days": (
+            calculation["duration_days"] if duration_type == "daily" else None
+        ),
+        "duration_minutes": (
+            calculation["duration_minutes"] if duration_type == "hourly" else None
+        ),
+        "reason": item.description,
+        "status": "approved",
+    }
 
 
 # ── List ──────────────────────────────────────────────────────────────────
@@ -348,6 +446,44 @@ def create_request(
 
 
 # ── Generate fake (admin only) ────────────────────────────────────────────
+
+
+@router.post("/bulk", status_code=201)
+def create_bulk_requests(
+    body: BulkPersonnelRequestCreate,
+    _: Any = Depends(require_role("operator")),
+) -> dict[str, Any]:
+    """Create an atomic batch of requests for one personnel."""
+    personnel = _get_personnel(body.personnel_id)
+    if personnel is None:
+        raise HTTPException(404, f"پرسنل با شناسه {body.personnel_id} یافت نشد")
+    shift = _get_shift(personnel)
+    if shift is None:
+        raise HTTPException(
+            400,
+            f"برای پرسنل با شناسه {body.personnel_id} شیفتی تعیین نشده است",
+        )
+
+    prepared = [
+        _prepare_bulk_request(personnel, shift, item) for item in body.requests
+    ]
+    try:
+        records = get_request_store().create_many(
+            personnel_id=body.personnel_id,
+            requests=prepared,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    full_name = _full_name(personnel)
+    return {
+        "personnel_id": body.personnel_id,
+        "count": len(records),
+        "requests": [
+            legacy_request_response(record, full_name=full_name)
+            for record in records
+        ],
+    }
 
 
 @router.post("/generate-fake", status_code=201)

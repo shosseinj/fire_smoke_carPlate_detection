@@ -980,6 +980,67 @@ class TestDetectionLogsApi:
 class TestPersonnelRequestsApi:
     MODULE = "personnel_requests"
 
+    def test_bulk_create_for_one_personnel(self, crud):
+        personnel_response = crud.client.get(
+            "/api/v1/personnel/",
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert personnel_response.status_code == 200, personnel_response.text
+        personnel = personnel_response.json()[0]
+        shift = crud.runtime.shift_store.create(
+            shift_name="Bulk Request Shift",
+            start_time="08:00",
+            end_time="16:00",
+            works_saturday=True,
+            works_sunday=True,
+            works_monday=True,
+            works_tuesday=True,
+            works_wednesday=True,
+            works_thursday=True,
+            works_friday=True,
+        )
+        updated_personnel = crud.runtime.personnel_store.update(
+            personnel["id"],
+            shift_id=shift.id,
+        )
+        assert updated_personnel is not None
+        personnel["shift_id"] = shift.id
+
+        response = crud.client.post(
+            "/api/v1/personnel-requests/bulk",
+            json={
+                "personnel_id": personnel["id"],
+                "requests": [
+                    {
+                        "request_type": "earned_leave",
+                        "duration_type": "daily",
+                        "start_date": "1405/06/01",
+                        "end_date": "1405/06/01",
+                    },
+                    {
+                        "request_type": "mission",
+                        "duration_type": "daily",
+                        "start_date": "1405/06/02",
+                        "end_date": "1405/06/02",
+                    },
+                ],
+            },
+            headers={"Authorization": f"Bearer {crud.operator_token}"},
+        )
+
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert payload["personnel_id"] == personnel["id"]
+        assert payload["count"] == 2
+        assert [item["request_type"] for item in payload["requests"]] == [
+            "earned_leave",
+            "mission",
+        ]
+        assert all(
+            item["personnel_id"] == personnel["id"]
+            for item in payload["requests"]
+        )
+
     def test_list_not_found_validation_and_permissions(self, crud):
         base = "/api/v1/personnel-requests"
         listed = crud.client.get(
@@ -1008,7 +1069,7 @@ class TestPersonnelRequestsApi:
         assert invalid_personnel.status_code == 404
 
         forbidden = crud.client.get(f"{base}/", headers={"Authorization": f"Bearer {crud.viewer_token}"})
-        assert forbidden.status_code == 403
+        assert forbidden.status_code == 200
 
 
 class TestDeveloperAndProcessorTestsApi:

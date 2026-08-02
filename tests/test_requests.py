@@ -54,6 +54,54 @@ class TestRequestStore:
                         start_date="1405-05-10", end_date="1405-05-12")
         assert req.id > 0
 
+    def test_create_many_is_atomic(
+        self,
+        stores: tuple[RequestStore, PersonnelStore, Path],
+        person_id: int,
+    ) -> None:
+        rs, _, _ = stores
+        before = rs.count()
+        with pytest.raises(ValueError, match="Invalid request type"):
+            rs.create_many(
+                personnel_id=person_id,
+                requests=[
+                    {
+                        "request_type": "earned_leave",
+                        "start_date": "2026-08-01",
+                        "end_date": "2026-08-02",
+                    },
+                    {
+                        "request_type": "invalid",
+                        "start_date": "2026-08-03",
+                        "end_date": "2026-08-04",
+                    },
+                ],
+            )
+        assert rs.count() == before
+
+        created = rs.create_many(
+            personnel_id=person_id,
+            requests=[
+                {
+                    "request_type": "earned_leave",
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-02",
+                    "status": "approved",
+                },
+                {
+                    "request_type": "mission",
+                    "start_date": "2026-08-03",
+                    "end_date": "2026-08-03",
+                    "status": "approved",
+                },
+            ],
+        )
+        assert [record.request_type for record in created] == [
+            "earned_leave",
+            "mission",
+        ]
+        assert all(record.personnel_id == person_id for record in created)
+
     def test_create_invalid_type(self, stores: tuple[RequestStore, PersonnelStore, Path], person_id: int) -> None:
         rs, _, _ = stores
         with pytest.raises(ValueError, match="Invalid request type"):
@@ -62,13 +110,13 @@ class TestRequestStore:
 
     def test_create_missing_dates(self, stores: tuple[RequestStore, PersonnelStore, Path], person_id: int) -> None:
         rs, _, _ = stores
-        with pytest.raises(ValueError, match="required"):
+        with pytest.raises(ValueError, match="الزامی"):
             rs.create(personnel_id=person_id, request_type="leave",
                       start_date="", end_date="")
 
     def test_create_start_after_end(self, stores: tuple[RequestStore, PersonnelStore, Path], person_id: int) -> None:
         rs, _, _ = stores
-        with pytest.raises(ValueError, match="start_date must not be after end_date"):
+        with pytest.raises(ValueError, match="نباید بعد از تاریخ پایان"):
             rs.create(personnel_id=person_id, request_type="leave",
                       start_date="2026-08-10", end_date="2026-08-05")
 

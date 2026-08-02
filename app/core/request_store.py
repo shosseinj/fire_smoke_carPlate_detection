@@ -219,6 +219,79 @@ class RequestStore:
                 raise RuntimeError("Failed to retrieve created request")
             return self._row_to_request(row)
 
+    def create_many(
+        self,
+        personnel_id: int,
+        requests: list[dict[str, Any]],
+    ) -> list[PersonnelRequestRecord]:
+        """Create multiple requests for one personnel in a single transaction."""
+        if not requests:
+            raise ValueError("At least one request is required")
+
+        prepared: list[tuple[Any, ...]] = []
+        now = _now()
+        for item in requests:
+            request_type = str(item.get("request_type", "leave"))
+            start_date = str(item.get("start_date", ""))
+            end_date = str(item.get("end_date", ""))
+            status = str(item.get("status", "pending"))
+            if request_type not in VALID_REQUEST_TYPES:
+                raise ValueError(f"Invalid request type: {request_type!r}")
+            if not start_date or not end_date:
+                raise ValueError("Start and end dates are required")
+            start = self._normalize_date(start_date)
+            end = self._normalize_date(end_date)
+            if start > end:
+                raise ValueError("start_date must not be after end_date")
+            if status not in VALID_REQUEST_STATUSES:
+                raise ValueError(f"Invalid status: {status!r}")
+            prepared.append(
+                (
+                    personnel_id,
+                    request_type,
+                    item.get("duration_type"),
+                    start,
+                    end,
+                    self._parse_time(item.get("start_time")),
+                    self._parse_time(item.get("end_time")),
+                    item.get("duration_days"),
+                    item.get("duration_minutes"),
+                    item.get("reason"),
+                    status,
+                    item.get("reviewed_at"),
+                    item.get("rejection_reason"),
+                    now,
+                    now,
+                )
+            )
+
+        with self._lock, self._connection() as conn:
+            personnel = conn.execute(
+                "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
+            ).fetchone()
+            if personnel is None:
+                raise ValueError(f"Personnel not found: {personnel_id}")
+
+            created: list[PersonnelRequestRecord] = []
+            for values in prepared:
+                cursor = conn.execute(
+                    "INSERT INTO personnel_requests "
+                    "(personnel_id, request_type, duration_type, start_date, end_date, "
+                    "start_time, end_time, duration_days, duration_minutes, "
+                    "reason, status, reviewed_at, rejection_reason, "
+                    "created_at_utc, updated_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+                row = conn.execute(
+                    "SELECT * FROM personnel_requests WHERE id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Failed to retrieve created request")
+                created.append(self._row_to_request(row))
+            return created
+
     def get(self, request_id: int) -> PersonnelRequestRecord | None:
         with self._lock, self._connection() as conn:
             row = conn.execute(
