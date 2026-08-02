@@ -590,6 +590,7 @@
       const liveBranchError = document.getElementById("liveBranchError");
       const liveBranchBack = document.getElementById("liveBranchBack");
       let sources = [];
+      let liveBranchSources = [];
       let broadcasting = false;
       let sourcesSignature = "";
       let synchronizationRunning = false;
@@ -689,7 +690,7 @@
       function renderLiveBranch() {
         liveBranchGrid.innerHTML = "";
         clearLiveBranchError();
-        for (const source of sources.filter((item) => item.enabled)) {
+         for (const source of liveBranchSources.filter((item) => item.enabled && item.active !== false)) {
            const card = document.createElement("article");
            card.className = "live-branch-card";
            card.dataset.nativeWidth = String(source.frame_width || 0);
@@ -1379,8 +1380,8 @@
         if (synchronizationRunning) return;
         synchronizationRunning = true;
         try {
-          const [sourcesResponse, stateResponse] = await Promise.all([fetch("/api/v1/sources/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" })]);
-          if (!sourcesResponse.ok || !stateResponse.ok) throw new Error("API در دسترس نیست");
+          const [sourcesResponse, stateResponse, liveSourcesResponse] = await Promise.all([fetch("/api/v1/sources/preview-config", { cache: "no-store" }), fetch("/api/v1/broadcast/state", { cache: "no-store" }), fetch("/api/v1/broadcast-gpu/sources", { cache: "no-store" })]);
+          if (!sourcesResponse.ok || !stateResponse.ok || !liveSourcesResponse.ok) throw new Error("API در دسترس نیست");
           const previewConfig = await sourcesResponse.json();
           previewBaseUrl = previewConfig.whep_base_url;
           previewAvailable = previewConfig.enabled;
@@ -1390,6 +1391,8 @@
           useJpegFallback = true;
           const nextSources = previewConfig.sources;
           const state = await stateResponse.json();
+          const liveSourcesConfig = await liveSourcesResponse.json();
+          liveBranchSources = Array.isArray(liveSourcesConfig.sources) ? liveSourcesConfig.sources : [];
           showState(state.enabled);
           const nextSignature = signatureFor(nextSources);
           if (nextSignature !== sourcesSignature) {

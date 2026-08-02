@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
 import cv2
 import numpy as np
@@ -184,7 +185,8 @@ class DeepStreamIngestor:
     def _resolve_uri(self, source_uri: str) -> str:
         if VideoFileIngestor.is_rtsp_uri(source_uri):
             return source_uri
-        path = Path(source_uri).expanduser()
+        parsed = urlsplit(source_uri)
+        path = Path(unquote(parsed.path) if parsed.scheme.lower() == "file" else source_uri).expanduser()
         if not path.is_absolute():
             path = self.project_root / path
         return path.resolve().as_uri()
@@ -482,7 +484,10 @@ class DeepStreamIngestor:
         assert record.source_uri is not None
         is_rtsp = VideoFileIngestor.is_rtsp_uri(record.source_uri)
         if not is_rtsp:
-            source_path = Path(record.source_uri).expanduser()
+            parsed = urlsplit(record.source_uri)
+            source_path = Path(
+                unquote(parsed.path) if parsed.scheme.lower() == "file" else record.source_uri
+            ).expanduser()
             if not source_path.is_absolute():
                 source_path = self.project_root / source_path
             if not source_path.is_file():

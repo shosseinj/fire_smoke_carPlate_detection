@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from urllib.parse import urlsplit
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
@@ -78,10 +79,13 @@ def _source_record_for_create(
         raise HTTPException(status_code=422, detail="آدرس منبع الزامی است")
     source_type = STATIC_VIDEO if static_record is not None else payload.source_type
     if source_type == STATIC_VIDEO and static_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="ابتدا فایل ویدیوی ایستا را بارگذاری کنید",
-        )
+        parsed = urlsplit(str(source_uri))
+        local_path = Path(parsed.path if parsed.scheme == "file" else str(source_uri))
+        if not local_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="ابتدا فایل ویدیوی ایستا را بارگذاری کنید",
+            )
     if static_record is not None and static_record.processing_status not in {
         "uploaded",
         "queued",

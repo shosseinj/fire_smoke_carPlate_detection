@@ -58,9 +58,17 @@ Baseline DeepStream AI processing continued with zero failed batches, but source
 
 The currently running container predates the worktree changes and had `LIVE_BRANCH_ENABLED=false`; its OpenAPI returned 404 for live-branch routes. A rebuild/restart with the changed worktree and `LIVE_BRANCH_ENABLED=true`, an active source, installed Chromium, and real WHEP publication are required.
 
+## Active source discovery follow-up
+
+The real `GET /api/v1/broadcast-gpu/sources` request initially returned 404 because no broadcast-gpu router existed and the dashboard was using the preview source snapshot instead. The fix adds a registry-backed route and makes the dashboard fetch it on synchronization. The route reads `runtime.registry.list()` per request, returns only enabled records with `source_id`, `source_uri`, `enabled`, `active`, and `source_type`, and therefore refreshes immediately after source registration without a restart.
+
+The production `POST /api/v1/sources` path now accepts an existing local static video when `source_type=static_video` and the path exists. `file:///workspace/data/1.mp4` was confirmed inside the container and registered as source ID `9`. File-URI resolution was added to both video ingestors. The source discovery endpoint returned 9 sources including that static record after registration.
+
+Manual wall acquire for the static source returned 503 because the decoder had not produced a confirmed NVMM tee attachment. This is the next failing boundary; no GPU/AI path success is claimed.
+
 ## Commits
 
-`d3ec5d2` (`Add GPU decode tee live branch`) and `824b37a` (`Correct live branch topology and WHEP host URL`) are local implementation commits. No push or merge performed.
+`d3ec5d2`, `824b37a`, and the source-discovery follow-up are local implementation commits. No push or merge performed.
 
 ## Merge recommendation
 

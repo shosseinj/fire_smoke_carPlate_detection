@@ -15,6 +15,8 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "video.muted = true" in html
     assert "video.playsInline = true" in html
     assert "width: 260px" in html and "height: 260px" in html
+    assert "/api/v1/broadcast-gpu/sources" in html
+    assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import cv2
 
@@ -170,7 +170,11 @@ class VideoFileIngestor:
     def _resolve_uri(self, source_uri: str) -> str:
         if self.is_rtsp_uri(source_uri):
             return source_uri
-        path = Path(source_uri).expanduser()
+        parsed = urlsplit(source_uri)
+        if parsed.scheme.lower() == "file":
+            path = Path(unquote(parsed.path))
+        else:
+            path = Path(source_uri).expanduser()
         if not path.is_absolute():
             path = self.project_root / path
         return str(path.resolve())

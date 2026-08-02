@@ -44,6 +44,7 @@ from app.api.project_info import router as project_info_router
 from app.api.import_progress import router as import_progress_router
 from app.api.static_videos import router as static_videos_router
 from app.api.live_branch import router as live_branch_router
+from app.api.broadcast_gpu import router as broadcast_gpu_router
 
 from app.config import settings
 from app.core.detection_media import RestrictedMediaStaticFiles
@@ -69,6 +70,7 @@ OPENAPI_TAGS = [
     {"name": "results"},
     {"name": "annotated-broadcast"},
     {"name": "live-branch"},
+    {"name": "broadcast-gpu"},
     {"name": "plate-logs"},
     {"name": "car-plates"},
     {"name": "fire-smoke"},
@@ -146,6 +148,7 @@ app.include_router(frames_router)
 app.include_router(results_router)
 app.include_router(broadcast_router)
 app.include_router(live_branch_router)
+app.include_router(broadcast_gpu_router)
 
 app.include_router(plate_logs_router)
 app.include_router(car_plates_router)
