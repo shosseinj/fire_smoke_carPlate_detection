@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_role
-from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.jalali_utils import parse_jalali_date
 from app.core.legacy_service import format_jalali, validate_jalali_date
@@ -209,10 +209,20 @@ def _shift_assignment_response(
     )
 
 
-def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
+def _personnel_simple(
+    p: PersonnelRecord,
+    store: PersonnelStore,
+    *,
+    department_names: dict[int | None, str | None] | None = None,
+    shift_names: dict[int | None, str | None] | None = None,
+    user_briefs: dict[int, UserBrief] | None = None,
+) -> SimplePersonnelResponse:
     from app.core.jalali_utils import utc_iso_to_jalali_datetime
     c = u = None
-    if p.created_by is not None or p.updated_by is not None:
+    if user_briefs is not None:
+        c = user_briefs.get(p.created_by)
+        u = user_briefs.get(p.updated_by)
+    elif p.created_by is not None or p.updated_by is not None:
         with store._connection() as conn:
             c = resolve_user_brief(p.created_by, conn)
             u = resolve_user_brief(p.updated_by, conn)
@@ -222,8 +232,16 @@ def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePerson
         lname=p.lname,
         national_code=p.national_code,
         employee_type=p.employee_type,
-        department_name=store._resolve_department_name(p.department_id),
-        shift_name=store._resolve_shift_name(p.shift_id),
+        department_name=(
+            department_names.get(p.department_id)
+            if department_names is not None
+            else store._resolve_department_name(p.department_id)
+        ),
+        shift_name=(
+            shift_names.get(p.shift_id)
+            if shift_names is not None
+            else store._resolve_shift_name(p.shift_id)
+        ),
         degree=p.degree,
         created_at=p.created_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(p.created_at_utc) or "",
@@ -263,7 +281,30 @@ def list_personnel(
         department_id=section_id,
         search=search,
     )
-    return [_personnel_simple(r, store) for r in records]
+    department_names = store._resolve_department_names_bulk(
+        {record.department_id for record in records}
+    )
+    shift_names = store._resolve_shift_names_bulk(
+        {record.shift_id for record in records}
+    )
+    audit_ids = {
+        user_id
+        for record in records
+        for user_id in (record.created_by, record.updated_by)
+        if user_id is not None
+    }
+    with store._connection() as connection:
+        user_briefs = resolve_user_briefs(audit_ids, connection)
+    return [
+        _personnel_simple(
+            record,
+            store,
+            department_names=department_names,
+            shift_names=shift_names,
+            user_briefs=user_briefs,
+        )
+        for record in records
+    ]
 
 
 @router.post("/", summary="ایجاد پرسنل جدید", status_code=status.HTTP_201_CREATED)

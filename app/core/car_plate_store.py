@@ -60,13 +60,12 @@ class CarPlateStore:
         columns = list(fields) + ["created_at_utc", "updated_at_utc"]
         parameters = [int(fields[name]) if name == "is_active" else fields[name] for name in fields] + [now, now]
         with self.database.connection() as connection:
-            cursor = connection.execute(
-                f"INSERT INTO car_plates ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) RETURNING id",
+            row = connection.execute(
+                f"INSERT INTO car_plates ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)}) RETURNING *",
                 parameters,
-            )
-            plate_id = int(cursor.fetchone()[0])
-            connection.commit()
-        return self.get(plate_id) or {}
+            ).fetchone()
+        return self._serialize(dict(row)) if row is not None else {}
 
     def update(self, plate_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         if not values:
@@ -75,14 +74,12 @@ class CarPlateStore:
         params = [int(value) if name == "is_active" else value for name, value in values.items()]
         params.extend([self._now(), plate_id])
         with self.database.connection() as connection:
-            cursor = connection.execute(
-                f"UPDATE car_plates SET {', '.join(assignments)} WHERE id = ? AND deleted_at_utc IS NULL",
+            row = connection.execute(
+                f"UPDATE car_plates SET {', '.join(assignments)} "
+                "WHERE id = ? AND deleted_at_utc IS NULL RETURNING *",
                 params,
-            )
-            connection.commit()
-            if cursor.rowcount == 0:
-                return None
-        return self.get(plate_id)
+            ).fetchone()
+        return self._serialize(dict(row)) if row is not None else None
 
     def delete(self, plate_id: int) -> bool:
         with self.database.connection() as connection:

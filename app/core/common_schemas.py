@@ -25,3 +25,23 @@ def resolve_user_brief(user_id: int | None, db: Connection) -> UserBrief | None:
     if row is None:
         return None
     return UserBrief(id=int(row["id"]), full_name=str(row["full_name"] or ""))
+
+
+def resolve_user_briefs(
+    user_ids: set[int | None], db: Connection
+) -> dict[int, UserBrief]:
+    """Resolve many audit user IDs in one query."""
+    ids = sorted({int(user_id) for user_id in user_ids if user_id is not None})
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ids)
+    rows = db.execute(
+        f"SELECT id, full_name FROM users WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return {
+        int(row["id"]): UserBrief(
+            id=int(row["id"]), full_name=str(row["full_name"] or "")
+        )
+        for row in rows
+    }

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.auth import require_role
 from app.core.auth_store import UserRecord
-from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.location_store import LocationStore
 from app.runtime import Runtime
@@ -215,9 +215,18 @@ def _polygon_to_list(polygon_json: str | None) -> list[list[float]] | None:
     return None
 
 
-def _resolve_audit_briefs(record, store: LocationStore):
+def _resolve_audit_briefs(
+    record,
+    store: LocationStore,
+    user_briefs: dict[int, UserBrief] | None = None,
+):
     """Resolve ``created_by`` and ``updated_by`` to ``UserBrief`` using the store's database."""
     c = u = None
+    if user_briefs is not None:
+        return (
+            user_briefs.get(record.created_by),
+            user_briefs.get(record.updated_by),
+        )
     if hasattr(record, "created_by") and record.created_by is not None:
         with store.database.connection() as conn:
             c = resolve_user_brief(record.created_by, conn)
@@ -227,11 +236,16 @@ def _resolve_audit_briefs(record, store: LocationStore):
     return c, u
 
 
-def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
+def _build_response(
+    store: LocationStore,
+    b,
+    sections=None,
+    user_briefs: dict[int, UserBrief] | None = None,
+) -> BuildingResponse:
     if sections is None:
         sec_rows, _ = store.list_sections(building_id=b.id, limit=1000)
         sections = [SectionMinimal(id=s.id, name=s.name) for s in sec_rows]
-    c, u = _resolve_audit_briefs(b, store)
+    c, u = _resolve_audit_briefs(b, store, user_briefs)
     return BuildingResponse(
         id=b.id,
         name=b.name,
@@ -248,13 +262,21 @@ def _build_response(store: LocationStore, b, sections=None) -> BuildingResponse:
     )
 
 
-def _section_response(store: LocationStore, s) -> SectionResponse:
+def _section_response(
+    store: LocationStore,
+    s,
+    building_names: dict[int, str] | None = None,
+    user_briefs: dict[int, UserBrief] | None = None,
+) -> SectionResponse:
     bld_name = ""
     if s.building_id is not None:
-        bld = store.get_building(s.building_id)
-        bld_name = bld.name if bld else ""
+        if building_names is not None:
+            bld_name = building_names.get(s.building_id, "")
+        else:
+            bld = store.get_building(s.building_id)
+            bld_name = bld.name if bld else ""
     full_name = f"{bld_name} - {s.name}" if bld_name else s.name
-    c, u = _resolve_audit_briefs(s, store)
+    c, u = _resolve_audit_briefs(s, store, user_briefs)
     return SectionResponse(
         id=s.id,
         section_name=s.name,
@@ -273,10 +295,14 @@ def _section_response(store: LocationStore, s) -> SectionResponse:
     )
 
 
-def _room_response(r, store: LocationStore | None = None) -> RoomResponse:
+def _room_response(
+    r,
+    store: LocationStore | None = None,
+    user_briefs: dict[int, UserBrief] | None = None,
+) -> RoomResponse:
     c = u = None
     if store is not None:
-        c, u = _resolve_audit_briefs(r, store)
+        c, u = _resolve_audit_briefs(r, store, user_briefs)
     return RoomResponse(
         id=r.id,
         room_name=r.name,
@@ -311,11 +337,22 @@ def list_buildings(
 ):
     store = _store(runtime)
     records, _ = store.list_buildings(offset=skip, limit=limit)
+    sections_by_building = store.list_sections_for_buildings(
+        {record.id for record in records}
+    )
+    audit_ids = {
+        user_id
+        for record in records
+        for user_id in (record.created_by, record.updated_by)
+        if user_id is not None
+    }
+    with store.database.connection() as connection:
+        user_briefs = resolve_user_briefs(audit_ids, connection)
     result = []
     for b in records:
-        sec_rows, _ = store.list_sections(building_id=b.id, limit=1000)
+        sec_rows = sections_by_building.get(b.id, [])
         sections = [SectionMinimal(id=s.id, name=s.name) for s in sec_rows]
-        result.append(_build_response(store, b, sections))
+        result.append(_build_response(store, b, sections, user_briefs))
     return result
 
 
@@ -416,7 +453,21 @@ def list_sections(
 ):
     store = _store(runtime)
     records, _ = store.list_sections(offset=skip, limit=limit, building_id=building_id)
-    return [_section_response(store, s) for s in records]
+    building_names = store.get_building_names_by_ids(
+        {record.building_id for record in records if record.building_id is not None}
+    )
+    audit_ids = {
+        user_id
+        for record in records
+        for user_id in (record.created_by, record.updated_by)
+        if user_id is not None
+    }
+    with store.database.connection() as connection:
+        user_briefs = resolve_user_briefs(audit_ids, connection)
+    return [
+        _section_response(store, record, building_names, user_briefs)
+        for record in records
+    ]
 
 
 @sections_router.get("/{section_id}", response_model=SectionResponse)
@@ -464,9 +515,10 @@ def create_section(
     current_user: UserRecord = Depends(require_role("admin")),
 ):
     store = _store(runtime)
-    bld = store.database.connection().execute(
-        "SELECT id FROM buildings WHERE id = ?", (payload.building_id,)
-    ).fetchone()
+    with store.database.connection() as connection:
+        bld = connection.execute(
+            "SELECT id FROM buildings WHERE id = ?", (payload.building_id,)
+        ).fetchone()
     if not bld:
         raise HTTPException(status_code=404, detail="ساختمان یافت نشد")
     try:
@@ -495,9 +547,10 @@ def update_section(
     if not s:
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
     if payload.building_id is not None:
-        bld = store.database.connection().execute(
-            "SELECT id FROM buildings WHERE id = ?", (payload.building_id,)
-        ).fetchone()
+        with store.database.connection() as connection:
+            bld = connection.execute(
+                "SELECT id FROM buildings WHERE id = ?", (payload.building_id,)
+            ).fetchone()
         if not bld:
             raise HTTPException(status_code=404, detail="ساختمان یافت نشد")
     changes: dict[str, Any] = {}
@@ -610,7 +663,15 @@ def list_rooms(
         offset=skip, limit=limit, cam_id=camera_id
     )
     store = _store(runtime)
-    return [_room_response(r, store) for r in records]
+    audit_ids = {
+        user_id
+        for record in records
+        for user_id in (record.created_by, record.updated_by)
+        if user_id is not None
+    }
+    with store.database.connection() as connection:
+        user_briefs = resolve_user_briefs(audit_ids, connection)
+    return [_room_response(record, store, user_briefs) for record in records]
 
 
 @rooms_router.get("/check-access/{personnel_id}/{room_id}")

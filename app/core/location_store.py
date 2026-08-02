@@ -6,6 +6,7 @@ from app.time_utils import utc_now_text
 import json
 import logging
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ DEFAULT_POLYGON: list[list[float]] = [[0.0, 0.0], [0.0, 640.0], [640.0, 640.0], 
 # Sentinel room_id used for default-polygon transition tracking (not stored in DB).
 _DEFAULT_ROOM_ID: int = -1
 _UNSET = object()
+_POLYGON_CACHE_MAX_ENTRIES = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,12 @@ class LocationStore:
         self._init_db()
         # Tracks entry/exit state: key=(camera_id, track_id, room_id) -> is_inside
         self._entry_state: dict[tuple[str, int, int], bool] = {}
+        self._room_polygon_cache: OrderedDict[
+            int, tuple[tuple[float, float], ...]
+        ] = OrderedDict()
+        self._camera_polygon_cache: OrderedDict[
+            int, tuple[tuple[int, tuple[tuple[float, float], ...]], ...]
+        ] = OrderedDict()
 
     def _connection(self) -> Connection:
         return self.database.connection()
@@ -144,6 +152,29 @@ class LocationStore:
 
     def _now(self) -> str:
         return utc_now_text()
+
+    @staticmethod
+    def _freeze_polygon(
+        polygon: list[list[float]],
+    ) -> tuple[tuple[float, float], ...]:
+        return tuple((float(point[0]), float(point[1])) for point in polygon)
+
+    @staticmethod
+    def _thaw_polygon(
+        polygon: tuple[tuple[float, float], ...],
+    ) -> list[list[float]]:
+        return [[x, y] for x, y in polygon]
+
+    @staticmethod
+    def _cache_put(cache: OrderedDict, key: int, value: Any) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > _POLYGON_CACHE_MAX_ENTRIES:
+            cache.popitem(last=False)
+
+    def _invalidate_polygon_cache(self) -> None:
+        self._room_polygon_cache.clear()
+        self._camera_polygon_cache.clear()
 
     # ── Buildings ─────────────────────────────────────────────────────
 
@@ -376,6 +407,39 @@ class LocationStore:
             ).fetchall()
             return [self._row_to_section(r) for r in rows], int(total)
 
+    def list_sections_for_buildings(
+        self, building_ids: set[int]
+    ) -> dict[int, list[SectionRecord]]:
+        ids = sorted({int(value) for value in building_ids})
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sections "
+                f"WHERE building_id IN ({placeholders}) "
+                "ORDER BY building_id ASC, id DESC",
+                ids,
+            ).fetchall()
+        grouped: dict[int, list[SectionRecord]] = {building_id: [] for building_id in ids}
+        for row in rows:
+            record = self._row_to_section(row)
+            if record.building_id is not None:
+                grouped.setdefault(record.building_id, []).append(record)
+        return grouped
+
+    def get_building_names_by_ids(self, building_ids: set[int]) -> dict[int, str]:
+        ids = sorted({int(value) for value in building_ids})
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT id, name FROM buildings WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {int(row["id"]): str(row["name"] or "") for row in rows}
+
     def filter_cameras_by_section(
         self,
         cameras: list[dict[str, Any]],
@@ -464,6 +528,7 @@ class LocationStore:
             ).fetchone()
             if row is None:
                 raise RuntimeError("Failed to retrieve created room")
+            self._invalidate_polygon_cache()
             return self._row_to_room(row)
 
     def get_room(self, room_id: int) -> RoomRecord | None:
@@ -543,6 +608,7 @@ class LocationStore:
             row = conn.execute(
                 "SELECT * FROM rooms WHERE id = ?", (room_id,)
             ).fetchone()
+            self._invalidate_polygon_cache()
             return self._row_to_room(row)
 
     def delete_room(self, room_id: int) -> bool:
@@ -550,6 +616,8 @@ class LocationStore:
             cursor = conn.execute(
                 "DELETE FROM rooms WHERE id = ?", (room_id,)
             )
+            if cursor.rowcount > 0:
+                self._invalidate_polygon_cache()
             return cursor.rowcount > 0
 
     def list_rooms(
@@ -599,14 +667,10 @@ class LocationStore:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
             try:
-                cursor = conn.execute(
-                    "INSERT INTO personnel_room_access (personnel_id, room_id, granted_at_utc, granted_by) "
-                    "VALUES (?, ?, ?, ?)",
-                    (personnel_id, room_id, now, granted_by),
-                )
                 row = conn.execute(
-                    "SELECT * FROM personnel_room_access WHERE id = ?",
-                    (cursor.lastrowid,),
+                    "INSERT INTO personnel_room_access (personnel_id, room_id, granted_at_utc, granted_by) "
+                    "VALUES (?, ?, ?, ?) RETURNING *",
+                    (personnel_id, room_id, now, granted_by),
                 ).fetchone()
                 if row is None:
                     raise RuntimeError("Failed to retrieve created access record")
@@ -637,6 +701,55 @@ class LocationStore:
                 (personnel_id, room_id),
             ).fetchone()
             return row is not None
+
+    def resolve_access_for_pairs(
+        self, pairs: set[tuple[int, int]] | list[tuple[int, int]]
+    ) -> dict[tuple[int, int], bool]:
+        """Resolve many personnel/room access checks with bounded queries."""
+        unique_pairs = sorted({(int(pid), int(rid)) for pid, rid in pairs})
+        if not unique_pairs:
+            return {}
+        room_ids = sorted({room_id for _, room_id in unique_pairs})
+        room_rows: list[Row] = []
+        granted_rows: list[Row] = []
+        with self._lock, self._connection() as conn:
+            for start in range(0, len(room_ids), 1000):
+                room_batch = room_ids[start:start + 1000]
+                room_placeholders = ", ".join("?" for _ in room_batch)
+                room_rows.extend(
+                    conn.execute(
+                        f"SELECT id, name FROM rooms WHERE id IN ({room_placeholders})",
+                        room_batch,
+                    ).fetchall()
+                )
+            for start in range(0, len(unique_pairs), 1000):
+                pair_batch = unique_pairs[start:start + 1000]
+                values_sql = ", ".join("(?, ?)" for _ in pair_batch)
+                pair_params = [value for pair in pair_batch for value in pair]
+                granted_rows.extend(
+                    conn.execute(
+                        "WITH requested(personnel_id, room_id) AS (VALUES "
+                        + values_sql
+                        + ") SELECT a.personnel_id, a.room_id "
+                        "FROM personnel_room_access a JOIN requested r "
+                        "ON r.personnel_id = a.personnel_id AND r.room_id = a.room_id",
+                        pair_params,
+                    ).fetchall()
+                )
+        general_rooms = {
+            int(row["id"])
+            for row in room_rows
+            if "general" in str(row.get("name") or "").lower()
+            or "عمومی" in str(row.get("name") or "").lower()
+        }
+        granted = {
+            (int(row["personnel_id"]), int(row["room_id"]))
+            for row in granted_rows
+        }
+        return {
+            pair: pair[1] in general_rooms or pair in granted
+            for pair in unique_pairs
+        }
 
     def list_personnel_rooms(self, personnel_id: int) -> list[RoomRecord]:
         with self._lock, self._connection() as conn:
@@ -740,19 +853,17 @@ class LocationStore:
                 personnel_id = None
         with self._lock, self._connection() as conn:
             rooms = conn.execute(
-                "SELECT id, polygon_json FROM rooms WHERE section_id = ? AND polygon_json IS NOT NULL",
+                "SELECT id, polygon_json FROM rooms "
+                "WHERE section_id = ? AND is_active = 1 AND polygon_json IS NOT NULL",
                 (section_id,),
             ).fetchall()
-
-            matched: list[DetectionRoomMatchRecord] = []
             now = self._now()
-
+            values: list[tuple[Any, ...]] = []
             for room in rooms:
                 polygon = parse_polygon(room["polygon_json"])
                 if len(polygon) < 3:
                     continue
                 is_inside = point_in_polygon(bbox_center_x, bbox_center_y, polygon)
-                # Determine transition type
                 transition = self._resolve_transition(
                     camera_id=camera_id,
                     track_id=track_id,
@@ -760,35 +871,45 @@ class LocationStore:
                     is_inside=is_inside,
                 )
                 if not is_inside and transition is None:
-                    # Point is outside and no transition (was outside before)
                     continue
-                if is_inside and transition is None and track_id is not None:
-                    # Still inside - record as heartbeat (no transition)
-                    pass
-                cursor = conn.execute(
-                    "INSERT INTO detection_room_matches "
-                    "(detection_type, detection_event_id, room_id, personnel_id, camera_id, track_id, transition_type, matched_at_utc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (detection_type, detection_event_id, room["id"], personnel_id,
-                     camera_id, track_id, transition, now),
+                values.append(
+                    (
+                        detection_type,
+                        detection_event_id,
+                        room["id"],
+                        personnel_id,
+                        camera_id,
+                        track_id,
+                        transition,
+                        now,
+                    )
                 )
-                row = conn.execute(
-                    "SELECT * FROM detection_room_matches WHERE id = ?",
-                    (cursor.lastrowid,),
-                ).fetchone()
-                if row is not None:
-                    matched.append(DetectionRoomMatchRecord(
-                        id=row["id"],
-                        detection_type=row["detection_type"],
-                        detection_event_id=row["detection_event_id"],
-                        room_id=row["room_id"],
-                        personnel_id=row["personnel_id"],
-                        camera_id=row["camera_id"],
-                        track_id=row["track_id"],
-                        transition_type=row["transition_type"],
-                        matched_at_utc=row["matched_at_utc"],
-                    ))
-            return matched
+            if not values:
+                return []
+            value_sql = "(" + ", ".join("?" for _ in range(8)) + ")"
+            rows = conn.execute(
+                "INSERT INTO detection_room_matches "
+                "(detection_type, detection_event_id, room_id, personnel_id, "
+                "camera_id, track_id, transition_type, matched_at_utc) VALUES "
+                + ", ".join(value_sql for _ in values)
+                + " RETURNING id, detection_type, detection_event_id, room_id, "
+                "personnel_id, camera_id, track_id, transition_type, matched_at_utc",
+                [value for row in values for value in row],
+            ).fetchall()
+            return [
+                DetectionRoomMatchRecord(
+                    id=row["id"],
+                    detection_type=row["detection_type"],
+                    detection_event_id=row["detection_event_id"],
+                    room_id=row["room_id"],
+                    personnel_id=row["personnel_id"],
+                    camera_id=row["camera_id"],
+                    track_id=row["track_id"],
+                    transition_type=row["transition_type"],
+                    matched_at_utc=row["matched_at_utc"],
+                )
+                for row in rows
+            ]
 
     def room_has_polygon(self, room_id: int | None) -> bool:
         return bool(self.get_polygon_for_room(room_id))
@@ -796,12 +917,24 @@ class LocationStore:
     def get_polygon_for_room(self, room_id: int | None) -> list[list[float]]:
         if room_id is None:
             return []
+        with self._lock:
+            cached = self._room_polygon_cache.get(room_id)
+            if cached is not None:
+                self._room_polygon_cache.move_to_end(room_id)
+                return self._thaw_polygon(cached)
         with self._lock, self._connection() as conn:
             row = conn.execute(
                 "SELECT polygon_json FROM rooms WHERE id = ?", (room_id,)
             ).fetchone()
         points = parse_polygon(row["polygon_json"]) if row and row["polygon_json"] else []
-        return points if len(points) >= 3 else []
+        valid = points if len(points) >= 3 else []
+        with self._lock:
+            self._cache_put(
+                self._room_polygon_cache,
+                room_id,
+                self._freeze_polygon(valid),
+            )
+        return valid
 
     def get_camera_polygon_rooms_for_room(
         self, room_id: int | None
@@ -814,6 +947,14 @@ class LocationStore:
         """
         if room_id is None:
             return []
+        with self._lock:
+            cached = self._camera_polygon_cache.get(room_id)
+            if cached is not None:
+                self._camera_polygon_cache.move_to_end(room_id)
+                return [
+                    (cached_room_id, self._thaw_polygon(polygon))
+                    for cached_room_id, polygon in cached
+                ]
         with self._lock, self._connection() as conn:
             assigned = conn.execute(
                 "SELECT cam_id, is_active, polygon_json FROM rooms WHERE id = ?",
@@ -835,6 +976,14 @@ class LocationStore:
             points = parse_polygon(row["polygon_json"]) if row["polygon_json"] else []
             if len(points) >= 3:
                 polygon_rooms.append((int(row["id"]), points))
+        with self._lock:
+            frozen = tuple(
+                (cached_room_id, self._freeze_polygon(polygon))
+                for cached_room_id, polygon in polygon_rooms
+            )
+            self._cache_put(self._camera_polygon_cache, room_id, frozen)
+            for cached_room_id, polygon in frozen:
+                self._cache_put(self._room_polygon_cache, cached_room_id, polygon)
         return polygon_rooms
 
     def get_camera_polygons_for_room(self, room_id: int | None) -> list[list[list[float]]]:
@@ -856,21 +1005,59 @@ class LocationStore:
         track_id: int | None = None,
     ) -> list[DetectionRoomMatchRecord]:
         """Match one detection independently against every zone of its camera."""
-        matches: list[DetectionRoomMatchRecord] = []
-        for room_id, _polygon in self.get_camera_polygon_rooms_for_room(anchor_room_id):
-            matches.extend(
-                self.match_detection_to_room(
-                    room_id=room_id,
-                    detection_type=detection_type,
-                    detection_event_id=detection_event_id,
-                    bbox_center_x=bbox_center_x,
-                    bbox_center_y=bbox_center_y,
-                    personnel_id=personnel_id,
-                    camera_id=camera_id,
-                    track_id=track_id,
+        if personnel_id is not None:
+            try:
+                personnel_id = int(personnel_id)
+            except (TypeError, ValueError):
+                personnel_id = None
+        now = self._now()
+        values: list[tuple[Any, ...]] = []
+        for room_id, polygon in self.get_camera_polygon_rooms_for_room(anchor_room_id):
+            is_inside = point_in_polygon(bbox_center_x, bbox_center_y, polygon)
+            transition = self._resolve_transition(
+                camera_id, track_id, room_id, is_inside
+            )
+            if not is_inside and transition is None:
+                continue
+            values.append(
+                (
+                    detection_type,
+                    detection_event_id,
+                    room_id,
+                    personnel_id,
+                    camera_id,
+                    track_id,
+                    transition,
+                    now,
                 )
             )
-        return matches
+        if not values:
+            return []
+        value_sql = "(" + ", ".join("?" for _ in range(8)) + ")"
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "INSERT INTO detection_room_matches "
+                "(detection_type, detection_event_id, room_id, personnel_id, "
+                "camera_id, track_id, transition_type, matched_at_utc) VALUES "
+                + ", ".join(value_sql for _ in values)
+                + " RETURNING id, detection_type, detection_event_id, room_id, "
+                "personnel_id, camera_id, track_id, transition_type, matched_at_utc",
+                [value for row in values for value in row],
+            ).fetchall()
+        return [
+            DetectionRoomMatchRecord(
+                id=row["id"],
+                detection_type=row["detection_type"],
+                detection_event_id=row["detection_event_id"],
+                room_id=row["room_id"],
+                personnel_id=row["personnel_id"],
+                camera_id=row["camera_id"],
+                track_id=row["track_id"],
+                transition_type=row["transition_type"],
+                matched_at_utc=row["matched_at_utc"],
+            )
+            for row in rows
+        ]
 
     def match_detection_to_room(
         self,
@@ -883,8 +1070,9 @@ class LocationStore:
         camera_id: str | None = None,
         *,
         track_id: int | None = None,
+        polygon: list[list[float]] | None = None,
     ) -> list[DetectionRoomMatchRecord]:
-        polygon = self.get_polygon_for_room(room_id)
+        polygon = polygon if polygon is not None else self.get_polygon_for_room(room_id)
         if not polygon:
             return []
         if personnel_id is not None:
@@ -897,15 +1085,13 @@ class LocationStore:
         if not is_inside and transition is None:
             return []
         with self._lock, self._connection() as conn:
-            cursor = conn.execute(
+            row = conn.execute(
                 "INSERT INTO detection_room_matches "
                 "(detection_type, detection_event_id, room_id, personnel_id, camera_id, track_id, transition_type, matched_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "RETURNING id, detection_type, detection_event_id, room_id, personnel_id, camera_id, track_id, transition_type, matched_at_utc",
                 (detection_type, detection_event_id, room_id, personnel_id, camera_id,
                  track_id, transition, self._now()),
-            )
-            row = conn.execute(
-                "SELECT * FROM detection_room_matches WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
         if row is None:
             return []

@@ -156,7 +156,7 @@ class DetectionLogStore:
             detection_time = _now()
         now = _now()
         with self._lock, self._connection() as conn:
-            cursor = conn.execute(
+            row = conn.execute(
                 "INSERT INTO detection_logs "
                 "(source_system, source_event_key, source_human_log_id, "
                 "personnel_id, person, confidence, detection_time, ref_img_id, "
@@ -165,7 +165,8 @@ class DetectionLogStore:
                 "snapshot_image, video, face_video_or_unknown_faces, video_status, "
                 "face_video_status, media_finalized_at, created_by, updated_by, "
                 "created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "RETURNING *",
                 (
                     source_system, source_event_key, source_human_log_id,
                     personnel_id, person, confidence, detection_time, ref_img_id,
@@ -174,15 +175,94 @@ class DetectionLogStore:
                     snapshot_image, video, face_video_or_unknown_faces, video_status,
                     face_video_status, media_finalized_at, created_by, created_by, now, now,
                 ),
-            )
-            row = conn.execute(
-                "SELECT * FROM detection_logs WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
             if row is None:
                 raise RuntimeError("Failed to retrieve created detection log")
             record = self._row_to_log(row)
         self._notify("created", record)
         return record
+
+    def create_many(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        batch_size: int = 500,
+    ) -> list[DetectionLogRecord]:
+        """Insert detection logs in bounded multi-row statements.
+
+        Callers should validate business input first. Each batch is one database
+        transaction and returned records retain the input order within the batch.
+        """
+        if not records:
+            return []
+        batch_size = max(1, min(int(batch_size), 1000))
+        columns = (
+            "source_system", "source_event_key", "source_human_log_id",
+            "personnel_id", "person", "confidence", "detection_time", "ref_img_id",
+            "room_id", "camera_id", "access_granted", "counts_for_attendance",
+            "log_type", "import_source_parts", "face_image", "face_thumbnail",
+            "body_image", "snapshot_image", "video", "face_video_or_unknown_faces",
+            "video_status", "face_video_status", "media_finalized_at", "created_by",
+            "updated_by", "created_at_utc", "updated_at_utc",
+        )
+        created: list[DetectionLogRecord] = []
+        for start in range(0, len(records), batch_size):
+            batch = records[start:start + batch_size]
+            values: list[Any] = []
+            placeholders: list[str] = []
+            for item in batch:
+                video_status = str(item.get("video_status", "missing"))
+                face_video_status = str(item.get("face_video_status", "missing"))
+                if video_status not in VALID_MEDIA_STATUSES:
+                    raise ValueError(f"Invalid video_status: {video_status}")
+                if face_video_status not in VALID_MEDIA_STATUSES:
+                    raise ValueError(f"Invalid face_video_status: {face_video_status}")
+                now = _now()
+                detection_time = item.get("detection_time") or now
+                created_by = item.get("created_by")
+                row_values = (
+                    item.get("source_system", "face_recognition"),
+                    item.get("source_event_key"),
+                    item.get("source_human_log_id"),
+                    item.get("personnel_id"),
+                    item.get("person", "Unknown"),
+                    float(item.get("confidence", 0.0)),
+                    detection_time,
+                    item.get("ref_img_id"),
+                    item.get("room_id"),
+                    item.get("camera_id"),
+                    int(bool(item.get("access_granted", False))),
+                    int(bool(item.get("counts_for_attendance", True))),
+                    item.get("log_type", "real_time"),
+                    item.get("import_source_parts"),
+                    item.get("face_image"),
+                    item.get("face_thumbnail"),
+                    item.get("body_image"),
+                    item.get("snapshot_image"),
+                    item.get("video"),
+                    item.get("face_video_or_unknown_faces"),
+                    video_status,
+                    face_video_status,
+                    item.get("media_finalized_at"),
+                    created_by,
+                    item.get("updated_by", created_by),
+                    item.get("created_at_utc", now),
+                    item.get("updated_at_utc", now),
+                )
+                placeholders.append("(" + ", ".join("?" for _ in columns) + ")")
+                values.extend(row_values)
+            sql = (
+                f"INSERT INTO detection_logs ({', '.join(columns)}) VALUES "
+                + ", ".join(placeholders)
+                + " RETURNING *"
+            )
+            with self._lock, self._connection() as conn:
+                rows = conn.execute(sql, values).fetchall()
+            batch_records = [self._row_to_log(row) for row in rows]
+            created.extend(batch_records)
+            for record in batch_records:
+                self._notify("created", record)
+        return created
 
     def get(self, log_id: int) -> DetectionLogRecord | None:
         with self._lock, self._connection() as conn:
@@ -239,12 +319,9 @@ class DetectionLogStore:
             set_parts.append("updated_at_utc = ?")
             params.append(_now())
             params.append(log_id)
-            conn.execute(
-                f"UPDATE detection_logs SET {', '.join(set_parts)} WHERE id = ?",
-                params,
-            )
             row = conn.execute(
-                "SELECT * FROM detection_logs WHERE id = ?", (log_id,)
+                f"UPDATE detection_logs SET {', '.join(set_parts)} WHERE id = ? RETURNING *",
+                params,
             ).fetchone()
             record = self._row_to_log(row) if row is not None else None
         if record is not None:
@@ -297,6 +374,69 @@ class DetectionLogStore:
                 ),
             ).fetchone()
             return self._row_to_log(row) if row is not None else None
+
+    def find_dedup_indexes(
+        self,
+        candidates: list[tuple[int, int, str]],
+        *,
+        time_window_seconds: int = 60,
+        batch_size: int = 500,
+    ) -> set[int]:
+        """Return candidate indexes having an existing earlier log in the window."""
+        if not candidates:
+            return set()
+        matched: set[int] = set()
+        batch_size = max(1, min(int(batch_size), 1000))
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start:start + batch_size]
+            values_sql: list[str] = []
+            params: list[Any] = []
+            for local_idx, (personnel_id, room_id, detection_time) in enumerate(batch):
+                values_sql.append("(?, ?, ?, ?::timestamptz)")
+                params.extend((start + local_idx, personnel_id, room_id, detection_time))
+            params.append(float(time_window_seconds))
+            with self._lock, self._connection() as conn:
+                rows = conn.execute(
+                    "WITH incoming(candidate_index, personnel_id, room_id, detection_time) AS (VALUES "
+                    + ", ".join(values_sql)
+                    + ") SELECT DISTINCT i.candidate_index "
+                    "FROM incoming i JOIN detection_logs d "
+                    "ON d.personnel_id = i.personnel_id AND d.room_id = i.room_id "
+                    "AND d.detection_time >= "
+                    "(i.detection_time - make_interval(secs => ?)) "
+                    "AND d.detection_time <= i.detection_time",
+                    params,
+                ).fetchall()
+            matched.update(int(row["candidate_index"]) for row in rows)
+        return matched
+
+    def iter_media_key_batches(self, batch_size: int = 1000):
+        """Yield media keys in bounded id-ordered batches without loading all logs."""
+        batch_size = max(1, int(batch_size))
+        last_id = 0
+        while True:
+            with self._lock, self._connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, face_image, face_thumbnail, body_image, snapshot_image, "
+                    "video, face_video_or_unknown_faces FROM detection_logs "
+                    "WHERE id > ? ORDER BY id LIMIT ?",
+                    (last_id, batch_size),
+                ).fetchall()
+            if not rows:
+                return
+            keys: list[str] = []
+            for row in rows:
+                last_id = int(row["id"])
+                keys.extend(
+                    key
+                    for key in (
+                        row.get("face_image"), row.get("face_thumbnail"),
+                        row.get("body_image"), row.get("snapshot_image"),
+                        row.get("video"), row.get("face_video_or_unknown_faces"),
+                    )
+                    if key
+                )
+            yield keys
 
     def list_filter(
         self,
