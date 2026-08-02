@@ -10,9 +10,9 @@ Baseline captured by `live-branch-ai-guardian` from commit `beb9b3f`: `nvurisrcb
 
 `app/core/deepstream_ingestor.py` rejects decoded pads unless negotiated caps contain `video/x-raw` and `memory:NVMM`, then links the decoder to a tee. The tee request pad feeds the unchanged pacer/queue AI chain. Runtime negotiated caps were not captured after rebuilding the changed image: BLOCKED.
 
-## Wall chain and 260x260 caps
+## Wall chain and 320x320 caps
 
-The on-demand branch uses `queue -> nvvideoconvert -> video/x-raw(memory:NVMM),format=NV12,width=260,height=260 -> nvv4l2h264enc -> h264parse -> rtph264pay -> rtspclientsink`. Static fake-GStreamer caps test passed; real NVMM/NVENC negotiation: BLOCKED.
+The on-demand branch uses `queue -> nvvideoconvert -> video/x-raw(memory:NVMM),format=NV12,width=320,height=320 -> nvv4l2h264enc -> h264parse -> rtspclientsink`. Static fake-GStreamer caps test passed; real NVMM/NVENC negotiation: BLOCKED.
 
 ## Fullscreen chain and native caps
 
@@ -24,7 +24,7 @@ Static guardrail passed for the live branch. Real graph validation and GPU telem
 
 ## API and frontend integration
 
-Implemented distinct `/api/v1/live-branch/{wall|fullscreen}/{acquire|heartbeat|release}` routes, `See live branch`, 260x260 wall CSS, fullscreen switching, WHEP negotiation, heartbeat, release, unload cleanup, and visible errors. Static focused tests passed.
+Implemented distinct `/api/v1/live-branch/{wall|fullscreen}/{acquire|heartbeat|release}` routes, `See live branch`, 320x320 wall CSS, fullscreen switching, WHEP negotiation, heartbeat, release, unload cleanup, and visible FPS/resolution overlays. Static focused tests passed.
 
 ## Playwright browser evidence
 
@@ -76,7 +76,7 @@ MediaMTX could return `404 no stream is available` when the browser posted WHEP 
 
 ## Wall-to-fullscreen playback follow-up
 
-The dashboard wall remains exactly 260x260. Fullscreen acquires the separate native profile and replaces the wall session. Browser heartbeat `409` responses after a runtime restart now trigger wall session reacquisition instead of leaving stale dead tiles. A fresh source-3 wall validation returned HTTP 200, 260x260 dimensions, WHEP OPTIONS 204, and release HTTP 200. Actual advancing browser playback remains dependent on the real Playwright browser environment.
+The dashboard wall is exactly 320x320. Fullscreen acquires the separate native profile and replaces the wall session. Browser heartbeat `409` responses after a runtime restart now trigger wall session reacquisition instead of leaving stale dead tiles. The dashboard displays measured FPS and video resolution above each live video. A fresh source-3 wall validation returned HTTP 200, 320x320 dimensions, WHEP OPTIONS 204, and release HTTP 200. Actual advancing browser playback remains dependent on the real Playwright browser environment.
 
 Fullscreen permission failures were caused by calling `requestFullscreen()` after awaited network/release operations, which loses browser user activation. The dashboard now requests fullscreen synchronously from the tile click and performs branch release/acquire afterward.
 
@@ -99,7 +99,7 @@ Open the Dashboard and click `See live branch`; URL remains http://127.0.0.1:999
 Open high-resolution fullscreen:
 From a live wall tile, click the tile; native fullscreen URL is browser DOM fullscreen, not a stable URL. Real tested fullscreen: BLOCKED.
 
-Example 260x260 stream:
+Example 320x320 stream:
 BLOCKED — no real WHEP URL was tested or published.
 
 Example native stream:

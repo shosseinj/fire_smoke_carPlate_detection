@@ -152,7 +152,7 @@ def test_wall_caps_are_exact_and_fullscreen_has_no_resize() -> None:
     wall = manager._build(source, "wall")
     fullscreen = manager._build(source, "fullscreen")
     assert wall.elements[2].props["caps"].to_string() == (
-        "video/x-raw(memory:NVMM),format=NV12,width=260,height=260"
+        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
     )
     assert "width=" not in fullscreen.elements[2].props["caps"].to_string()
     assert "height=" not in fullscreen.elements[2].props["caps"].to_string()

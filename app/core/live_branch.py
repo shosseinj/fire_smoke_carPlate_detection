@@ -217,7 +217,7 @@ class GpuLiveBranchManager:
         try:
             if profile == "wall":
                 capsfilter.set_property("caps", Gst.Caps.from_string(
-                    "video/x-raw(memory:NVMM),format=NV12,width=260,height=260"
+                    "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
                 ))
             else:
                 capsfilter.set_property("caps", Gst.Caps.from_string(
@@ -268,8 +268,8 @@ class GpuLiveBranchManager:
             "enabled": True, "source_id": branch.source_id, "profile": branch.profile,
             "path": branch.path, "url": self.browser_url(branch.source_id, branch.profile),
             "references": len(branch.references),
-            "width": 260 if branch.profile == "wall" else (source.native_width if source else None),
-            "height": 260 if branch.profile == "wall" else (source.native_height if source else None),
+            "width": 320 if branch.profile == "wall" else (source.native_width if source else None),
+            "height": 320 if branch.profile == "wall" else (source.native_height if source else None),
         }
 
     def _remove(self, key: tuple[str, str]) -> None:

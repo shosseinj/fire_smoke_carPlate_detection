@@ -36,7 +36,7 @@ def test_enabled_static_source_is_returned_with_live_branch_fields() -> None:
         "tasks": [],
         "frame_width": 640,
         "frame_height": 640,
-        "wall_profile": "260x260",
+        "wall_profile": "320x320",
         "fullscreen_profile": "native",
     }]
 

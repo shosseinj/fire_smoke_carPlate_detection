@@ -79,7 +79,7 @@ def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, run
     url = str(result.get("url", ""))
     # rtspclientsink publishes asynchronously. Give MediaMTX time to create
     # the path before returning a WHEP URL to a browser.
-    time.sleep(2.0)
+    time.sleep(0.5)
     whep_url = _browser_whep_url(url, request)
     return {
         "enabled": True,

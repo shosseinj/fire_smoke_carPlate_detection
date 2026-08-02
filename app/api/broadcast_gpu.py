@@ -26,7 +26,7 @@ def _source_payload(record: Any) -> dict[str, Any]:
         "tasks": sorted(task.value for task in record.tasks),
         "frame_width": record.frame_width,
         "frame_height": record.frame_height,
-        "wall_profile": "260x260",
+        "wall_profile": "320x320",
         "fullscreen_profile": "native",
     }
 

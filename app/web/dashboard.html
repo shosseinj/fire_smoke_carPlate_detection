@@ -521,9 +521,11 @@
       }
       .live-branch-section { padding: 24px; }
       .live-branch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-      .live-branch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 260px)); gap: 16px; }
-      .live-branch-card { width: 260px; cursor: pointer; background: #152536; border-radius: 10px; padding: 8px; }
-      .live-branch-card video { display: block; width: 260px; height: 260px; object-fit: contain; background: #000; }
+       .live-branch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 320px)); gap: 16px; }
+       .live-branch-card { width: 320px; cursor: pointer; background: #152536; border-radius: 10px; padding: 8px; }
+       .live-branch-media { position: relative; width: 320px; height: 320px; }
+       .live-branch-card video { display: block; width: 320px; height: 320px; object-fit: contain; background: #000; }
+       .live-branch-metrics { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 2; padding: 4px 7px; color: #fff; background: rgba(0,0,0,.72); border-radius: 4px; font: 12px/1.3 monospace; text-align: left; pointer-events: none; }
       .live-branch-card h3 { margin: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .live-branch-card [data-live-status] { color: #ffd166; min-height: 1.5em; padding: 4px; }
       .live-branch-error { color: #ff8b8b; background: #421d28; padding: 10px; margin-bottom: 12px; }
@@ -643,6 +645,28 @@
         } catch (_) { /* unload/network cleanup is best effort */ }
       }
 
+      function startLiveBranchMetrics(video, card, profile, result) {
+        const metrics = card.querySelector(".live-branch-metrics");
+        if (!metrics) return;
+        let frames = 0;
+        let windowStart = performance.now();
+        const render = () => {
+          const width = video.videoWidth || result.width || 0;
+          const height = video.videoHeight || result.height || 0;
+          const elapsed = Math.max(1, performance.now() - windowStart) / 1000;
+          const fps = frames > 0 ? (frames / elapsed).toFixed(1) : "--";
+          metrics.textContent = `FPS: ${fps} · RES: ${width}×${height} · ${profile}`;
+          if (elapsed >= 1) { frames = 0; windowStart = performance.now(); }
+        };
+        video.addEventListener("loadedmetadata", render, { once: false });
+        if (typeof video.requestVideoFrameCallback === "function") {
+          const frame = () => { frames += 1; render(); video.requestVideoFrameCallback(frame); };
+          video.requestVideoFrameCallback(frame);
+        } else {
+          window.setInterval(render, 500);
+        }
+      }
+
       async function acquireLiveBranch(source, profile, video, card) {
         const previous = liveBranchStates.get(`${source.source_uri}:${profile}`);
         if (previous) await releaseLiveBranch(previous);
@@ -660,6 +684,7 @@
              card.dataset.nativeWidth = String(result.width);
              card.dataset.nativeHeight = String(result.height);
            }
+           startLiveBranchMetrics(video, card, profile, result);
           const peer = new RTCPeerConnection();
           state.peer = peer;
           peer.addTransceiver("video", { direction: "recvonly" });
@@ -700,14 +725,17 @@
            card.className = "live-branch-card";
            card.dataset.nativeWidth = String(source.frame_width || 0);
            card.dataset.nativeHeight = String(source.frame_height || 0);
-          const title = document.createElement("h3"); title.textContent = source.name || source.source_uri;
-          const video = document.createElement("video");
-          video.autoplay = true; video.muted = true; video.playsInline = true;
-          video.dataset.sourceUri = source.source_uri;
-          const status = document.createElement("div"); status.dataset.liveStatus = "true"; status.textContent = "در حال دریافت…";
-          card.append(title, video, status); liveBranchGrid.appendChild(card);
+           const title = document.createElement("h3"); title.textContent = source.name || source.source_uri;
+           const media = document.createElement("div"); media.className = "live-branch-media";
+           const video = document.createElement("video");
+           video.autoplay = true; video.muted = true; video.playsInline = true;
+           video.dataset.sourceUri = source.source_uri;
+           const metrics = document.createElement("div"); metrics.className = "live-branch-metrics"; metrics.textContent = "FPS: -- · RES: --";
+           media.append(video, metrics);
+           const status = document.createElement("div"); status.dataset.liveStatus = "true"; status.textContent = "در حال دریافت…";
+           card.append(title, media, status); liveBranchGrid.appendChild(card);
           card.addEventListener("click", () => openLiveBranchFullscreen(source, card, video));
-          acquireLiveBranch(source, "wall", video, card);
+           acquireLiveBranch(source, "wall", video, card);
         }
         if (!liveBranchGrid.children.length) showLiveBranchError("منبع فعالی برای شاخه زنده وجود ندارد");
       }

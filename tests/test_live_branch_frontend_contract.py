@@ -14,13 +14,15 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "video.autoplay = true" in html
     assert "video.muted = true" in html
     assert "video.playsInline = true" in html
-    assert "width: 260px" in html and "height: 260px" in html
+    assert "width: 320px" in html and "height: 320px" in html
     assert "/api/v1/broadcast-gpu/sources" in html
     assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
     assert "attempt < 10" in html
     assert "heartbeat.status === 409" in html
     assert "const fullscreenRequest =" in html
     assert "video.requestFullscreen()" in html
+    assert "FPS: ${fps}" in html
+    assert "RES: ${width}×${height}" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:
