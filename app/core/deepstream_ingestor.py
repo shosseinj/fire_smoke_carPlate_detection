@@ -303,6 +303,7 @@ class DeepStreamIngestor:
                 return False
             if not attached:
                 return False
+            LOGGER.info("LIVE_NVMM_CAPS source=%s caps=%s", source_id, caps.to_string())
             return True
 
     def _schedule_live_registration_retry(self, source_id: str, pad: Any, tee: Any) -> None:

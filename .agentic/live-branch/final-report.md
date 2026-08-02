@@ -74,6 +74,10 @@ The decoder pad callback now defers live registration until fixed negotiated NVM
 
 MediaMTX could return `404 no stream is available` when the browser posted WHEP immediately after acquire, before `rtspclientsink` finished publishing. Acquire now waits briefly for asynchronous publication and the dashboard retries transient WHEP 404 responses. Runtime source 3 validation returned acquire HTTP 200, WHEP `OPTIONS` HTTP 204 for `live-branch/wall/7dbb9cc0448f2fa13ff76c78/whep`, and release HTTP 200.
 
+## Wall-to-fullscreen playback follow-up
+
+The dashboard wall remains exactly 260x260. Fullscreen acquires the separate native profile and replaces the wall session. Browser heartbeat `409` responses after a runtime restart now trigger wall session reacquisition instead of leaving stale dead tiles. A fresh source-3 wall validation returned HTTP 200, 260x260 dimensions, WHEP OPTIONS 204, and release HTTP 200. Actual advancing browser playback remains dependent on the real Playwright browser environment.
+
 ## Commits
 
 `d3ec5d2`, `824b37a`, and the source-discovery follow-up are local implementation commits. No push or merge performed.

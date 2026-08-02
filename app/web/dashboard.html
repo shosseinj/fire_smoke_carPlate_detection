@@ -737,7 +737,16 @@
         document.querySelector("main").hidden = enabled;
         liveBranchButton.setAttribute("aria-pressed", String(enabled));
         if (enabled) { history.replaceState(null, "", "#live-branch"); renderLiveBranch(); liveBranchHeartbeatTimer = window.setInterval(() => {
-          for (const state of liveBranchStates.values()) if (state.sessionId && !state.released) fetch(`/api/v1/live-branch/${state.profile}/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_uri: state.sourceUri, session_id: state.sessionId }) }).catch(() => liveBranchStatus(state.card, "خطای heartbeat شاخه زنده"));
+          for (const state of [...liveBranchStates.values()]) if (state.sessionId && !state.released) fetch(`/api/v1/live-branch/${state.profile}/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_uri: state.sourceUri, session_id: state.sessionId }) }).then(async (heartbeat) => {
+            if (heartbeat.ok) return;
+            if (heartbeat.status === 409 && state.profile === "wall" && liveBranchView) {
+              await releaseLiveBranch(state);
+              const source = liveBranchSources.find((item) => item.source_uri === state.sourceUri);
+              if (source) await acquireLiveBranch(source, "wall", state.video, state.card);
+              return;
+            }
+            liveBranchStatus(state.card, "خطای heartbeat شاخه زنده");
+          }).catch(() => liveBranchStatus(state.card, "خطای heartbeat شاخه زنده"));
         }, 5000); } else { history.replaceState(null, "", "/dashboard"); closeLiveBranchView(); }
       }
 
