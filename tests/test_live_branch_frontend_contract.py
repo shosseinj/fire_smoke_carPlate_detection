@@ -25,3 +25,14 @@ def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:
     assert LiveBranchAcquire.model_json_schema()["required"] == ["source_uri"]
     assert "session_id" in LiveBranchSession.model_json_schema()["required"]
     assert "/api/v1/live-branch" not in "/api/v1/broadcast"
+
+
+def test_fullscreen_acquire_route_is_registered_for_frontend_path() -> None:
+    from app.api.live_branch import router
+
+    matching = [
+        route for route in router.routes
+        if route.path == "/api/v1/live-branch/{profile}/acquire"
+        and "POST" in route.methods
+    ]
+    assert matching, "POST /api/v1/live-branch/fullscreen/acquire must resolve through the profile route"

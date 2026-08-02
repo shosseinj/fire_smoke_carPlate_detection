@@ -124,6 +124,28 @@ def test_source_requires_confirmed_nvmm() -> None:
     assert manager.acquire("camera", "wall", "viewer")["path"].startswith("live-branch/wall/")
 
 
+def test_confirmed_decoder_caps_register_when_tee_sink_is_not_negotiated() -> None:
+    manager = _manager()
+    tee = _Tee()
+    tee.sink.caps = None
+    pipeline = _Pipeline()
+    decoded_caps = _Caps("video/x-raw(memory:NVMM),format=NV12,width=(int)1280,height=(int)720")
+    assert manager.attach_source("static-file", tee, pipeline, confirmed_caps=decoded_caps)
+    assert manager.acquire("static-file", "fullscreen", "viewer")["width"] == 1280
+
+
+def test_non_nvmm_decoder_output_is_not_registered_or_broadcast() -> None:
+    manager = _manager()
+    tee = _Tee()
+    tee.sink.caps = None
+    assert not manager.attach_source(
+        "rtsp-camera", tee, _Pipeline(),
+        confirmed_caps=_Caps("video/x-raw,format=NV12,width=1280,height=720"),
+    )
+    with pytest.raises(RuntimeError, match="confirmed NVMM"):
+        manager.acquire("rtsp-camera", "wall", "viewer")
+
+
 def test_wall_caps_are_exact_and_fullscreen_has_no_resize() -> None:
     manager = _manager()
     source = type("Source", (), {"source_id": "camera", "tee": _Tee(), "pipeline": _Pipeline()})()

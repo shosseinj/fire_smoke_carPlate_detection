@@ -63,7 +63,6 @@ class GpuLiveBranchManager:
         "capsfilter",
         "nvv4l2h264enc",
         "h264parse",
-        "rtph264pay",
         "rtspclientsink",
     )
 
@@ -129,18 +128,27 @@ class GpuLiveBranchManager:
     def publish_uri(self, source_id: str, profile: str) -> str:
         return f"{self.publish_base}/{live_stream_path(source_id, profile)}"
 
-    def attach_source(self, source_id: str, tee: Any, pipeline: Any) -> bool:
-        """Register only a confirmed decoder NVMM tee."""
-        caps = tee.get_static_pad("sink").get_current_caps()
+    def attach_source(
+        self,
+        source_id: str,
+        tee: Any,
+        pipeline: Any,
+        confirmed_caps: Any | None = None,
+    ) -> bool:
+        """Register a decoder tee after its decoded pad has negotiated NVMM."""
+        if not self.enabled:
+            return False
+        sink_pad = tee.get_static_pad("sink")
+        caps = confirmed_caps or (sink_pad.get_current_caps() if sink_pad is not None else None)
         if not _is_nvmm_caps(caps):
             LOGGER.warning("Refusing live branch attachment without confirmed NVMM: %s", source_id)
             return False
         with self._lock:
             if self._closed:
                 return False
-            caps_text = tee.get_static_pad("sink").get_current_caps().to_string()
-            width_match = re.search(r"width=(\d+)", caps_text)
-            height_match = re.search(r"height=(\d+)", caps_text)
+            caps_text = caps.to_string()
+            width_match = re.search(r"width=(?:\(int\))?(\d+)", caps_text)
+            height_match = re.search(r"height=(?:\(int\))?(\d+)", caps_text)
             self._sources[source_id] = LiveSource(
                 source_id, tee, pipeline,
                 int(width_match.group(1)) if width_match else None,
@@ -203,9 +211,8 @@ class GpuLiveBranchManager:
         capsfilter = self._make("capsfilter", f"live_caps_{suffix}")
         encoder = self._make("nvv4l2h264enc", f"live_encoder_{suffix}")
         parser = self._make("h264parse", f"live_parser_{suffix}")
-        payloader = self._make("rtph264pay", f"live_pay_{suffix}")
         sink = self._make("rtspclientsink", f"live_sink_{suffix}")
-        elements = [queue, converter, capsfilter, encoder, parser, payloader, sink]
+        elements = [queue, converter, capsfilter, encoder, parser, sink]
         tee_pad = None
         try:
             if profile == "wall":
@@ -218,8 +225,15 @@ class GpuLiveBranchManager:
                 ))
             queue.set_property("leaky", 2)
             queue.set_property("max-size-buffers", 2)
-            encoder.set_property("insert-sps-pps", True)
+            find_property = getattr(encoder, "find_property", None)
+            if find_property is None or find_property("insert-sps-pps") is not None:
+                encoder.set_property("insert-sps-pps", True)
             sink.set_property("location", self.publish_uri(source.source_id, profile))
+            sink_find_property = getattr(sink, "find_property", None)
+            if sink_find_property is None or sink_find_property("protocols") is not None:
+                sink.set_property("protocols", 4)
+            if sink_find_property is None or sink_find_property("latency") is not None:
+                sink.set_property("latency", 0)
             for element in elements:
                 source.pipeline.add(element)
             tee_pad = source.tee.get_request_pad("src_%u")
@@ -227,8 +241,10 @@ class GpuLiveBranchManager:
                 raise RuntimeError("could not acquire/link live tee request pad")
             if not queue.link(converter) or not converter.link(capsfilter) or not capsfilter.link(encoder):
                 raise RuntimeError("could not link GPU live conversion branch")
-            if not encoder.link(parser) or not parser.link(payloader) or not payloader.link(sink):
-                raise RuntimeError("could not link NVENC live publisher branch")
+            if not encoder.link(parser):
+                raise RuntimeError("could not link NVENC to H264 parser")
+            if not parser.link(sink):
+                raise RuntimeError("could not link H264 parser to RTSP publisher")
             for element in elements:
                 element.sync_state_with_parent()
             return LiveBranch(source.source_id, profile, live_stream_path(source.source_id, profile), source.pipeline, source.tee, tee_pad, elements, sink)
@@ -301,7 +317,13 @@ class GpuLiveBranchManager:
                 branch.references.difference_update(expired)
                 for viewer in expired:
                     branch.last_heartbeat.pop(viewer, None)
-            keys = [key for key, deadline in self._pending_removal.items() if deadline <= now and not self._branches[key].references]
+            keys = [
+                key
+                for key, deadline in self._pending_removal.items()
+                if deadline <= now
+                and key in self._branches
+                and not self._branches[key].references
+            ]
         for key in keys:
             self._remove(key)
 

@@ -22,7 +22,7 @@ from app.core.source_registry import (
     canonical_source_type,
 )
 from app.core.video_ingestor import VideoFileIngestor
-from app.core.live_branch import GpuLiveBranchManager
+from app.core.live_branch import GpuLiveBranchManager, _is_nvmm_caps
 
 LOGGER = logging.getLogger(__name__)
 
@@ -77,12 +77,16 @@ class DeepStreamSourceState:
     loop_count: int = 0
     source_frame_width: int = 0
     source_frame_height: int = 0
+    live_registration_retry_id: int | None = None
+    live_registration_attempts: int = 0
 
 
 class DeepStreamIngestor:
     """Uses DeepStream/NVDEC for file and RTSP decoding, then feeds the router."""
 
     SCHEDULER_MAX_FPS = 240.0
+    LIVE_REGISTRATION_RETRY_INTERVAL_MS = 50
+    LIVE_REGISTRATION_MAX_RETRIES = 20
 
     REQUIRED_ELEMENTS = (
         "nvurisrcbin",
@@ -233,15 +237,127 @@ class DeepStreamIngestor:
             raise RuntimeError(f"Required GStreamer element is unavailable: {factory}")
         return element
 
+    def _cancel_live_registration_retry(self, state: DeepStreamSourceState) -> None:
+        retry_id = state.live_registration_retry_id
+        state.live_registration_retry_id = None
+        if retry_id is None or self._glib is None:
+            return
+        try:
+            self._glib.source_remove(retry_id)
+        except Exception:
+            LOGGER.debug("Could not cancel live registration retry for %s", state.source_id, exc_info=True)
+
+    def _try_register_live_source(self, source_id: str, pad: Any, tee: Any) -> bool:
+        manager = self.live_branch_manager
+        if manager is None or not manager.enabled:
+            return False
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or source_id in self._closing_sources:
+                return False
+            candidates: list[Any] = []
+            for candidate_pad in (pad, tee.get_static_pad("sink")):
+                if candidate_pad is None:
+                    continue
+                try:
+                    current = candidate_pad.get_current_caps()
+                except Exception:
+                    current = None
+                if current is not None:
+                    candidates.append(current)
+                try:
+                    queried = candidate_pad.query_caps(None)
+                except Exception:
+                    queried = None
+                if queried is not None:
+                    candidates.append(queried)
+            caps = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if _is_nvmm_caps(candidate)
+                    and re.search(r"width=(?:\(int\))?\d+", candidate.to_string())
+                    and re.search(r"height=(?:\(int\))?\d+", candidate.to_string())
+                ),
+                None,
+            )
+            if caps is None:
+                LOGGER.debug(
+                    "Live NVMM registration pending for %s; caps=%s",
+                    source_id,
+                    [candidate.to_string() for candidate in candidates],
+                )
+                return False
+            self._cancel_live_registration_retry(state)
+            state.live_registration_attempts = 0
+            try:
+                manager.set_runtime(self._gst, self._glib)
+                attached = manager.attach_source(
+                    source_id, tee, state.pipeline, confirmed_caps=caps
+                )
+            except Exception:
+                LOGGER.exception(
+                    "GPU live branch registration failed without stopping AI: %s",
+                    source_id,
+                )
+                return False
+            if not attached:
+                return False
+            return True
+
+    def _schedule_live_registration_retry(self, source_id: str, pad: Any, tee: Any) -> None:
+        manager = self.live_branch_manager
+        if manager is None or not manager.enabled or self._glib is None:
+            return
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or state.live_registration_retry_id is not None:
+                return
+            state.live_registration_attempts = 0
+
+        def retry() -> bool:
+            with self._lock:
+                state = self._states.get(source_id)
+                if state is None or state.tee is not tee or source_id in self._closing_sources:
+                    return False
+                state.live_registration_attempts += 1
+                attempts = state.live_registration_attempts
+            if self._try_register_live_source(source_id, pad, tee):
+                return False
+            if attempts >= self.LIVE_REGISTRATION_MAX_RETRIES:
+                with self._lock:
+                    current = self._states.get(source_id)
+                    if current is not None:
+                        current.live_registration_retry_id = None
+                LOGGER.warning(
+                    "Decoder output never negotiated fixed NVMM caps; live branch disabled for source: %s",
+                    source_id,
+                )
+                return False
+            return True
+
+        try:
+            retry_id = self._glib.timeout_add(self.LIVE_REGISTRATION_RETRY_INTERVAL_MS, retry)
+        except Exception:
+            LOGGER.exception("Could not schedule deferred live branch registration: %s", source_id)
+            return
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or source_id in self._closing_sources:
+                try:
+                    self._glib.source_remove(retry_id)
+                except Exception:
+                    pass
+                return
+            state.live_registration_retry_id = retry_id
+
     def _on_decoded_pad_added(
         self, _: Any, pad: Any, tee: Any, ai_pacer: Any, source_id: str
     ) -> None:
         Gst, _ = self._require_runtime()
         caps = pad.get_current_caps() or pad.query_caps(None)
         caps_text = caps.to_string() if caps is not None else ""
-        if "video/x-raw" not in caps_text or "memory:NVMM" not in caps_text:
-            if caps_text.startswith("video/"):
-                LOGGER.error("Refusing non-NVMM decoded pad for %s: %s", source_id, caps_text)
+        if not caps_text or not caps_text.startswith("video/"):
             return
         sink_pad = tee.get_static_pad("sink")
         if sink_pad is None or sink_pad.is_linked():
@@ -257,12 +373,12 @@ class DeepStreamIngestor:
                 tee.release_request_pad(ai_pad)
             LOGGER.error("DeepStream AI tee branch could not be linked: %s", source_id)
             return
-        if self.live_branch_manager is not None:
+        if self.live_branch_manager is not None and self.live_branch_manager.enabled:
             try:
                 state = self._states.get(source_id)
                 if state is not None:
-                    self.live_branch_manager.set_runtime(Gst, self._glib)
-                    self.live_branch_manager.attach_source(source_id, tee, state.pipeline)
+                    if not self._try_register_live_source(source_id, pad, tee):
+                        self._schedule_live_registration_retry(source_id, pad, tee)
             except Exception:
                 LOGGER.exception("GPU live branch attachment failed without stopping AI: %s", source_id)
 
@@ -633,6 +749,8 @@ class DeepStreamIngestor:
 
     def _dispose_state(self, state: DeepStreamSourceState) -> None:
         Gst, _ = self._require_runtime()
+        with self._lock:
+            self._cancel_live_registration_retry(state)
         for element, handler_id in (
             (state.sink, state.sink_handler_id),
             (state.source, state.source_pad_handler_id),
@@ -686,6 +804,8 @@ class DeepStreamIngestor:
     def _close_source(self, source_id: str) -> None:
         with self._lock:
             state = self._states.pop(source_id, None)
+            if state is not None:
+                self._cancel_live_registration_retry(state)
         if state is None:
             return
         self._schedule_state_disposal(state)

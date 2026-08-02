@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+import logging
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.runtime import Runtime
 
 router = APIRouter(prefix="/api/v1/live-branch", tags=["live-branch"])
+LOGGER = logging.getLogger(__name__)
 Profile = Literal["wall", "fullscreen"]
 
 
@@ -68,6 +70,7 @@ def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, run
     try:
         result = manager.acquire(payload.source_uri, profile, session_id)
     except Exception as exc:
+        LOGGER.exception("Live branch acquire failed for %s/%s", profile, payload.source_uri)
         with _sessions_lock:
             _sessions.pop(session_id, None)
         raise HTTPException(status_code=503, detail=f"live branch acquire failed: {exc}") from exc

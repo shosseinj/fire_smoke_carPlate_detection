@@ -66,6 +66,10 @@ The production `POST /api/v1/sources` path now accepts an existing local static 
 
 Manual wall acquire for the static source returned 503 because the decoder had not produced a confirmed NVMM tee attachment. This is the next failing boundary; no GPU/AI path success is claimed.
 
+## NVMM tee and fullscreen route follow-up
+
+The decoder pad callback now defers live registration until fixed negotiated NVMM caps are available, while linking the pre-existing AI tee branch unchanged. Runtime source 9 subsequently acquired the wall profile with HTTP 200 and MediaMTX published `live-branch/wall/1f17fc4f663d61bd827c3ee0`; release and grace cleanup removed the branch. The fullscreen profile route is the registered profile route `/api/v1/live-branch/{profile}/acquire`; after rebuilding `video-ai-router`, `POST /api/v1/live-branch/fullscreen/acquire` for source 9 returned HTTP 200 with `live-branch/fullscreen/1f17fc4f663d61bd827c3ee0` and WHEP port 8789. Browser playback remains separately unvalidated.
+
 ## Commits
 
 `d3ec5d2`, `824b37a`, and the source-discovery follow-up are local implementation commits. No push or merge performed.
