@@ -232,7 +232,7 @@ class DeepStreamIngestor:
         return element
 
     def _on_decoded_pad_added(
-        self, _: Any, pad: Any, tee: Any, ai_queue: Any, source_id: str
+        self, _: Any, pad: Any, tee: Any, ai_pacer: Any, source_id: str
     ) -> None:
         Gst, _ = self._require_runtime()
         caps = pad.get_current_caps() or pad.query_caps(None)
@@ -249,7 +249,7 @@ class DeepStreamIngestor:
             LOGGER.error("DeepStream NVMM source pad could not be linked: %s", result)
             return
         ai_pad = tee.get_request_pad("src_%u")
-        ai_sink = ai_queue.get_static_pad("sink")
+        ai_sink = ai_pacer.get_static_pad("sink")
         if ai_pad is None or ai_sink is None or ai_pad.link(ai_sink) != Gst.PadLinkReturn.OK:
             if ai_pad is not None:
                 tee.release_request_pad(ai_pad)
@@ -578,7 +578,7 @@ class DeepStreamIngestor:
             if not bgrx_caps.link(sink):
                 raise RuntimeError("Could not link BGRx caps to appsink")
             source_pad_handler_id = source.connect(
-                "pad-added", self._on_decoded_pad_added, tee, queue, record.source_uri
+                "pad-added", self._on_decoded_pad_added, tee, pacer, record.source_uri
             )
             sink_handler_id = sink.connect(
                 "new-sample", self._on_new_sample, record.source_uri

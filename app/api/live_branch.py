@@ -82,6 +82,8 @@ def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, run
         "profile": profile,
         "stream_path": path,
         "whep_url": whep_url,
+        "width": result.get("width"),
+        "height": result.get("height"),
     }
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -42,6 +43,8 @@ class LiveSource:
     source_id: str
     tee: Any
     pipeline: Any
+    native_width: int | None = None
+    native_height: int | None = None
     attached: bool = True
 
 
@@ -135,7 +138,14 @@ class GpuLiveBranchManager:
         with self._lock:
             if self._closed:
                 return False
-            self._sources[source_id] = LiveSource(source_id, tee, pipeline)
+            caps_text = tee.get_static_pad("sink").get_current_caps().to_string()
+            width_match = re.search(r"width=(\d+)", caps_text)
+            height_match = re.search(r"height=(\d+)", caps_text)
+            self._sources[source_id] = LiveSource(
+                source_id, tee, pipeline,
+                int(width_match.group(1)) if width_match else None,
+                int(height_match.group(1)) if height_match else None,
+            )
         return True
 
     def detach_source(self, source_id: str) -> None:
@@ -237,7 +247,14 @@ class GpuLiveBranchManager:
             raise
 
     def _contract(self, branch: LiveBranch) -> dict[str, Any]:
-        return {"enabled": True, "source_id": branch.source_id, "profile": branch.profile, "path": branch.path, "url": self.browser_url(branch.source_id, branch.profile), "references": len(branch.references)}
+        source = self._sources.get(branch.source_id)
+        return {
+            "enabled": True, "source_id": branch.source_id, "profile": branch.profile,
+            "path": branch.path, "url": self.browser_url(branch.source_id, branch.profile),
+            "references": len(branch.references),
+            "width": 260 if branch.profile == "wall" else (source.native_width if source else None),
+            "height": 260 if branch.profile == "wall" else (source.native_height if source else None),
+        }
 
     def _remove(self, key: tuple[str, str]) -> None:
         with self._lock:
