@@ -36,3 +36,14 @@ def test_fullscreen_acquire_route_is_registered_for_frontend_path() -> None:
         and "POST" in route.methods
     ]
     assert matching, "POST /api/v1/live-branch/fullscreen/acquire must resolve through the profile route"
+
+
+def test_wall_acquire_url_is_get_discoverable_without_creating_a_session() -> None:
+    from app.api.live_branch import router
+
+    matching = [
+        route for route in router.routes
+        if route.path == "/api/v1/live-branch/{profile}/acquire"
+        and "GET" in route.methods
+    ]
+    assert matching, "GET wall acquire compatibility/discovery route must be registered"

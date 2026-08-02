@@ -6,7 +6,7 @@ import logging
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.runtime import Runtime
@@ -98,6 +98,38 @@ def acquire(
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     return _acquire(profile, payload, request, runtime)
+
+
+@router.get("/{profile}/acquire")
+def acquire_get(
+    profile: Profile,
+    request: Request,
+    source_uri: str | None = Query(default=None, min_length=1),
+    client_id: str | None = Query(default=None, min_length=1, max_length=200),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    """Provide browser-safe discovery and optional query-parameter compatibility.
+
+    POST remains the canonical acquire contract. A bare GET describes the
+    required POST call instead of returning an opaque 405 when opened directly.
+    Supplying source_uri performs the same acquire operation as POST.
+    """
+    if source_uri is not None:
+        return _acquire(
+            profile,
+            LiveBranchAcquire(source_uri=source_uri, client_id=client_id),
+            request,
+            runtime,
+        )
+    manager = _manager(runtime)
+    return {
+        "enabled": bool(manager.enabled),
+        "profile": profile,
+        "method": "POST",
+        "acquire_url": str(request.url).split("?", 1)[0],
+        "required_query": "source_uri",
+        "sources_url": "/api/v1/broadcast-gpu/sources",
+    }
 
 
 @router.post("/{profile}/heartbeat")
