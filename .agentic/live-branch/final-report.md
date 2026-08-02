@@ -78,6 +78,8 @@ MediaMTX could return `404 no stream is available` when the browser posted WHEP 
 
 The dashboard wall is exactly 320x320. Fullscreen acquires the separate native profile and replaces the wall session. Browser heartbeat `409` responses after a runtime restart now trigger wall session reacquisition instead of leaving stale dead tiles. The dashboard displays measured FPS and video resolution above each live video. A fresh source-3 wall validation returned HTTP 200, 320x320 dimensions, WHEP OPTIONS 204, and release HTTP 200. Actual advancing browser playback remains dependent on the real Playwright browser environment.
 
+Fullscreen now keeps the playing wall stream visible while a detached video preloads the native branch. The displayed video swaps to the native stream only after WHEP negotiation/playback succeeds, eliminating the blank/fullscreen startup gap.
+
 Fullscreen permission failures were caused by calling `requestFullscreen()` after awaited network/release operations, which loses browser user activation. The dashboard now requests fullscreen synchronously from the tile click and performs branch release/acquire afterward.
 
 ## Commits

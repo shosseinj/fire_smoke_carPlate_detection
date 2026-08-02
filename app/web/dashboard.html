@@ -749,9 +749,17 @@
           ? Promise.reject(new Error("Exit the current fullscreen view first"))
           : video.requestFullscreen();
         const wall = liveBranchStates.get(`${source.source_uri}:wall`);
+        // Keep the already-playing wall stream in the visible element. The
+        // native branch is negotiated on a detached muted video and swapped
+        // in only after it is actually playable, so fullscreen never blanks.
+        const nativeVideo = document.createElement("video");
+        nativeVideo.autoplay = true; nativeVideo.muted = true; nativeVideo.playsInline = true;
+        const state = await acquireLiveBranch(source, "fullscreen", nativeVideo, card);
+        if (!state) { try { await fullscreenRequest; } catch (error) { liveBranchStatus(card, `تمام‌صفحه رد شد: ${error.message}`); } return; }
+        video.srcObject = nativeVideo.srcObject;
+        try { await video.play(); } catch (_) { /* the native peer is already playing */ }
+        state.video = video;
         if (wall) await releaseLiveBranch(wall);
-        const state = await acquireLiveBranch(source, "fullscreen", video, card);
-        if (!state) return;
         liveBranchFullscreen = state;
         try { await fullscreenRequest; } catch (error) { liveBranchStatus(card, `تمام‌صفحه رد شد: ${error.message}`); }
       }

@@ -23,6 +23,8 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "video.requestFullscreen()" in html
     assert "FPS: ${fps}" in html
     assert "RES: ${width}×${height}" in html
+    assert "nativeVideo = document.createElement(\"video\")" in html
+    assert "video.srcObject = nativeVideo.srcObject" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:
