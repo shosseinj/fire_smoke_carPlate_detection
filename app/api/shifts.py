@@ -78,6 +78,7 @@ class BulkShiftAssignmentCreate(BaseModel):
     start_date: str
     end_date: str
     personnel_ids: list[int] = Field(min_length=1)
+    skip_failed_records: bool = False
 
     @field_validator("personnel_ids")
     @classmethod
@@ -188,11 +189,12 @@ def bulk_assign_personnel_to_shift(
     try:
         start_date = validate_jalali_date(body.start_date)
         end_date = validate_jalali_date(body.end_date)
-        assignments = get_shift_store().assign_personnel_bulk(
+        assignments, failed_records = get_shift_store().assign_personnel_bulk(
             personnel_ids=body.personnel_ids,
             shift_id=body.shift_id,
             start_date=start_date,
             end_date=end_date,
+            skip_failed_records=body.skip_failed_records,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -200,8 +202,11 @@ def bulk_assign_personnel_to_shift(
         "shift_id": body.shift_id,
         "start_date": body.start_date,
         "end_date": body.end_date,
+        "skip_failed_records": body.skip_failed_records,
         "assigned_count": len(assignments),
+        "failed_count": len(failed_records),
         "assignments": [_assignment_response(item) for item in assignments],
+        "failed_records": failed_records,
     }
 
 
