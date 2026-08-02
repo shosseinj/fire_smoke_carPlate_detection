@@ -434,6 +434,81 @@ class ShiftStore:
             ).fetchone()
             return self._row_to_assignment(row)
 
+    def assign_personnel_bulk(
+        self,
+        personnel_ids: list[int],
+        shift_id: int,
+        start_date: date,
+        end_date: date,
+    ) -> list[ShiftAssignmentRecord]:
+        """Atomically assign one dated shift to multiple personnel."""
+        if not personnel_ids:
+            raise ValueError("حداقل یک پرسنل باید انتخاب شود")
+        if len(personnel_ids) != len(set(personnel_ids)):
+            raise ValueError("شناسه پرسنل تکراری مجاز نیست")
+        if end_date < start_date:
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
+
+        with self._lock, self._connection() as conn:
+            if conn.execute(
+                "SELECT id FROM work_shifts WHERE id = ?", (shift_id,)
+            ).fetchone() is None:
+                raise ValueError("شیفت یافت نشد")
+
+            placeholders = ", ".join("?" for _ in personnel_ids)
+            existing_rows = conn.execute(
+                f"SELECT id FROM personnel WHERE id IN ({placeholders})",
+                personnel_ids,
+            ).fetchall()
+            existing_ids = {int(row["id"]) for row in existing_rows}
+            missing_ids = [item for item in personnel_ids if item not in existing_ids]
+            if missing_ids:
+                raise ValueError(
+                    "پرسنل یافت نشد: " + ", ".join(str(item) for item in missing_ids)
+                )
+
+            overlap_rows = conn.execute(
+                "SELECT DISTINCT personnel_id FROM personnel_shift_assignments "
+                f"WHERE personnel_id IN ({placeholders}) "
+                "AND start_date <= ? AND end_date >= ? ORDER BY personnel_id",
+                [*personnel_ids, end_date, start_date],
+            ).fetchall()
+            if overlap_rows:
+                overlap_ids = [int(row["personnel_id"]) for row in overlap_rows]
+                raise ValueError(
+                    "بازه تاریخ شیفت برای این پرسنل هم‌پوشانی دارد: "
+                    + ", ".join(str(item) for item in overlap_ids)
+                )
+
+            now = _now()
+            assignment_ids: list[int] = []
+            try:
+                for personnel_id in personnel_ids:
+                    cursor = conn.execute(
+                        "INSERT INTO personnel_shift_assignments "
+                        "(personnel_id, shift_id, start_date, end_date, created_at_utc, updated_at_utc) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (personnel_id, shift_id, start_date, end_date, now, now),
+                    )
+                    assignment_ids.append(int(cursor.lastrowid))
+            except IntegrityError as exc:
+                if "overlap" in str(exc).lower() or "ex_personnel" in str(exc).lower():
+                    raise ValueError("بازه تاریخ شیفت با شیفت دیگری هم‌پوشانی دارد") from exc
+                raise
+
+            today = date.today()
+            if start_date <= today <= end_date:
+                conn.execute(
+                    f"UPDATE personnel SET shift_id = ? WHERE id IN ({placeholders})",
+                    [shift_id, *personnel_ids],
+                )
+            rows = conn.execute(
+                "SELECT * FROM personnel_shift_assignments "
+                f"WHERE id IN ({', '.join('?' for _ in assignment_ids)}) ORDER BY id",
+                assignment_ids,
+            ).fetchall()
+            return [self._row_to_assignment(row) for row in rows]
+
     def get_assignment_for_date(
         self, personnel_id: int, on_date: date
     ) -> ShiftAssignmentRecord | None:
