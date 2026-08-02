@@ -148,6 +148,36 @@ def test_create_personnel(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
+def test_list_personnel_filters_by_optional_section_id(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        with test_runtime.database.connection() as conn:
+            section_id = int(conn.execute("SELECT id FROM sections ORDER BY id LIMIT 1").fetchone()["id"])
+            assigned_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code, department_id) "
+                "VALUES (?, ?, ?, ?)",
+                ("Section", "Assigned", "section-filter-assigned", section_id),
+            ).lastrowid
+            unassigned_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Section", "Unassigned", "section-filter-unassigned"),
+            ).lastrowid
+
+        filtered = client.get(
+            "/api/v1/personnel/",
+            params={"section_id": section_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert filtered.status_code == 200, filtered.text
+        returned_ids = [item["id"] for item in filtered.json()]
+        assert assigned_id in returned_ids
+        assert unassigned_id not in returned_ids
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
 def test_create_personnel_duplicate_national_code(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:

@@ -250,12 +250,19 @@ def list_personnel(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
     employee_type: str | None = Query(default=None),
+    section_id: int | None = Query(default=None, ge=1),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
 ) -> list:
     store = _store(runtime)
-    records, _ = store.list(offset=skip, limit=limit, employee_type=employee_type, search=search)
+    records, _ = store.list(
+        offset=skip,
+        limit=limit,
+        employee_type=employee_type,
+        department_id=section_id,
+        search=search,
+    )
     return [_personnel_simple(r, store) for r in records]
 
 
