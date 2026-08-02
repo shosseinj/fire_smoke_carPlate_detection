@@ -17,6 +17,7 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "width: 260px" in html and "height: 260px" in html
     assert "/api/v1/broadcast-gpu/sources" in html
     assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
+    assert "attempt < 10" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:

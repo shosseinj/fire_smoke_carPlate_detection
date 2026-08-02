@@ -70,6 +70,10 @@ Manual wall acquire for the static source returned 503 because the decoder had n
 
 The decoder pad callback now defers live registration until fixed negotiated NVMM caps are available, while linking the pre-existing AI tee branch unchanged. Runtime source 9 subsequently acquired the wall profile with HTTP 200 and MediaMTX published `live-branch/wall/1f17fc4f663d61bd827c3ee0`; release and grace cleanup removed the branch. The fullscreen profile route is the registered profile route `/api/v1/live-branch/{profile}/acquire`; after rebuilding `video-ai-router`, `POST /api/v1/live-branch/fullscreen/acquire` for source 9 returned HTTP 200 with `live-branch/fullscreen/1f17fc4f663d61bd827c3ee0` and WHEP port 8789. Browser playback remains separately unvalidated.
 
+## WHEP publication race follow-up
+
+MediaMTX could return `404 no stream is available` when the browser posted WHEP immediately after acquire, before `rtspclientsink` finished publishing. Acquire now waits briefly for asynchronous publication and the dashboard retries transient WHEP 404 responses. Runtime source 3 validation returned acquire HTTP 200, WHEP `OPTIONS` HTTP 204 for `live-branch/wall/7dbb9cc0448f2fa13ff76c78/whep`, and release HTTP 200.
+
 ## Commits
 
 `d3ec5d2`, `824b37a`, and the source-discovery follow-up are local implementation commits. No push or merge performed.

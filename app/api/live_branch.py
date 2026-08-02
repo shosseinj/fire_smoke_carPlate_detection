@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import uuid
 import logging
+import time
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -76,6 +77,9 @@ def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, run
         raise HTTPException(status_code=503, detail=f"live branch acquire failed: {exc}") from exc
     path = str(result.get("path", ""))
     url = str(result.get("url", ""))
+    # rtspclientsink publishes asynchronously. Give MediaMTX time to create
+    # the path before returning a WHEP URL to a browser.
+    time.sleep(2.0)
     whep_url = _browser_whep_url(url, request)
     return {
         "enabled": True,

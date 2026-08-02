@@ -671,9 +671,14 @@
           });
           await peer.setLocalDescription(await peer.createOffer());
           await waitForIceGatheringBounded(peer);
-          const whep = await fetch(result.whep_url, {
-            method: "POST", headers: { "Content-Type": "application/sdp" }, body: peer.localDescription.sdp,
-          });
+          let whep;
+          for (let attempt = 0; attempt < 10; attempt += 1) {
+            whep = await fetch(result.whep_url, {
+              method: "POST", headers: { "Content-Type": "application/sdp" }, body: peer.localDescription.sdp,
+            });
+            if (whep.status !== 404 || attempt === 9) break;
+            await new Promise((resolve) => window.setTimeout(resolve, 250));
+          }
           if (!whep.ok) throw new Error(`مذاکره WHEP با کد ${whep.status} شکست خورد`);
           await peer.setRemoteDescription({ type: "answer", sdp: await whep.text() });
           try { await video.play(); } catch (error) { throw new Error(`پخش ویدیو رد شد: ${error.message}`); }
