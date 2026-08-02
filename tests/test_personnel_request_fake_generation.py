@@ -43,11 +43,17 @@ def test_generate_fake_requests_uses_all_personnel_pages_and_calculated_fields(
         "get_personnel_store",
         lambda: PersonnelStore(),
     )
-    monkeypatch.setattr(personnel_requests, "_get_shift", lambda person: shift)
-    monkeypatch.setattr(personnel_requests, "get_holiday_store", lambda: object())
     monkeypatch.setattr(
         personnel_requests,
-        "calculate_request_duration",
+        "get_shift_store",
+        lambda: SimpleNamespace(
+            list_assignments=lambda personnel_id, **_: [] if personnel_id == 1 else [object()]
+        ),
+    )
+    monkeypatch.setattr(personnel_requests, "_get_shift", lambda person, day=None: shift)
+    monkeypatch.setattr(
+        personnel_requests,
+        "_calculate_request_duration_for_assignments",
         lambda *args: calculation,
     )
     monkeypatch.setattr(personnel_requests, "utc_now_text", lambda: "2026-07-30T10:00:00Z")
@@ -98,11 +104,15 @@ def test_generate_fake_requests_review_metadata_matches_each_status(monkeypatch)
         "get_personnel_store",
         lambda: PersonnelStore(),
     )
-    monkeypatch.setattr(personnel_requests, "_get_shift", lambda value: object())
-    monkeypatch.setattr(personnel_requests, "get_holiday_store", lambda: object())
     monkeypatch.setattr(
         personnel_requests,
-        "calculate_request_duration",
+        "get_shift_store",
+        lambda: SimpleNamespace(list_assignments=lambda *args, **kwargs: [object()]),
+    )
+    monkeypatch.setattr(personnel_requests, "_get_shift", lambda value, day=None: object())
+    monkeypatch.setattr(
+        personnel_requests,
+        "_calculate_request_duration_for_assignments",
         lambda *args: {"duration_days": 2.0, "duration_minutes": None},
     )
     monkeypatch.setattr(personnel_requests, "utc_now_text", lambda: "reviewed-now")
@@ -150,11 +160,15 @@ def _configure_single_eligible_person(monkeypatch) -> _CapturingRequestStore:
         "get_personnel_store",
         lambda: PersonnelStore(),
     )
-    monkeypatch.setattr(personnel_requests, "_get_shift", lambda value: object())
-    monkeypatch.setattr(personnel_requests, "get_holiday_store", lambda: object())
     monkeypatch.setattr(
         personnel_requests,
-        "calculate_request_duration",
+        "get_shift_store",
+        lambda: SimpleNamespace(list_assignments=lambda *args, **kwargs: [object()]),
+    )
+    monkeypatch.setattr(personnel_requests, "_get_shift", lambda value, day=None: object())
+    monkeypatch.setattr(
+        personnel_requests,
+        "_calculate_request_duration_for_assignments",
         lambda *args: {"duration_days": 1.0, "duration_minutes": None},
     )
     monkeypatch.setattr(personnel_requests._random, "choice", lambda values: values[0])

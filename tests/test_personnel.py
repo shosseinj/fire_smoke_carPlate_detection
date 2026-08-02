@@ -507,9 +507,12 @@ def test_import_excel(tmp_path: Path) -> None:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Personnel Import"
-        ws.append(["fname", "lname", "national_code", "employee_type", "degree"])
-        ws.append(["Sara", "Hosseini", VALID_CODE_2, "employee", "PhD"])
-        ws.append(["Mohsen", "Rezaei", VALID_CODE_3, "contractor", ""])
+        ws.append([
+            "fname", "lname", "national_code", "employee_type", "department_id",
+            "shift_id", "shift_start_date", "shift_end_date", "degree",
+        ])
+        ws.append(["Sara", "Hosseini", VALID_CODE_2, "employee", None, None, None, None, 8])
+        ws.append(["Mohsen", "Rezaei", VALID_CODE_3, "contractor", None, None, None, None, None])
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)

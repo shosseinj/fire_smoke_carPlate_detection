@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.config import settings
+from app.core.jalali_utils import parse_jalali_date
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -719,13 +720,14 @@ class PersonnelStore:
         headers = [
             "نام", "نام خانوادگی",
             "کد ملی", "نوع کارمند (کد)", "دپارتمان (شناسه)",
-            "شیفت کاری (شناسه)", "مدرک تحصیلی",
+            "شیفت کاری (شناسه)", "تاریخ شروع شیفت", "تاریخ پایان شیفت",
+            "مدرک تحصیلی",
         ]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="right")
-        col_widths = [16, 20, 16, 18, 18, 18, 20]
+        col_widths = [16, 20, 16, 18, 18, 18, 18, 18, 20]
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
@@ -755,7 +757,9 @@ class PersonnelStore:
             ("D: نوع کارمند", "1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"),
             ("E: دپارتمان", "شناسه دپارتمان از جدول دپارتمان‌های زیر (اختیاری)"),
             ("F: شیفت کاری", "شناسه شیفت از جدول شیفت‌های زیر (اختیاری)"),
-            ("G: مدرک تحصیلی", "1=بی‌سواد, 2=ابتدایی, 3=سیکل, 4=دیپلم, 5=فوق‌دیپلم, 6=لیسانس, 7=فوق‌لیسانس, 8=دکتری"),
+            ("G: تاریخ شروع شیفت", "تاریخ شمسی YYYY-MM-DD؛ در صورت انتخاب شیفت الزامی است"),
+            ("H: تاریخ پایان شیفت", "تاریخ شمسی YYYY-MM-DD؛ در صورت انتخاب شیفت الزامی است"),
+            ("I: مدرک تحصیلی", "1=بی‌سواد, 2=ابتدایی, 3=سیکل, 4=دیپلم, 5=فوق‌دیپلم, 6=لیسانس, 7=فوق‌لیسانس, 8=دکتری"),
         ]
         for col, desc in col_guide:
             ws_guide.cell(row=r, column=1, value=col).font = Font(bold=True)
@@ -1009,7 +1013,34 @@ class PersonnelStore:
                         })
 
                 # ── Parse & validate degree ───────────────────────
-                deg_raw = row[6] if len(row) > 6 else None
+                shift_start_date = None
+                shift_end_date = None
+                start_date_val = row[6] if len(row) > 6 else None
+                end_date_val = row[7] if len(row) > 7 else None
+                if shift_id is not None:
+                    if not start_date_val or not end_date_val:
+                        row_field_errors.append({
+                            "field": "shift_dates",
+                            "message": "تاریخ شروع و پایان تخصیص شیفت الزامی است",
+                        })
+                    else:
+                        try:
+                            shift_start_date = parse_jalali_date(str(start_date_val))
+                            shift_end_date = parse_jalali_date(str(end_date_val))
+                            if shift_end_date < shift_start_date:
+                                raise ValueError("end before start")
+                        except ValueError:
+                            row_field_errors.append({
+                                "field": "shift_dates",
+                                "message": "بازه تاریخ تخصیص شیفت معتبر نیست",
+                            })
+                elif start_date_val or end_date_val:
+                    row_field_errors.append({
+                        "field": "shift_id",
+                        "message": "برای تاریخ‌های تخصیص، شناسه شیفت الزامی است",
+                    })
+
+                deg_raw = row[8] if len(row) > 8 else None
                 degree: str | None = None
                 if deg_raw is not None and str(deg_raw).strip() not in ("", "nan", "None"):
                     deg_key = str(deg_raw).strip()
@@ -1055,11 +1086,20 @@ class PersonnelStore:
                     )
                     action = "updated"
                 else:
-                    self.create(
+                    existing = self.create(
                         fname, lname, national_code, employee_type,
                         degree, shift_id, department_id,
                     )
                     action = "created"
+                if shift_id is not None:
+                    from app.core.shift_store import ShiftStore
+
+                    ShiftStore(self.database).assign_personnel(
+                        existing.id,
+                        shift_id,
+                        shift_start_date,
+                        shift_end_date,
+                    )
                 created += 1
                 successful_rows.append({
                     "row": row_idx,
@@ -1070,6 +1110,12 @@ class PersonnelStore:
                     "employee_type": employee_type,
                     "degree": degree,
                     "shift_id": shift_id,
+                    "shift_start_date": (
+                        shift_start_date.isoformat() if shift_start_date else None
+                    ),
+                    "shift_end_date": (
+                        shift_end_date.isoformat() if shift_end_date else None
+                    ),
                     "department_id": department_id,
                 })
             except ValueError as exc:

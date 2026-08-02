@@ -77,10 +77,66 @@ def _get_personnel(personnel_id: int) -> PersonnelRecord | None:
     return get_personnel_store().get(personnel_id)
 
 
-def _get_shift(personnel: PersonnelRecord) -> WorkShiftRecord | None:
+def _get_shift(
+    personnel: PersonnelRecord,
+    on_date: date | None = None,
+) -> WorkShiftRecord | None:
+    store = get_shift_store()
+    if on_date is not None:
+        assignment = store.get_assignment_for_date(personnel.id, on_date)
+        return store.get(assignment.shift_id) if assignment is not None else None
     if personnel.shift_id is None:
         return None
-    return get_shift_store().get(personnel.shift_id)
+    return store.get(personnel.shift_id)
+
+
+def _calculate_request_duration_for_assignments(
+    personnel: PersonnelRecord,
+    start: date,
+    end: date,
+    duration_type: str,
+    start_clock: time | None,
+    end_clock: time | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "working_dates": [],
+        "excluded_non_working_dates": [],
+        "excluded_holiday_dates": [],
+        "duration_days": 0.0,
+        "duration_minutes": 0 if duration_type == "hourly" else None,
+        "duration_hours": 0.0 if duration_type == "hourly" else None,
+    }
+    current = start
+    while current <= end:
+        shift = _get_shift(personnel, current)
+        if shift is None:
+            raise HTTPException(
+                400,
+                f"برای تاریخ {format_jalali(current)} شیفتی برای پرسنل تعیین نشده است",
+            )
+        day_result = calculate_request_duration(
+            personnel,
+            shift,
+            get_holiday_store(),
+            current,
+            current,
+            duration_type,
+            start_clock,
+            end_clock,
+        )
+        for key in (
+            "working_dates",
+            "excluded_non_working_dates",
+            "excluded_holiday_dates",
+        ):
+            result[key].extend(day_result[key])
+        result["duration_days"] += day_result["duration_days"]
+        if duration_type == "hourly":
+            result["duration_minutes"] += day_result["duration_minutes"] or 0
+        current += timedelta(days=1)
+    if duration_type == "hourly":
+        result["duration_hours"] = round(result["duration_minutes"] / 60, 4)
+    return result
 
 
 def _full_name(personnel: PersonnelRecord) -> str:
@@ -89,7 +145,6 @@ def _full_name(personnel: PersonnelRecord) -> str:
 
 def _prepare_bulk_request(
     personnel: PersonnelRecord,
-    shift: WorkShiftRecord,
     item: BulkPersonnelRequestItem,
 ) -> dict[str, Any]:
     request_type = item.request_type
@@ -139,10 +194,8 @@ def _prepare_bulk_request(
             raise HTTPException(400, "end_time باید بعد از start_time باشد")
 
     try:
-        calculation = calculate_request_duration(
+        calculation = _calculate_request_duration_for_assignments(
             personnel,
-            shift,
-            get_holiday_store(),
             start,
             end,
             duration_type,
@@ -255,10 +308,6 @@ def calculate_time(
     personnel = _get_personnel(personnel_id)
     if personnel is None:
         raise HTTPException(404, f"پرسنل با شناسه {personnel_id} یافت نشد")
-    shift = _get_shift(personnel)
-    if shift is None:
-        raise HTTPException(400, f"برای پرسنل با شناسه {personnel_id} شیفتی تعیین نشده است")
-
     try:
         s = validate_jalali_date(start_date_str)
         e = validate_jalali_date(end_date_str) if end_date_str else s
@@ -290,8 +339,8 @@ def calculate_time(
         if et <= st:
             raise HTTPException(400, "end_time باید بعد از start_time باشد")
 
-    calc = calculate_request_duration(
-        personnel, shift, get_holiday_store(), s, e, duration_type, st, et,
+    calc = _calculate_request_duration_for_assignments(
+        personnel, s, e, duration_type, st, et,
     )
 
     return {
@@ -386,10 +435,6 @@ def create_request(
     personnel = _get_personnel(personnel_id)
     if personnel is None:
         raise HTTPException(404, f"پرسنل با شناسه {personnel_id} یافت نشد")
-    shift = _get_shift(personnel)
-    if shift is None:
-        raise HTTPException(400, f"برای پرسنل با شناسه {personnel_id} شیفتی تعیین نشده است")
-
     try:
         s = validate_jalali_date(start_date_str)
         e = validate_jalali_date(end_date_str) if end_date_str else s
@@ -421,8 +466,8 @@ def create_request(
         if et <= st:
             raise HTTPException(400, "end_time باید بعد از start_time باشد")
 
-    calc = calculate_request_duration(
-        personnel, shift, get_holiday_store(), s, e, duration_type, st, et,
+    calc = _calculate_request_duration_for_assignments(
+        personnel, s, e, duration_type, st, et,
     )
 
     try:
@@ -457,15 +502,8 @@ def create_bulk_requests(
     personnel = _get_personnel(body.personnel_id)
     if personnel is None:
         raise HTTPException(404, f"پرسنل با شناسه {body.personnel_id} یافت نشد")
-    shift = _get_shift(personnel)
-    if shift is None:
-        raise HTTPException(
-            400,
-            f"برای پرسنل با شناسه {body.personnel_id} شیفتی تعیین نشده است",
-        )
-
     prepared = [
-        _prepare_bulk_request(personnel, shift, item) for item in body.requests
+        _prepare_bulk_request(personnel, item) for item in body.requests
     ]
     try:
         records = get_request_store().create_many(
@@ -524,7 +562,15 @@ def generate_fake_requests(
         if not personnel_page:
             break
         personnel_offset += len(personnel_page)
-    personnel_with_shift = [p for p in all_personnel if p.shift_id is not None]
+    personnel_with_shift = [
+        p
+        for p in all_personnel
+        if get_shift_store().list_assignments(
+            p.id,
+            start_date=generation_start,
+            end_date=generation_end,
+        )
+    ]
     if not personnel_with_shift:
         raise HTTPException(404, "هیچ پرسنل دارای شیفتی یافت نشد")
 
@@ -566,14 +612,9 @@ def generate_fake_requests(
             st_str = st.strftime("%H:%M")
             et_str = et.strftime("%H:%M")
 
-        shift = _get_shift(person)
-        if shift is None:
-            continue
-
         try:
-            calc = calculate_request_duration(
-                person, shift, get_holiday_store(),
-                request_start, request_end, duration_type, st, et,
+            calc = _calculate_request_duration_for_assignments(
+                person, request_start, request_end, duration_type, st, et,
             )
         except (ValueError, Exception):
             continue

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import SimpleNamespace
 from datetime import date, datetime, time, timezone
 
 from app.core.attendance_summary_service import (
@@ -285,3 +286,56 @@ def test_monthly_summary_returns_jalali_shifted_boundaries(monkeypatch) -> None:
 
     assert row["month_start"] == "1405-05-16"
     assert row["month_end"] == "1405-06-15"
+
+
+class _FakeShiftStore:
+    def __init__(self, assignments, shifts):
+        self.assignments = assignments
+        self.shifts = shifts
+
+    def list_assignments(self, personnel_id, start_date=None, end_date=None):
+        return [
+            item for item in self.assignments
+            if item.personnel_id == personnel_id
+            and (start_date is None or item.end_date >= start_date)
+            and (end_date is None or item.start_date <= end_date)
+        ]
+
+    def get(self, shift_id):
+        return self.shifts.get(shift_id)
+
+
+def _shift_record(shift_id: int, name: str, start: str = "07:00", end: str = "18:00"):
+    shift = _shift()
+    return SimpleNamespace(
+        id=shift_id, shift_name=name, start_time=start, end_time=end,
+        timezone_name="UTC", max_minutes_delay=0, max_minutes_early=0,
+        max_overtime_hours=0, works_monday=shift.works_monday,
+        works_tuesday=shift.works_tuesday, works_wednesday=shift.works_wednesday,
+        works_thursday=shift.works_thursday, works_friday=shift.works_friday,
+        works_saturday=shift.works_saturday, works_sunday=shift.works_sunday,
+    )
+
+
+def test_effective_shifts_switch_at_inclusive_assignment_boundary() -> None:
+    assignments = [
+        SimpleNamespace(personnel_id=1, shift_id=1, start_date=date(2026, 7, 1), end_date=date(2026, 7, 15)),
+        SimpleNamespace(personnel_id=1, shift_id=2, start_date=date(2026, 7, 16), end_date=date(2026, 7, 31)),
+    ]
+    store = _FakeShiftStore(assignments, {1: _shift_record(1, "first"), 2: _shift_record(2, "second")})
+    service = AttendanceSummaryService(database=None, shift_store=store)  # type: ignore[arg-type]
+
+    shifts = service._effective_shifts(1, date(2026, 7, 15), date(2026, 7, 16))
+
+    assert shifts[date(2026, 7, 15)].id == 1
+    assert shifts[date(2026, 7, 16)].id == 2
+
+
+def test_overnight_logs_remain_owned_by_assignment_start_day() -> None:
+    overnight = AttendanceSummaryService._record_to_shift(_shift_record(3, "night", "22:00", "06:00"))
+    logs = [SummaryLog(1, "123", 1, datetime(2026, 7, 28, 2, tzinfo=timezone.utc))]
+
+    from app.core.attendance_summary_service import _logs_for_report_day
+
+    assert _logs_for_report_day(logs, date(2026, 7, 27), overnight, use_shift_window=True) == logs
+    assert _logs_for_report_day(logs, date(2026, 7, 28), overnight, use_shift_window=True) == []

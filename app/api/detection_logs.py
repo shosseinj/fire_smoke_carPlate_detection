@@ -111,6 +111,7 @@ def _excel_bool(value: Any, default: bool) -> bool:
 
 _detection_media_storage: DetectionMediaStorage | None = None
 _FILTER_MEDIA_WORKERS = 16
+_MANUAL_DETECTION_CONFIDENCE = 1.0
 _filter_media_executor = ThreadPoolExecutor(
     max_workers=_FILTER_MEDIA_WORKERS,
     thread_name_prefix="detection-media-check",
@@ -511,7 +512,7 @@ def create_detection_log(
     personnel_id = body.get("personnel_id")
     room_id = body.get("room_id")
     person = str(body.get("person", "Unknown"))
-    confidence = float(body.get("confidence", 0.0))
+    confidence = _MANUAL_DETECTION_CONFIDENCE
     ref_img_id = body.get("ref_img_id")
     face_image = _canonical_media_input(
         body.get("face_image_path") or body.get("face_image"), "face_image"
@@ -921,7 +922,7 @@ def import_excel(
                 source_system="excel_import",
                 personnel_id=personnel.id,
                 person=f"{personnel.fname} {personnel.lname}",
-                confidence=1.0,
+                confidence=_MANUAL_DETECTION_CONFIDENCE,
                 detection_time=detection_time,
                 room_id=room_id,
                 camera_id=None,

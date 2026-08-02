@@ -10,6 +10,7 @@ from app.core.detection_log_store import DetectionLogStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
+from app.core.jalali_utils import parse_jalali_date
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.init_db import (
     DEFAULT_PERSONNEL_SEED_DATA,
@@ -83,6 +84,7 @@ def test_create_default_detection_logs_seeds_when_empty(
         start_time="08:00",
         end_time="16:00",
         timezone_name="Asia/Tehran",
+        works_saturday=True,
     )
     personnel_store.create(
         fname="Test",
@@ -163,6 +165,13 @@ def test_init_database_seeds_everything_when_empty(
 
     # Personnel created
     assert personnel_store.count() == len(DEFAULT_PERSONNEL_SEED_DATA)
+    personnel, _ = personnel_store.list(limit=1000)
+    assert personnel
+    for person in personnel:
+        assignments = shift_store.list_assignments(person.id)
+        assert len(assignments) == 1
+        assert assignments[0].start_date == parse_jalali_date("1405-01-01")
+        assert assignments[0].end_date == parse_jalali_date("1405-12-29")
 
     # Detection logs created
     by_status = log_store.count_by_status()

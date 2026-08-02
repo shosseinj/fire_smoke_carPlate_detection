@@ -31,7 +31,7 @@ def test_bulk_endpoint_uses_one_personnel_and_preserves_order(monkeypatch) -> No
     monkeypatch.setattr(
         api,
         "_prepare_bulk_request",
-        lambda _personnel, _shift, item: {
+        lambda _personnel, item: {
             "request_type": item.request_type,
             "start_date": item.start_date,
             "end_date": item.end_date or item.start_date,

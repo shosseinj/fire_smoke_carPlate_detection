@@ -14,7 +14,9 @@ from app.core.shift_store import WorkShiftRecord
 from app.core.legacy_service import (
     legacy_shift_response,
     legacy_weekdays_to_internal,
+    format_jalali,
     validate_clock_time,
+    validate_jalali_date,
     validate_timezone,
 )
 
@@ -64,6 +66,11 @@ class ShiftUpdate(BaseModel):
     friday: bool = False
     saturday: bool = True
     sunday: bool = True
+
+
+class ShiftAssignmentCreate(BaseModel):
+    start_date: str
+    end_date: str
 
 
 SHIFT_TYPES = [
@@ -143,6 +150,20 @@ def _personnel_shift_response(item: dict[str, Any]) -> dict[str, Any]:
 
 def _weekday_payload(body: BaseModel) -> dict[str, bool]:
     return legacy_weekdays_to_internal(body.model_dump())
+
+
+def _assignment_response(record: Any) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "personnel_id": record.personnel_id,
+        "shift_id": record.shift_id,
+        "start_date": format_jalali(record.start_date),
+        "end_date": format_jalali(record.end_date),
+        "start_date_gregorian": record.start_date.isoformat(),
+        "end_date_gregorian": record.end_date.isoformat(),
+        "created_at_utc": record.created_at_utc,
+        "updated_at_utc": record.updated_at_utc,
+    }
 
 
 # Keep this registration order aligned with old/backend/app/routers/shifts.py.
@@ -268,17 +289,60 @@ def get_shift_types(_: dict = Depends(require_role("admin"))) -> list[dict[str, 
 
 
 # Current-project extensions remain available after the legacy route block.
-@router.post("/{shift_id}/assign/{personnel_id}", include_in_schema=False)
+@router.post("/{shift_id}/assign/{personnel_id}", status_code=status.HTTP_201_CREATED)
 def assign_personnel_to_shift(
     shift_id: int,
     personnel_id: int,
+    body: ShiftAssignmentCreate,
     _: dict = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     try:
-        get_shift_store().assign_personnel(personnel_id, shift_id)
+        start_date = validate_jalali_date(body.start_date)
+        end_date = validate_jalali_date(body.end_date)
+        assignment = get_shift_store().assign_personnel(
+            personnel_id, shift_id, start_date, end_date
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return {"assigned": True}
+    return _assignment_response(assignment)
+
+
+@router.get("/{shift_id}/personnel/{personnel_id}/assignments")
+def get_personnel_shift_assignments(
+    shift_id: int,
+    personnel_id: int,
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    _: dict = Depends(require_role("operator")),
+) -> list[dict[str, Any]]:
+    if get_shift_store().get(shift_id) is None:
+        raise HTTPException(404, "شیفت یافت نشد")
+    try:
+        start = validate_jalali_date(start_date) if start_date else None
+        end = validate_jalali_date(end_date) if end_date else None
+    except ValueError:
+        raise HTTPException(400, "تاریخ نامعتبر است")
+    if start is not None and end is not None and end < start:
+        raise HTTPException(400, "تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
+    return [
+        _assignment_response(item)
+        for item in get_shift_store().list_assignments(personnel_id, start, end)
+        if item.shift_id == shift_id
+    ]
+
+
+@router.delete("/{shift_id}/assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_personnel_shift_assignment(
+    shift_id: int,
+    assignment_id: int,
+    _: dict = Depends(require_role("admin")),
+) -> Response:
+    # shift_id keeps the assignment operation naturally scoped under its shift.
+    if get_shift_store().get(shift_id) is None:
+        raise HTTPException(404, "شیفت یافت نشد")
+    if not get_shift_store().delete_assignment(assignment_id, shift_id=shift_id):
+        raise HTTPException(404, "تخصیص شیفت یافت نشد")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/assign/{personnel_id}", include_in_schema=False)

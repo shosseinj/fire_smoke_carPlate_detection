@@ -8,7 +8,7 @@ from app.time_utils import utc_now_text
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,17 @@ class WorkShiftRecord:
     works_wednesday: bool
     works_thursday: bool
     works_friday: bool
+    created_at_utc: str
+    updated_at_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShiftAssignmentRecord:
+    id: int
+    personnel_id: int
+    shift_id: int
+    start_date: date
+    end_date: date
     created_at_utc: str
     updated_at_utc: str
 
@@ -158,6 +169,28 @@ class ShiftStore:
             updated_at_utc=row["updated_at_utc"],
         )
 
+    @staticmethod
+    def _row_to_assignment(row: Row) -> ShiftAssignmentRecord:
+        start_date = row["start_date"]
+        end_date = row["end_date"]
+        return ShiftAssignmentRecord(
+            id=int(row["id"]),
+            personnel_id=int(row["personnel_id"]),
+            shift_id=int(row["shift_id"]),
+            start_date=(
+                start_date
+                if isinstance(start_date, date)
+                else date.fromisoformat(str(start_date))
+            ),
+            end_date=(
+                end_date
+                if isinstance(end_date, date)
+                else date.fromisoformat(str(end_date))
+            ),
+            created_at_utc=row["created_at_utc"],
+            updated_at_utc=row["updated_at_utc"],
+        )
+
     def _validate(self, name: str, shift_type: str, start_time: str, end_time: str,
                   max_minutes_delay: int, max_minutes_early: int,
                   max_overtime_hours: float, weekday_flags: dict[str, bool]) -> None:
@@ -173,6 +206,8 @@ class ShiftStore:
             raise ValueError("حداکثر دقیقه زودآمدی باید غیرمنفی باشد")
         if max_overtime_hours < 0:
             raise ValueError("حداکثر ساعت اضافه‌کاری باید غیرمنفی باشد")
+        if not any(weekday_flags.get(column, False) for column in WEEKDAY_COLS):
+            raise ValueError("At least one weekday must be enabled")
 
     def create(
         self,
@@ -295,7 +330,7 @@ class ShiftStore:
         with self._lock, self._connection() as conn:
             if not force:
                 count = conn.execute(
-                    "SELECT COUNT(*) FROM personnel WHERE shift_id = ?", (shift_id,)
+                    "SELECT COUNT(DISTINCT personnel_id) FROM personnel_shift_assignments WHERE shift_id = ?", (shift_id,)
                 ).fetchone()[0]
                 if count > 0:
                     raise ValueError(
@@ -303,6 +338,10 @@ class ShiftStore:
                         f"personnel. Use force=true for forced deletion."
                     )
             else:
+                conn.execute(
+                    "DELETE FROM personnel_shift_assignments WHERE shift_id = ?",
+                    (shift_id,),
+                )
                 conn.execute(
                     "UPDATE personnel SET shift_id = NULL WHERE shift_id = ?",
                     (shift_id,),
@@ -346,31 +385,126 @@ class ShiftStore:
 
     # ── Personnel assignment ─────────────────────────────────────────
 
-    def assign_personnel(self, personnel_id: int, shift_id: int) -> bool:
-        """Assign a Personnel member to a shift. Returns True if updated."""
+    def assign_personnel(
+        self, personnel_id: int, shift_id: int, start_date: date, end_date: date
+    ) -> ShiftAssignmentRecord:
+        """Assign a shift for an inclusive date range without personnel overlap."""
+        if end_date < start_date:
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
         with self._lock, self._connection() as conn:
-            # Verify shift exists
             shift = conn.execute(
                 "SELECT id FROM work_shifts WHERE id = ?", (shift_id,)
             ).fetchone()
             if shift is None:
-                raise ValueError(f"Shift not found: {shift_id}")
-            cursor = conn.execute(
+                raise ValueError("شیفت یافت نشد")
+            if conn.execute("SELECT id FROM personnel WHERE id = ?", (personnel_id,)).fetchone() is None:
+                raise ValueError("پرسنل یافت نشد")
+            overlap = conn.execute(
+                "SELECT id FROM personnel_shift_assignments "
+                "WHERE personnel_id = ? AND start_date <= ? AND end_date >= ? LIMIT 1",
+                (personnel_id, end_date, start_date),
+            ).fetchone()
+            if overlap is not None:
+                raise ValueError("بازه تاریخ شیفت با شیفت دیگری برای این پرسنل هم‌پوشانی دارد")
+            now = _now()
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO personnel_shift_assignments "
+                    "(personnel_id, shift_id, start_date, end_date, created_at_utc, updated_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (personnel_id, shift_id, start_date, end_date, now, now),
+                )
+            except IntegrityError as exc:
+                if "overlap" in str(exc).lower() or "ex_personnel" in str(exc).lower():
+                    raise ValueError("بازه تاریخ شیفت با شیفت دیگری برای این پرسنل هم‌پوشانی دارد") from exc
+                raise
+            # Compatibility projection for consumers not migrated to dated lookup yet.
+            today = date.today()
+            effective = conn.execute(
+                "SELECT shift_id FROM personnel_shift_assignments WHERE personnel_id = ? "
+                "AND start_date <= ? AND end_date >= ? LIMIT 1",
+                (personnel_id, today, today),
+            ).fetchone()
+            conn.execute(
                 "UPDATE personnel SET shift_id = ? WHERE id = ?",
-                (shift_id, personnel_id),
+                (effective["shift_id"] if effective is not None else None, personnel_id),
             )
-            if cursor.rowcount == 0:
-                raise ValueError(f"Personnel not found: {personnel_id}")
+            row = conn.execute(
+                "SELECT * FROM personnel_shift_assignments WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+            return self._row_to_assignment(row)
+
+    def get_assignment_for_date(
+        self, personnel_id: int, on_date: date
+    ) -> ShiftAssignmentRecord | None:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM personnel_shift_assignments WHERE personnel_id = ? "
+                "AND start_date <= ? AND end_date >= ? ORDER BY start_date DESC LIMIT 1",
+                (personnel_id, on_date, on_date),
+            ).fetchone()
+            return self._row_to_assignment(row) if row is not None else None
+
+    def list_assignments(
+        self,
+        personnel_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[ShiftAssignmentRecord]:
+        clauses = ["personnel_id = ?"]
+        params: list[Any] = [personnel_id]
+        if start_date is not None:
+            clauses.append("end_date >= ?")
+            params.append(start_date)
+        if end_date is not None:
+            clauses.append("start_date <= ?")
+            params.append(end_date)
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM personnel_shift_assignments WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY start_date, id",
+                params,
+            ).fetchall()
+            return [self._row_to_assignment(row) for row in rows]
+
+    def delete_assignment(self, assignment_id: int, shift_id: int | None = None) -> bool:
+        with self._lock, self._connection() as conn:
+            scope = " AND shift_id = ?" if shift_id is not None else ""
+            parameters: tuple[Any, ...] = (
+                (assignment_id, shift_id) if shift_id is not None else (assignment_id,)
+            )
+            row = conn.execute(
+                "SELECT personnel_id FROM personnel_shift_assignments WHERE id = ?" + scope,
+                parameters,
+            ).fetchone()
+            if row is None:
+                return False
+            personnel_id = int(row["personnel_id"])
+            conn.execute("DELETE FROM personnel_shift_assignments WHERE id = ?", (assignment_id,))
+            today = date.today()
+            replacement = conn.execute(
+                "SELECT shift_id FROM personnel_shift_assignments WHERE personnel_id = ? "
+                "AND start_date <= ? AND end_date >= ? ORDER BY start_date DESC LIMIT 1",
+                (personnel_id, today, today),
+            ).fetchone()
+            conn.execute(
+                "UPDATE personnel SET shift_id = ? WHERE id = ?",
+                (replacement["shift_id"] if replacement is not None else None, personnel_id),
+            )
             return True
 
     def remove_personnel_shift(self, personnel_id: int) -> bool:
         """Remove a Personnel member's shift assignment."""
         with self._lock, self._connection() as conn:
+            deleted = conn.execute(
+                "DELETE FROM personnel_shift_assignments WHERE personnel_id = ?", (personnel_id,)
+            )
             cursor = conn.execute(
                 "UPDATE personnel SET shift_id = NULL WHERE id = ? AND shift_id IS NOT NULL",
                 (personnel_id,),
             )
-            return cursor.rowcount > 0
+            return deleted.rowcount > 0 or cursor.rowcount > 0
 
     def list_personnel_in_shift(self, shift_id: int) -> list[dict[str, Any]]:
         """Return Personnel records assigned to a shift (legacy format)."""
@@ -382,8 +516,9 @@ class ShiftStore:
                 "s.max_overtime_hours, s.works_saturday, s.works_sunday, "
                 "s.works_monday, s.works_tuesday, s.works_wednesday, "
                 "s.works_thursday, s.works_friday "
-                "FROM personnel p LEFT JOIN work_shifts s ON p.shift_id = s.id "
-                "WHERE p.shift_id = ? ORDER BY p.lname, p.fname",
+                "FROM personnel_shift_assignments a JOIN personnel p ON p.id = a.personnel_id "
+                "JOIN work_shifts s ON a.shift_id = s.id "
+                "WHERE a.shift_id = ? GROUP BY p.id, s.id ORDER BY p.lname, p.fname",
                 (shift_id,),
             ).fetchall()
             result: list[dict[str, Any]] = []
@@ -423,7 +558,7 @@ class ShiftStore:
     def count_personnel_in_shift(self, shift_id: int) -> int:
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM personnel WHERE shift_id = ?", (shift_id,)
+                "SELECT COUNT(DISTINCT personnel_id) FROM personnel_shift_assignments WHERE shift_id = ?", (shift_id,)
             ).fetchone()
             return int(row[0])
 
@@ -441,7 +576,7 @@ class ShiftStore:
                 )
                 assigned = int(
                     conn.execute(
-                        "SELECT COUNT(*) FROM personnel WHERE shift_id IS NOT NULL"
+                        "SELECT COUNT(DISTINCT personnel_id) FROM personnel_shift_assignments"
                     ).fetchone()[0]
                 )
                 unassigned = total_personnel - assigned
@@ -449,8 +584,9 @@ class ShiftStore:
                 pass
             try:
                 shifts = conn.execute(
-                    "SELECT s.id, s.shift_name, s.shift_type, COUNT(p.id) as cnt "
-                    "FROM work_shifts s LEFT JOIN personnel p ON p.shift_id = s.id "
+                    "SELECT s.id, s.shift_name, s.shift_type, COUNT(DISTINCT p.id) as cnt "
+                    "FROM work_shifts s LEFT JOIN personnel_shift_assignments a ON a.shift_id = s.id "
+                    "LEFT JOIN personnel p ON p.id = a.personnel_id "
                     "GROUP BY s.id, s.shift_name, s.shift_type ORDER BY s.shift_name"
                 ).fetchall()
             except OperationalError:

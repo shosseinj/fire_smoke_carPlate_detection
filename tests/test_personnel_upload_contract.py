@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from starlette.datastructures import Headers
 
 from app.api.personnel import (
+    PersonnelCreateRequest,
     upload_personnel_images,
 )
 from app.api.personnel import router as personnel_router
@@ -122,7 +123,29 @@ def test_create_with_images_declares_department_and_shift_once() -> None:
 
     assert "department_id" in properties
     assert "shift_id" in properties
+    assert "shift_start_date" in properties
+    assert "shift_end_date" in properties
     assert "departmen_id" not in properties
+
+
+def test_personnel_shift_requires_both_assignment_dates() -> None:
+    with pytest.raises(ValueError):
+        PersonnelCreateRequest(
+            fname="Test",
+            lname="User",
+            national_code="1234567891",
+            shift_id=1,
+        )
+
+    payload = PersonnelCreateRequest(
+        fname="Test",
+        lname="User",
+        national_code="1234567891",
+        shift_id=1,
+        shift_start_date="1405-01-01",
+        shift_end_date="1405-12-29",
+    )
+    assert payload.shift_start_date == "1405-01-01"
 
 
 @pytest.mark.parametrize(

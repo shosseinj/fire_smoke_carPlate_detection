@@ -12,12 +12,13 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.frontend_messages import LocalizedJSONRoute
+from app.core.jalali_utils import parse_jalali_date
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -72,6 +73,18 @@ class PersonnelCreateRequest(BaseModel):
     degree: Optional[str] = Field(default=None, max_length=200)
     department_id: Optional[int] = None
     shift_id: Optional[int] = None
+    shift_start_date: Optional[str] = None
+    shift_end_date: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_shift_dates(self) -> "PersonnelCreateRequest":
+        if self.shift_id is not None and (
+            not self.shift_start_date or not self.shift_end_date
+        ):
+            raise ValueError("تاریخ شروع و پایان تخصیص شیفت الزامی است")
+        if self.shift_id is None and (self.shift_start_date or self.shift_end_date):
+            raise ValueError("برای تاریخ‌های تخصیص، شناسه شیفت الزامی است")
+        return self
 
 
 class PersonnelUpdateRequest(BaseModel):
@@ -82,6 +95,18 @@ class PersonnelUpdateRequest(BaseModel):
     degree: Optional[str] = Field(default=None, max_length=200)
     department_id: Optional[int] = None
     shift_id: Optional[int] = None
+    shift_start_date: Optional[str] = None
+    shift_end_date: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_shift_dates(self) -> "PersonnelUpdateRequest":
+        if self.shift_id is not None and (
+            not self.shift_start_date or not self.shift_end_date
+        ):
+            raise ValueError("تاریخ شروع و پایان تخصیص شیفت الزامی است")
+        if self.shift_id is None and (self.shift_start_date or self.shift_end_date):
+            raise ValueError("برای تاریخ‌های تخصیص، شناسه شیفت الزامی است")
+        return self
 
 
 class SimplePersonnelResponse(BaseModel):
@@ -177,6 +202,14 @@ def create_personnel(
             department_id=payload.department_id,
             created_by=current_user.id,
         )
+        if payload.shift_id is not None:
+            runtime.shift_store.assign_personnel(
+                record.id,
+                payload.shift_id,
+                parse_jalali_date(payload.shift_start_date or ""),
+                parse_jalali_date(payload.shift_end_date or ""),
+            )
+            record = store.get(record.id) or record
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return _personnel_simple(record, store)
@@ -209,6 +242,8 @@ async def create_personnel_with_images(
     degree: str | None = Form(default=None),
     department_id: int | None = Form(default=None),
     shift_id: int | None = Form(default=None),
+    shift_start_date: str | None = Form(default=None),
+    shift_end_date: str | None = Form(default=None),
     images: list[UploadFile] = File(
         description="تصاویر JPEG، PNG یا BMP",
         media_type="image/*",
@@ -223,6 +258,11 @@ async def create_personnel_with_images(
     enable_cropping: bool = Form(default=False),
 ) -> Any:
     store = _store(runtime)
+    if shift_id is not None and (not shift_start_date or not shift_end_date):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="تاریخ شروع و پایان تخصیص شیفت الزامی است",
+        )
     try:
         person = store.create(
             fname=fname,
@@ -233,6 +273,14 @@ async def create_personnel_with_images(
             department_id=department_id,
             shift_id=shift_id,
         )
+        if shift_id is not None:
+            runtime.shift_store.assign_personnel(
+                person.id,
+                shift_id,
+                parse_jalali_date(shift_start_date or ""),
+                parse_jalali_date(shift_end_date or ""),
+            )
+            person = store.get(person.id) or person
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -431,12 +479,22 @@ def update_personnel(
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
+    shift_start_date = changes.pop("shift_start_date", None)
+    shift_end_date = changes.pop("shift_end_date", None)
     changes["updated_by"] = current_user.id
     try:
         record = store.update(
             personnel_id=personnel_id,
             **changes,
         )
+        if record is not None and payload.shift_id is not None:
+            runtime.shift_store.assign_personnel(
+                personnel_id,
+                payload.shift_id,
+                parse_jalali_date(shift_start_date or ""),
+                parse_jalali_date(shift_end_date or ""),
+            )
+            record = store.get(personnel_id) or record
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     if record is None:

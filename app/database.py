@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260730_0046"
+ALEMBIC_HEAD_REVISION = "20260802_0047"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -215,6 +215,24 @@ Index("idx_personnel_national_code", personnel.c.national_code)
 Index("idx_personnel_name", personnel.c.lname, personnel.c.fname)
 Index("idx_personnel_shift", personnel.c.shift_id)
 Index("idx_personnel_department", personnel.c.department_id)
+
+personnel_shift_assignments = Table(
+    "personnel_shift_assignments", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("personnel_id", Integer, ForeignKey("personnel.id", ondelete="CASCADE"), nullable=False),
+    Column("shift_id", Integer, ForeignKey("work_shifts.id", ondelete="RESTRICT"), nullable=False),
+    Column("start_date", Date, nullable=False),
+    Column("end_date", Date, nullable=False),
+    CheckConstraint("end_date >= start_date", name="ck_personnel_shift_assignment_dates"),
+    *_audit_columns(),
+)
+Index("idx_personnel_shift_assignments_personnel", personnel_shift_assignments.c.personnel_id)
+Index("idx_personnel_shift_assignments_shift", personnel_shift_assignments.c.shift_id)
+Index(
+    "idx_personnel_shift_assignments_dates",
+    personnel_shift_assignments.c.start_date,
+    personnel_shift_assignments.c.end_date,
+)
 
 personnel_images = Table(
     "personnel_images", metadata,

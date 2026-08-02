@@ -753,6 +753,57 @@ class TestFireLogsCrud:
 class TestDetectionLogsApi:
     MODULE = "detection_logs"
 
+    def test_manual_api_and_excel_import_force_confidence_to_one(self, crud):
+        auth = {"Authorization": f"Bearer {crud.operator_token}"}
+        api_response = crud.client.post(
+            "/api/v1/logs/log",
+            json={"person": "Unknown", "confidence": 0.23},
+            headers=auth,
+        )
+        assert api_response.status_code == 200, api_response.text
+        assert api_response.json()["confidence"] == 1.0
+
+        _, national_code = self._first_personnel(crud)
+        workbook = detection_logs_api.openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.append(
+            [
+                "national_code",
+                "year",
+                "month",
+                "day",
+                "hour",
+                "minute",
+                "room_id",
+                "access_granted",
+                "counts_for_attendance",
+            ]
+        )
+        worksheet.append([national_code, 1405, 2, 1, 10, 15, None, 1, 1])
+        content = BytesIO()
+        workbook.save(content)
+
+        excel_response = crud.client.post(
+            "/api/v1/logs/import-excel",
+            files={
+                "file": (
+                    "detection-logs.xlsx",
+                    content.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers=auth,
+        )
+        assert excel_response.status_code == 200, excel_response.text
+        assert excel_response.json()["imported_rows"] == 1
+        imported = [
+            record
+            for record in detection_logs_api.get_detection_log_store().list_all()
+            if record.source_system == "excel_import"
+        ]
+        assert imported
+        assert imported[-1].confidence == 1.0
+
     def _first_log_id(self, crud) -> int:
         resp = crud.client.post(
             "/api/v1/logs/log",
@@ -987,24 +1038,10 @@ class TestPersonnelRequestsApi:
         )
         assert personnel_response.status_code == 200, personnel_response.text
         personnel = personnel_response.json()[0]
-        shift = crud.runtime.shift_store.create(
-            shift_name="Bulk Request Shift",
-            start_time="08:00",
-            end_time="16:00",
-            works_saturday=True,
-            works_sunday=True,
-            works_monday=True,
-            works_tuesday=True,
-            works_wednesday=True,
-            works_thursday=True,
-            works_friday=True,
+        assignment = crud.runtime.shift_store.get_assignment_for_date(
+            personnel["id"], parse_jalali_date("1405-06-01")
         )
-        updated_personnel = crud.runtime.personnel_store.update(
-            personnel["id"],
-            shift_id=shift.id,
-        )
-        assert updated_personnel is not None
-        personnel["shift_id"] = shift.id
+        assert assignment is not None
 
         response = crud.client.post(
             "/api/v1/personnel-requests/bulk",

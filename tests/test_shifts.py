@@ -184,6 +184,52 @@ class TestShiftStore:
         # Assignment needs a personnel record — tested via integration
         assert shift.id > 0
 
+    def test_dated_assignments_reject_inclusive_overlap(
+        self, store: ShiftStore, postgres_database: Database
+    ) -> None:
+        shift = store.create(
+            shift_name="Dated",
+            works_saturday=True, works_sunday=True, works_monday=True,
+            works_tuesday=True, works_wednesday=True, works_thursday=True,
+            works_friday=True,
+        )
+        with postgres_database.connection() as conn:
+            personnel_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Test", "Person", f"shift-{shift.id}"),
+            ).lastrowid
+        first = store.assign_personnel(
+            personnel_id, shift.id, date(2026, 3, 21), date(2026, 4, 20)
+        )
+        assert store.get_assignment_for_date(personnel_id, date(2026, 4, 1)) == first
+        with pytest.raises(ValueError, match="هم‌پوشانی"):
+            store.assign_personnel(
+                personnel_id, shift.id, date(2026, 4, 20), date(2026, 5, 20)
+            )
+
+    def test_assignment_range_and_delete(
+        self, store: ShiftStore, postgres_database: Database
+    ) -> None:
+        shift = store.create(
+            shift_name="Range",
+            works_saturday=True, works_sunday=True, works_monday=True,
+            works_tuesday=True, works_wednesday=True, works_thursday=True,
+            works_friday=True,
+        )
+        with postgres_database.connection() as conn:
+            personnel_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Range", "Person", f"range-{shift.id}"),
+            ).lastrowid
+        assignment = store.assign_personnel(
+            personnel_id, shift.id, date(2026, 3, 21), date(2027, 3, 20)
+        )
+        assert store.list_assignments(
+            personnel_id, date(2027, 1, 1), date(2027, 1, 31)
+        ) == [assignment]
+        assert store.delete_assignment(assignment.id) is True
+        assert store.list_assignments(personnel_id) == []
+
 
 # ── Overnight shift helper test ───────────────────────────────────────
 

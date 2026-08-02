@@ -11,7 +11,7 @@ tables are empty. Called from build_runtime() at startup.
 import json
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.core.cam_store import CamRecord, CamStore
@@ -19,12 +19,16 @@ from app.core.detection_log_store import DetectionLogStore
 from app.core.location_store import LocationStore
 from app.core.holiday_import import seed_default_official_holidays
 from app.core.holiday_store import HolidayStore
+from app.core.jalali_utils import parse_jalali_date
 from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
 
 LOGGER = logging.getLogger(__name__)
+
+_SEED_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
+_SEED_SHIFT_END_DATE: date = parse_jalali_date("1405-12-29")
 
 # ── Code maps (from the legacy init_database.py) ───────────────────────
 _EMPLOYEE_TYPE_CODE_MAP: dict[str, str] = {
@@ -342,8 +346,8 @@ def create_default_personnel(
                 national_code=national_code,
                 employee_type=_EMPLOYEE_TYPE_CODE_MAP.get(employee_type_code, "employee"),
                 degree=_DEGREE_CODE_MAP.get(str(degree_code)) if degree_code is not None else None,
-                shift_id=item.get("shift_id") or shift_id,
-                department_id=item.get("department_id") or department_id,
+                shift_id=shift_id,
+                department_id=department_id,
             )
             count += 1
         except ValueError as exc:
@@ -688,6 +692,31 @@ def init_database(
         if created > 0:
             LOGGER.info("INIT_DB created %d personnel record(s)", created)
             seeded = True
+        personnel_records, _ = personnel_store.list(limit=1000)
+        for person in personnel_records:
+            effective_shift_id = person.shift_id or shift_id
+            if effective_shift_id is None or shift_store is None:
+                continue
+            if shift_store.list_assignments(
+                person.id,
+                start_date=_SEED_SHIFT_START_DATE,
+                end_date=_SEED_SHIFT_END_DATE,
+            ):
+                continue
+            try:
+                shift_store.assign_personnel(
+                    person.id,
+                    effective_shift_id,
+                    _SEED_SHIFT_START_DATE,
+                    _SEED_SHIFT_END_DATE,
+                )
+                seeded = True
+            except ValueError as exc:
+                LOGGER.warning(
+                    "INIT_DB skip dated shift assignment for personnel %s: %s",
+                    person.id,
+                    exc,
+                )
 
     # ── Seed sample detection logs ──────────────────────────────────
     if (
