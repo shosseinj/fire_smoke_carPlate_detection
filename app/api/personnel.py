@@ -19,6 +19,7 @@ from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.jalali_utils import parse_jalali_date
+from app.core.legacy_service import format_jalali, validate_jalali_date
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -124,6 +125,39 @@ class SimplePersonnelResponse(BaseModel):
     updated_by: UserBrief | None = None
 
 
+class ShiftInfo(BaseModel):
+    id: int
+    shift_name: str
+    shift_type: str
+    start_time: str
+    end_time: str
+    timezone_name: str = "Asia/Tehran"
+    max_minutes_delay: int = 0
+    max_minutes_early: int = 0
+    max_overtime_hours: float = 0.0
+    monday: bool = False
+    tuesday: bool = False
+    wednesday: bool = False
+    thursday: bool = False
+    friday: bool = False
+    saturday: bool = False
+    sunday: bool = False
+    personnel_count: int = 0
+
+
+class PersonnelShiftAssignmentResponse(BaseModel):
+    id: int
+    personnel_id: int
+    shift_id: int
+    start_date: str
+    end_date: str
+    start_date_gregorian: str
+    end_date_gregorian: str
+    created_at_utc: str
+    updated_at_utc: str
+    shift: ShiftInfo | None = None
+
+
 class PersonnelImageResponse(BaseModel):
     id: int
     image_base64: Optional[str] = None
@@ -133,6 +167,47 @@ class PersonnelImageResponse(BaseModel):
 
 
 # ── Converters ───────────────────────────────────────────────────
+
+def _shift_info(record: Any | None) -> ShiftInfo | None:
+    if record is None:
+        return None
+    return ShiftInfo(
+        id=record.id,
+        shift_name=record.shift_name,
+        shift_type=record.shift_type,
+        start_time=record.start_time,
+        end_time=record.end_time,
+        timezone_name=getattr(record, "timezone_name", None) or "Asia/Tehran",
+        max_minutes_delay=record.max_minutes_delay,
+        max_minutes_early=record.max_minutes_early,
+        max_overtime_hours=float(record.max_overtime_hours),
+        monday=record.works_monday,
+        tuesday=record.works_tuesday,
+        wednesday=record.works_wednesday,
+        thursday=record.works_thursday,
+        friday=record.works_friday,
+        saturday=record.works_saturday,
+        sunday=record.works_sunday,
+    )
+
+
+def _shift_assignment_response(
+    assignment: Any,
+    shift: Any | None,
+) -> PersonnelShiftAssignmentResponse:
+    return PersonnelShiftAssignmentResponse(
+        id=assignment.id,
+        personnel_id=assignment.personnel_id,
+        shift_id=assignment.shift_id,
+        start_date=format_jalali(assignment.start_date),
+        end_date=format_jalali(assignment.end_date),
+        start_date_gregorian=assignment.start_date.isoformat(),
+        end_date_gregorian=assignment.end_date.isoformat(),
+        created_at_utc=assignment.created_at_utc,
+        updated_at_utc=assignment.updated_at_utc,
+        shift=_shift_info(shift),
+    )
+
 
 def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
     from app.core.jalali_utils import utc_iso_to_jalali_datetime
@@ -466,6 +541,35 @@ def get_personnel(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return _personnel_simple(record, store)
+
+
+@router.get("/{personnel_id}/shifts", summary="دریافت همه شیفت‌های اختصاص‌یافته به یک پرسنل")
+def get_personnel_shifts(
+    personnel_id: int,
+    start_date: str | None = Query(default=None, description="بازه شروع (شمسی یا میلادی)"),
+    end_date: str | None = Query(default=None, description="بازه پایان (شمسی یا میلادی)"),
+    runtime: Runtime = Depends(get_runtime),
+    _: UserRecord = Depends(require_role("operator")),
+) -> list[PersonnelShiftAssignmentResponse]:
+    store = _store(runtime)
+    if store.get(personnel_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    try:
+        start = validate_jalali_date(start_date) if start_date else None
+        end = validate_jalali_date(end_date) if end_date else None
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="تاریخ نامعتبر است")
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد",
+        )
+    shift_store = runtime.shift_store
+    assignments = shift_store.list_assignments(personnel_id, start, end)
+    return [
+        _shift_assignment_response(assignment, shift_store.get(assignment.shift_id))
+        for assignment in assignments
+    ]
 
 
 @router.put("/{personnel_id}", summary="به‌روزرسانی یک پرسنل")
