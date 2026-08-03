@@ -134,6 +134,46 @@ def _daterange(start: date, end: date) -> Iterable[date]:
         yield start + timedelta(days=index)
 
 
+def _shift_assignment_segments(
+    shifts_by_day: dict[date, SummaryShift],
+    start_day: date,
+    end_day: date,
+) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    segment_start: date | None = None
+    segment_shift: SummaryShift | None = None
+    previous_day: date | None = None
+
+    for day in _daterange(start_day, end_day):
+        shift = shifts_by_day.get(day)
+        if shift is not None and segment_shift is not None and shift.id == segment_shift.id:
+            previous_day = day
+            continue
+        if segment_shift is not None and segment_start is not None and previous_day is not None:
+            segments.append(
+                {
+                    "shift_id": segment_shift.id,
+                    "shift_name": segment_shift.shift_name,
+                    "start_date": segment_start.isoformat(),
+                    "end_date": previous_day.isoformat(),
+                }
+            )
+        segment_shift = shift
+        segment_start = day if shift is not None else None
+        previous_day = day
+
+    if segment_shift is not None and segment_start is not None and previous_day is not None:
+        segments.append(
+            {
+                "shift_id": segment_shift.id,
+                "shift_name": segment_shift.shift_name,
+                "start_date": segment_start.isoformat(),
+                "end_date": previous_day.isoformat(),
+            }
+        )
+    return segments
+
+
 def _local_day_bounds_utc(day: date, timezone_name: str) -> tuple[datetime, datetime]:
     tz = ZoneInfo(timezone_name)
     local_start = datetime.combine(day, time.min, tzinfo=tz)
@@ -796,11 +836,17 @@ def _logs_for_report_day(
     return sorted(selected, key=lambda item: _to_shift_local(item.detection_time, shift))
 
 
-def _calculate_monthly_earned_leave_days(final_working_days: int, month_days: int) -> float:
-    if month_days <= 0:
+def _calculate_monthly_earned_leave_days(
+    eligible_days: int,
+    expected_working_days: int,
+) -> float:
+    if expected_working_days <= 0:
         return 0.0
-    worked_ratio = max(0.0, min(1.0, float(final_working_days) / float(month_days)))
-    return round(MONTHLY_EARNED_LEAVE_DAYS * worked_ratio, 4)
+    eligible_ratio = max(
+        0.0,
+        min(1.0, float(eligible_days) / float(expected_working_days)),
+    )
+    return round(MONTHLY_EARNED_LEAVE_DAYS * eligible_ratio, 4)
 
 
 def _earned_leave_request_days_in_range(
@@ -837,11 +883,12 @@ def _yearly_leave_month_attendance(
     shifts_by_day: dict[date, SummaryShift] | None = None,
 ) -> dict[str, Any]:
     month_days = (month_end - month_start).days + 1
-    shifts_by_day = shifts_by_day or {
-        day: personnel.shift for day in _daterange(month_start, month_end) if personnel.shift
-    }
+    shifts_by_day = shifts_by_day or {}
     off_days = 0
+    no_shift_days = 0
     custom_holidays = 0
+    total_holidays = 0
+    month_working_days = 0
     present_days = 0
     mission_days = 0
     earned_leave_days = 0
@@ -850,18 +897,24 @@ def _yearly_leave_month_attendance(
 
     for day in _daterange(month_start, month_end):
         shift = shifts_by_day.get(day)
+        is_custom_holiday = day in holiday_days
         if shift is None:
-            off_days += 1
+            no_shift_days += 1
+            if is_custom_holiday:
+                custom_holidays += 1
+                total_holidays += 1
             continue
         is_shift_day = _shift_expected_on_day(day, shift)
-        is_custom_holiday = day in holiday_days
         is_workday = is_shift_day and not is_custom_holiday
         if not is_shift_day:
             off_days += 1
-        elif is_custom_holiday:
+        if is_custom_holiday:
             custom_holidays += 1
+        if not is_shift_day or is_custom_holiday:
+            total_holidays += 1
         if not is_workday:
             continue
+        month_working_days += 1
         if _logs_for_report_day(person_logs, day, shift, use_shift_window=True):
             present_days += 1
             continue
@@ -875,13 +928,15 @@ def _yearly_leave_month_attendance(
         elif request_category == REQUEST_UNPAID_LEAVE:
             unpaid_leave_days += 1
 
-    total_holidays = off_days + custom_holidays
-    month_working_days = max(0, month_days - total_holidays)
     final_working_days = present_days + mission_days + earned_leave_days + sick_leave_days
-    absent_days = max(0, month_working_days - final_working_days)
+    absent_days = max(
+        0,
+        month_working_days - final_working_days - unpaid_leave_days,
+    )
     return {
         "month_days": month_days,
         "off_days": off_days,
+        "no_shift_days": no_shift_days,
         "custom_holidays": custom_holidays,
         "total_holidays": total_holidays,
         "month_working_days": month_working_days,
@@ -943,8 +998,6 @@ class AttendanceSummaryService:
         return shifts
 
     def _person_shifts(self, person: SummaryPersonnel, start_day: date, end_day: date) -> dict[date, SummaryShift]:
-        if self.shift_store is None:
-            return {day: person.shift for day in _daterange(start_day, end_day) if person.shift}
         return self._effective_shifts(person.id, start_day, end_day)
 
     @staticmethod
@@ -1317,8 +1370,15 @@ class AttendanceSummaryService:
             for day in _daterange(start_day, end_day):
                 shift = shifts_by_day.get(day)
                 if not shift:
-                    if not include_non_workdays:
-                        continue
+                    day_logs = _logs_for_report_day(
+                        logs_by_person.get(person.national_code, []),
+                        day,
+                        None,
+                        use_shift_window=False,
+                    )
+                    local_times = [
+                        _to_shift_local(log.detection_time) for log in day_logs
+                    ]
                     result.append(
                         {
                             "person": person.national_code,
@@ -1330,24 +1390,34 @@ class AttendanceSummaryService:
                             "is_workday": False,
                             "status": "no_shift",
                             "message": "برای این کارمند شیفت کاری تعریف نشده است",
-                            "first_detection": None,
-                            "last_detection": None,
-                            "middle_detections": [],
+                            "first_detection": (
+                                _time_to_hhmm(local_times[0]) if local_times else None
+                            ),
+                            "last_detection": (
+                                None
+                                if len(local_times) <= 1
+                                else _time_to_hhmm(local_times[-1])
+                            ),
+                            "middle_detections": (
+                                [_time_to_hhmm(item) for item in local_times[1:-1]]
+                                if len(local_times) > 2
+                                else []
+                            ),
                             "first_last_span_time": None,
                             "raw_worked_time": None,
                             "net_worked_time": None,
                             "net_worked_time_with_overtime": None,
-                            "delay_minutes": "00:00",
-                            "early_leave_minutes": "00:00",
-                            "overtime_minutes": "00:00",
-                            "holiday_overtime_minutes": "00:00",
-                            "illegal_presence_minutes": "00:00",
-                            "in_between_absence_minutes": "00:00",
-                            "total_absence_time": "00:00",
-                            "earned_leave_minutes": "00:00",
-                            "sick_leave_minutes": "00:00",
-                            "unpaid_leave_minutes": "00:00",
-                            "mission_minutes": "00:00",
+                            "delay_minutes": None,
+                            "early_leave_minutes": None,
+                            "overtime_minutes": None,
+                            "holiday_overtime_minutes": None,
+                            "illegal_presence_minutes": None,
+                            "in_between_absence_minutes": None,
+                            "total_absence_time": None,
+                            "earned_leave_minutes": None,
+                            "sick_leave_minutes": None,
+                            "unpaid_leave_minutes": None,
+                            "mission_minutes": None,
                         }
                     )
                     continue
@@ -1482,6 +1552,8 @@ class AttendanceSummaryService:
         result: list[dict[str, Any]] = []
         for person in personnel_list:
             shifts_by_day = self._person_shifts(person, g_start, g_end)
+            # The filter selects personnel who used this shift during the report
+            # period; their totals still cover the complete requested month.
             if shift_id is not None and not any(s.id == shift_id for s in shifts_by_day.values()):
                 continue
             effective = {shift.id: shift for shift in shifts_by_day.values()}
@@ -1493,7 +1565,10 @@ class AttendanceSummaryService:
             person_logs = logs_by_person.get(person.national_code, [])
 
             off_days = 0
+            no_shift_days = 0
             custom_holidays = 0
+            total_holidays = 0
+            month_working_days = 0
             present_days = 0
             sick_leave_days = 0
             mission_days = 0
@@ -1508,121 +1583,137 @@ class AttendanceSummaryService:
             daily_rows: list[dict[str, Any]] = []
 
             for day in _daterange(g_start, g_end):
-                    shift = shifts_by_day.get(day)
-                    if shift is None:
-                        off_days += 1
-                        if include_daily_rows:
-                            daily_rows.append({
-                                "date": day.isoformat(), "date_jalali": _jalali_date_string(day),
-                                "shift_id": None, "shift_name": None, "is_shift_day": False,
-                                "is_custom_holiday": False, "is_workday": False,
-                                "status": "no_shift", "detection_count": 0,
-                                "first_detection": None, "last_detection": None,
-                                "hourly_leave_minutes": 0, "work_time": "00:00",
-                                "overtime": "00:00", "holiday_overtime": "00:00",
-                            })
-                        continue
-                    is_shift_day = _shift_expected_on_day(day, shift)
-                    is_custom_holiday = day in holiday_days
-                    is_workday = is_shift_day and not is_custom_holiday
-                    if not is_shift_day:
-                        off_days += 1
-                    elif is_custom_holiday:
+                shift = shifts_by_day.get(day)
+                is_custom_holiday = day in holiday_days
+                if shift is None:
+                    no_shift_days += 1
+                    if is_custom_holiday:
                         custom_holidays += 1
-
+                        total_holidays += 1
                     day_logs = _logs_for_report_day(
-                        person_logs, day, shift, use_shift_window=True
+                        person_logs, day, None, use_shift_window=False
                     )
-                    shift_window = _shift_window(day, shift)
-                    assert shift_window is not None
-                    shift_start, shift_end = shift_window
-                    requests = requests_map.get(person.id, {}).get(day, [])
-                    request_minutes = _request_minutes_for_day(
-                        requests,
-                        day,
-                        shift_start,
-                        shift_end,
-                    )
-                    if is_workday:
-                        hourly_leave_minutes += request_minutes["hourly_leave_minutes"]
-
-                    presence = _monthly_presence_minutes(day, day_logs, shift, is_workday)
-                    work_time_minutes += presence["regular"]
-                    overtime_minutes += presence["overtime"]
-                    holiday_overtime_minutes += presence["holiday_overtime"]
-
-                    day_category: str | None = None
-                    if is_workday:
-                        if day_logs:
-                            present_days += 1
-                            day_category = "present"
-                            stats = _compute_shift_day_stats(day, day_logs, shift)
-                            early_minutes += stats["early_leave_minutes"]
-                            delay_minutes += stats["delay_minutes"]
-                        else:
-                            request_category = _full_day_request_category(requests)
-                            if request_category == REQUEST_MISSION:
-                                mission_days += 1
-                                day_category = "mission"
-                            elif request_category == REQUEST_SICK_LEAVE:
-                                sick_leave_days += 1
-                                day_category = "sick_leave"
-                            elif request_category == REQUEST_EARNED_LEAVE:
-                                earned_leave_days += 1
-                                day_category = "earned_leave"
-                            elif request_category == REQUEST_UNPAID_LEAVE:
-                                unpaid_leave_days += 1
-                                day_category = "unpaid_leave"
-                            else:
-                                day_category = "absent"
-                    elif day_logs:
-                        day_category = "holiday_overtime"
-                    elif is_custom_holiday:
-                        day_category = "custom_holiday"
-                    else:
-                        day_category = "off_day"
-
                     if include_daily_rows:
-                        first_detection = (
-                            _to_shift_local(day_logs[0].detection_time, shift)
-                            if day_logs
-                            else None
-                        )
-                        last_detection = (
-                            _to_shift_local(day_logs[-1].detection_time, shift)
-                            if day_logs
-                            else None
-                        )
-                        daily_rows.append(
-                            {
-                                "date": day.isoformat(),
-                                "date_jalali": _jalali_date_string(day),
-                                "shift_id": shift.id,
-                                "shift_name": shift.shift_name,
-                                "is_shift_day": is_shift_day,
-                                "is_custom_holiday": is_custom_holiday,
-                                "is_workday": is_workday,
-                                "status": day_category,
-                                "detection_count": len(day_logs),
-                                "first_detection": (
-                                    first_detection.time() if first_detection else None
-                                ),
-                                "last_detection": (
-                                    last_detection.time() if last_detection else None
-                                ),
-                                "hourly_leave_minutes": int(
-                                    round(request_minutes["hourly_leave_minutes"])
-                                ),
-                                "work_time": _minutes_to_hhmm(presence["regular"]),
-                                "overtime": _minutes_to_hhmm(presence["overtime"]),
-                                "holiday_overtime": _minutes_to_hhmm(
-                                    presence["holiday_overtime"]
-                                ),
-                            }
-                        )
+                        local_times = [
+                            _to_shift_local(log.detection_time) for log in day_logs
+                        ]
+                        daily_rows.append({
+                            "date": day.isoformat(), "date_jalali": _jalali_date_string(day),
+                            "shift_id": None, "shift_name": None, "is_shift_day": False,
+                            "is_custom_holiday": is_custom_holiday, "is_workday": False,
+                            "status": "no_shift", "detection_count": len(day_logs),
+                            "first_detection": (
+                                local_times[0].time() if local_times else None
+                            ),
+                            "last_detection": (
+                                local_times[-1].time() if len(local_times) > 1 else None
+                            ),
+                            "hourly_leave_minutes": 0, "work_time": "00:00",
+                            "overtime": "00:00", "holiday_overtime": "00:00",
+                        })
+                    continue
+                is_shift_day = _shift_expected_on_day(day, shift)
+                is_workday = is_shift_day and not is_custom_holiday
+                if not is_shift_day:
+                    off_days += 1
+                if is_custom_holiday:
+                    custom_holidays += 1
+                if not is_shift_day or is_custom_holiday:
+                    total_holidays += 1
+                if is_workday:
+                    month_working_days += 1
 
-            total_holidays = off_days + custom_holidays
-            month_working_days = month_days - total_holidays
+                day_logs = _logs_for_report_day(
+                    person_logs, day, shift, use_shift_window=True
+                )
+                shift_window = _shift_window(day, shift)
+                assert shift_window is not None
+                shift_start, shift_end = shift_window
+                requests = requests_map.get(person.id, {}).get(day, [])
+                request_minutes = _request_minutes_for_day(
+                    requests,
+                    day,
+                    shift_start,
+                    shift_end,
+                )
+                if is_workday:
+                    hourly_leave_minutes += request_minutes["hourly_leave_minutes"]
+
+                presence = _monthly_presence_minutes(day, day_logs, shift, is_workday)
+                work_time_minutes += presence["regular"]
+                overtime_minutes += presence["overtime"]
+                holiday_overtime_minutes += presence["holiday_overtime"]
+
+                day_category: str | None = None
+                if is_workday:
+                    if day_logs:
+                        present_days += 1
+                        day_category = "present"
+                        stats = _compute_shift_day_stats(day, day_logs, shift)
+                        early_minutes += stats["early_leave_minutes"]
+                        delay_minutes += stats["delay_minutes"]
+                    else:
+                        request_category = _full_day_request_category(requests)
+                        if request_category == REQUEST_MISSION:
+                            mission_days += 1
+                            day_category = "mission"
+                        elif request_category == REQUEST_SICK_LEAVE:
+                            sick_leave_days += 1
+                            day_category = "sick_leave"
+                        elif request_category == REQUEST_EARNED_LEAVE:
+                            earned_leave_days += 1
+                            day_category = "earned_leave"
+                        elif request_category == REQUEST_UNPAID_LEAVE:
+                            unpaid_leave_days += 1
+                            day_category = "unpaid_leave"
+                        else:
+                            day_category = "absent"
+                elif day_logs:
+                    day_category = "holiday_overtime"
+                elif is_custom_holiday:
+                    day_category = "custom_holiday"
+                else:
+                    day_category = "off_day"
+
+                if include_daily_rows:
+                    first_detection = (
+                        _to_shift_local(day_logs[0].detection_time, shift)
+                        if day_logs
+                        else None
+                    )
+                    last_detection = (
+                        _to_shift_local(day_logs[-1].detection_time, shift)
+                        if day_logs
+                        else None
+                    )
+                    daily_rows.append(
+                        {
+                            "date": day.isoformat(),
+                            "date_jalali": _jalali_date_string(day),
+                            "shift_id": shift.id,
+                            "shift_name": shift.shift_name,
+                            "is_shift_day": is_shift_day,
+                            "is_custom_holiday": is_custom_holiday,
+                            "is_workday": is_workday,
+                            "status": day_category,
+                            "detection_count": len(day_logs),
+                            "first_detection": (
+                                first_detection.time() if first_detection else None
+                            ),
+                            "last_detection": (
+                                last_detection.time() if last_detection else None
+                            ),
+                            "hourly_leave_minutes": int(
+                                round(request_minutes["hourly_leave_minutes"])
+                            ),
+                            "work_time": _minutes_to_hhmm(presence["regular"]),
+                            "overtime": _minutes_to_hhmm(presence["overtime"]),
+                            "holiday_overtime": _minutes_to_hhmm(
+                                presence["holiday_overtime"]
+                            ),
+                        }
+                    )
+
             final_working_days = (
                 present_days + mission_days + earned_leave_days + sick_leave_days
             )
@@ -1637,6 +1728,9 @@ class AttendanceSummaryService:
                 "shift_id": scalar_shift.id if scalar_shift else None,
                 "shift_name": scalar_shift.shift_name if scalar_shift else None,
                 "timezone_name": _shift_timezone_name(scalar_shift) if scalar_shift else None,
+                "shift_assignments": _shift_assignment_segments(
+                    shifts_by_day, g_start, g_end
+                ),
                 "jalali_year": jalali_year,
                 "jalali_month": jalali_month,
                 "move_days": move_days,
@@ -1644,6 +1738,7 @@ class AttendanceSummaryService:
                 "month_end": _jalali_date_string(g_end),
                 "month_days": month_days,
                 "off_days": off_days,
+                "no_shift_days": no_shift_days,
                 "custom_holidays": custom_holidays,
                 "total_holidays": total_holidays,
                 "month_working_days": month_working_days,
@@ -1677,7 +1772,7 @@ class AttendanceSummaryService:
             month_start, month_end = _jalali_moving_month_range(
                 jalali_year,
                 month,
-                0,
+                10,
             )
             month_ranges.append(
                 {"month": month, "g_start": month_start, "g_end": month_end}
@@ -1735,7 +1830,7 @@ class AttendanceSummaryService:
                 )
                 earned_leave_days = _calculate_monthly_earned_leave_days(
                     attendance["final_working_days"],
-                    attendance["month_days"],
+                    attendance["month_working_days"],
                 )
                 used_leave_days = round(sum(
                     1.0
@@ -1755,9 +1850,15 @@ class AttendanceSummaryService:
                 months.append(
                     {
                         "month": month,
+                        "period_start": _jalali_date_string(month_start),
+                        "period_end": _jalali_date_string(month_end),
                         "earned_leave_days": earned_leave_days,
                         "used_leave_days": used_leave_days,
                         "remaining_leave_days": remaining_leave_days,
+                        "expected_working_days": attendance["month_working_days"],
+                        "eligible_days": attendance["final_working_days"],
+                        "absence_days": attendance["absent_days"],
+                        "unpaid_leave_days": attendance["unpaid_leave_days"],
                     }
                 )
             result.append(

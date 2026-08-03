@@ -33,6 +33,7 @@ class HolidayResponse(BaseModel):
     id: int
     name: str
     date: date
+    date_jalali: str = ""
     description: Optional[str] = None
     holiday_type: str
     every_year: bool
@@ -43,3 +44,9 @@ class HolidayResponse(BaseModel):
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
     updated_by: UserBrief | None = None
+
+
+class HolidayRangeResponse(BaseModel):
+    count: int
+    unique_day_count: int
+    holidays: list[HolidayResponse]
