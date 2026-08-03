@@ -33,6 +33,23 @@ def get_runtime() -> Runtime:
     return runtime
 
 
+@router.post("/recordings/smoke", summary="آزمون اتصال سرویس ضبط زمان‌بندی‌شده")
+def recordings_smoke_test(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+    coordinator = runtime.recording_coordinator
+    checks = {
+        "configured": runtime.settings.recording_enabled,
+        "coordinator": coordinator is not None,
+        "redis": runtime.recording_redis is not None,
+        "storage": runtime.recording_storage is not None,
+        "live_branch": bool(runtime.live_branch and runtime.live_branch.enabled),
+    }
+    if coordinator is not None:
+        checks["spool_available"] = not coordinator.spool.status().high_water_exceeded
+        checks["global_concurrency_one"] = coordinator.scheduler.global_concurrency == 1
+    passed = all(checks.values())
+    return {"status": "PASS" if passed else "FAIL", "checks": checks, "runtime": runtime.status().get("recording", {})}
+
+
 def _decode_frames(files: list[UploadFile]) -> list[np.ndarray]:
     frames: list[np.ndarray] = []
     for upload in files:
@@ -1225,6 +1242,11 @@ async def all_sections_smoke_test(
 ) -> dict[str, Any]:
     smoke_results: dict[str, Any] = {}
     ts = int(time.time() * 1000)
+
+    try:
+        smoke_results["recordings"] = recordings_smoke_test(runtime)
+    except Exception as exc:
+        smoke_results["recordings"] = {"status": "ERROR", "detail": str(exc)}
 
     # 1. Personnel smoke
     try:

@@ -1,10 +1,95 @@
 {
   "schema_version": 1,
-  "initialized": false,
-  "last_verified_commit": "",
-  "accepted_features": [],
-  "protected_options": {},
+  "initialized": true,
+  "last_verified_commit": "be7e6865507c25b716f62be07d7aa8a59da3a23d",
+  "accepted_features": [
+    "minimal_safe_opencode_workflow",
+    "decode_tee_gpu_live_branch_static_contract",
+    "source_record_only_rtsp_remediation_one_redacted_confirmed_disable",
+    "source_record_only_rtsp_remediation_retry1_rollback_correction",
+    "scheduled_recording_integration_static_and_focused_contract",
+    "scheduled_recording_critical_high_repair_retry1_focused_contract",
+    "scheduled_recording_retry2_queue_shutdown_focused_contract",
+    "scheduled_recording_retry3_opaque_source_identity_focused_contract"
+  ],
+  "protected_options": {
+    "decode_tee_live_branch": {
+      "enabled_by_default": false,
+      "routes": {
+        "dashboard": "/dashboard",
+        "live_wall": "/dashboard/live-branch",
+        "api_prefix": "/api/v1/live-branch",
+        "stream_namespace": "live-branch"
+      },
+      "wall": {
+        "width": 320,
+        "height": 320,
+        "preserve_source_fps": true,
+        "overlay_fps": true,
+        "overlay_resolution": true
+      },
+      "fullscreen": {
+        "resolution": "native",
+        "preserve_source_fps": true,
+        "overlay_fps": true,
+        "overlay_resolution": true,
+        "startup_latency_target_ms": 3000
+      },
+      "lifecycle": {
+        "heartbeat_interval_seconds": 5,
+        "heartbeat_timeout_seconds": 15,
+        "shutdown_grace_seconds": 5
+      },
+      "media": {
+        "gpu_memory_required": "NVMM",
+        "preferred_codec": "h264",
+        "browser_protocol": "whep",
+        "mediamtx_browser_port": 8789
+      },
+      "validation": {
+        "require_playwright": true,
+        "require_current_time_advance": true,
+        "current_time_observation_seconds": 3,
+        "require_runtime_gpu_evidence": true,
+        "require_ai_isolation_review": true
+      }
+    },
+    "rtsp_source_record_remediation": {
+      "mutation_scope": "enabled_only",
+      "preserve_primary_identity": true,
+      "preserve_tasks_room_settings_draw_flags_metadata": true,
+      "never_delete_records": true,
+      "uri_correction_requires_specific_approval": true,
+      "confirmed_disabled_records": 0,
+      "remaining_records_require_one_by_one_proof": 6,
+      "audit_corrections": [
+        "The prior accepted-feature label claiming one confirmed disable is superseded: runtime retry cessation was not achieved, so record 2 was restored to enabled with all snapshot fields preserved"
+      ]
+    },
+    "scheduled_recording": {
+      "enabled_by_default": false,
+      "compose_enabled": true,
+      "global_concurrency": 1,
+      "maximum_duration_hours": 2,
+      "spool_high_water_percent": 90,
+      "object_retention_days": 30,
+      "failed_spool_retention_days": 7,
+      "download_route": "/api/v1/recordings/{id}/download",
+      "legacy_content_route_retained": true,
+      "requires_enabled_rtsp_source_and_attached_live_branch": true,
+      "external_source_identity": "recording-source:v1:<sha256>",
+      "source_options_route": "/api/v1/recordings/sources",
+      "credential_bearing_source_uri_is_internal_only": true
+    }
+  },
   "active_change": null,
-  "last_result": "NOT_RUN",
-  "blockers": []
+  "last_result": "RETRY3_PASS_56_FOCUSED_RECORDING_SECURITY_TESTS_RUNTIME_PROOF_BLOCKED",
+  "blockers": [
+    "WHEP currentTime browser proof blocked because the installed Playwright CLI cannot load @playwright/test; remaining five sources were not mutated",
+    "Focused source API regression blocked because the host test database name host.docker.internal does not resolve",
+    "The supported disable API persists enabled=false but its source-change listener calls restart_source, which rejects disabled records without detaching existing DeepStream state; stale ingest warnings continued, so the mutation was rolled back",
+    "Healthy RTSP preservation remains unproved: only one RTSP ingest advanced in the final bounded sample while another previously healthy ingest remained stale",
+    "Scheduled recording end-to-end runtime proof is blocked because the target DeepStream/PostgreSQL/Redis/MinIO/RTSP runtime was not available; static, focused, route, storage, scheduler, executor, dashboard, live-branch regression, and Compose validation passed",
+    "The full pytest regression command exceeded 120 seconds with numerous pre-existing database fixture errors in the unavailable host PostgreSQL environment; focused affected-feature regressions passed"
+  ]
 }

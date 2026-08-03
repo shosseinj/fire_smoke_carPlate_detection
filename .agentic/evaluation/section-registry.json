@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "sections": {
+    "scheduled_recording": {
+      "status": "NOT_RUNTIME_VALIDATED",
+      "static_validation": "PASS",
+      "focused_tests": "PASS",
+      "retry_1_repair_tests": "PASS: 44 focused recording/live-branch tests",
+      "retry_2_repair_tests": "PASS: 50 focused recording/live-branch tests",
+      "retry_3_security_tests": "PASS: 56 focused recording/live-branch tests",
+      "recording_source_identity": "PASS: authenticated opaque source_ref options, authoritative server-side resolution, credential-redacted responses, and source_ref-only dashboard submission",
+      "queue_and_shutdown": "PASS: deterministic Redis task identity, singular combined recovery enqueue, bounded clients, and explicit stuck-coordinator dependency preservation",
+      "concurrency_and_recovery": "PASS: renewable owner leases, atomic owner release, cancellation/upload races, transient loop survival, periodic reconciliation, and deterministic spool recovery",
+      "compose_config": "PASS",
+      "runtime_evidence": "BLOCKED: target DeepStream/PostgreSQL/RTSP runtime was not available during validation"
+    }
+  }
+}

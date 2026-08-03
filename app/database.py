@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    BigInteger,
     LargeBinary,
     MetaData,
     String,
@@ -29,10 +30,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260802_0048"
+ALEMBIC_HEAD_REVISION = "20260803_0049"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -63,6 +65,32 @@ users = Table(
     Column("locked_until_utc", UTC_TS),
     CheckConstraint("role IN ('superadmin', 'admin', 'user')", name="ck_users_role"),
 )
+
+recording_jobs = Table(
+    "recording_jobs", metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True),
+    Column("source_uri", Text, ForeignKey("sources.source_uri", ondelete="RESTRICT"), nullable=False),
+    Column("created_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("idempotency_key", String(255)),
+    Column("status", String(32), nullable=False, server_default="scheduled"),
+    Column("scheduled_start_utc", UTC_TS, nullable=False),
+    Column("scheduled_end_utc", UTC_TS, nullable=False),
+    Column("started_at_utc", UTC_TS), Column("finished_at_utc", UTC_TS),
+    Column("cancel_requested_at_utc", UTC_TS),
+    Column("object_key", Text), Column("content_type", String(128)),
+    Column("size_bytes", BigInteger), Column("spool_path", Text),
+    Column("warning", Text), Column("error", Text),
+    Column("is_partial", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("object_expires_at_utc", UTC_TS), Column("spool_expires_at_utc", UTC_TS),
+    *_audit_columns(),
+    CheckConstraint("scheduled_end_utc > scheduled_start_utc", name="ck_recording_jobs_positive_duration"),
+    CheckConstraint("scheduled_end_utc <= scheduled_start_utc + INTERVAL '2 hours'", name="ck_recording_jobs_max_duration"),
+    CheckConstraint("status IN ('scheduled','queued','recording','finalizing','uploading','completed','partial','failed','cancelled')", name="ck_recording_jobs_status"),
+    UniqueConstraint("created_by", "idempotency_key", name="uq_recording_jobs_actor_idempotency"),
+)
+Index("idx_recording_jobs_source_start", recording_jobs.c.source_uri, recording_jobs.c.scheduled_start_utc)
+Index("idx_recording_jobs_status_start", recording_jobs.c.status, recording_jobs.c.scheduled_start_utc)
 Index("idx_users_username", users.c.username)
 Index("idx_users_email", users.c.email)
 

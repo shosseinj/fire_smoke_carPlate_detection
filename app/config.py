@@ -131,6 +131,16 @@ class Settings:
     live_branch_heartbeat_timeout_seconds: float = _env_float(
         "LIVE_BRANCH_HEARTBEAT_TIMEOUT_SECONDS", 15.0
     )
+    recording_enabled: bool = _env_bool("RECORDING_ENABLED", False)
+    recording_redis_url: str = os.getenv("RECORDING_REDIS_URL", "redis://redis:6379/0")
+    recording_minio_endpoint: str = os.getenv("RECORDING_MINIO_ENDPOINT", "minio:9000")
+    recording_minio_access_key: str = os.getenv("RECORDING_MINIO_ACCESS_KEY", "")
+    recording_minio_secret_key: str = os.getenv("RECORDING_MINIO_SECRET_KEY", "")
+    recording_minio_bucket: str = os.getenv("RECORDING_MINIO_BUCKET", "recordings")
+    recording_minio_secure: bool = _env_bool("RECORDING_MINIO_SECURE", False)
+    recording_spool_path: Path = _path("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
+    recording_spool_high_water_percent: float = _env_float("RECORDING_SPOOL_HIGH_WATER_PERCENT", 90.0)
+    recording_poll_seconds: float = _env_float("RECORDING_POLL_SECONDS", 0.5)
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
     static_video_upload_path: Path = _path("STATIC_VIDEO_UPLOAD_PATH", "saved_media/static_videos")
     fire_severity_window_seconds: float = _env_float(

@@ -27,6 +27,11 @@ from app.core.model_management import (
 )
 from app.core.media_preview_publisher import MediaPreviewPublisher
 from app.core.live_branch import GpuLiveBranchManager
+from app.core.recording_coordinator import RecordingCoordinator
+from app.core.recording_executor import ScheduledRecordingExecutor
+from app.core.recording_job_store import RecordingJobStore
+from app.core.recording_scheduler import RecordingScheduler
+from app.core.recording_storage import LocalSpoolLifecycle, RecordingStorageService, RecordingStorageSettings, SpoolSettings
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
@@ -111,6 +116,10 @@ class Runtime:
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
     live_branch: GpuLiveBranchManager | None = None
+    recording_coordinator: RecordingCoordinator | None = None
+    recording_redis: object | None = None
+    recording_storage: RecordingStorageService | None = None
+    recording_error: str | None = None
 
     def operational_settings(self):
         gs = self.general_settings.get()
@@ -342,14 +351,28 @@ class Runtime:
                     LOGGER.warning("MEDIA_PREVIEW_NOT_READY %s", exc)
             if self.live_branch is not None:
                 self.live_branch.start()
+            if self.recording_coordinator is not None:
+                try:
+                    self.recording_coordinator.start()
+                except Exception as exc:
+                    self.recording_error = type(exc).__name__
+                    LOGGER.warning("RECORDING_NOT_READY error=%s", type(exc).__name__)
             if self.video_ingestor is not None:
                 self.video_ingestor.start()
             if self.static_video_ingestor is not None:
                 self.static_video_ingestor.start()
         except Exception:
+            coordinator_stopped = True
+            if self.recording_coordinator is not None:
+                try:
+                    self.recording_coordinator.close()
+                except Exception as exc:
+                    coordinator_stopped = False
+                    self.recording_error = type(exc).__name__
+                    LOGGER.error("RECORDING_SHUTDOWN_BLOCKED error=%s", type(exc).__name__)
             if self.media_preview is not None:
                 self.media_preview.close()
-            if self.live_branch is not None:
+            if coordinator_stopped and self.live_branch is not None:
                 self.live_branch.close()
             if self.static_video_ingestor is not None:
                 self.static_video_ingestor.close()
@@ -364,9 +387,19 @@ class Runtime:
         self.broadcast.close()
         self.personnel_zip_imports.close()
         self.model_conversions.close()
+        coordinator_error: Exception | None = None
+        if self.recording_coordinator is not None:
+            try:
+                self.recording_coordinator.close()
+            except Exception as exc:
+                coordinator_error = exc
+                self.recording_error = type(exc).__name__
+                LOGGER.error("RECORDING_SHUTDOWN_BLOCKED error=%s", type(exc).__name__)
+        if coordinator_error is None and self.recording_redis is not None and hasattr(self.recording_redis, "close"):
+            self.recording_redis.close()
         if self.media_preview is not None:
             self.media_preview.close()
-        if self.live_branch is not None:
+        if coordinator_error is None and self.live_branch is not None:
             self.live_branch.close()
         if self.static_video_ingestor is not None:
             self.static_video_ingestor.close()
@@ -378,7 +411,10 @@ class Runtime:
         self.plate_logs.close()
         self.human_logs.close()
         self.registry.close()
-        self.database.dispose()
+        if coordinator_error is None:
+            self.database.dispose()
+        if coordinator_error is not None:
+            raise RuntimeError("recording coordinator is still active; recording dependencies were preserved") from coordinator_error
 
     def status(self) -> dict:
         value = self.router.status()
@@ -403,6 +439,13 @@ class Runtime:
             if self.live_branch is not None
             else {"enabled": False, "branches": {}}
         )
+        value["recording"] = (
+            self.recording_coordinator.status()
+            if self.recording_coordinator is not None
+            else {"enabled": self.settings.recording_enabled, "running": False, "error": self.recording_error}
+        )
+        if self.recording_error is not None:
+            value["recording"]["error"] = self.recording_error
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
@@ -939,6 +982,47 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         grace_seconds=app_settings.live_branch_grace_seconds,
         heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
     )
+    recording_coordinator = None
+    recording_redis = None
+    recording_storage = None
+    recording_error = None
+    if app_settings.recording_enabled:
+        try:
+            import redis
+
+            recording_redis = redis.Redis.from_url(
+                app_settings.recording_redis_url,
+                decode_responses=True,
+                socket_connect_timeout=3.0,
+                socket_timeout=5.0,
+                retry_on_timeout=False,
+            )
+            recording_redis.ping()
+            recording_storage = RecordingStorageService(RecordingStorageSettings(
+                endpoint=app_settings.recording_minio_endpoint,
+                access_key=app_settings.recording_minio_access_key,
+                secret_key=app_settings.recording_minio_secret_key,
+                bucket_name=app_settings.recording_minio_bucket,
+                secure=app_settings.recording_minio_secure,
+                minio_retention_days=30,
+            ))
+            recording_store = RecordingJobStore(database)
+            recording_scheduler = RecordingScheduler(recording_store, recording_redis, global_concurrency=1)
+            spool = LocalSpoolLifecycle(SpoolSettings(
+                app_settings.recording_spool_path, failed_retention_days=7,
+                high_water_percent=app_settings.recording_spool_high_water_percent,
+            ))
+            app_settings.recording_spool_path.mkdir(parents=True, exist_ok=True)
+            recording_executor = ScheduledRecordingExecutor(
+                live_branches=live_branch, spool_path=app_settings.recording_spool_path,
+            )
+            recording_coordinator = RecordingCoordinator(
+                recording_store, recording_scheduler, recording_executor, recording_storage, spool,
+                poll_seconds=app_settings.recording_poll_seconds,
+            )
+        except Exception as exc:
+            recording_error = type(exc).__name__
+            LOGGER.warning("RECORDING_CONFIGURATION_UNAVAILABLE error=%s", type(exc).__name__)
     if app_settings.video_ingestion_enabled:
         common_ingestor_settings = {
             "registry": registry,
@@ -1053,6 +1137,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,
         live_branch=live_branch,
+        recording_coordinator=recording_coordinator,
+        recording_redis=recording_redis,
+        recording_storage=recording_storage,
+        recording_error=recording_error,
     )
 
     def _publish_detection_change(action: str, record: object) -> None:
