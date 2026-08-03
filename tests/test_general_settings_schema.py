@@ -3,7 +3,18 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.api.general_settings import OperationalSettingsPatch
+from app.api.general_settings import GeneralSettingsPatch, OperationalSettingsPatch
+
+
+def test_general_settings_patch_accepts_force() -> None:
+    payload = GeneralSettingsPatch.model_validate({"force": True})
+
+    assert payload.force is True
+
+
+def test_general_settings_patch_rejects_unknown_top_level_fields() -> None:
+    with pytest.raises(ValidationError):
+        GeneralSettingsPatch.model_validate({"unknown_setting": True})
 
 
 def test_general_settings_operational_patch_rejects_fire_thresholds() -> None:
