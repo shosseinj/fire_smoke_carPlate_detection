@@ -6,7 +6,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
-from app.api.holiday_schemas import HolidayCreate, HolidayResponse, HolidayUpdate
+from app.api.holiday_schemas import (
+    HolidayCreate,
+    HolidayRangeResponse,
+    HolidayResponse,
+    HolidayUpdate,
+)
 from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.holiday_import import (
@@ -18,6 +23,7 @@ from app.core.holiday_import import (
     parse_holiday_excel,
 )
 from app.core.holiday_store import HolidayRecord
+from app.core.jalali_utils import gregorian_to_jalali_str, parse_jalali_date
 
 router = APIRouter(prefix="/api/v1/holidays", tags=["Holidays"])
 
@@ -37,12 +43,12 @@ def _record_to_response(
     updated_by: UserBrief | None = None,
 ) -> HolidayResponse:
     parsed_date = date.fromisoformat(record.date_value) if isinstance(record.date_value, str) else record.date_value
-    from app.core.jalali_utils import parse_jalali_date, utc_iso_to_jalali_datetime
-    from app.core.legacy_service import format_jalali
+    from app.core.jalali_utils import utc_iso_to_jalali_datetime
     return HolidayResponse(
         id=record.id,
         name=record.name,
         date=parsed_date,
+        date_jalali=gregorian_to_jalali_str(parsed_date),
         description=record.description,
         holiday_type=record.holiday_type,
         every_year=record.every_year,
@@ -81,6 +87,29 @@ def list_holidays(
         records = [r for r in records if r.every_year == every_year]
     records.sort(key=lambda r: r.date_value)
     return [_record_to_response(r, *_resolve_briefs(store, r)) for r in records]
+
+
+@router.get("/range", response_model=HolidayRangeResponse)
+def get_holidays_in_range(
+    start_date: str = Query(..., description="تاریخ شروع شمسی (مثلاً 1404-01-01)"),
+    end_date: str = Query(..., description="تاریخ پایان شمسی (مثلاً 1404-12-29)"),
+    _: dict = Depends(require_role("operator")),
+) -> HolidayRangeResponse:
+    try:
+        start_day = parse_jalali_date(start_date)
+        end_day = parse_jalali_date(end_date)
+    except ValueError as exc:
+        raise HTTPException(400, f"تاریخ شمسی نامعتبر است: {exc}")
+    if start_day > end_day:
+        raise HTTPException(400, "تاریخ شروع نباید بعد از تاریخ پایان باشد")
+    store = get_holiday_store()
+    records = store.get_holidays_in_range(start_day, end_day)
+    records.sort(key=lambda r: r.date_value)
+    holidays = [_record_to_response(r, *_resolve_briefs(store, r)) for r in records]
+    unique_day_count = len({r.date_value for r in records})
+    return HolidayRangeResponse(
+        count=len(holidays), unique_day_count=unique_day_count, holidays=holidays
+    )
 
 
 @router.get("/import-excel/template")
