@@ -8,6 +8,8 @@ Reorganize the decode-tee GPU live-branch OpenCode workflow so each requirement 
 
 `.agentic/live-branch/config.yaml` is the only owner of mutable product and runtime values. The canonical wall profile is represented as numeric `width: 320` and `height: 320` fields. URLs, route fragments, feature flags, heartbeat intervals, shutdown grace, latency targets, report paths, and canonical agent names also live only in this configuration.
 
+Existing values in `.agentic/live-branch/config.yaml` are immutable unless the user explicitly requests changing them. Workflow installation, normalization, and validation must preserve those values byte-for-byte. For this refactor, the user's explicit `320*320` instruction confirms the existing wall dimensions; it does not authorize changing any other configuration value.
+
 Durable rules are divided by responsibility across the ten required `.opencode/instructions/*.md` files. They describe invariants and how to resolve configuration keys, but do not copy mutable values. The AI-protection instruction remains the absolute boundary for production work.
 
 `.agentic/live-branch/spec.md` is a scope and authority index. It links to the configuration and focused instructions instead of restating their requirements. State, architecture map, AI baseline, validation matrix, and final report are evidence artifacts; observations must identify the governing config key and must not become normative sources.
@@ -28,7 +30,7 @@ Frontmatter uses syntax accepted by the installed OpenCode 1.18.11 CLI. Permissi
 
 Tests construct temporary workflow fixtures and demonstrate failures for missing files, stale references, conflicting values, invalid frontmatter, unknown agent names, and malformed permissions before the validator implementation is completed.
 
-The PowerShell installer copies or normalizes the canonical repository workflow and runs both validators. It does not modify production application files.
+The PowerShell installer copies or normalizes the canonical repository workflow and runs both validators. It does not rewrite an existing `.agentic/live-branch/config.yaml` and does not modify production application files.
 
 ## Execution and safety
 
