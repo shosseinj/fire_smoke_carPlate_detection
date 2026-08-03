@@ -73,6 +73,9 @@ class DisplaySettingsPatch(BaseModel):
     confirmation_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 class GeneralSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    force: bool | None = None
     models: ModelSettingsPatch | None = None
     plate_detection: PlateDetectionPatch | None = None
     fire_smoke_detection: FireSmokePolicyPatch | None = None
@@ -120,6 +123,7 @@ def _snapshot(runtime: Runtime) -> dict[str, Any]:
         operational_merged.pop(field, None)
         application_values.pop(field, None)
     return {
+        "force": gs.force,
         "operational": operational_merged,
         "models": runtime.models.snapshot(),
         "plate_detection": runtime.plate_settings.general(),
@@ -177,6 +181,11 @@ def update_general_settings(
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:
+        if payload.force is not None:
+            runtime.general_settings.update(
+                {"force": payload.force},
+                updated_by=current_user.id,
+            )
         if payload.models is not None:
             runtime.models.update(
                 payload.models.model_dump(exclude_unset=True, exclude_none=True)
