@@ -317,6 +317,11 @@ class GpuLiveBranchManager:
                 branch.references.difference_update(expired)
                 for viewer in expired:
                     branch.last_heartbeat.pop(viewer, None)
+                if expired and not branch.references:
+                    self._pending_removal.setdefault(
+                        (branch.source_id, branch.profile),
+                        now + self.grace_seconds,
+                    )
             keys = [
                 key
                 for key, deadline in self._pending_removal.items()

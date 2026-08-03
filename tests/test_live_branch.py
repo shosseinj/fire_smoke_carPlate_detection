@@ -169,6 +169,24 @@ def test_branch_reuse_and_grace_release() -> None:
     assert manager.heartbeat("camera", "wall", "two")
 
 
+def test_expired_heartbeat_schedules_branch_for_grace_cleanup(monkeypatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr("app.core.live_branch.time.monotonic", lambda: clock["now"])
+    manager = _manager()
+    manager.heartbeat_timeout_seconds = 2.0
+    manager.grace_seconds = 1.0
+    manager.attach_source("camera", _Tee(), _Pipeline())
+    manager.acquire("camera", "wall", "viewer")
+
+    clock["now"] = 103.0
+    manager._expire()
+    assert ("camera", "wall") in manager._pending_removal
+
+    clock["now"] = 105.0
+    manager._expire()
+    assert manager.status()["branches"] == {}
+
+
 def test_invalid_profile_rolls_back_without_branch() -> None:
     manager = _manager()
     with pytest.raises(ValueError):

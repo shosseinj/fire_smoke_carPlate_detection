@@ -20,11 +20,13 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "attempt < 10" in html
     assert "heartbeat.status === 409" in html
     assert "const fullscreenRequest =" in html
-    assert "video.requestFullscreen()" in html
+    assert "nativeVideo.requestFullscreen()" in html
     assert "FPS: ${fps}" in html
     assert "RES: ${width}×${height}" in html
     assert "nativeVideo = document.createElement(\"video\")" in html
-    assert "video.srcObject = nativeVideo.srcObject" in html
+    assert 'nativeVideo.dataset.liveBranchFullscreen = "true"' in html
+    assert "video.srcObject = nativeVideo.srcObject" not in html
+    assert "if (!state.sessionId) return;" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:

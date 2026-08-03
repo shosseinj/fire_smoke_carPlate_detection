@@ -631,11 +631,12 @@
         if (status) { status.textContent = message; status.hidden = false; }
       }
 
-      async function releaseLiveBranch(state) {
+      async function releaseLiveBranch(state, options = {}) {
         if (!state || state.released) return;
         state.released = true;
         if (state.peer) state.peer.close();
-        state.video.srcObject = null;
+        if (!options.keepStream) state.video.srcObject = null;
+        if (!state.sessionId) return;
         try {
           await fetch(`/api/v1/live-branch/${state.profile}/release`, {
             method: "DELETE", headers: { "Content-Type": "application/json" },
@@ -645,29 +646,50 @@
         } catch (_) { /* unload/network cleanup is best effort */ }
       }
 
+      const liveBranchMetricsState = new WeakMap();
       function startLiveBranchMetrics(video, card, profile, result) {
         const metrics = card.querySelector(".live-branch-metrics");
         if (!metrics) return;
-        let frames = 0;
-        let windowStart = performance.now();
+        if (liveBranchMetricsState.has(video)) {
+          const existing = liveBranchMetricsState.get(video);
+          existing.result = result;
+          existing.profile = profile;
+          return;
+        }
+        const state = { result, profile, frames: 0, windowStart: performance.now() };
+        liveBranchMetricsState.set(video, state);
         const render = () => {
-          const width = video.videoWidth || result.width || 0;
-          const height = video.videoHeight || result.height || 0;
-          const elapsed = Math.max(1, performance.now() - windowStart) / 1000;
-          const fps = frames > 0 ? (frames / elapsed).toFixed(1) : "--";
-          metrics.textContent = `FPS: ${fps} · RES: ${width}×${height} · ${profile}`;
-          if (elapsed >= 1) { frames = 0; windowStart = performance.now(); }
+          const width = video.videoWidth || state.result.width || 0;
+          const height = video.videoHeight || state.result.height || 0;
+          const elapsed = Math.max(1, performance.now() - state.windowStart) / 1000;
+          const fps = state.frames > 0 ? (state.frames / elapsed).toFixed(1) : "--";
+          metrics.textContent = `FPS: ${fps} · RES: ${width}×${height} · ${state.profile}`;
+          if (elapsed >= 1) { state.frames = 0; state.windowStart = performance.now(); }
         };
         video.addEventListener("loadedmetadata", render, { once: false });
         if (typeof video.requestVideoFrameCallback === "function") {
-          const frame = () => { frames += 1; render(); video.requestVideoFrameCallback(frame); };
+          const frame = () => { state.frames += 1; render(); video.requestVideoFrameCallback(frame); };
           video.requestVideoFrameCallback(frame);
         } else {
           window.setInterval(render, 500);
         }
       }
 
-      async function acquireLiveBranch(source, profile, video, card) {
+      async function scheduleReconnect(source, profile, video, card, attempt = 0) {
+        if (!liveBranchView) return;
+        if (attempt >= 3) {
+          liveBranchStatus(card, "اتصال شاخه زنده پس از ۳ تلاش برقرار نشد");
+          return;
+        }
+        liveBranchStatus(card, `تلاش برای اتصال مجدد… (${attempt + 1}/۳)`);
+        await new Promise((resolve) => window.setTimeout(resolve, [800, 1600, 3200][attempt] || 3200));
+        if (!liveBranchView) return;
+        const next = await acquireLiveBranch(source, profile, video, card);
+        if (!next) await scheduleReconnect(source, profile, video, card, attempt + 1);
+      }
+
+      async function acquireLiveBranch(source, profile, video, card, options = {}) {
+        const startMetrics = options.startMetrics !== false;
         const previous = liveBranchStates.get(`${source.source_uri}:${profile}`);
         if (previous) await releaseLiveBranch(previous);
         const state = { sourceUri: source.source_uri, profile, video, card, peer: null, sessionId: null, released: false };
@@ -684,14 +706,18 @@
              card.dataset.nativeWidth = String(result.width);
              card.dataset.nativeHeight = String(result.height);
            }
-           startLiveBranchMetrics(video, card, profile, result);
+           if (startMetrics) startLiveBranchMetrics(video, card, profile, result);
           const peer = new RTCPeerConnection();
           state.peer = peer;
           peer.addTransceiver("video", { direction: "recvonly" });
           peer.addEventListener("track", (event) => { video.srcObject = event.streams[0]; });
           peer.addEventListener("connectionstatechange", () => {
-            if (["failed", "disconnected", "closed"].includes(peer.connectionState) && !state.released) {
+            if (["failed", "disconnected", "closed"].includes(peer.connectionState)
+                && !state.released
+                && liveBranchView
+                && liveBranchStates.get(`${source.source_uri}:${profile}`) === state) {
               liveBranchStatus(card, `اتصال شاخه زنده قطع شد (${peer.connectionState})`);
+              scheduleReconnect(source, profile, video, card, 0);
             }
           });
           await peer.setLocalDescription(await peer.createOffer());
@@ -740,31 +766,45 @@
         if (!liveBranchGrid.children.length) showLiveBranchError("منبع فعالی برای شاخه زنده وجود ندارد");
       }
 
+      let liveBranchFullscreenToken = 0;
       async function openLiveBranchFullscreen(source, card, video) {
+        const token = ++liveBranchFullscreenToken;
         if (liveBranchFullscreen && liveBranchFullscreen.sourceUri === source.source_uri) return;
-        // requestFullscreen must run synchronously in the tile click's user
-        // activation. Awaiting release/acquire first makes browsers reject it
-        // with "Permissions check failed".
-        const fullscreenRequest = document.fullscreenElement
-          ? Promise.reject(new Error("Exit the current fullscreen view first"))
-          : video.requestFullscreen();
-        const wall = liveBranchStates.get(`${source.source_uri}:wall`);
-        // Keep the already-playing wall stream in the visible element. The
-        // native branch is negotiated on a detached muted video and swapped
-        // in only after it is actually playable, so fullscreen never blanks.
         const nativeVideo = document.createElement("video");
         nativeVideo.autoplay = true; nativeVideo.muted = true; nativeVideo.playsInline = true;
-        const state = await acquireLiveBranch(source, "fullscreen", nativeVideo, card);
-        if (!state) { try { await fullscreenRequest; } catch (error) { liveBranchStatus(card, `تمام‌صفحه رد شد: ${error.message}`); } return; }
-        video.srcObject = nativeVideo.srcObject;
-        try { await video.play(); } catch (_) { /* the native peer is already playing */ }
-        state.video = video;
-        if (wall) await releaseLiveBranch(wall);
+        nativeVideo.dataset.liveBranchFullscreen = "true";
+        nativeVideo.style.background = "#000";
+        document.body.appendChild(nativeVideo);
+        const fullscreenRequest = document.fullscreenElement
+          ? Promise.resolve(null)
+          : nativeVideo.requestFullscreen().catch((error) => error);
+        if (liveBranchFullscreen) {
+          const previous = liveBranchFullscreen;
+          liveBranchFullscreen = null;
+          await releaseLiveBranch(previous);
+          previous.video.remove();
+        }
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        const state = await acquireLiveBranch(source, "fullscreen", nativeVideo, card, { startMetrics: false });
+        if (token !== liveBranchFullscreenToken) {
+          if (state) await releaseLiveBranch(state);
+          nativeVideo.remove();
+          return;
+        }
+        if (!state) {
+          nativeVideo.remove();
+          return;
+        }
+        startLiveBranchMetrics(video, card, "fullscreen", { width: source.frame_width || 0, height: source.frame_height || 0 });
         liveBranchFullscreen = state;
-        try { await fullscreenRequest; } catch (error) { liveBranchStatus(card, `تمام‌صفحه رد شد: ${error.message}`); }
+        const fullscreenResult = await fullscreenRequest;
+        if (fullscreenResult instanceof Error) {
+          liveBranchStatus(card, `تمام‌صفحه رد شد: ${fullscreenResult.message}`);
+        }
       }
 
       async function closeLiveBranchView() {
+        liveBranchFullscreenToken += 1;
         if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
         for (const state of liveBranchStates.values()) await releaseLiveBranch(state);
         liveBranchStates.clear(); liveBranchFullscreen = null;
@@ -784,6 +824,14 @@
               await releaseLiveBranch(state);
               const source = liveBranchSources.find((item) => item.source_uri === state.sourceUri);
               if (source) await acquireLiveBranch(source, "wall", state.video, state.card);
+              return;
+            }
+            if (heartbeat.status === 409 && state.profile === "fullscreen" && liveBranchView
+                && liveBranchFullscreen && liveBranchFullscreen.sessionId === state.sessionId) {
+              liveBranchFullscreen = null;
+              await releaseLiveBranch(state);
+              const source = liveBranchSources.find((item) => item.source_uri === state.sourceUri);
+              if (source) await openLiveBranchFullscreen(source, state.card, state.video);
               return;
             }
             liveBranchStatus(state.card, "خطای heartbeat شاخه زنده");
@@ -1513,9 +1561,7 @@
           const state = liveBranchFullscreen;
           liveBranchFullscreen = null;
           releaseLiveBranch(state);
-          const source = sources.find((item) => item.source_uri === state.sourceUri);
-          const card = state.card;
-          if (source && liveBranchView) acquireLiveBranch(source, "wall", state.video, card);
+          state.video.remove();
         }
       });
 

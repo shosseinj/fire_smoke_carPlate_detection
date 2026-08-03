@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import uuid
 import logging
-import time
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -62,25 +61,32 @@ def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, run
     manager = _manager(runtime)
     if not manager.enabled:
         return {"enabled": False, "source_id": payload.source_uri, "source_uri": payload.source_uri, "profile": profile}
-    if runtime.registry.get(payload.source_uri) is None:
-        raise HTTPException(status_code=404, detail="source_uri was not found")
+    try:
+        if runtime.registry.get(payload.source_uri) is None:
+            raise HTTPException(status_code=404, detail="source_uri was not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("Live branch registry lookup failed for %s", payload.source_uri)
+        raise HTTPException(status_code=503, detail=f"live branch registry lookup failed: {exc}") from exc
     client_id = payload.client_id or uuid.uuid4().hex
     with _sessions_lock:
         session_id = uuid.uuid4().hex
         _sessions[session_id] = (payload.source_uri, profile, client_id)
     try:
         result = manager.acquire(payload.source_uri, profile, session_id)
+        path = str(result.get("path", ""))
+        url = str(result.get("url", ""))
+        whep_url = _browser_whep_url(url, request)
+    except HTTPException:
+        with _sessions_lock:
+            _sessions.pop(session_id, None)
+        raise
     except Exception as exc:
         LOGGER.exception("Live branch acquire failed for %s/%s", profile, payload.source_uri)
         with _sessions_lock:
             _sessions.pop(session_id, None)
         raise HTTPException(status_code=503, detail=f"live branch acquire failed: {exc}") from exc
-    path = str(result.get("path", ""))
-    url = str(result.get("url", ""))
-    # rtspclientsink publishes asynchronously. Give MediaMTX time to create
-    # the path before returning a WHEP URL to a browser.
-    time.sleep(0.5)
-    whep_url = _browser_whep_url(url, request)
     return {
         "enabled": True,
         "session_id": session_id,

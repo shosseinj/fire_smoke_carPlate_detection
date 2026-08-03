@@ -111,6 +111,14 @@ def _state(tee: _Tee) -> SimpleNamespace:
     )
 
 
+def _native_caps() -> SimpleNamespace:
+    pads = {
+        "sink": _Pad([_Caps("")]),
+        "src": _Pad([_Caps("")]),
+    }
+    return SimpleNamespace(get_static_pad=lambda name: pads[name])
+
+
 def test_early_video_caps_defer_until_nvmm_and_preserve_ai_link() -> None:
     tee = _Tee()
     decoded_pad = _Pad([
@@ -123,7 +131,7 @@ def test_early_video_caps_defer_until_nvmm_and_preserve_ai_link() -> None:
     glib = _GLib()
     ingestor = _ingestor(manager, glib, _state(tee))
 
-    ingestor._on_decoded_pad_added(None, decoded_pad, tee, ai_pacer, "source")
+    ingestor._on_decoded_pad_added(None, decoded_pad, tee, _native_caps(), ai_pacer, "source")
 
     assert decoded_pad.linked
     assert len(tee.requested) == 1
@@ -144,7 +152,7 @@ def test_deferred_registration_uses_negotiated_tee_sink_caps() -> None:
     glib = _GLib()
     ingestor = _ingestor(manager, glib, _state(tee))
 
-    ingestor._on_decoded_pad_added(None, decoded_pad, tee, ai_pacer, "source")
+    ingestor._on_decoded_pad_added(None, decoded_pad, tee, _native_caps(), ai_pacer, "source")
 
     assert manager.attachments[0][0] == "source"
     assert "width=1280" in manager.attachments[0][1].to_string()
@@ -159,7 +167,7 @@ def test_no_nvmm_retry_exhaustion_does_not_affect_ai_branch() -> None:
     ingestor = _ingestor(manager, glib, _state(tee))
     ingestor.LIVE_REGISTRATION_MAX_RETRIES = 2
 
-    ingestor._on_decoded_pad_added(None, decoded_pad, tee, ai_pacer, "source")
+    ingestor._on_decoded_pad_added(None, decoded_pad, tee, _native_caps(), ai_pacer, "source")
     retry = next(iter(glib.callbacks.values()))
     assert retry() is True
     assert retry() is False
