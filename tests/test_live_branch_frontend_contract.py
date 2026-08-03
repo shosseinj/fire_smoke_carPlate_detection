@@ -17,16 +17,24 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "width: 320px" in html and "height: 320px" in html
     assert "/api/v1/broadcast-gpu/sources" in html
     assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
-    assert "attempt < 10" in html
+    assert "attempt < 20" in html
     assert "heartbeat.status === 409" in html
     assert "const fullscreenRequest =" in html
-    assert "nativeVideo.requestFullscreen()" in html
+    assert "fullscreenShell.requestFullscreen()" in html
     assert "FPS: ${fps}" in html
     assert "RES: ${width}×${height}" in html
     assert "nativeVideo = document.createElement(\"video\")" in html
     assert 'nativeVideo.dataset.liveBranchFullscreen = "true"' in html
     assert "video.srcObject = nativeVideo.srcObject" not in html
     assert "if (!state.sessionId) return;" in html
+    assert "wallPreview.srcObject = video.srcObject" in html
+    assert "wallPreview.play().catch(() => {})" in html
+    assert "nativeVideo.hidden = true" in html
+    assert "wallPreview.hidden = true" in html
+    assert 'startLiveBranchMetrics(video, card, "fullscreen"' not in html
+    assert "state.released || liveBranchStates.get(state.key) !== state" in html
+    assert "showLiveBranchError(error.message)" not in html
+    assert "recoverLiveBranchFullscreen(state)" in html
 
 
 def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:

@@ -156,6 +156,10 @@ def test_wall_caps_are_exact_and_fullscreen_has_no_resize() -> None:
     )
     assert "width=" not in fullscreen.elements[2].props["caps"].to_string()
     assert "height=" not in fullscreen.elements[2].props["caps"].to_string()
+    assert wall.elements[3].props["idrinterval"] == 15
+    assert wall.elements[3].props["iframeinterval"] == 15
+    assert fullscreen.elements[3].props["idrinterval"] == 15
+    assert fullscreen.elements[3].props["iframeinterval"] == 15
 
 
 def test_branch_reuse_and_grace_release() -> None:

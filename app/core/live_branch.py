@@ -228,6 +228,10 @@ class GpuLiveBranchManager:
             find_property = getattr(encoder, "find_property", None)
             if find_property is None or find_property("insert-sps-pps") is not None:
                 encoder.set_property("insert-sps-pps", True)
+            if find_property is None or find_property("idrinterval") is not None:
+                encoder.set_property("idrinterval", 15)
+            if find_property is None or find_property("iframeinterval") is not None:
+                encoder.set_property("iframeinterval", 15)
             sink.set_property("location", self.publish_uri(source.source_id, profile))
             sink_find_property = getattr(sink, "find_property", None)
             if sink_find_property is None or sink_find_property("protocols") is not None:
