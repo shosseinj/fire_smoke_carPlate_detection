@@ -175,6 +175,21 @@ def test_branch_reuse_and_grace_release() -> None:
     assert manager.heartbeat("camera", "wall", "two")
 
 
+def test_durable_fullscreen_owner_does_not_expire_without_heartbeat(monkeypatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr("app.core.live_branch.time.monotonic", lambda: clock["now"])
+    manager = _manager()
+    manager.heartbeat_timeout_seconds = 1.0
+    manager.attach_source("camera", _Tee(), _Pipeline())
+    manager.acquire_durable("camera", "recording:job")
+
+    clock["now"] = 200.0
+    manager._expire()
+
+    assert "camera/fullscreen" in manager.status()["branches"]
+    assert manager.release_durable("camera", "recording:job")
+
+
 def test_expired_heartbeat_schedules_branch_for_grace_cleanup(monkeypatch) -> None:
     clock = {"now": 100.0}
     monkeypatch.setattr("app.core.live_branch.time.monotonic", lambda: clock["now"])

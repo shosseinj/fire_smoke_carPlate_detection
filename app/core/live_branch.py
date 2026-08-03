@@ -35,6 +35,7 @@ class LiveBranch:
     sink: Any
     references: set[str] = field(default_factory=set)
     last_heartbeat: dict[str, float] = field(default_factory=dict)
+    durable_references: set[str] = field(default_factory=set)
     removing: bool = False
 
 
@@ -128,6 +129,10 @@ class GpuLiveBranchManager:
     def publish_uri(self, source_id: str, profile: str) -> str:
         return f"{self.publish_base}/{live_stream_path(source_id, profile)}"
 
+    def recording_uri(self, source_id: str) -> str:
+        """Return the existing fullscreen MediaMTX input used by recorders."""
+        return self.publish_uri(source_id, "fullscreen")
+
     def attach_source(
         self,
         source_id: str,
@@ -188,6 +193,16 @@ class GpuLiveBranchManager:
             self._pending_removal.pop(key, None)
             return self._contract(branch)
 
+    def acquire_durable(self, source_id: str, owner_id: str) -> dict[str, Any]:
+        """Keep the fullscreen branch alive without viewer heartbeat expiry."""
+        with self._lock:
+            contract = self.acquire(source_id, "fullscreen", owner_id)
+            if not contract.get("enabled"):
+                return contract
+            branch = self._branches[(source_id, "fullscreen")]
+            branch.durable_references.add(owner_id)
+        return contract
+
     def heartbeat(self, source_id: str, profile: str, viewer_id: str) -> bool:
         with self._lock:
             branch = self._branches.get((source_id, profile))
@@ -203,10 +218,14 @@ class GpuLiveBranchManager:
             if branch is None:
                 return False
             branch.references.discard(viewer_id)
+            branch.durable_references.discard(viewer_id)
             branch.last_heartbeat.pop(viewer_id, None)
             if not branch.references:
                 self._pending_removal[key] = time.monotonic() + self.grace_seconds
             return True
+
+    def release_durable(self, source_id: str, owner_id: str) -> bool:
+        return self.release(source_id, "fullscreen", owner_id)
 
     def _build(self, source: LiveSource, profile: str) -> LiveBranch:
         Gst = self._require_gst()
@@ -322,7 +341,12 @@ class GpuLiveBranchManager:
         now = time.monotonic()
         with self._lock:
             for branch in self._branches.values():
-                expired = {viewer for viewer, stamp in branch.last_heartbeat.items() if now - stamp > self.heartbeat_timeout_seconds}
+                expired = {
+                    viewer
+                    for viewer, stamp in branch.last_heartbeat.items()
+                    if viewer not in branch.durable_references
+                    and now - stamp > self.heartbeat_timeout_seconds
+                }
                 branch.references.difference_update(expired)
                 for viewer in expired:
                     branch.last_heartbeat.pop(viewer, None)

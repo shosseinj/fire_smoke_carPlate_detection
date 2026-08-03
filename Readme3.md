@@ -239,3 +239,5 @@ trtexec \
 - **OpenCV 4.13.0**
 - **Qdrant Client 1.18.0**
 - **Hezar 0.44.0** (Persian OCR)
+
+route.exe -p add 192.168.110.0 mask 255.255.255.0 192.168.10.254 metric 1 if 21
