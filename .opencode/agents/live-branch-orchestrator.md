@@ -29,6 +29,20 @@ Before doing any work, read and follow:
 
 `.opencode/instructions/ai-branch-protection.md`
 
+Before doing any work, read:
+
+- `.agentic/live-branch/config.yaml`
+- `.agentic/live-branch/config.lock.yaml`
+- `.opencode/instructions/ai-branch-protection.md`
+- `.opencode/instructions/live-branch-orchestration.md`
+- `.agentic/live-branch/spec.md`
+
+Treat `.agentic/live-branch/config.yaml` as authoritative.
+
+Do not change any existing configuration value unless the user explicitly requests that exact change.
+
+If `config.yaml` differs from `config.lock.yaml`, stop and report the difference unless the change is documented in `.agentic/live-branch/config-migrations.md`.
+
 Use `todowrite` with these phases and exactly one in progress:
 
 1. baseline and reproduction;
@@ -55,7 +69,7 @@ Target architecture:
 source -> NVIDIA decode -> video/x-raw(memory:NVMM) -> tee
   |-- existing AI branch (unchanged)
   |-- dynamic live branch
-       |-- wall: queue -> nvvideoconvert -> NVMM 260x260 -> NVENC/publish
+       |-- wall: queue -> nvvideoconvert -> NVMM 320x320 -> NVENC/publish
        |-- fullscreen: queue -> native NVMM -> NVENC/passthrough/publish
 ```
 
@@ -64,7 +78,7 @@ Required product behavior:
 - Dashboard has a `See live branch` button.
 - Clicking it opens or switches to the new live-branch video wall.
 - The new live branch uses a route/stream namespace different from the old preview.
-- Wall tiles are 260x260.
+- Wall tiles are 320x320.
 - Clicking a tile starts native-resolution fullscreen for that source.
 - No viewer means no live conversion/encoding/publication.
 - Multiple viewers reuse compatible branches.
@@ -77,6 +91,23 @@ AI isolation is a hard gate:
 - run existing AI/inference tests;
 - prove branch attach/detach does not pause or terminate ingestion;
 - reject changes that alter AI resolution, FPS, batching, callbacks, inference inputs, or outputs.
+
+## Configuration preservation
+
+`.agentic/live-branch/config.yaml` is the authoritative source for all adjustable live-branch options.
+
+Before modifying production code, every agent must read the current configuration.
+
+Existing configuration values must not be changed, reset, normalized, or replaced during future development unless the user explicitly requests that specific configuration change.
+
+When adding a new feature:
+
+1. preserve all existing configuration keys and values;
+2. add only the new required key;
+3. use backward-compatible defaults;
+4. do not rename or remove existing keys;
+5. update config validation and documentation;
+6. report every configuration change explicitly.
 
 Final response must print real tested values:
 
@@ -91,7 +122,7 @@ Open low-resolution wall:
 Open high-resolution fullscreen:
 <exact click flow or URL>
 
-Example 260x260 stream:
+Example 320*320 stream:
 <exact tested WHEP/WebRTC URL>
 
 Example native stream:

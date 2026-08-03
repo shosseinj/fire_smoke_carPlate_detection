@@ -58,7 +58,7 @@ class DeepStreamSourceState:
     sink_handler_id: int
     frame_width: int
     frame_height: int
-delivery_target_fps: float | None
+    delivery_target_fps: float | None
     tee: Any = None
     native_caps: Any = None
     next_frame_due_monotonic: float = 0.0
@@ -353,7 +353,7 @@ class DeepStreamIngestor:
                 return
             state.live_registration_retry_id = retry_id
 
-def _on_decoded_pad_added(
+    def _on_decoded_pad_added(
         self, _: Any, pad: Any, tee: Any, native_caps: Any, ai_pacer: Any, source_id: str
     ) -> None:
         Gst, _ = self._require_runtime()
@@ -623,7 +623,7 @@ def _on_decoded_pad_added(
         if pipeline is None:
             raise RuntimeError("Could not create a GStreamer pipeline")
 
-try:
+        try:
             source = self._make("nvurisrcbin", f"source_{safe_id}")
             queue = self._make("queue", f"queue_{safe_id}")
             pacer = self._make("identity", f"pacer_{safe_id}")
@@ -697,7 +697,7 @@ try:
                 "caps", Gst.Caps.from_string("video/x-raw(memory:NVMM)")
             )
 
-for element in (
+            for element in (
                 source,
                 tee,
                 native_caps,
@@ -716,7 +716,7 @@ for element in (
                 raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
             if not bgrx_caps.link(sink):
                 raise RuntimeError("Could not link BGRx caps to appsink")
-source_pad_handler_id = source.connect(
+            source_pad_handler_id = source.connect(
                 "pad-added", self._on_decoded_pad_added, tee, native_caps, pacer, record.source_uri
             )
             sink_handler_id = sink.connect(
@@ -726,7 +726,7 @@ source_pad_handler_id = source.connect(
             bus = pipeline.get_bus()
             bus.add_signal_watch()
             bus_handler_id = bus.connect("message", self._on_bus_message, record.source_uri)
-state = DeepStreamSourceState(
+            state = DeepStreamSourceState(
                 source_id=record.source_uri,
                 source_uri=record.source_uri,
                 display_uri=display_uri,
