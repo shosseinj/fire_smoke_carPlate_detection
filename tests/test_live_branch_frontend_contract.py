@@ -16,7 +16,10 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "video.playsInline = true" in html
     assert "width: 320px" in html and "height: 320px" in html
     assert "/api/v1/broadcast-gpu/sources" in html
-    assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
+    assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" not in html
+    assert "reconcileLiveBranchSources()" in html
+    assert "source.active === true" in html
+    assert "liveBranchCards" in html
     assert "attempt < 20" in html
     assert "heartbeat.status === 409" in html
     assert "const fullscreenRequest =" in html

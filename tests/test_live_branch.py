@@ -122,6 +122,8 @@ def test_source_requires_confirmed_nvmm() -> None:
     pipeline = _Pipeline()
     assert manager.attach_source("camera", tee, pipeline)
     assert manager.acquire("camera", "wall", "viewer")["path"].startswith("live-branch/wall/")
+    assert manager.has_source("camera") is True
+    assert manager.has_source("missing") is False
 
 
 def test_confirmed_decoder_caps_register_when_tee_sink_is_not_negotiated() -> None:

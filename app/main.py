@@ -216,6 +216,7 @@ def health() -> dict:
         "registered_sources": len(runtime.registry.list()),
         "router_started": status["started"],
         "video_ingestor": status["video_ingestor"],
+        "static_video_ingestor": status["static_video_ingestor"],
         "media_preview": status["media_preview"],
         "live_branch": status["live_branch"],
         "broadcast": status["broadcast"],

@@ -174,3 +174,24 @@ def test_no_nvmm_retry_exhaustion_does_not_affect_ai_branch() -> None:
     assert decoded_pad.linked
     assert len(tee.requested) == 1
     assert manager.attachments == []
+
+
+def test_slow_static_caps_can_register_after_original_one_second_window() -> None:
+    tee = _Tee()
+    decoded_pad = _Pad([
+        _Caps("video/x-raw,format=NV12"),
+        _Caps("video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080"),
+    ])
+    decoded_pad.query_caps = lambda _filter: decoded_pad.get_current_caps()  # type: ignore[method-assign]
+    manager = _Manager()
+    glib = _GLib()
+    ingestor = _ingestor(manager, glib, _state(tee))
+    ai_pacer = SimpleNamespace(get_static_pad=lambda _name: _Pad([_Caps("")]))
+
+    ingestor._on_decoded_pad_added(None, decoded_pad, tee, _native_caps(), ai_pacer, "source")
+    retry = next(iter(glib.callbacks.values()))
+    for _ in range(25):
+        assert retry() is True
+    decoded_pad.advance_caps()
+    assert retry() is False
+    assert manager.attachments[0][0] == "source"
