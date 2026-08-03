@@ -163,6 +163,11 @@ class GpuLiveBranchManager:
         for key in keys:
             self._remove(key)
 
+    def has_source(self, source_id: str) -> bool:
+        """Return whether the decoded source is attached to the live GPU manager."""
+        with self._lock:
+            return source_id in self._sources
+
     def acquire(self, source_id: str, profile: str, viewer_id: str) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False, "source_id": source_id, "profile": profile}

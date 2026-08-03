@@ -10,9 +10,10 @@ from app.core.video_ingestor import VideoFileIngestor
 from app.schemas import SourceCreate
 
 
-def _runtime(records: list[SourceRecord]) -> SimpleNamespace:
+def _runtime(records: list[SourceRecord], attached: set[str] | None = None) -> SimpleNamespace:
     registry = SimpleNamespace(list=lambda: list(records))
-    manager = SimpleNamespace(enabled=True)
+    attached = attached or set()
+    manager = SimpleNamespace(enabled=True, has_source=lambda source_uri: source_uri in attached)
     return SimpleNamespace(registry=registry, live_branch=manager)
 
 
@@ -24,7 +25,7 @@ def test_enabled_static_source_is_returned_with_live_branch_fields() -> None:
         source_type="static_video",
         enabled=True,
     )
-    result = list_broadcast_gpu_sources(_runtime([record]))
+    result = list_broadcast_gpu_sources(_runtime([record], {record.source_uri}))
     assert result["enabled"] is True
     assert result["sources"] == [{
         "source_id": "7",
@@ -41,15 +42,19 @@ def test_enabled_static_source_is_returned_with_live_branch_fields() -> None:
     }]
 
 
-def test_disabled_sources_are_excluded_and_registry_refresh_is_immediate() -> None:
+def test_all_sources_are_returned_and_active_requires_live_attachment() -> None:
     enabled = SourceRecord(id=1, source_uri="rtsp://camera/1", name="Camera", enabled=True)
     disabled = SourceRecord(id=2, source_uri="rtsp://camera/2", name="Disabled", enabled=False)
     records = [enabled, disabled]
-    runtime = _runtime(records)
-    assert [item["source_id"] for item in list_broadcast_gpu_sources(runtime)["sources"]] == ["1"]
+    runtime = _runtime(records, {enabled.source_uri, disabled.source_uri})
+    first = list_broadcast_gpu_sources(runtime)["sources"]
+    assert [item["source_id"] for item in first] == ["1", "2"]
+    assert [item["active"] for item in first] == [True, False]
     added = SourceRecord(id=3, source_uri="file:///workspace/data/1.mp4", name="Static", source_type="static_video")
     records.append(added)
-    assert {item["source_id"] for item in list_broadcast_gpu_sources(runtime)["sources"]} == {"1", "3"}
+    refreshed = list_broadcast_gpu_sources(runtime)["sources"]
+    assert {item["source_id"] for item in refreshed} == {"1", "2", "3"}
+    assert next(item for item in refreshed if item["source_id"] == "3")["active"] is False
 
 
 def test_production_source_registration_accepts_existing_local_static_file(tmp_path: Path) -> None:

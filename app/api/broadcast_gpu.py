@@ -15,13 +15,13 @@ def get_runtime() -> Runtime:
     return runtime
 
 
-def _source_payload(record: Any) -> dict[str, Any]:
+def _source_payload(record: Any, *, active: bool) -> dict[str, Any]:
     return {
         "source_id": str(record.id) if record.id is not None else record.source_uri,
         "source_uri": record.source_uri,
         "name": record.name,
         "enabled": bool(record.enabled),
-        "active": bool(record.enabled),
+        "active": active,
         "source_type": record.source_type,
         "tasks": sorted(task.value for task in record.tasks),
         "frame_width": record.frame_width,
@@ -33,11 +33,19 @@ def _source_payload(record: Any) -> dict[str, Any]:
 
 @router.get("/sources")
 def list_broadcast_gpu_sources(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
-    """Return the current enabled source registry for on-demand GPU branches."""
+    """Return every registry source and its actual live-branch readiness."""
+    manager = runtime.live_branch
     sources = [
-        _source_payload(record)
+        _source_payload(
+            record,
+            active=bool(
+                record.enabled
+                and manager is not None
+                and manager.enabled
+                and manager.has_source(record.source_uri)
+            ),
+        )
         for record in runtime.registry.list()
-        if record.enabled
     ]
     return {
         "enabled": bool(runtime.live_branch and runtime.live_branch.enabled),

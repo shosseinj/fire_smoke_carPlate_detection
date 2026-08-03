@@ -617,6 +617,7 @@
       let liveBranchView = false;
       let liveBranchFullscreen = null;
       const liveBranchStates = new Map();
+      const liveBranchCards = new Map();
       let liveBranchHeartbeatTimer = null;
 
       function showLiveBranchError(message) {
@@ -759,27 +760,71 @@
         }
       }
 
+      function createLiveBranchCard(source) {
+        const card = document.createElement("article");
+        card.className = "live-branch-card";
+        card.dataset.sourceUri = source.source_uri;
+        const title = document.createElement("h3");
+        const media = document.createElement("div"); media.className = "live-branch-media";
+        const video = document.createElement("video");
+        video.autoplay = true; video.muted = true; video.playsInline = true;
+        video.dataset.sourceUri = source.source_uri;
+        const metrics = document.createElement("div"); metrics.className = "live-branch-metrics"; metrics.textContent = "FPS: -- · RES: --";
+        media.append(video, metrics);
+        const status = document.createElement("div"); status.dataset.liveStatus = "true";
+        card.append(title, media, status);
+        const entry = { source, card, title, video };
+        card.addEventListener("click", () => {
+          if (entry.source.enabled && entry.source.active === true) {
+            openLiveBranchFullscreen(entry.source, card, video);
+          }
+        });
+        liveBranchGrid.appendChild(card);
+        liveBranchCards.set(source.source_uri, entry);
+        return entry;
+      }
+
+      function updateLiveBranchCard(entry, source) {
+        entry.source = source;
+        entry.title.textContent = source.name || source.source_uri;
+        entry.card.dataset.nativeWidth = String(source.frame_width || 0);
+        entry.card.dataset.nativeHeight = String(source.frame_height || 0);
+        const wallKey = `${source.source_uri}:wall`;
+        const wallState = liveBranchStates.get(wallKey);
+        if (source.enabled && source.active === true) {
+          if (!wallState) {
+            liveBranchStatus(entry.card, "در حال دریافت…");
+            acquireLiveBranch(source, "wall", entry.video, entry.card);
+          }
+          return;
+        }
+        if (wallState) releaseLiveBranch(wallState);
+        entry.video.srcObject = null;
+        liveBranchStatus(entry.card, source.enabled ? "در انتظار آماده‌شدن مسیر GPU…" : "منبع غیرفعال است");
+      }
+
+      function reconcileLiveBranchSources() {
+        const currentUris = new Set(liveBranchSources.map((source) => source.source_uri));
+        for (const [sourceUri, entry] of liveBranchCards.entries()) {
+          if (currentUris.has(sourceUri)) continue;
+          const wallState = liveBranchStates.get(`${sourceUri}:wall`);
+          if (wallState) releaseLiveBranch(wallState);
+          entry.card.remove();
+          liveBranchCards.delete(sourceUri);
+        }
+        for (const source of liveBranchSources) {
+          const entry = liveBranchCards.get(source.source_uri) || createLiveBranchCard(source);
+          updateLiveBranchCard(entry, source);
+        }
+        if (liveBranchSources.length) clearLiveBranchError();
+        else showLiveBranchError("هیچ منبعی در فهرست منابع ثبت نشده است");
+      }
+
       function renderLiveBranch() {
         liveBranchGrid.innerHTML = "";
+        liveBranchCards.clear();
         clearLiveBranchError();
-         for (const source of liveBranchSources.filter((item) => item.enabled && item.active !== false)) {
-           const card = document.createElement("article");
-           card.className = "live-branch-card";
-           card.dataset.nativeWidth = String(source.frame_width || 0);
-           card.dataset.nativeHeight = String(source.frame_height || 0);
-           const title = document.createElement("h3"); title.textContent = source.name || source.source_uri;
-           const media = document.createElement("div"); media.className = "live-branch-media";
-           const video = document.createElement("video");
-           video.autoplay = true; video.muted = true; video.playsInline = true;
-           video.dataset.sourceUri = source.source_uri;
-           const metrics = document.createElement("div"); metrics.className = "live-branch-metrics"; metrics.textContent = "FPS: -- · RES: --";
-           media.append(video, metrics);
-           const status = document.createElement("div"); status.dataset.liveStatus = "true"; status.textContent = "در حال دریافت…";
-           card.append(title, media, status); liveBranchGrid.appendChild(card);
-          card.addEventListener("click", () => openLiveBranchFullscreen(source, card, video));
-           acquireLiveBranch(source, "wall", video, card);
-        }
-        if (!liveBranchGrid.children.length) showLiveBranchError("منبع فعالی برای شاخه زنده وجود ندارد");
+        reconcileLiveBranchSources();
       }
 
       let liveBranchFullscreenToken = 0;
@@ -1561,6 +1606,7 @@
           const state = await stateResponse.json();
           const liveSourcesConfig = await liveSourcesResponse.json();
           liveBranchSources = Array.isArray(liveSourcesConfig.sources) ? liveSourcesConfig.sources : [];
+          if (liveBranchView) reconcileLiveBranchSources();
           showState(state.enabled);
           const nextSignature = signatureFor(nextSources);
           if (nextSignature !== sourcesSignature) {
