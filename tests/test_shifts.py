@@ -230,6 +230,103 @@ class TestShiftStore:
         assert store.delete_assignment(assignment.id) is True
         assert store.list_assignments(personnel_id) == []
 
+    def test_bulk_assignment_is_atomic_on_overlap(
+        self, store: ShiftStore, postgres_database: Database
+    ) -> None:
+        shift = store.create(
+            shift_name="Bulk",
+            works_saturday=True, works_sunday=True, works_monday=True,
+            works_tuesday=True, works_wednesday=True, works_thursday=True,
+            works_friday=True,
+        )
+        with postgres_database.connection() as conn:
+            clean_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Bulk", "Clean", f"bulk-clean-{shift.id}"),
+            ).lastrowid
+            overlap_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Bulk", "Overlap", f"bulk-overlap-{shift.id}"),
+            ).lastrowid
+        store.assign_personnel(
+            overlap_id, shift.id, date(2026, 4, 1), date(2026, 4, 30)
+        )
+
+        with pytest.raises(ValueError, match=f"bulk-overlap-{shift.id}"):
+            store.assign_personnel_bulk(
+                [clean_id, overlap_id],
+                shift.id,
+                date(2026, 4, 15),
+                date(2026, 5, 15),
+            )
+
+        assert store.list_assignments(clean_id) == []
+
+    def test_bulk_assignment_creates_all_records(
+        self, store: ShiftStore, postgres_database: Database
+    ) -> None:
+        shift = store.create(
+            shift_name="Bulk success",
+            works_saturday=True, works_sunday=True, works_monday=True,
+            works_tuesday=True, works_wednesday=True, works_thursday=True,
+            works_friday=True,
+        )
+        with postgres_database.connection() as conn:
+            personnel_ids = [
+                conn.execute(
+                    "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                    ("Bulk", str(index), f"bulk-success-{shift.id}-{index}"),
+                ).lastrowid
+                for index in range(2)
+            ]
+
+        assignments, failed_records = store.assign_personnel_bulk(
+            personnel_ids,
+            shift.id,
+            date(2027, 3, 21),
+            date(2028, 3, 19),
+        )
+
+        assert [item.personnel_id for item in assignments] == personnel_ids
+        assert all(item.shift_id == shift.id for item in assignments)
+        assert failed_records == []
+
+    def test_bulk_assignment_can_skip_overlaps_and_reports_national_code(
+        self, store: ShiftStore, postgres_database: Database
+    ) -> None:
+        shift = store.create(
+            shift_name="Bulk skip",
+            works_saturday=True, works_sunday=True, works_monday=True,
+            works_tuesday=True, works_wednesday=True, works_thursday=True,
+            works_friday=True,
+        )
+        overlap_code = f"bulk-skip-overlap-{shift.id}"
+        with postgres_database.connection() as conn:
+            clean_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Bulk", "Clean", f"bulk-skip-clean-{shift.id}"),
+            ).lastrowid
+            overlap_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Bulk", "Overlap", overlap_code),
+            ).lastrowid
+        store.assign_personnel(
+            overlap_id, shift.id, date(2026, 4, 1), date(2026, 4, 30)
+        )
+
+        assignments, failed_records = store.assign_personnel_bulk(
+            [clean_id, overlap_id],
+            shift.id,
+            date(2026, 4, 15),
+            date(2026, 5, 15),
+            skip_failed_records=True,
+        )
+
+        assert [item.personnel_id for item in assignments] == [clean_id]
+        assert failed_records == [
+            {"national_code": overlap_code, "reason": "date_overlap"}
+        ]
+
 
 # ── Overnight shift helper test ───────────────────────────────────────
 

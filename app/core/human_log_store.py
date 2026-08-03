@@ -1205,10 +1205,6 @@ class HumanLogStore:
                 if should_save_snapshot
                 else max(current_snapshot_quality, 0.0)
             )
-            current_face_quality = (
-                float(existing["best_face_quality"] or 0.0) if existing else 0.0
-            )
-            better_face = event.face_quality > current_face_quality
             stored_name = event.name
             if existing and event.name == "Unknown" and existing["name"] != "Unknown":
                 stored_name = str(existing["name"])
@@ -1218,80 +1214,59 @@ class HumanLogStore:
                 stored_recognition_score = float(existing["recognition_score"])
                 stored_ref_img_id = existing["ref_img_id"]
 
-            if existing is None:
-                connection.execute(
-                    """
-                    INSERT INTO human_logs (
-                        session_id, camera, track_id, name, first_seen, last_seen,
-                        recognition_score, ref_img_id, snapshot_url, video_url,
-                        face_video_url, snapshot_quality, best_face_quality,
-                        full_frame_video_frames, accepted_face_frames,
-                        personnel_id, counts_for_attendance
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.session_id,
-                        event.camera,
-                        event.track_id,
-                        stored_name,
-                        event.captured_at_utc,
-                        event.captured_at_utc,
-                        stored_recognition_score,
-                        None if stored_ref_img_id is None else str(stored_ref_img_id),
-                        snapshot_url,
-                        video_key,
-                        face_video_key,
-                        snapshot_quality,
-                        event.face_quality,
-                        state.full_frame_frames,
-                        state.face_frames,
-                        event.personnel_id,
-                        int(event.counts_for_attendance),
-                    ),
-                )
-            else:
-                connection.execute(
-                    """
-                    UPDATE human_logs
-                    SET name = ?, last_seen = ?, recognition_score = ?, ref_img_id = ?,
-                        snapshot_url = ?, video_url = ?, face_video_url = ?,
-                        snapshot_quality = ?,
-                        best_face_quality = CASE WHEN ? THEN ? ELSE best_face_quality END,
-                        full_frame_video_frames = CASE
-                            WHEN full_frame_video_frames < ? THEN ?
-                            ELSE full_frame_video_frames END,
-                        accepted_face_frames = CASE
-                            WHEN accepted_face_frames < ? THEN ?
-                            ELSE accepted_face_frames END,
-                        personnel_id = CASE WHEN ? THEN ? ELSE personnel_id END
-                    WHERE session_id = ? AND camera = ? AND track_id = ?
-                    """,
-                    (
-                        stored_name,
-                        event.captured_at_utc,
-                        max(stored_recognition_score, 0.0),
-                        None if stored_ref_img_id is None else str(stored_ref_img_id),
-                        snapshot_url,
-                        video_key,
-                        face_video_key,
-                        snapshot_quality,
-                        bool(better_face),
-                        event.face_quality,
-                        state.full_frame_frames,
-                        state.full_frame_frames,
-                        state.face_frames,
-                        state.face_frames,
-                        bool(event.personnel_id is not None),
-                        event.personnel_id,
-                        event.session_id,
-                        event.camera,
-                        event.track_id,
-                    ),
-                )
             human_row = connection.execute(
-                "SELECT id, snapshot_url, video_url, face_video_url "
-                "FROM human_logs WHERE session_id = ? AND camera = ? AND track_id = ?",
-                (event.session_id, event.camera, event.track_id),
+                """
+                INSERT INTO human_logs (
+                    session_id, camera, track_id, name, first_seen, last_seen,
+                    recognition_score, ref_img_id, snapshot_url, video_url,
+                    face_video_url, snapshot_quality, best_face_quality,
+                    full_frame_video_frames, accepted_face_frames,
+                    personnel_id, counts_for_attendance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (session_id, camera, track_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    last_seen = EXCLUDED.last_seen,
+                    recognition_score = EXCLUDED.recognition_score,
+                    ref_img_id = EXCLUDED.ref_img_id,
+                    snapshot_url = EXCLUDED.snapshot_url,
+                    video_url = EXCLUDED.video_url,
+                    face_video_url = EXCLUDED.face_video_url,
+                    snapshot_quality = EXCLUDED.snapshot_quality,
+                    best_face_quality = GREATEST(
+                        human_logs.best_face_quality, EXCLUDED.best_face_quality
+                    ),
+                    full_frame_video_frames = GREATEST(
+                        human_logs.full_frame_video_frames,
+                        EXCLUDED.full_frame_video_frames
+                    ),
+                    accepted_face_frames = GREATEST(
+                        human_logs.accepted_face_frames,
+                        EXCLUDED.accepted_face_frames
+                    ),
+                    personnel_id = COALESCE(
+                        EXCLUDED.personnel_id, human_logs.personnel_id
+                    )
+                RETURNING id, snapshot_url, video_url, face_video_url
+                """,
+                (
+                    event.session_id,
+                    event.camera,
+                    event.track_id,
+                    stored_name,
+                    event.captured_at_utc,
+                    event.captured_at_utc,
+                    max(stored_recognition_score, 0.0),
+                    None if stored_ref_img_id is None else str(stored_ref_img_id),
+                    snapshot_url,
+                    video_key,
+                    face_video_key,
+                    snapshot_quality,
+                    event.face_quality,
+                    state.full_frame_frames,
+                    state.face_frames,
+                    event.personnel_id,
+                    int(event.counts_for_attendance),
+                ),
             ).fetchone()
         if event.finalize_detection_log:
             # Release writers before exposing video URLs. MP4 metadata is not

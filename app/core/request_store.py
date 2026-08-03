@@ -201,19 +201,17 @@ class RequestStore:
             ).fetchone()
             if p is None:
                 raise ValueError(f"Personnel not found: {personnel_id}")
-            cursor = conn.execute(
+            row = conn.execute(
                 "INSERT INTO personnel_requests "
                 "(personnel_id, request_type, duration_type, start_date, end_date, "
                 "start_time, end_time, duration_days, duration_minutes, "
                 "reason, status, reviewed_at, rejection_reason, "
                 "created_at_utc, updated_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "RETURNING *",
                 (personnel_id, request_type, duration_type, s, e,
                  st, et, duration_days, duration_minutes,
                  reason, status, reviewed_at, rejection_reason, now, now),
-            )
-            row = conn.execute(
-                "SELECT * FROM personnel_requests WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
             if row is None:
                 raise RuntimeError("Failed to retrieve created request")
@@ -272,25 +270,20 @@ class RequestStore:
             if personnel is None:
                 raise ValueError(f"Personnel not found: {personnel_id}")
 
-            created: list[PersonnelRequestRecord] = []
-            for values in prepared:
-                cursor = conn.execute(
-                    "INSERT INTO personnel_requests "
-                    "(personnel_id, request_type, duration_type, start_date, end_date, "
-                    "start_time, end_time, duration_days, duration_minutes, "
-                    "reason, status, reviewed_at, rejection_reason, "
-                    "created_at_utc, updated_at_utc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    values,
-                )
-                row = conn.execute(
-                    "SELECT * FROM personnel_requests WHERE id = ?",
-                    (cursor.lastrowid,),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError("Failed to retrieve created request")
-                created.append(self._row_to_request(row))
-            return created
+            value_sql = "(" + ", ".join("?" for _ in range(15)) + ")"
+            rows = conn.execute(
+                "INSERT INTO personnel_requests "
+                "(personnel_id, request_type, duration_type, start_date, end_date, "
+                "start_time, end_time, duration_days, duration_minutes, "
+                "reason, status, reviewed_at, rejection_reason, "
+                "created_at_utc, updated_at_utc) VALUES "
+                + ", ".join(value_sql for _ in prepared)
+                + " RETURNING *",
+                [value for row in prepared for value in row],
+            ).fetchall()
+            if len(rows) != len(prepared):
+                raise RuntimeError("Failed to retrieve all created requests")
+            return [self._row_to_request(row) for row in rows]
 
     def get(self, request_id: int) -> PersonnelRequestRecord | None:
         with self._lock, self._connection() as conn:
@@ -397,6 +390,7 @@ class RequestStore:
         status: str | None = None,
         start_date_from: str | None = None,
         start_date_to: str | None = None,
+        include_total: bool = True,
     ) -> tuple[list[PersonnelRequestRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -419,15 +413,19 @@ class RequestStore:
         if where_clauses:
             where = " WHERE " + " AND ".join(where_clauses)
         with self._lock, self._connection() as conn:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM personnel_requests{where}", params
-            ).fetchone()[0]
+            total = 0
+            if include_total:
+                total = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM personnel_requests{where}", params
+                    ).fetchone()[0]
+                )
             rows = conn.execute(
                 f"SELECT * FROM personnel_requests{where} "
                 "ORDER BY created_at_utc DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
-            return [self._row_to_request(r) for r in rows], int(total)
+            return [self._row_to_request(r) for r in rows], total
 
     def count(self) -> int:
         with self._lock, self._connection() as conn:

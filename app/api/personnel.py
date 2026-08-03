@@ -16,9 +16,10 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_role
-from app.core.common_schemas import UserBrief, resolve_user_brief
+from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.jalali_utils import parse_jalali_date
+from app.core.legacy_service import format_jalali, validate_jalali_date
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -124,6 +125,39 @@ class SimplePersonnelResponse(BaseModel):
     updated_by: UserBrief | None = None
 
 
+class ShiftInfo(BaseModel):
+    id: int
+    shift_name: str
+    shift_type: str
+    start_time: str
+    end_time: str
+    timezone_name: str = "Asia/Tehran"
+    max_minutes_delay: int = 0
+    max_minutes_early: int = 0
+    max_overtime_hours: float = 0.0
+    monday: bool = False
+    tuesday: bool = False
+    wednesday: bool = False
+    thursday: bool = False
+    friday: bool = False
+    saturday: bool = False
+    sunday: bool = False
+    personnel_count: int = 0
+
+
+class PersonnelShiftAssignmentResponse(BaseModel):
+    id: int
+    personnel_id: int
+    shift_id: int
+    start_date: str
+    end_date: str
+    start_date_gregorian: str
+    end_date_gregorian: str
+    created_at_utc: str
+    updated_at_utc: str
+    shift: ShiftInfo | None = None
+
+
 class PersonnelImageResponse(BaseModel):
     id: int
     image_base64: Optional[str] = None
@@ -134,10 +168,61 @@ class PersonnelImageResponse(BaseModel):
 
 # ── Converters ───────────────────────────────────────────────────
 
-def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePersonnelResponse:
+def _shift_info(record: Any | None) -> ShiftInfo | None:
+    if record is None:
+        return None
+    return ShiftInfo(
+        id=record.id,
+        shift_name=record.shift_name,
+        shift_type=record.shift_type,
+        start_time=record.start_time,
+        end_time=record.end_time,
+        timezone_name=getattr(record, "timezone_name", None) or "Asia/Tehran",
+        max_minutes_delay=record.max_minutes_delay,
+        max_minutes_early=record.max_minutes_early,
+        max_overtime_hours=float(record.max_overtime_hours),
+        monday=record.works_monday,
+        tuesday=record.works_tuesday,
+        wednesday=record.works_wednesday,
+        thursday=record.works_thursday,
+        friday=record.works_friday,
+        saturday=record.works_saturday,
+        sunday=record.works_sunday,
+    )
+
+
+def _shift_assignment_response(
+    assignment: Any,
+    shift: Any | None,
+) -> PersonnelShiftAssignmentResponse:
+    return PersonnelShiftAssignmentResponse(
+        id=assignment.id,
+        personnel_id=assignment.personnel_id,
+        shift_id=assignment.shift_id,
+        start_date=format_jalali(assignment.start_date),
+        end_date=format_jalali(assignment.end_date),
+        start_date_gregorian=assignment.start_date.isoformat(),
+        end_date_gregorian=assignment.end_date.isoformat(),
+        created_at_utc=assignment.created_at_utc,
+        updated_at_utc=assignment.updated_at_utc,
+        shift=_shift_info(shift),
+    )
+
+
+def _personnel_simple(
+    p: PersonnelRecord,
+    store: PersonnelStore,
+    *,
+    department_names: dict[int | None, str | None] | None = None,
+    shift_names: dict[int | None, str | None] | None = None,
+    user_briefs: dict[int, UserBrief] | None = None,
+) -> SimplePersonnelResponse:
     from app.core.jalali_utils import utc_iso_to_jalali_datetime
     c = u = None
-    if p.created_by is not None or p.updated_by is not None:
+    if user_briefs is not None:
+        c = user_briefs.get(p.created_by)
+        u = user_briefs.get(p.updated_by)
+    elif p.created_by is not None or p.updated_by is not None:
         with store._connection() as conn:
             c = resolve_user_brief(p.created_by, conn)
             u = resolve_user_brief(p.updated_by, conn)
@@ -147,8 +232,16 @@ def _personnel_simple(p: PersonnelRecord, store: PersonnelStore) -> SimplePerson
         lname=p.lname,
         national_code=p.national_code,
         employee_type=p.employee_type,
-        department_name=store._resolve_department_name(p.department_id),
-        shift_name=store._resolve_shift_name(p.shift_id),
+        department_name=(
+            department_names.get(p.department_id)
+            if department_names is not None
+            else store._resolve_department_name(p.department_id)
+        ),
+        shift_name=(
+            shift_names.get(p.shift_id)
+            if shift_names is not None
+            else store._resolve_shift_name(p.shift_id)
+        ),
         degree=p.degree,
         created_at=p.created_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(p.created_at_utc) or "",
@@ -175,13 +268,43 @@ def list_personnel(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
     employee_type: str | None = Query(default=None),
+    section_id: int | None = Query(default=None, ge=1),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
     runtime: Runtime = Depends(get_runtime),
     _: UserRecord = Depends(require_role("admin")),
 ) -> list:
     store = _store(runtime)
-    records, _ = store.list(offset=skip, limit=limit, employee_type=employee_type, search=search)
-    return [_personnel_simple(r, store) for r in records]
+    records, _ = store.list(
+        offset=skip,
+        limit=limit,
+        employee_type=employee_type,
+        department_id=section_id,
+        search=search,
+    )
+    department_names = store._resolve_department_names_bulk(
+        {record.department_id for record in records}
+    )
+    shift_names = store._resolve_shift_names_bulk(
+        {record.shift_id for record in records}
+    )
+    audit_ids = {
+        user_id
+        for record in records
+        for user_id in (record.created_by, record.updated_by)
+        if user_id is not None
+    }
+    with store._connection() as connection:
+        user_briefs = resolve_user_briefs(audit_ids, connection)
+    return [
+        _personnel_simple(
+            record,
+            store,
+            department_names=department_names,
+            shift_names=shift_names,
+            user_briefs=user_briefs,
+        )
+        for record in records
+    ]
 
 
 @router.post("/", summary="ایجاد پرسنل جدید", status_code=status.HTTP_201_CREATED)
@@ -466,6 +589,35 @@ def get_personnel(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return _personnel_simple(record, store)
+
+
+@router.get("/{personnel_id}/shifts", summary="دریافت همه شیفت‌های اختصاص‌یافته به یک پرسنل")
+def get_personnel_shifts(
+    personnel_id: int,
+    start_date: str | None = Query(default=None, description="بازه شروع (شمسی یا میلادی)"),
+    end_date: str | None = Query(default=None, description="بازه پایان (شمسی یا میلادی)"),
+    runtime: Runtime = Depends(get_runtime),
+    _: UserRecord = Depends(require_role("operator")),
+) -> list[PersonnelShiftAssignmentResponse]:
+    store = _store(runtime)
+    if store.get(personnel_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    try:
+        start = validate_jalali_date(start_date) if start_date else None
+        end = validate_jalali_date(end_date) if end_date else None
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="تاریخ نامعتبر است")
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد",
+        )
+    shift_store = runtime.shift_store
+    assignments = shift_store.list_assignments(personnel_id, start, end)
+    return [
+        _shift_assignment_response(assignment, shift_store.get(assignment.shift_id))
+        for assignment in assignments
+    ]
 
 
 @router.put("/{personnel_id}", summary="به‌روزرسانی یک پرسنل")

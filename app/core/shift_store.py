@@ -434,6 +434,112 @@ class ShiftStore:
             ).fetchone()
             return self._row_to_assignment(row)
 
+    def assign_personnel_bulk(
+        self,
+        personnel_ids: list[int],
+        shift_id: int,
+        start_date: date,
+        end_date: date,
+        skip_failed_records: bool = False,
+    ) -> tuple[list[ShiftAssignmentRecord], list[dict[str, Any]]]:
+        """Assign one dated shift to multiple personnel, optionally skipping failures."""
+        if not personnel_ids:
+            raise ValueError("حداقل یک پرسنل باید انتخاب شود")
+        if len(personnel_ids) != len(set(personnel_ids)):
+            raise ValueError("شناسه پرسنل تکراری مجاز نیست")
+        if end_date < start_date:
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد")
+
+        with self._lock, self._connection() as conn:
+            if conn.execute(
+                "SELECT id FROM work_shifts WHERE id = ?", (shift_id,)
+            ).fetchone() is None:
+                raise ValueError("شیفت یافت نشد")
+
+            placeholders = ", ".join("?" for _ in personnel_ids)
+            existing_rows = conn.execute(
+                f"SELECT id, national_code FROM personnel WHERE id IN ({placeholders})",
+                personnel_ids,
+            ).fetchall()
+            personnel_codes = {
+                int(row["id"]): str(row["national_code"]) for row in existing_rows
+            }
+            existing_ids = set(personnel_codes)
+            missing_ids = [item for item in personnel_ids if item not in existing_ids]
+            if missing_ids and not skip_failed_records:
+                raise ValueError(
+                    "پرسنل یافت نشد: " + ", ".join(str(item) for item in missing_ids)
+                )
+
+            overlap_rows = conn.execute(
+                "SELECT DISTINCT a.personnel_id, p.national_code "
+                "FROM personnel_shift_assignments a "
+                "JOIN personnel p ON p.id = a.personnel_id "
+                f"WHERE a.personnel_id IN ({placeholders}) "
+                "AND a.start_date <= ? AND a.end_date >= ? ORDER BY a.personnel_id",
+                [*personnel_ids, end_date, start_date],
+            ).fetchall()
+            overlap_ids = {int(row["personnel_id"]) for row in overlap_rows}
+            overlap_codes = [str(row["national_code"]) for row in overlap_rows]
+            if overlap_rows and not skip_failed_records:
+                raise ValueError(
+                    "بازه تاریخ شیفت برای این پرسنل هم‌پوشانی دارد: "
+                    + ", ".join(overlap_codes)
+                )
+
+            failed_records: list[dict[str, Any]] = [
+                {
+                    "personnel_id": item,
+                    "national_code": None,
+                    "reason": "personnel_not_found",
+                }
+                for item in missing_ids
+            ]
+            failed_records.extend(
+                {
+                    "national_code": str(row["national_code"]),
+                    "reason": "date_overlap",
+                }
+                for row in overlap_rows
+            )
+            valid_ids = [
+                item
+                for item in personnel_ids
+                if item in existing_ids and item not in overlap_ids
+            ]
+
+            now = _now()
+            assignment_ids: list[int] = []
+            try:
+                for personnel_id in valid_ids:
+                    cursor = conn.execute(
+                        "INSERT INTO personnel_shift_assignments "
+                        "(personnel_id, shift_id, start_date, end_date, created_at_utc, updated_at_utc) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (personnel_id, shift_id, start_date, end_date, now, now),
+                    )
+                    assignment_ids.append(int(cursor.lastrowid))
+            except IntegrityError as exc:
+                if "overlap" in str(exc).lower() or "ex_personnel" in str(exc).lower():
+                    raise ValueError("بازه تاریخ شیفت با شیفت دیگری هم‌پوشانی دارد") from exc
+                raise
+
+            today = date.today()
+            if valid_ids and start_date <= today <= end_date:
+                valid_placeholders = ", ".join("?" for _ in valid_ids)
+                conn.execute(
+                    f"UPDATE personnel SET shift_id = ? WHERE id IN ({valid_placeholders})",
+                    [shift_id, *valid_ids],
+                )
+            if not assignment_ids:
+                return [], failed_records
+            rows = conn.execute(
+                "SELECT * FROM personnel_shift_assignments "
+                f"WHERE id IN ({', '.join('?' for _ in assignment_ids)}) ORDER BY id",
+                assignment_ids,
+            ).fetchall()
+            return [self._row_to_assignment(row) for row in rows], failed_records
+
     def get_assignment_for_date(
         self, personnel_id: int, on_date: date
     ) -> ShiftAssignmentRecord | None:

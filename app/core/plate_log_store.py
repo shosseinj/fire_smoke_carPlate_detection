@@ -86,20 +86,32 @@ class PlateLogStore:
 
     def _registered_plate_id(self, plate_number: str) -> int | None:
         """Resolve an exact normalized OCR value to one active registered plate."""
+        return self._registered_plate_ids({plate_number}).get(plate_number)
+
+    def _registered_plate_ids(self, plate_numbers: set[str]) -> dict[str, int]:
+        """Resolve many normalized OCR values with one indexed query."""
+        values = sorted(value for value in plate_numbers if value)
+        if not values:
+            return {}
+        placeholders = ", ".join("?" for _ in values)
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id
+            rows = connection.execute(
+                f"""
+                SELECT id, normalized_plate
                 FROM car_plates
                 WHERE deleted_at_utc IS NULL
                   AND is_active = 1
-                  AND CONCAT(left_digits, plate_alphabet, right_digits, iran_code) = ?
+                  AND normalized_plate IN ({placeholders})
                 ORDER BY id
-                LIMIT 1
                 """,
-                (plate_number,),
-            ).fetchone()
-        return int(row["id"]) if row is not None else None
+                values,
+            ).fetchall()
+        result: dict[str, int] = {}
+        for row in rows:
+            normalized = str(row["normalized_plate"] or "")
+            if normalized:
+                result.setdefault(normalized, int(row["id"]))
+        return result
 
     def insert_result(self, packet: FramePacket, result: TaskResult) -> int:
         if result.error or result.task != TaskName.PLATE_RECOGNITION:
@@ -130,7 +142,7 @@ class PlateLogStore:
         video_key = f"plate/videos/{video_path.name}"
         snapshot_frame = packet.frame.copy()
 
-        records: list[tuple[Any, ...]] = []
+        prepared: list[tuple[str | None, str | None, Any, Any]] = []
         now = self._now_utc()
         for item in candidates:
             if isinstance(item, dict):
@@ -159,9 +171,6 @@ class PlateLogStore:
             )
             if plate_number is None and raw_text is None:
                 continue
-            plate_id = (
-                self._registered_plate_id(plate_number) if plate_number else None
-            )
             if self.draw_info and bbox and len(bbox) == 4:
                 x1, y1, x2, y2 = map(int, bbox)
                 height, width = snapshot_frame.shape[:2]
@@ -174,6 +183,14 @@ class PlateLogStore:
                     (x1, max(25, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA,
                 )
+            prepared.append((plate_number, raw_text, confidence, bbox))
+
+        registered_plate_ids = self._registered_plate_ids(
+            {plate_number for plate_number, _, _, _ in prepared if plate_number}
+        )
+        records: list[tuple[Any, ...]] = []
+        for plate_number, raw_text, confidence, _bbox in prepared:
+            plate_id = registered_plate_ids.get(plate_number) if plate_number else None
             records.append(
                 (
                     source_type, source_uri, static_video_id, plate_id,

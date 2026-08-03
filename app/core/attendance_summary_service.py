@@ -1046,26 +1046,37 @@ class AttendanceSummaryService:
         code_by_id = {item.id: item.national_code for item in personnel}
         id_by_code = {item.national_code: item.id for item in personnel if item.national_code}
 
-        conditions = []
-        params: list[Any] = [from_dt, to_dt]
-        if codes:
-            placeholders = ", ".join("?" for _ in codes)
-            conditions.append(f"d.person IN ({placeholders})")
-            params.extend(codes)
-        if ids:
-            placeholders = ", ".join("?" for _ in ids)
-            conditions.append(f"d.personnel_id IN ({placeholders})")
-            params.extend(ids)
-        identity_sql = " OR ".join(conditions)
-        sql = (
-            "SELECT d.id, d.person, d.personnel_id, d.detection_time "
-            "FROM detection_logs d "
-            "WHERE d.counts_for_attendance = 1 "
-            "AND d.detection_time >= ? AND d.detection_time < ? "
-            f"AND ({identity_sql}) ORDER BY d.detection_time ASC"
-        )
+        rows_by_id: dict[int, Row] = {}
         with self.database.connection() as connection:
-            rows = connection.execute(sql, params).fetchall()
+            if ids:
+                placeholders = ", ".join("?" for _ in ids)
+                rows = connection.execute(
+                    "SELECT d.id, d.person, d.personnel_id, d.detection_time "
+                    "FROM detection_logs d "
+                    "WHERE d.counts_for_attendance = 1 "
+                    "AND d.detection_time >= ? AND d.detection_time < ? "
+                    f"AND d.personnel_id IN ({placeholders}) "
+                    "ORDER BY d.detection_time ASC",
+                    [from_dt, to_dt, *ids],
+                ).fetchall()
+                rows_by_id.update({int(row["id"]): row for row in rows})
+            if codes:
+                placeholders = ", ".join("?" for _ in codes)
+                rows = connection.execute(
+                    "SELECT d.id, d.person, d.personnel_id, d.detection_time "
+                    "FROM detection_logs d "
+                    "WHERE d.counts_for_attendance = 1 "
+                    "AND d.detection_time >= ? AND d.detection_time < ? "
+                    f"AND d.person IN ({placeholders}) "
+                    "ORDER BY d.detection_time ASC",
+                    [from_dt, to_dt, *codes],
+                ).fetchall()
+                rows_by_id.update({int(row["id"]): row for row in rows})
+
+        rows = sorted(
+            rows_by_id.values(),
+            key=lambda row: (_as_utc_datetime(row["detection_time"]), int(row["id"])),
+        )
 
         grouped: dict[str, list[SummaryLog]] = {}
         for row in rows:

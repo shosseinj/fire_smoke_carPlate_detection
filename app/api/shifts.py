@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import require_role
 from app.core.shift_store import WorkShiftRecord
@@ -71,6 +71,21 @@ class ShiftUpdate(BaseModel):
 class ShiftAssignmentCreate(BaseModel):
     start_date: str
     end_date: str
+
+
+class BulkShiftAssignmentCreate(BaseModel):
+    shift_id: int
+    start_date: str
+    end_date: str
+    personnel_ids: list[int] = Field(min_length=1)
+    skip_failed_records: bool = False
+
+    @field_validator("personnel_ids")
+    @classmethod
+    def validate_unique_personnel_ids(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("شناسه پرسنل تکراری مجاز نیست")
+        return value
 
 
 SHIFT_TYPES = [
@@ -163,6 +178,35 @@ def _assignment_response(record: Any) -> dict[str, Any]:
         "end_date_gregorian": record.end_date.isoformat(),
         "created_at_utc": record.created_at_utc,
         "updated_at_utc": record.updated_at_utc,
+    }
+
+
+@router.post("/bulk-assignments", status_code=status.HTTP_201_CREATED)
+def bulk_assign_personnel_to_shift(
+    body: BulkShiftAssignmentCreate,
+    _: dict = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    try:
+        start_date = validate_jalali_date(body.start_date)
+        end_date = validate_jalali_date(body.end_date)
+        assignments, failed_records = get_shift_store().assign_personnel_bulk(
+            personnel_ids=body.personnel_ids,
+            shift_id=body.shift_id,
+            start_date=start_date,
+            end_date=end_date,
+            skip_failed_records=body.skip_failed_records,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "shift_id": body.shift_id,
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "skip_failed_records": body.skip_failed_records,
+        "assigned_count": len(assignments),
+        "failed_count": len(failed_records),
+        "assignments": [_assignment_response(item) for item in assignments],
+        "failed_records": failed_records,
     }
 
 

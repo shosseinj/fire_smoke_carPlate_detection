@@ -246,14 +246,16 @@ def list_requests(
         status=int_status,
         start_date_from=start_date_from,
         start_date_to=start_date_to,
+        include_total=False,
+    )
+    names = get_personnel_store().get_full_names_by_ids(
+        {record.personnel_id for record in records}
     )
     result: list[dict[str, Any]] = []
     for r in records:
-        name = None
-        p = _get_personnel(r.personnel_id)
-        if p:
-            name = _full_name(p)
-        result.append(legacy_request_response(r, full_name=name))
+        result.append(
+            legacy_request_response(r, full_name=names.get(r.personnel_id))
+        )
     return result
 
 
@@ -273,14 +275,16 @@ def get_my_requests(
         offset=skip,
         limit=limit,
         status=int_status,
+        include_total=False,
+    )
+    names = get_personnel_store().get_full_names_by_ids(
+        {record.personnel_id for record in records}
     )
     result: list[dict[str, Any]] = []
     for r in records:
-        name = None
-        p = _get_personnel(r.personnel_id)
-        if p:
-            name = _full_name(p)
-        result.append(legacy_request_response(r, full_name=name))
+        result.append(
+            legacy_request_response(r, full_name=names.get(r.personnel_id))
+        )
     return result
 
 

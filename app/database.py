@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Computed,
     Date,
     DateTime,
     Float,
@@ -31,7 +32,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260802_0047"
+ALEMBIC_HEAD_REVISION = "20260802_0048"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -133,6 +134,27 @@ Index("idx_detection_logs_camera", detection_logs.c.camera_id)
 Index("idx_detection_logs_attendance", detection_logs.c.counts_for_attendance)
 Index("idx_detection_logs_type", detection_logs.c.log_type)
 Index("idx_detection_logs_source_event", detection_logs.c.source_event_key)
+Index("idx_detection_logs_source_human", detection_logs.c.source_human_log_id)
+Index(
+    "idx_detection_logs_attendance_personnel_time",
+    detection_logs.c.personnel_id,
+    detection_logs.c.detection_time,
+    postgresql_where=text("counts_for_attendance = 1 AND personnel_id IS NOT NULL"),
+)
+Index(
+    "idx_detection_logs_attendance_person_time",
+    detection_logs.c.person,
+    detection_logs.c.detection_time,
+    postgresql_where=text("counts_for_attendance = 1"),
+)
+Index("idx_detection_logs_room_time", detection_logs.c.room_id, detection_logs.c.detection_time)
+Index("idx_detection_logs_camera_time", detection_logs.c.camera_id, detection_logs.c.detection_time)
+Index(
+    "idx_detection_logs_personnel_room_time",
+    detection_logs.c.personnel_id,
+    detection_logs.c.room_id,
+    detection_logs.c.detection_time,
+)
 
 fire_smoke_logs = Table(
     "fire_smoke_logs", metadata,
@@ -245,6 +267,12 @@ personnel_images = Table(
 )
 Index("idx_personnel_images_personnel", personnel_images.c.personnel_id)
 Index("idx_personnel_images_primary", personnel_images.c.personnel_id, personnel_images.c.is_primary)
+Index(
+    "idx_personnel_images_personnel_order",
+    personnel_images.c.personnel_id,
+    personnel_images.c.is_primary.desc(),
+    personnel_images.c.uploaded_at_utc.desc(),
+)
 
 buildings = Table(
     "buildings", metadata,
@@ -314,6 +342,18 @@ detection_room_matches = Table(
 )
 Index("idx_matches_room", detection_room_matches.c.room_id); Index("idx_matches_personnel", detection_room_matches.c.personnel_id)
 Index("idx_matches_detection", detection_room_matches.c.detection_type, detection_room_matches.c.detection_event_id)
+Index(
+    "idx_matches_camera_track_room_time",
+    detection_room_matches.c.camera_id,
+    detection_room_matches.c.track_id,
+    detection_room_matches.c.room_id,
+    detection_room_matches.c.matched_at_utc.desc(),
+)
+Index(
+    "idx_matches_room_time",
+    detection_room_matches.c.room_id,
+    detection_room_matches.c.matched_at_utc.desc(),
+)
 
 human_logs = Table(
     "human_logs", metadata,
@@ -332,6 +372,12 @@ human_logs = Table(
     UniqueConstraint("session_id", "camera", "track_id", name="uq_human_session_camera_track"),
 )
 Index("idx_human_logs_camera", human_logs.c.camera); Index("idx_human_logs_name", human_logs.c.name); Index("idx_human_logs_last_seen", human_logs.c.last_seen)
+Index(
+    "idx_human_logs_attendance_personnel_last_seen",
+    human_logs.c.personnel_id,
+    human_logs.c.last_seen,
+    postgresql_where=text("counts_for_attendance = 1 AND personnel_id IS NOT NULL"),
+)
 
 car_plates = Table(
     "car_plates", metadata,
@@ -340,6 +386,11 @@ car_plates = Table(
     Column("plate_alphabet", String(1), nullable=False),
     Column("right_digits", String(3), nullable=False),
     Column("iran_code", String(2), nullable=False),
+    Column(
+        "normalized_plate",
+        Text,
+        Computed("left_digits || plate_alphabet || right_digits || iran_code", persisted=True),
+    ),
     Column("plate_format", String(32), nullable=False, server_default="standard"),
     Column("usage_type", String(32), nullable=False),
     Column("vehicle_type", String(32), nullable=False),
@@ -352,6 +403,11 @@ car_plates = Table(
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("updated_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("created_by", Integer), Column("updated_by", Integer),
+)
+Index(
+    "idx_car_plates_active_normalized",
+    car_plates.c.normalized_plate,
+    postgresql_where=text("deleted_at_utc IS NULL AND is_active = 1"),
 )
 Index("idx_car_plates_owner_phone", car_plates.c.owner_phone)
 Index("idx_car_plates_active", car_plates.c.is_active)
@@ -520,6 +576,13 @@ Index("idx_requests_personnel", personnel_requests.c.personnel_id); Index("idx_r
 Index("idx_requests_dates", personnel_requests.c.start_date, personnel_requests.c.end_date)
 Index("idx_requests_duration_type", personnel_requests.c.duration_type)
 Index("idx_requests_reviewed_by", personnel_requests.c.reviewed_by)
+Index(
+    "idx_requests_person_status_dates",
+    personnel_requests.c.personnel_id,
+    personnel_requests.c.status,
+    personnel_requests.c.start_date,
+    personnel_requests.c.end_date,
+)
 
 
 face_embeddings = Table(
@@ -673,10 +736,19 @@ class Connection:
         return Cursor([], result.rowcount)
 
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> Cursor:
-        total = 0
-        for params in seq_of_params:
-            total += max(0, self.execute(sql, params).rowcount)
-        return Cursor([], total)
+        statement = _replace_qmarks(sql.strip().rstrip(";"))
+        if not statement:
+            return Cursor([], 0)
+        parameter_sets = [tuple(params) for params in seq_of_params]
+        if not parameter_sets:
+            return Cursor([], 0)
+        if "RETURNING" in statement.upper():
+            raise ValueError("executemany() does not support RETURNING; use execute() instead")
+        result = self._conn.exec_driver_sql(statement, parameter_sets)
+        rowcount = result.rowcount
+        if rowcount is None or rowcount < 0:
+            rowcount = len(parameter_sets)
+        return Cursor([], int(rowcount))
 
     def commit(self) -> None:
         self._conn.commit()

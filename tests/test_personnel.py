@@ -148,6 +148,36 @@ def test_create_personnel(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
+def test_list_personnel_filters_by_optional_section_id(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        with test_runtime.database.connection() as conn:
+            section_id = int(conn.execute("SELECT id FROM sections ORDER BY id LIMIT 1").fetchone()["id"])
+            assigned_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code, department_id) "
+                "VALUES (?, ?, ?, ?)",
+                ("Section", "Assigned", "section-filter-assigned", section_id),
+            ).lastrowid
+            unassigned_id = conn.execute(
+                "INSERT INTO personnel (fname, lname, national_code) VALUES (?, ?, ?)",
+                ("Section", "Unassigned", "section-filter-unassigned"),
+            ).lastrowid
+
+        filtered = client.get(
+            "/api/v1/personnel/",
+            params={"section_id": section_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert filtered.status_code == 200, filtered.text
+        returned_ids = [item["id"] for item in filtered.json()]
+        assert assigned_id in returned_ids
+        assert unassigned_id not in returned_ids
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
 def test_create_personnel_duplicate_national_code(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
@@ -231,6 +261,192 @@ def test_get_personnel_not_found(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 404
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def _create_shift(client: TestClient, token: str, name: str = "Morning") -> int:
+    resp = client.post(
+        "/api/v1/shifts/",
+        json={
+            "shift_name": name,
+            "shift_type": "morning",
+            "start_time": "08:00",
+            "end_time": "16:00",
+            "timezone_name": "Asia/Tehran",
+            "max_minutes_delay": 10,
+            "max_minutes_early": 5,
+            "max_overtime_hours": 2.0,
+            "saturday": True,
+            "sunday": False,
+            "monday": True,
+            "tuesday": True,
+            "wednesday": True,
+            "thursday": True,
+            "friday": False,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def test_personnel_shifts_endpoint_returns_complete_shift_info(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        shift_id = _create_shift(client, token)
+        create_resp = client.post(
+            "/api/v1/personnel/",
+            json={
+                "fname": "Shif",
+                "lname": "List",
+                "national_code": VALID_CODE_1,
+                "employee_type": "employee",
+                "shift_id": shift_id,
+                "shift_start_date": "1405-01-01",
+                "shift_end_date": "1405-06-30",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        person_id = create_resp.json()["id"]
+
+        client.post(
+            "/api/v1/auth/create-user",
+            json={
+                "username": "shiftsop",
+                "password": "ShiftOp1!",
+                "role": "operator",
+                "email": "shiftsop@example.com",
+                "confirm_password": "ShiftOp1!",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        op_login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "shiftsop", "password": "ShiftOp1!"},
+        )
+        op_token = op_login.json()["access_token"]
+
+        resp = client.get(
+            f"/api/v1/personnel/{person_id}/shifts",
+            headers={"Authorization": f"Bearer {op_token}"},
+        )
+        assert resp.status_code == 200
+        assignments = resp.json()
+        assert len(assignments) == 1
+        assignment = assignments[0]
+        assert assignment["personnel_id"] == person_id
+        assert assignment["shift_id"] == shift_id
+        assert assignment["start_date_gregorian"] is not None
+        assert assignment["end_date_gregorian"] is not None
+        shift = assignment["shift"]
+        assert shift is not None
+        assert shift["id"] == shift_id
+        assert shift["shift_name"] == "Morning"
+        assert shift["shift_type"] == "morning"
+        assert shift["start_time"] == "08:00"
+        assert shift["end_time"] == "16:00"
+        assert shift["timezone_name"] == "Asia/Tehran"
+        assert shift["max_minutes_delay"] == 10
+        assert shift["max_minutes_early"] == 5
+        assert shift["max_overtime_hours"] == 2.0
+        assert shift["saturday"] is True
+        assert shift["sunday"] is False
+        assert shift["friday"] is False
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_personnel_shifts_endpoint_lists_multiple_assignments(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        morning_id = _create_shift(client, token, name="Morning")
+        night_id = _create_shift(client, token, name="Night")
+        create_resp = client.post(
+            "/api/v1/personnel/",
+            json={
+                "fname": "Multi",
+                "lname": "Shift",
+                "national_code": VALID_CODE_1,
+                "employee_type": "employee",
+                "shift_id": morning_id,
+                "shift_start_date": "1405-01-01",
+                "shift_end_date": "1405-06-30",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        person_id = create_resp.json()["id"]
+
+        assign2 = client.post(
+            f"/api/v1/shifts/{night_id}/assign/{person_id}",
+            json={"start_date": "1405-07-01", "end_date": "1405-12-29"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert assign2.status_code == 201, assign2.text
+
+        resp = client.get(
+            f"/api/v1/personnel/{person_id}/shifts",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assignments = resp.json()
+        assert len(assignments) == 2
+        names = {item["shift"]["shift_name"] for item in assignments}
+        assert names == {"Morning", "Night"}
+
+        filtered = client.get(
+            f"/api/v1/personnel/{person_id}/shifts",
+            params={"start_date": "1405-01-01", "end_date": "1405-06-30"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert filtered.status_code == 200
+        assert len(filtered.json()) == 1
+        assert filtered.json()[0]["shift"]["shift_name"] == "Morning"
+    finally:
+        _teardown(test_runtime, old_runtime)
+
+
+def test_personnel_shifts_endpoint_empty_and_guards(tmp_path: Path) -> None:
+    test_runtime, old_runtime, client = _setup_client(tmp_path)
+    try:
+        token = _admin_token(client)
+        create_resp = client.post(
+            "/api/v1/personnel/",
+            json={
+                "fname": "No",
+                "lname": "Shift",
+                "national_code": VALID_CODE_1,
+                "employee_type": "employee",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        person_id = create_resp.json()["id"]
+
+        resp = client.get(
+            f"/api/v1/personnel/{person_id}/shifts",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+        not_found = client.get(
+            "/api/v1/personnel/99999/shifts",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert not_found.status_code == 404
+
+        invalid = client.get(
+            f"/api/v1/personnel/{person_id}/shifts",
+            params={"start_date": "not-a-date"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert invalid.status_code == 400
+
+        unauthorized = client.get(f"/api/v1/personnel/{person_id}/shifts")
+        assert unauthorized.status_code == 401
     finally:
         _teardown(test_runtime, old_runtime)
 

@@ -285,15 +285,13 @@ class PersonnelStore:
         now = self._now()
         with self._lock, self._connection() as conn:
             try:
-                cursor = conn.execute(
+                row = conn.execute(
                     "INSERT INTO personnel "
                     "(fname, lname, national_code, employee_type, degree, shift_id, department_id, "
                     "created_at_utc, updated_at_utc, created_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    f"RETURNING {self._personnel_columns()}",
                     (fname, lname, raw_code, employee_type, degree, shift_id, department_id, now, now, created_by),
-                )
-                row = conn.execute(
-                    f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
                 if row is None:
                     raise RuntimeError("Failed to retrieve created personnel record")
@@ -325,6 +323,37 @@ class PersonnelStore:
             if row is None:
                 return None
             return self._row_to_personnel(row)
+
+    def get_by_national_codes(
+        self, national_codes: set[str] | list[str] | tuple[str, ...]
+    ) -> dict[str, PersonnelRecord]:
+        """Load personnel for many national codes with one query."""
+        codes = sorted(
+            {
+                normalized
+                for raw in national_codes
+                if (normalized := normalize_national_code(str(raw)))
+            }
+        )
+        if not codes:
+            return {}
+        result: dict[str, PersonnelRecord] = {}
+        with self._lock, self._connection() as conn:
+            for start in range(0, len(codes), 5000):
+                batch = codes[start:start + 5000]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT {self._personnel_columns()} FROM personnel "
+                    f"WHERE national_code IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                result.update(
+                    {
+                        str(row["national_code"]): self._row_to_personnel(row)
+                        for row in rows
+                    }
+                )
+        return result
 
     def get_by_name(self, fname: str, lname: str) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
@@ -374,17 +403,15 @@ class PersonnelStore:
             new_department_id = department_id if department_id is not None else existing["department_id"]
             now = self._now()
             try:
-                conn.execute(
+                row = conn.execute(
                     "UPDATE personnel SET fname=?, lname=?, national_code=?, "
                     "employee_type=?, degree=?, shift_id=?, department_id=?, "
-                    "updated_at_utc=?, updated_by=? WHERE id=?",
+                    "updated_at_utc=?, updated_by=? WHERE id=? "
+                    f"RETURNING {self._personnel_columns()}",
                     (new_fname, new_lname, raw_code, new_employee_type, new_degree,
                      new_shift_id, new_department_id, now, updated_by, personnel_id),
-                )
-                row = conn.execute(
-                    f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
                 ).fetchone()
-                return self._row_to_personnel(row)
+                return self._row_to_personnel(row) if row is not None else None
             except IntegrityError as exc:
                 raise ValueError(
                     _personnel_integrity_message(
@@ -456,6 +483,7 @@ class PersonnelStore:
         offset: int = 0,
         limit: int = 50,
         employee_type: str | None = None,
+        department_id: int | None = None,
         search: str | None = None,
     ) -> tuple[list[PersonnelRecord], int]:
         where_clauses: list[str] = []
@@ -463,6 +491,9 @@ class PersonnelStore:
         if employee_type is not None:
             where_clauses.append("employee_type = ?")
             params.append(employee_type)
+        if department_id is not None:
+            where_clauses.append("department_id = ?")
+            params.append(department_id)
         if search is not None:
             where_clauses.append("(fname LIKE ? OR lname LIKE ? OR national_code LIKE ?)")
             pattern = f"%{search}%"
@@ -492,21 +523,48 @@ class PersonnelStore:
                 f"SELECT {self._personnel_columns()} FROM personnel ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
+            personnel_ids = [int(row["id"]) for row in rows]
+            images_by_personnel: dict[int, list[PersonnelImageRecord]] = {
+                personnel_id: [] for personnel_id in personnel_ids
+            }
+            if personnel_ids:
+                placeholders = ", ".join("?" for _ in personnel_ids)
+                image_rows = conn.execute(
+                    "SELECT * FROM personnel_images "
+                    f"WHERE personnel_id IN ({placeholders}) "
+                    "ORDER BY personnel_id ASC, is_primary DESC, "
+                    "uploaded_at_utc DESC, id DESC",
+                    personnel_ids,
+                ).fetchall()
+                for image_row in image_rows:
+                    image = self._row_to_image(image_row)
+                    images_by_personnel.setdefault(image.personnel_id, []).append(image)
             result: list[dict[str, Any]] = []
             for row in rows:
                 person = self._row_to_personnel(row)
-                images = [
-                    self._row_to_image(img)
-                    for img in conn.execute(
-                        "SELECT * FROM personnel_images WHERE personnel_id = ? ORDER BY is_primary DESC, uploaded_at_utc DESC",
-                        (person.id,),
-                    ).fetchall()
-                ]
+                images = images_by_personnel.get(person.id, [])
                 result.append({
                     **dataclass_to_dict(person),
                     "images": [dataclass_to_dict(img) for img in images],
                 })
             return result, int(total)
+
+    def get_full_names_by_ids(self, personnel_ids: set[int]) -> dict[int, str]:
+        """Resolve personnel names with one query for list-response enrichment."""
+        ids = sorted({int(value) for value in personnel_ids if value is not None})
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, fname, lname FROM personnel "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {
+            int(row["id"]): f"{row['fname'] or ''} {row['lname'] or ''}".strip()
+            for row in rows
+        }
 
     def touch_last_seen(self, personnel_id: int, seen_at: str | None = None) -> None:
         if seen_at is None:
@@ -920,14 +978,27 @@ class PersonnelStore:
         }
         valid_degree_codes = set(degree_map.keys())
 
-        rows_iter = ws.iter_rows(min_row=2, values_only=True)
+        excel_rows = list(ws.iter_rows(min_row=2, values_only=True))
+        candidate_codes: set[str] = set()
+        for row in excel_rows:
+            if not row or len(row) <= 2 or row[2] is None:
+                continue
+            raw_value = row[2]
+            if isinstance(raw_value, (int, float)):
+                candidate_codes.add(str(int(float(raw_value))).zfill(10))
+            else:
+                candidate_codes.add(str(raw_value).strip())
+        existing_by_code = self.get_by_national_codes(candidate_codes)
+        from app.core.shift_store import ShiftStore
+
+        shift_store = ShiftStore(self.database)
         created = 0
         skipped = 0
         errors: list[dict[str, Any]] = []
         successful_rows: list[dict[str, Any]] = []
         skipped_rows: list[dict[str, Any]] = []
 
-        for row_idx, row in enumerate(rows_iter, start=2):
+        for row_idx, row in enumerate(excel_rows, start=2):
             if not row or all(cell is None for cell in row):
                 continue
             row_field_errors: list[dict[str, str]] = []
@@ -1070,7 +1141,8 @@ class PersonnelStore:
                         raise ValueError("; ".join(e["message"] for e in row_field_errors))
 
                 # ── Upsert logic ──────────────────────────────────
-                existing = self.get_by_national_code(national_code)
+                normalized_code = normalize_national_code(national_code)
+                existing = existing_by_code.get(normalized_code)
                 if existing is not None:
                     if not update_existing:
                         skipped += 1
@@ -1080,10 +1152,12 @@ class PersonnelStore:
                             "field_errors": [{"field": "national_code", "message": "کد ملی تکراری است"}],
                         })
                         continue
-                    self.update(
+                    updated = self.update(
                         existing.id, fname, lname, national_code,
                         employee_type, degree, shift_id, department_id,
                     )
+                    if updated is not None:
+                        existing = updated
                     action = "updated"
                 else:
                     existing = self.create(
@@ -1091,10 +1165,9 @@ class PersonnelStore:
                         degree, shift_id, department_id,
                     )
                     action = "created"
+                existing_by_code[normalized_code] = existing
                 if shift_id is not None:
-                    from app.core.shift_store import ShiftStore
-
-                    ShiftStore(self.database).assign_personnel(
+                    shift_store.assign_personnel(
                         existing.id,
                         shift_id,
                         shift_start_date,

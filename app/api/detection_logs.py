@@ -35,6 +35,7 @@ from app.core.legacy_detection_service import (
     calculate_access,
     legacy_detection_response,
 )
+from app.core.personnel_store import normalize_national_code
 
 
 # ── PATCH request schemas ──────────────────────────────────────────────────
@@ -204,27 +205,29 @@ def _canonical_media_input(value: Any, field_name: str) -> str | None:
 def _resolve_usernames(
     record: DetectionLogRecord,
 ) -> tuple[str | None, str | None]:
-    c_user = None
-    u_user = None
-    if record.created_by:
-        try:
-            u = get_runtime().database.connection().execute(
-                "SELECT username FROM users WHERE id = ?", (record.created_by,)
-            ).fetchone()
-            if u:
-                c_user = u["username"]
-        except Exception:
-            pass
-    if record.updated_by:
-        try:
-            u = get_runtime().database.connection().execute(
-                "SELECT username FROM users WHERE id = ?", (record.updated_by,)
-            ).fetchone()
-            if u:
-                u_user = u["username"]
-        except Exception:
-            pass
-    return c_user, u_user
+    ids = sorted(
+        {
+            int(user_id)
+            for user_id in (record.created_by, record.updated_by)
+            if user_id is not None
+        }
+    )
+    if not ids:
+        return None, None
+    placeholders = ", ".join("?" for _ in ids)
+    try:
+        with get_runtime().database.connection() as connection:
+            rows = connection.execute(
+                f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+    except Exception:
+        return None, None
+    usernames = {int(row["id"]): row.get("username") for row in rows}
+    return (
+        usernames.get(int(record.created_by)) if record.created_by is not None else None,
+        usernames.get(int(record.updated_by)) if record.updated_by is not None else None,
+    )
 
 
 def _resolve_names(
@@ -276,22 +279,23 @@ def _filter_response_enrichment(
         return {}
     placeholders = ", ".join("?" for _ in records)
     try:
-        rows = get_runtime().database.connection().execute(
-            "SELECT d.id, p.id AS personnel_record_id, p.fname, p.lname, "
-            "r.name AS room_name, "
-            "s.name AS section_name, b.name AS building_name, "
-            "created_user.username AS created_by_username, "
-            "updated_user.username AS updated_by_username "
-            "FROM detection_logs d "
-            "LEFT JOIN personnel p ON p.id = d.personnel_id "
-            "LEFT JOIN rooms r ON r.id = d.room_id "
-            "LEFT JOIN sections s ON s.id = r.section_id "
-            "LEFT JOIN buildings b ON b.id = s.building_id "
-            "LEFT JOIN users created_user ON created_user.id = d.created_by "
-            "LEFT JOIN users updated_user ON updated_user.id = d.updated_by "
-            f"WHERE d.id IN ({placeholders})",
-            [record.id for record in records],
-        ).fetchall()
+        with get_runtime().database.connection() as connection:
+            rows = connection.execute(
+                "SELECT d.id, p.id AS personnel_record_id, p.fname, p.lname, "
+                "r.name AS room_name, "
+                "s.name AS section_name, b.name AS building_name, "
+                "created_user.username AS created_by_username, "
+                "updated_user.username AS updated_by_username "
+                "FROM detection_logs d "
+                "LEFT JOIN personnel p ON p.id = d.personnel_id "
+                "LEFT JOIN rooms r ON r.id = d.room_id "
+                "LEFT JOIN sections s ON s.id = r.section_id "
+                "LEFT JOIN buildings b ON b.id = s.building_id "
+                "LEFT JOIN users created_user ON created_user.id = d.created_by "
+                "LEFT JOIN users updated_user ON updated_user.id = d.updated_by "
+                f"WHERE d.id IN ({placeholders})",
+                [record.id for record in records],
+            ).fetchall()
     except Exception:
         return None
 
@@ -859,8 +863,7 @@ def import_excel(
     ps = get_personnel_store()
     user_id = _get_current_user_id(current_user)
 
-    imported = 0
-    skipped = 0
+    parsed_rows: list[dict[str, Any]] = []
     failed = 0
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if not row or all(v is None for v in row):
@@ -875,65 +878,129 @@ def import_excel(
             room_id = int(_excel_text(row[6])) if row[6] not in (None, "") else None
             explicit_access = _excel_bool(row[7], True) if len(row) > 7 else None
             counts_for_attendance = _excel_bool(row[8], True) if len(row) > 8 else True
-        except (ValueError, TypeError, IndexError):
-            failed += 1
-            continue
-
-        if not national_code or year is None or month is None or day is None:
-            failed += 1
-            continue
-
-        personnel = None
-        try:
-            personnel = ps.get_by_national_code(national_code)
-        except Exception:
-            pass
-
-        if personnel is None:
-            failed += 1
-            continue
-
-        try:
+            if not national_code or year is None or month is None or day is None:
+                raise ValueError("missing required import fields")
             if calendar == "gregorian":
                 g_dt = datetime(year, month, day, hour, minute)
             else:
                 j_dt = jdatetime.datetime(year, month, day, hour, minute)
                 g_dt = j_dt.togregorian()
-            detection_time = g_dt.replace(tzinfo=_get_tehran_tz()).astimezone(timezone.utc).isoformat()
-        except (ValueError, TypeError):
+            detection_time = (
+                g_dt.replace(tzinfo=_get_tehran_tz())
+                .astimezone(timezone.utc)
+                .isoformat()
+            )
+        except (ValueError, TypeError, IndexError):
             failed += 1
             continue
+        parsed_rows.append({
+            "row_idx": row_idx,
+            "national_code": national_code,
+            "detection_time": detection_time,
+            "room_id": room_id,
+            "explicit_access": explicit_access,
+            "counts_for_attendance": counts_for_attendance,
+        })
 
+    personnel_by_code = ps.get_by_national_codes(
+        {str(row["national_code"]) for row in parsed_rows}
+    )
+    resolved_rows: list[dict[str, Any]] = []
+    for row in parsed_rows:
+        personnel = personnel_by_code.get(
+            normalize_national_code(str(row["national_code"]))
+        )
+        if personnel is None:
+            failed += 1
+            continue
+        resolved_rows.append({**row, "personnel": personnel})
+
+    skipped = 0
+    accepted_rows: list[dict[str, Any]] = []
+    duplicate_candidate_indexes: set[int] = set()
+    candidate_index_by_row: dict[int, int] = {}
+    if skip_duplicates:
+        candidates: list[tuple[int, int, str]] = []
+        for row_position, row in enumerate(resolved_rows):
+            personnel = row["personnel"]
+            room_id = row["room_id"]
+            if personnel.id is None or room_id is None:
+                continue
+            candidate_index_by_row[row_position] = len(candidates)
+            candidates.append((personnel.id, room_id, str(row["detection_time"])))
+        duplicate_candidate_indexes = store.find_dedup_indexes(
+            candidates, time_window_seconds=60
+        )
+
+    accepted_times: dict[tuple[int, int], list[datetime]] = defaultdict(list)
+    for row_position, row in enumerate(resolved_rows):
+        personnel = row["personnel"]
+        room_id = row["room_id"]
         if skip_duplicates and personnel.id is not None and room_id is not None:
-            existing = store.find_dedup(
-                personnel_id=personnel.id,
-                room_id=room_id,
-                detection_time_utc_str=detection_time,
-                time_window_seconds=60,
-            )
-            if existing is not None:
+            candidate_index = candidate_index_by_row.get(row_position)
+            if candidate_index in duplicate_candidate_indexes:
                 skipped += 1
                 continue
+            current_time = datetime.fromisoformat(str(row["detection_time"]))
+            key = (personnel.id, room_id)
+            if any(
+                previous <= current_time
+                and previous >= current_time - timedelta(seconds=60)
+                for previous in accepted_times[key]
+            ):
+                skipped += 1
+                continue
+            accepted_times[key].append(current_time)
+        accepted_rows.append(row)
 
-        access = explicit_access if explicit_access is not None else calculate_access(personnel.id, room_id, ls)
+    access_pairs = {
+        (row["personnel"].id, row["room_id"])
+        for row in accepted_rows
+        if row["explicit_access"] is None
+        and row["personnel"].id is not None
+        and row["room_id"] is not None
+    }
+    access_by_pair = ls.resolve_access_for_pairs(access_pairs)
 
+    payloads: list[dict[str, Any]] = []
+    for row in accepted_rows:
+        personnel = row["personnel"]
+        room_id = row["room_id"]
+        explicit_access = row["explicit_access"]
+        if explicit_access is not None:
+            access = explicit_access
+        elif room_id is None:
+            access = True
+        else:
+            access = access_by_pair.get((personnel.id, room_id), False)
+        payloads.append({
+            "source_system": "excel_import",
+            "personnel_id": personnel.id,
+            "person": f"{personnel.fname} {personnel.lname}",
+            "confidence": _MANUAL_DETECTION_CONFIDENCE,
+            "detection_time": row["detection_time"],
+            "room_id": room_id,
+            "camera_id": None,
+            "access_granted": access,
+            "counts_for_attendance": row["counts_for_attendance"],
+            "log_type": "excel_import",
+            "created_by": user_id,
+        })
+
+    imported = 0
+    for start in range(0, len(payloads), 500):
+        batch = payloads[start:start + 500]
         try:
-            store.create(
-                source_system="excel_import",
-                personnel_id=personnel.id,
-                person=f"{personnel.fname} {personnel.lname}",
-                confidence=_MANUAL_DETECTION_CONFIDENCE,
-                detection_time=detection_time,
-                room_id=room_id,
-                camera_id=None,
-                access_granted=access,
-                counts_for_attendance=counts_for_attendance,
-                log_type="excel_import",
-                created_by=user_id,
-            )
-            imported += 1
+            imported += len(store.create_many(batch, batch_size=len(batch)))
         except Exception:
-            failed += 1
+            # Preserve the previous row-level partial-success behavior if one
+            # exceptional record prevents a whole optimized batch insert.
+            for payload in batch:
+                try:
+                    store.create(**payload)
+                    imported += 1
+                except Exception:
+                    failed += 1
 
     return {
         "imported_rows": imported,
@@ -947,21 +1014,10 @@ def delete_all_logs(
     current_user: dict = Depends(require_role("superuser")),
 ) -> dict:
     store = get_detection_log_store()
-    records = store.list_all()
+    media_storage = get_detection_media_storage()
+    for media_keys in store.iter_media_key_batches(batch_size=1000):
+        media_storage.delete_many(media_keys)
     count = store.delete_all()
-    media_keys = [
-        key
-        for record in records
-        for key in (
-            record.face_image,
-            record.face_thumbnail,
-            record.body_image,
-            record.snapshot_image,
-            record.video,
-            record.face_video_or_unknown_faces,
-        )
-    ]
-    get_detection_media_storage().delete_many(media_keys)
     return {"deleted_count": count}
 
 
