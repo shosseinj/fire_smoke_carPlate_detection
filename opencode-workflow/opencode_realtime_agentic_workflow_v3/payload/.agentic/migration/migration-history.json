@@ -1,5 +1,0 @@
-{
-  "schema_version": 2,
-  "migration_mode": "PROMPT_SCOPED_INCREMENTAL_CATALOG_ONLY",
-  "runs": []
-}

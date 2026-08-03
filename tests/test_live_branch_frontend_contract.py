@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_dashboard_exposes_real_live_branch_surface() -> None:
+    html = (ROOT / "app" / "web" / "dashboard.html").read_text(encoding="utf-8")
+    assert "See live branch" in html
+    assert "/api/v1/live-branch/" in html
+    assert "RTCPeerConnection" in html
+    assert "video.autoplay = true" in html
+    assert "video.muted = true" in html
+    assert "video.playsInline = true" in html
+    assert "width: 320px" in html and "height: 320px" in html
+    assert "/api/v1/broadcast-gpu/sources" in html
+    assert "liveBranchSources.filter((item) => item.enabled && item.active !== false)" in html
+    assert "attempt < 20" in html
+    assert "heartbeat.status === 409" in html
+    assert "const fullscreenRequest =" in html
+    assert "fullscreenShell.requestFullscreen()" in html
+    assert "FPS: ${fps}" in html
+    assert "RES: ${width}×${height}" in html
+    assert "nativeVideo = document.createElement(\"video\")" in html
+    assert 'nativeVideo.dataset.liveBranchFullscreen = "true"' in html
+    assert "video.srcObject = nativeVideo.srcObject" not in html
+    assert "if (!state.sessionId) return;" in html
+    assert "wallPreview.srcObject = video.srcObject" in html
+    assert "wallPreview.play().catch(() => {})" in html
+    assert "nativeVideo.hidden = true" in html
+    assert "wallPreview.hidden = true" in html
+    assert 'startLiveBranchMetrics(video, card, "fullscreen"' not in html
+    assert "state.released || liveBranchStates.get(state.key) !== state" in html
+    assert "showLiveBranchError(error.message)" not in html
+    assert "recoverLiveBranchFullscreen(state)" in html
+
+
+def test_live_branch_routes_are_distinct_and_contract_is_typed() -> None:
+    from app.api.live_branch import LiveBranchAcquire, LiveBranchSession
+
+    assert LiveBranchAcquire.model_json_schema()["required"] == ["source_uri"]
+    assert "session_id" in LiveBranchSession.model_json_schema()["required"]
+    assert "/api/v1/live-branch" not in "/api/v1/broadcast"
+
+
+def test_fullscreen_acquire_route_is_registered_for_frontend_path() -> None:
+    from app.api.live_branch import router
+
+    matching = [
+        route for route in router.routes
+        if route.path == "/api/v1/live-branch/{profile}/acquire"
+        and "POST" in route.methods
+    ]
+    assert matching, "POST /api/v1/live-branch/fullscreen/acquire must resolve through the profile route"
+
+
+def test_wall_acquire_url_is_get_discoverable_without_creating_a_session() -> None:
+    from app.api.live_branch import router
+
+    matching = [
+        route for route in router.routes
+        if route.path == "/api/v1/live-branch/{profile}/acquire"
+        and "GET" in route.methods
+    ]
+    assert matching, "GET wall acquire compatibility/discovery route must be registered"

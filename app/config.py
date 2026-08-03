@@ -122,6 +122,15 @@ class Settings:
     media_preview_whep_base_url: str = os.getenv(
         "MEDIA_PREVIEW_WHEP_BASE_URL", ""
     ).rstrip("/")
+    live_branch_enabled: bool = _env_bool("LIVE_BRANCH_ENABLED", False)
+    live_branch_publish_base: str = os.getenv(
+        "LIVE_BRANCH_PUBLISH_BASE", "rtsp://mediamtx:8554"
+    ).strip()
+    live_branch_browser_base: str = os.getenv("LIVE_BRANCH_BROWSER_BASE", "").rstrip("/")
+    live_branch_grace_seconds: float = _env_float("LIVE_BRANCH_GRACE_SECONDS", 5.0)
+    live_branch_heartbeat_timeout_seconds: float = _env_float(
+        "LIVE_BRANCH_HEARTBEAT_TIMEOUT_SECONDS", 15.0
+    )
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")
     static_video_upload_path: Path = _path("STATIC_VIDEO_UPLOAD_PATH", "saved_media/static_videos")
     fire_severity_window_seconds: float = _env_float(

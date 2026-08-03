@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
 import cv2
 import numpy as np
@@ -21,6 +22,7 @@ from app.core.source_registry import (
     canonical_source_type,
 )
 from app.core.video_ingestor import VideoFileIngestor
+from app.core.live_branch import GpuLiveBranchManager, _is_nvmm_caps
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +59,8 @@ class DeepStreamSourceState:
     frame_width: int
     frame_height: int
     delivery_target_fps: float | None
+    tee: Any = None
+    native_caps: Any = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
@@ -74,12 +78,16 @@ class DeepStreamSourceState:
     loop_count: int = 0
     source_frame_width: int = 0
     source_frame_height: int = 0
+    live_registration_retry_id: int | None = None
+    live_registration_attempts: int = 0
 
 
 class DeepStreamIngestor:
     """Uses DeepStream/NVDEC for file and RTSP decoding, then feeds the router."""
 
     SCHEDULER_MAX_FPS = 240.0
+    LIVE_REGISTRATION_RETRY_INTERVAL_MS = 50
+    LIVE_REGISTRATION_MAX_RETRIES = 20
 
     REQUIRED_ELEMENTS = (
         "nvurisrcbin",
@@ -88,6 +96,7 @@ class DeepStreamIngestor:
         "identity",
         "capsfilter",
         "appsink",
+        "tee",
     )
 
     def __init__(
@@ -110,6 +119,7 @@ class DeepStreamIngestor:
         on_source_started: Callable[[str], None] | None = None,
         on_source_eos: Callable[[str, bool], None] | None = None,
         on_source_failed: Callable[[str, str], None] | None = None,
+        live_branch_manager: GpuLiveBranchManager | None = None,
     ) -> None:
         if source_type_filter not in SOURCE_TYPES:
             raise ValueError(f"source_type_filter must be one of {sorted(SOURCE_TYPES)}")
@@ -140,6 +150,7 @@ class DeepStreamIngestor:
         self.on_source_started = on_source_started
         self.on_source_eos = on_source_eos
         self.on_source_failed = on_source_failed
+        self.live_branch_manager = live_branch_manager
         self._started_sources: set[str] = set()
 
         self._gst: Any | None = None
@@ -179,7 +190,8 @@ class DeepStreamIngestor:
     def _resolve_uri(self, source_uri: str) -> str:
         if VideoFileIngestor.is_rtsp_uri(source_uri):
             return source_uri
-        path = Path(source_uri).expanduser()
+        parsed = urlsplit(source_uri)
+        path = Path(unquote(parsed.path) if parsed.scheme.lower() == "file" else source_uri).expanduser()
         if not path.is_absolute():
             path = self.project_root / path
         return path.resolve().as_uri()
@@ -226,17 +238,157 @@ class DeepStreamIngestor:
             raise RuntimeError(f"Required GStreamer element is unavailable: {factory}")
         return element
 
-    def _on_pad_added(self, _: Any, pad: Any, queue: Any) -> None:
+    def _cancel_live_registration_retry(self, state: DeepStreamSourceState) -> None:
+        retry_id = state.live_registration_retry_id
+        state.live_registration_retry_id = None
+        if retry_id is None or self._glib is None:
+            return
+        try:
+            self._glib.source_remove(retry_id)
+        except Exception:
+            LOGGER.debug("Could not cancel live registration retry for %s", state.source_id, exc_info=True)
+
+    def _try_register_live_source(self, source_id: str, pad: Any, tee: Any) -> bool:
+        manager = self.live_branch_manager
+        if manager is None or not manager.enabled:
+            return False
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or source_id in self._closing_sources:
+                return False
+            candidates: list[Any] = []
+            for candidate_pad in (pad, tee.get_static_pad("sink")):
+                if candidate_pad is None:
+                    continue
+                try:
+                    current = candidate_pad.get_current_caps()
+                except Exception:
+                    current = None
+                if current is not None:
+                    candidates.append(current)
+                try:
+                    queried = candidate_pad.query_caps(None)
+                except Exception:
+                    queried = None
+                if queried is not None:
+                    candidates.append(queried)
+            caps = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if _is_nvmm_caps(candidate)
+                    and re.search(r"width=(?:\(int\))?\d+", candidate.to_string())
+                    and re.search(r"height=(?:\(int\))?\d+", candidate.to_string())
+                ),
+                None,
+            )
+            if caps is None:
+                LOGGER.debug(
+                    "Live NVMM registration pending for %s; caps=%s",
+                    source_id,
+                    [candidate.to_string() for candidate in candidates],
+                )
+                return False
+            self._cancel_live_registration_retry(state)
+            state.live_registration_attempts = 0
+            try:
+                manager.set_runtime(self._gst, self._glib)
+                attached = manager.attach_source(
+                    source_id, tee, state.pipeline, confirmed_caps=caps
+                )
+            except Exception:
+                LOGGER.exception(
+                    "GPU live branch registration failed without stopping AI: %s",
+                    source_id,
+                )
+                return False
+            if not attached:
+                return False
+            LOGGER.info("LIVE_NVMM_CAPS source=%s caps=%s", source_id, caps.to_string())
+            return True
+
+    def _schedule_live_registration_retry(self, source_id: str, pad: Any, tee: Any) -> None:
+        manager = self.live_branch_manager
+        if manager is None or not manager.enabled or self._glib is None:
+            return
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or state.live_registration_retry_id is not None:
+                return
+            state.live_registration_attempts = 0
+
+        def retry() -> bool:
+            with self._lock:
+                state = self._states.get(source_id)
+                if state is None or state.tee is not tee or source_id in self._closing_sources:
+                    return False
+                state.live_registration_attempts += 1
+                attempts = state.live_registration_attempts
+            if self._try_register_live_source(source_id, pad, tee):
+                return False
+            if attempts >= self.LIVE_REGISTRATION_MAX_RETRIES:
+                with self._lock:
+                    current = self._states.get(source_id)
+                    if current is not None:
+                        current.live_registration_retry_id = None
+                LOGGER.warning(
+                    "Decoder output never negotiated fixed NVMM caps; live branch disabled for source: %s",
+                    source_id,
+                )
+                return False
+            return True
+
+        try:
+            retry_id = self._glib.timeout_add(self.LIVE_REGISTRATION_RETRY_INTERVAL_MS, retry)
+        except Exception:
+            LOGGER.exception("Could not schedule deferred live branch registration: %s", source_id)
+            return
+        with self._lock:
+            state = self._states.get(source_id)
+            if state is None or state.tee is not tee or source_id in self._closing_sources:
+                try:
+                    self._glib.source_remove(retry_id)
+                except Exception:
+                    pass
+                return
+            state.live_registration_retry_id = retry_id
+
+    def _on_decoded_pad_added(
+        self, _: Any, pad: Any, tee: Any, native_caps: Any, ai_pacer: Any, source_id: str
+    ) -> None:
         Gst, _ = self._require_runtime()
         caps = pad.get_current_caps() or pad.query_caps(None)
-        if caps is None or not caps.to_string().startswith("video/"):
+        caps_text = caps.to_string() if caps is not None else ""
+        if not caps_text or not caps_text.startswith("video/"):
             return
-        sink_pad = queue.get_static_pad("sink")
+        sink_pad = native_caps.get_static_pad("sink")
         if sink_pad is None or sink_pad.is_linked():
             return
         result = pad.link(sink_pad)
         if result != Gst.PadLinkReturn.OK:
-            LOGGER.error("DeepStream source pad could not be linked: %s", result)
+            LOGGER.error("DeepStream NVMM source pad could not be linked to native caps: %s", result)
+            return
+        tee_sink = tee.get_static_pad("sink")
+        if tee_sink is None or tee_sink.is_linked():
+            return
+        if not native_caps.get_static_pad("src").link(tee_sink) == Gst.PadLinkReturn.OK:
+            LOGGER.error("Could not link native caps to tee: %s", source_id)
+            return
+        ai_pad = tee.get_request_pad("src_%u")
+        ai_sink = ai_pacer.get_static_pad("sink")
+        if ai_pad is None or ai_sink is None or ai_pad.link(ai_sink) != Gst.PadLinkReturn.OK:
+            if ai_pad is not None:
+                tee.release_request_pad(ai_pad)
+            LOGGER.error("DeepStream AI tee branch could not be linked: %s", source_id)
+            return
+        if self.live_branch_manager is not None and self.live_branch_manager.enabled:
+            try:
+                state = self._states.get(source_id)
+                if state is not None:
+                    if not self._try_register_live_source(source_id, pad, tee):
+                        self._schedule_live_registration_retry(source_id, pad, tee)
+            except Exception:
+                LOGGER.exception("GPU live branch attachment failed without stopping AI: %s", source_id)
 
     @staticmethod
     def _on_autoplug_continue(_: Any, __: Any, caps: Any) -> bool:
@@ -456,7 +608,10 @@ class DeepStreamIngestor:
         assert record.source_uri is not None
         is_rtsp = VideoFileIngestor.is_rtsp_uri(record.source_uri)
         if not is_rtsp:
-            source_path = Path(record.source_uri).expanduser()
+            parsed = urlsplit(record.source_uri)
+            source_path = Path(
+                unquote(parsed.path) if parsed.scheme.lower() == "file" else record.source_uri
+            ).expanduser()
             if not source_path.is_absolute():
                 source_path = self.project_root / source_path
             if not source_path.is_file():
@@ -472,6 +627,8 @@ class DeepStreamIngestor:
             source = self._make("nvurisrcbin", f"source_{safe_id}")
             queue = self._make("queue", f"queue_{safe_id}")
             pacer = self._make("identity", f"pacer_{safe_id}")
+            tee = self._make("tee", f"decode_tee_{safe_id}")
+            native_caps = self._make("capsfilter", f"native_caps_{safe_id}")
             gpu_convert = self._make("nvvideoconvert", f"gpu_convert_{safe_id}")
             bgrx_caps = self._make("capsfilter", f"bgrx_caps_{safe_id}")
             sink = self._make("appsink", f"appsink_{safe_id}")
@@ -532,8 +689,18 @@ class DeepStreamIngestor:
             sink.set_property("drop", True)
             self._set_if_supported(sink, "enable-last-sample", False)
 
+            # Allow decoder to output native NVMM resolution by placing a
+            # permissive capsfilter before the tee. The AI branch will scale
+            # to 640x640 via its own nvvideoconvert + capsfilter, while the
+            # live branch receives native resolution.
+            native_caps.set_property(
+                "caps", Gst.Caps.from_string("video/x-raw(memory:NVMM)")
+            )
+
             for element in (
                 source,
+                tee,
+                native_caps,
                 queue,
                 pacer,
                 gpu_convert,
@@ -550,7 +717,7 @@ class DeepStreamIngestor:
             if not bgrx_caps.link(sink):
                 raise RuntimeError("Could not link BGRx caps to appsink")
             source_pad_handler_id = source.connect(
-                "pad-added", self._on_pad_added, pacer
+                "pad-added", self._on_decoded_pad_added, tee, native_caps, pacer, record.source_uri
             )
             sink_handler_id = sink.connect(
                 "new-sample", self._on_new_sample, record.source_uri
@@ -566,6 +733,8 @@ class DeepStreamIngestor:
                 source_type="rtsp" if is_rtsp else "video_file",
                 pipeline=pipeline,
                 source=source,
+                tee=tee,
+                native_caps=native_caps,
                 sink=sink,
                 bus=bus,
                 bus_handler_id=bus_handler_id,
@@ -599,6 +768,8 @@ class DeepStreamIngestor:
 
     def _dispose_state(self, state: DeepStreamSourceState) -> None:
         Gst, _ = self._require_runtime()
+        with self._lock:
+            self._cancel_live_registration_retry(state)
         for element, handler_id in (
             (state.sink, state.sink_handler_id),
             (state.source, state.source_pad_handler_id),
@@ -613,6 +784,8 @@ class DeepStreamIngestor:
             state.bus.remove_signal_watch()
         except Exception:
             pass
+        if self.live_branch_manager is not None:
+            self.live_branch_manager.detach_source(state.source_id)
         state.pipeline.set_state(Gst.State.NULL)
         try:
             # Wait until NVDEC and nvurisrcbin have actually released their
@@ -650,6 +823,8 @@ class DeepStreamIngestor:
     def _close_source(self, source_id: str) -> None:
         with self._lock:
             state = self._states.pop(source_id, None)
+            if state is not None:
+                self._cancel_live_registration_retry(state)
         if state is None:
             return
         self._schedule_state_disposal(state)
