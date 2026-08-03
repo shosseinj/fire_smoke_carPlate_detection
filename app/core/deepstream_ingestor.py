@@ -58,8 +58,9 @@ class DeepStreamSourceState:
     sink_handler_id: int
     frame_width: int
     frame_height: int
-    delivery_target_fps: float | None
+delivery_target_fps: float | None
     tee: Any = None
+    native_caps: Any = None
     next_frame_due_monotonic: float = 0.0
     latest_frame: np.ndarray | None = None
     latest_version: int = 0
@@ -352,20 +353,26 @@ class DeepStreamIngestor:
                 return
             state.live_registration_retry_id = retry_id
 
-    def _on_decoded_pad_added(
-        self, _: Any, pad: Any, tee: Any, ai_pacer: Any, source_id: str
+def _on_decoded_pad_added(
+        self, _: Any, pad: Any, tee: Any, native_caps: Any, ai_pacer: Any, source_id: str
     ) -> None:
         Gst, _ = self._require_runtime()
         caps = pad.get_current_caps() or pad.query_caps(None)
         caps_text = caps.to_string() if caps is not None else ""
         if not caps_text or not caps_text.startswith("video/"):
             return
-        sink_pad = tee.get_static_pad("sink")
+        sink_pad = native_caps.get_static_pad("sink")
         if sink_pad is None or sink_pad.is_linked():
             return
         result = pad.link(sink_pad)
         if result != Gst.PadLinkReturn.OK:
-            LOGGER.error("DeepStream NVMM source pad could not be linked: %s", result)
+            LOGGER.error("DeepStream NVMM source pad could not be linked to native caps: %s", result)
+            return
+        tee_sink = tee.get_static_pad("sink")
+        if tee_sink is None or tee_sink.is_linked():
+            return
+        if not native_caps.get_static_pad("src").link(tee_sink) == Gst.PadLinkReturn.OK:
+            LOGGER.error("Could not link native caps to tee: %s", source_id)
             return
         ai_pad = tee.get_request_pad("src_%u")
         ai_sink = ai_pacer.get_static_pad("sink")
@@ -616,11 +623,12 @@ class DeepStreamIngestor:
         if pipeline is None:
             raise RuntimeError("Could not create a GStreamer pipeline")
 
-        try:
+try:
             source = self._make("nvurisrcbin", f"source_{safe_id}")
             queue = self._make("queue", f"queue_{safe_id}")
             pacer = self._make("identity", f"pacer_{safe_id}")
             tee = self._make("tee", f"decode_tee_{safe_id}")
+            native_caps = self._make("capsfilter", f"native_caps_{safe_id}")
             gpu_convert = self._make("nvvideoconvert", f"gpu_convert_{safe_id}")
             bgrx_caps = self._make("capsfilter", f"bgrx_caps_{safe_id}")
             sink = self._make("appsink", f"appsink_{safe_id}")
@@ -681,9 +689,18 @@ class DeepStreamIngestor:
             sink.set_property("drop", True)
             self._set_if_supported(sink, "enable-last-sample", False)
 
-            for element in (
+            # Allow decoder to output native NVMM resolution by placing a
+            # permissive capsfilter before the tee. The AI branch will scale
+            # to 640x640 via its own nvvideoconvert + capsfilter, while the
+            # live branch receives native resolution.
+            native_caps.set_property(
+                "caps", Gst.Caps.from_string("video/x-raw(memory:NVMM)")
+            )
+
+for element in (
                 source,
                 tee,
+                native_caps,
                 queue,
                 pacer,
                 gpu_convert,
@@ -699,8 +716,8 @@ class DeepStreamIngestor:
                 raise RuntimeError("Could not link nvvideoconvert to BGRx caps")
             if not bgrx_caps.link(sink):
                 raise RuntimeError("Could not link BGRx caps to appsink")
-            source_pad_handler_id = source.connect(
-                "pad-added", self._on_decoded_pad_added, tee, pacer, record.source_uri
+source_pad_handler_id = source.connect(
+                "pad-added", self._on_decoded_pad_added, tee, native_caps, pacer, record.source_uri
             )
             sink_handler_id = sink.connect(
                 "new-sample", self._on_new_sample, record.source_uri
@@ -709,7 +726,7 @@ class DeepStreamIngestor:
             bus = pipeline.get_bus()
             bus.add_signal_watch()
             bus_handler_id = bus.connect("message", self._on_bus_message, record.source_uri)
-            state = DeepStreamSourceState(
+state = DeepStreamSourceState(
                 source_id=record.source_uri,
                 source_uri=record.source_uri,
                 display_uri=display_uri,
@@ -717,6 +734,7 @@ class DeepStreamIngestor:
                 pipeline=pipeline,
                 source=source,
                 tee=tee,
+                native_caps=native_caps,
                 sink=sink,
                 bus=bus,
                 bus_handler_id=bus_handler_id,

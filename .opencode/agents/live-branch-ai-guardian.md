@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: deny
 ---
-Protect the existing AI branch. Do not edit files.
 
+Protect the existing AI branch. Do not edit files.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Before implementation, record:
 
 - exact decoder-to-AI element chain;

@@ -2,6 +2,24 @@
 
 This file is the shared operating contract for Codex, OpenCode, and any sub-agents working in this repository.
 
+## AI branch protection
+
+The existing AI branch is protected and must remain structurally and behaviorally unchanged.
+
+No agent, command, workflow, or delegated subagent may modify:
+
+- AI GStreamer elements or element order;
+- AI caps, resolution, FPS, batching, queues, latency, or memory type;
+- AI source routing;
+- AI appsink behavior;
+- inference preprocessing, models, or postprocessing.
+
+The new live branch must attach as an independent sibling from the post-decode NVMM tee.
+
+Shared pipeline files may be edited only for live-branch attachment or lifecycle management, and such edits must not alter the AI branch.
+
+Any proposed AI-branch change requires explicit user approval before implementation.
+
 ## Project identity
 
 - Name: Unified Video AI Task Router
@@ -101,7 +119,6 @@ the workload; `TASK_QUEUE_BLOCK_TIMEOUT_MS=0` waits instead of rejecting admissi
 It still cannot guarantee lossless RTSP delivery when decode, network, or GPU
 throughput is lower than the source rate.
 
-
 ## Architecture
 
 - `app/main.py`: FastAPI application and lifespan.
@@ -138,6 +155,7 @@ only for display.
 The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 
 ### 1. JPEG fallback mode (default, always active)
+
 - Connects to the broadcast WebSocket (`/api/v1/broadcast/ws`) without `metadata_only`
 - Receives binary frames: 4-byte header length (uint32 BE) + JSON header + JPEG bytes
 - Displays server-annotated JPEG frames on `<img class="jpeg-fallback">` elements using `URL.createObjectURL()`
@@ -145,12 +163,14 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Variable: `useJpegFallback = true` in `synchronizeDashboard()`
 
 ### 2. WebRTC preview mode (optional enhancement)
+
 - Uses WHIP/WHEP protocol via MediaMTX server (port 8789) for real-time H264 video
 - Requires `MEDIA_PREVIEW_ENABLED=true`, GStreamer, and MediaMTX
 - The `MediaPreviewPublisher` remuxes H264 from sources to RTSP and publishes to MediaMTX
 - The MP4 file source pipeline has known EOS issues - file-based previews may fail repeatedly
 
 ### Broadcast hub (`app/core/broadcast.py`)
+
 - `AnnotatedBroadcastHub` renders frames asynchronously in a background thread
 - Produces full-res and wall-res JPEG per source
 - `publish_result()` accepts `FramePacket` + `TaskResult` and queues annotation + encoding
@@ -163,6 +183,7 @@ The dashboard at `/dashboard` (`app/web/dashboard.html`) has two display modes:
 - Snapshot at `/api/v1/broadcast/snapshots/{source_id}.jpg`
 
 ### Broadcast health checklist
+
 - Broadcast enabled and rendering: check `GET /api/v1/broadcast/state`
 - Dashboard loads: check `GET /dashboard`
 - Binary WS delivers JPEG frames: connect to `ws://host/api/v1/broadcast/ws` without params
@@ -215,13 +236,13 @@ stays outside the zone), the human log is discarded. This is implemented by a co
 `face_polygon_observer` in `runtime.py` (`_build_face_polygon_observer()`) that replaces
 the separate result_observer + location_observer for the face_recognition worker.
 
-| Condition | Human log saved? |
-|-----------|-----------------|
-| Person outside polygon (no custom zones, default applies) | No (no transition) |
-| Person enters polygon | Yes (`entered`) |
-| Person exits polygon | Yes (`exited`) |
-| Person stays inside polygon | No (heartbeat, no transition) |
-| No polygon zones exist for camera's section | Default full-frame polygon is used |
+| Condition                                                 | Human log saved?                   |
+| --------------------------------------------------------- | ---------------------------------- |
+| Person outside polygon (no custom zones, default applies) | No (no transition)                 |
+| Person enters polygon                                     | Yes (`entered`)                    |
+| Person exits polygon                                      | Yes (`exited`)                     |
+| Person stays inside polygon                               | No (heartbeat, no transition)      |
+| No polygon zones exist for camera's section               | Default full-frame polygon is used |
 
 ### Entry/exit detection
 
@@ -248,14 +269,14 @@ no longer visible. Expiry finalization also upgrades an existing idempotent
 
 ### API
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/rooms/` | GET | List rooms with polygon_points |
-| `/rooms/{id}` | GET | Get room with polygon_points |
-| `/rooms/` | POST | Create room with polygon_points |
-| `/rooms/{id}` | PUT | Update room polygon_points |
-| `/rooms/{id}/matches` | GET | List all polygon matches for a room |
-| `/rooms/{id}/entry-exits` | GET | List only entry/exit transitions (filters by transition_type) |
+| Endpoint                  | Method | Description                                                   |
+| ------------------------- | ------ | ------------------------------------------------------------- |
+| `/rooms/`                 | GET    | List rooms with polygon_points                                |
+| `/rooms/{id}`             | GET    | Get room with polygon_points                                  |
+| `/rooms/`                 | POST   | Create room with polygon_points                               |
+| `/rooms/{id}`             | PUT    | Update room polygon_points                                    |
+| `/rooms/{id}/matches`     | GET    | List all polygon matches for a room                           |
+| `/rooms/{id}/entry-exits` | GET    | List only entry/exit transitions (filters by transition_type) |
 
 Room updates use `PATCH /rooms/{id}` for the narrowly scoped mutable fields
 `polygon_points`, `room_number`, `room_type`, `description`, and `is_active`.
@@ -292,27 +313,27 @@ Zone polygons are drawn on the annotated broadcast JPEG frames when `draw_zones`
 
 The `sources` table (defined in `app/database.py`) stores 9 per‑source confidence‑field overrides:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `source_uri` | TEXT PK | Per‑source key; the well‑known row `'__default__'` holds global defaults |
-| `fps` | FLOAT nullable | Per-source playback/delivery FPS override; NULL means use source-native FPS for file/static-video sources when available |
-| `fire_confidence` | FLOAT nullable | Fire‑detection confidence threshold |
-| `smoke_confidence` | FLOAT nullable | Smoke‑detection confidence threshold |
-| `plate_confidence` | FLOAT nullable | Plate‑detection confidence threshold |
-| `plate_iou` | FLOAT nullable | Plate‑detection IoU threshold |
-| `vehicle_confidence` | FLOAT nullable | Vehicle‑detection confidence threshold |
-| `vehicle_iou` | FLOAT nullable | Vehicle‑detection IoU threshold |
-| `face_human_confidence` | FLOAT nullable | Human‑detection confidence threshold |
-| `face_detection_confidence` | FLOAT nullable | Face‑detection confidence threshold |
-| `face_recognition_threshold` | FLOAT nullable | Face‑recognition similarity threshold |
-| `loop` | INTEGER default 1 | Per-source file looping toggle for OpenCV/static-video ingest |
-| `draw_human` | INTEGER default 1 | Per-source human overlay toggle on broadcast JPEG output |
-| `draw_zone` | INTEGER default 1 | Per-source zone polygon overlay toggle on broadcast JPEG output |
-| `draw_fire` | INTEGER default 1 | Per-source fire overlay toggle on broadcast JPEG output |
-| `draw_smoke` | INTEGER default 1 | Per-source smoke overlay toggle on broadcast JPEG output |
-| `draw_vehicle` | INTEGER default 1 | Per-source vehicle overlay toggle on broadcast JPEG output |
-| `draw_plate` | INTEGER default 1 | Per-source plate overlay toggle on broadcast JPEG output |
-| `updated_at_utc` | TIMESTAMP | Row update timestamp |
+| Column                       | Type              | Description                                                                                                              |
+| ---------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `source_uri`                 | TEXT PK           | Per‑source key; the well‑known row `'__default__'` holds global defaults                                                 |
+| `fps`                        | FLOAT nullable    | Per-source playback/delivery FPS override; NULL means use source-native FPS for file/static-video sources when available |
+| `fire_confidence`            | FLOAT nullable    | Fire‑detection confidence threshold                                                                                      |
+| `smoke_confidence`           | FLOAT nullable    | Smoke‑detection confidence threshold                                                                                     |
+| `plate_confidence`           | FLOAT nullable    | Plate‑detection confidence threshold                                                                                     |
+| `plate_iou`                  | FLOAT nullable    | Plate‑detection IoU threshold                                                                                            |
+| `vehicle_confidence`         | FLOAT nullable    | Vehicle‑detection confidence threshold                                                                                   |
+| `vehicle_iou`                | FLOAT nullable    | Vehicle‑detection IoU threshold                                                                                          |
+| `face_human_confidence`      | FLOAT nullable    | Human‑detection confidence threshold                                                                                     |
+| `face_detection_confidence`  | FLOAT nullable    | Face‑detection confidence threshold                                                                                      |
+| `face_recognition_threshold` | FLOAT nullable    | Face‑recognition similarity threshold                                                                                    |
+| `loop`                       | INTEGER default 1 | Per-source file looping toggle for OpenCV/static-video ingest                                                            |
+| `draw_human`                 | INTEGER default 1 | Per-source human overlay toggle on broadcast JPEG output                                                                 |
+| `draw_zone`                  | INTEGER default 1 | Per-source zone polygon overlay toggle on broadcast JPEG output                                                          |
+| `draw_fire`                  | INTEGER default 1 | Per-source fire overlay toggle on broadcast JPEG output                                                                  |
+| `draw_smoke`                 | INTEGER default 1 | Per-source smoke overlay toggle on broadcast JPEG output                                                                 |
+| `draw_vehicle`               | INTEGER default 1 | Per-source vehicle overlay toggle on broadcast JPEG output                                                               |
+| `draw_plate`                 | INTEGER default 1 | Per-source plate overlay toggle on broadcast JPEG output                                                                 |
+| `updated_at_utc`             | TIMESTAMP         | Row update timestamp                                                                                                     |
 
 **Split ownership with `general_settings.operational_json`:**
 
@@ -334,7 +355,7 @@ The `cameras` table (defined in `app/database.py`) now uses **`source_uri` as it
 
 - `SourceRecord.source_uri` is now the sole identity field (was `source_id`)
 - `CameraResponse` no longer has `camera_id` — use `source_uri` instead
-- `SourceResponse` no longer has `source_id` — use `source_uri` instead  
+- `SourceResponse` no longer has `source_id` — use `source_uri` instead
 - `CameraCreate` and `SourceCreate` take `source_uri` as the required identifier
 - `SourceRegistry` methods (`get`, `require`, `update`, `delete`) key by `source_uri`
 - The `sources` table and `cameras` table share the same `source_uri` key, enabling unified per-source settings
@@ -430,6 +451,7 @@ The output must show a single linear chain with no branch labels or fork points.
 ### Verifying schema at startup
 
 `DatabaseVerifier.verify_schema()` in `app/database.py` checks:
+
 1. All tables in `app/database.py` `metadata` exist in PostgreSQL.
 2. The `alembic_version` row matches `ALEMBIC_HEAD_REVISION`.
 
@@ -682,13 +704,13 @@ docker logs --tail 200 merged-video-ai-router
 
 ### Configuration environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FIRE_SMOKE_MAX_WAIT_MS` | 50.0 | Max wait time to fill fire/smoke batch |
-| `PLATE_MAX_WAIT_MS` | 50.0 | Max wait time to fill plate batch |
-| `FACE_MAX_WAIT_MS` | 50.0 | Max wait time to fill face batch |
-| `WORKER_THREADS` | 1 | Number of threads sharing each task processor; values above 1 require target-runtime thread-safety proof |
-| `SKIP_TASKLESS_SOURCES` | false | Legacy compatibility setting; enabled sources always reach router broadcast, while task assignments control AI worker submission |
+| Variable                 | Default | Description                                                                                                                      |
+| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `FIRE_SMOKE_MAX_WAIT_MS` | 50.0    | Max wait time to fill fire/smoke batch                                                                                           |
+| `PLATE_MAX_WAIT_MS`      | 50.0    | Max wait time to fill plate batch                                                                                                |
+| `FACE_MAX_WAIT_MS`       | 50.0    | Max wait time to fill face batch                                                                                                 |
+| `WORKER_THREADS`         | 1       | Number of threads sharing each task processor; values above 1 require target-runtime thread-safety proof                         |
+| `SKIP_TASKLESS_SOURCES`  | false   | Legacy compatibility setting; enabled sources always reach router broadcast, while task assignments control AI worker submission |
 
 ### Performance optimization strategies
 
@@ -737,15 +759,16 @@ docker logs --tail 200 merged-video-ai-router
 
 **Measured Performance Impact:**
 
-| Operation | Before | After | Improvement |
-|-----------|--------|-------|-------------|
-| publish_result() | 2-5ms | 0.18ms | **23.6x faster** |
-| Frame render | 20-50ms | 3.89ms | **5-13x faster** |
-| Total per frame | 27-70ms | 4-5ms | **6-14x faster** |
+| Operation        | Before  | After  | Improvement      |
+| ---------------- | ------- | ------ | ---------------- |
+| publish_result() | 2-5ms   | 0.18ms | **23.6x faster** |
+| Frame render     | 20-50ms | 3.89ms | **5-13x faster** |
+| Total per frame  | 27-70ms | 4-5ms  | **6-14x faster** |
 
 **GPU Acceleration Path:**
 
 For production deployment in DeepStream Docker:
+
 1. `nvjpegenc` automatically used for GPU JPEG encoding
 2. `nvdsosd` can be added for GPU-based annotation (future optimization)
 3. Frames stay on GPU longer, reducing CPU overhead
@@ -763,11 +786,13 @@ Eight cameras admitted at 5 FPS yield 40 aggregate ingest frames per second, but
 ### Monitoring FPS
 
 Check real-time performance with a bounded sample:
+
 ```bash
 curl -fsS "http://127.0.0.1:9999/api/v1/diagnostics/fps?sample_seconds=5&expected_fps=25"
 ```
 
 Key metrics:
+
 - `appsink_sample_fps`, `rate_limited_fps`, `admitted_fps`, and `router_frame_fps` per camera
 - `processed_fps` and `latest_frame_replacement_fps` per camera/task
 - `last_batch_ms` as end-to-end worker batch time; processor `last_inference_ms` is the closer model-only signal
@@ -785,6 +810,7 @@ Key metrics:
 - **Never commit, push, or create PRs without the user explicitly asking.** Wait for the user to say "commit", "push", "create PR", or similar. The only exception is when the user has given prior explicit consent in the same conversation for the specific operation.
 
 <!-- OPENCODE-REALTIME-WORKFLOW:START -->
+
 # Real-Time Project Agent Rules
 
 ## Core interpretation rule
@@ -956,16 +982,19 @@ Cameras have a `source_type` column (`rtsp` or `static_video`, default `rtsp`) w
 - API schemas (`CameraCreate`, `CameraUpdate`, `CameraReplace`, `CameraResponse`) all include `source_type` with validation
 
 Each ingestor filters by `source_type_filter` parameter (default `RTSP`):
+
 - `VideoFileIngestor._process_once_unlocked()` only processes records matching `self.source_type_filter`
 - `DeepStreamIngestor._active_records()` only returns records matching `self.source_type_filter`
 
 Allocation caps:
+
 - `OperationalSettings.rtsp_source_count` (default 128) — max concurrent RTSP sources
 - `OperationalSettings.static_video_source_count` (default 16) — max concurrent static video sources
 - Each ingestor enforces `max_sources` before opening new sources
 - `apply_operational_settings()` pushes caps to both ingestors at runtime
 
 Two ingestor instances in `Runtime`:
+
 - `video_ingestor` — RTSP sources (DeepStream or OpenCV)
 - `static_video_ingestor` — always `StaticVideoFileIngestor` (OpenCV-based, loop=False, 30 FPS default)
 - `_restart_ingestor_source(camera_id)` routes to the correct ingestor based on `source_type`
@@ -974,11 +1003,11 @@ Two ingestor instances in `Runtime`:
 
 ### Static video upload API
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/static-videos/upload` | POST | Upload video file, return `source_uri` path |
-| `/api/v1/static-videos` | POST | Upload + create camera in one call |
-| `/api/v1/static-videos` | GET | List all static video camera sources |
+| Endpoint                       | Method | Description                                 |
+| ------------------------------ | ------ | ------------------------------------------- |
+| `/api/v1/static-videos/upload` | POST   | Upload video file, return `source_uri` path |
+| `/api/v1/static-videos`        | POST   | Upload + create camera in one call          |
+| `/api/v1/static-videos`        | GET    | List all static video camera sources        |
 
 Uploaded files are saved under `STATIC_VIDEO_UPLOAD_PATH` (default `saved_media/static_videos/`) with a UUID prefix to prevent name collisions. The returned `source_uri` is an absolute filesystem path that becomes the camera's `source_uri`. The `StaticVideoFileIngestor` automatically picks up new cameras on its next processing loop.
 
@@ -986,13 +1015,13 @@ Uploaded files are saved under `STATIC_VIDEO_UPLOAD_PATH` (default `saved_media/
 
 Cameras and sources share the same underlying `SourceRecord`/`SourceRegistry`/DB, but have different API surfaces:
 
-| Concern | Camera API (`/api/v1/cameras`) | Source API (`/api/v1/sources`) |
-|---------|-------------------------------|-------------------------------|
-| `enabled`/`tasks` | **NOT exposed** — camera is about device identity | **Exposed** — operational state belongs here |
-| `POST /{id}/enable`, `/disable` | Not available | Available |
-| `PUT /bulk/task-assignment` | Not available | Available |
-| `GET /preview-config` | Not available (removed) | **Available** — returns `enabled`/`tasks` per source |
-| `enable`/`disable` in create/update schemas | Not in `CameraCreate`/`CameraUpdate`/`CameraReplace`/`CameraResponse` | In `SourceCreate`/`SourceUpdate`/`SourceResponse` |
+| Concern                                     | Camera API (`/api/v1/cameras`)                                        | Source API (`/api/v1/sources`)                       |
+| ------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------- |
+| `enabled`/`tasks`                           | **NOT exposed** — camera is about device identity                     | **Exposed** — operational state belongs here         |
+| `POST /{id}/enable`, `/disable`             | Not available                                                         | Available                                            |
+| `PUT /bulk/task-assignment`                 | Not available                                                         | Available                                            |
+| `GET /preview-config`                       | Not available (removed)                                               | **Available** — returns `enabled`/`tasks` per source |
+| `enable`/`disable` in create/update schemas | Not in `CameraCreate`/`CameraUpdate`/`CameraReplace`/`CameraResponse` | In `SourceCreate`/`SourceUpdate`/`SourceResponse`    |
 
 The dashboard fetches `/api/v1/sources/preview-config` to get source operational state (enabled + tasks) for card rendering.
 
@@ -1007,6 +1036,7 @@ Response models that expose `created_at` / `updated_at` as UTC ISO strings can a
 Response models for admin tables (buildings, sections, rooms, cam, personnel, holidays) include `created_by: UserBrief | None` and `updated_by: UserBrief | None` fields.
 
 **Pattern:**
+
 - **DB**: Only the user `id` (INT, FK → `users.id ON DELETE SET NULL`) is stored via `_user_audit_columns()` helper.
 - **`UserBrief`** (`app.core.common_schemas`): Pydantic model with `id: int` + `full_name: str`. Resolved at response-build time via `resolve_user_brief(user_id, db_conn)`.
 - **Store `create()`**: Accepts `created_by: int | None = None`, included in `INSERT`.
@@ -1019,4 +1049,5 @@ Implemented on: BuildingResponse, SectionResponse, RoomResponse, CamResponse, Si
 ## Context efficiency
 
 Use specialized subagents and on-demand skills. Keep the main context focused on decisions, interfaces, evidence, and unresolved risks. Do not send the entire repository to every subagent. Work one coherent feature or option group at a time.
+
 <!-- OPENCODE-REALTIME-WORKFLOW:END -->

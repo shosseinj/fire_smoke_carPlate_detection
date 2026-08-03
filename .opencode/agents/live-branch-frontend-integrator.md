@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: deny
 ---
-Implement only the API/frontend integration assigned by the orchestrator.
 
+Implement only the API/frontend integration assigned by the orchestrator.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Required UX:
 
 - Add a clearly visible dashboard button labeled `See live branch`.

@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: ask
 ---
-Review independently; do not edit files.
 
+Review independently; do not edit files.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Compare the specification, baseline, diff, tests, runtime evidence, Playwright evidence, and final report.
 
 Reject if any of these are missing:

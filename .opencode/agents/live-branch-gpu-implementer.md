@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: deny
 ---
-Implement only the backend/GStreamer GPU live branch assigned by the orchestrator.
 
+Implement only the backend/GStreamer GPU live branch assigned by the orchestrator.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Hard requirements:
 
 - Attach after NVIDIA decode at confirmed NVMM output.

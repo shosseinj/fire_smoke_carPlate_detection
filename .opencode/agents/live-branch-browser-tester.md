@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: ask
 ---
-Create or run a real Playwright E2E suite against the live Compose stack. Do not accept mocked fetch, RTCPeerConnection, MediaStream, WHEP, or HTMLVideoElement.play as final proof.
 
+Create or run a real Playwright E2E suite against the live Compose stack. Do not accept mocked fetch, RTCPeerConnection, MediaStream, WHEP, or HTMLVideoElement.play as final proof.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Required test:
 
 1. Open the actual dashboard.

@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: ask
 ---
-Validate runtime behavior without editing production files.
 
+Validate runtime behavior without editing production files.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Use real static video and reachable RTSP when available. Verify:
 
 - feature flag and production routes;

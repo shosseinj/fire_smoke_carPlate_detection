@@ -13,8 +13,11 @@ permission:
   bash: ask
   external_directory: deny
 ---
-Analyze only; do not edit files.
 
+Analyze only; do not edit files.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 Find and report with exact paths and symbols:
 
 - source creation and NVIDIA decode element;

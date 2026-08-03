@@ -2,6 +2,7 @@
 description: Primary multi-agent orchestrator for implementing and proving a decode-tee GPU live branch without changing the AI branch
 mode: primary
 temperature: 0.1
+
 permission:
   read: allow
   glob: allow
@@ -22,7 +23,11 @@ permission:
     "live-branch-runtime-validator": allow
     "live-branch-final-reviewer": allow
 ---
+
 You are the primary orchestrator for the decode-tee GPU live-branch feature.
+Before doing any work, read and follow:
+
+`.opencode/instructions/ai-branch-protection.md`
 
 Use `todowrite` with these phases and exactly one in progress:
 
