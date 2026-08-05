@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -794,8 +795,19 @@ class TestDetectionLogsApi:
             },
             headers=auth,
         )
-        assert excel_response.status_code == 200, excel_response.text
-        assert excel_response.json()["imported_rows"] == 1
+        assert excel_response.status_code == 202, excel_response.text
+        status_url = excel_response.json()["status_url"]
+        deadline = time.monotonic() + 5
+        progress = None
+        while time.monotonic() < deadline:
+            progress_response = crud.client.get(status_url, headers=auth)
+            assert progress_response.status_code == 200
+            progress = progress_response.json()
+            if progress["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.01)
+        assert progress is not None and progress["status"] == "completed"
+        assert progress["result"]["imported_rows"] == 1
         imported = [
             record
             for record in detection_logs_api.get_detection_log_store().list_all()

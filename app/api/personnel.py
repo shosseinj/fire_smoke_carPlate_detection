@@ -32,6 +32,7 @@ from app.core.personnel_image_service import (
 )
 from app.processors.face_recognition import FaceRecognitionProcessor
 from app.runtime import Runtime
+from app.api.import_progress import ImportJobAccepted
 from app.core.auth_store import UserRecord
 from typing import Optional
 
@@ -466,6 +467,8 @@ async def create_personnel_with_images(
 
 @router.post(
     "/import-excel",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ImportJobAccepted,
     summary="ورود اطلاعات پرسنل از فایل اکسل",
 )
 async def import_excel(
@@ -479,43 +482,61 @@ async def import_excel(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="فایل خالی است")
-    try:
-        result = await run_in_threadpool(
-            store.import_from_excel,
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="حجم فایل اکسل نباید بیشتر از ۱۰ مگابایت باشد.",
+        )
+    filename = file.filename or "personnel.xlsx"
+
+    def processor(report):
+        result = store.import_from_excel(
             raw,
             update_existing=update_existing,
             skip_invalid_rows=skip_invalid_rows,
+            progress_callback=lambda values: report(
+                values["total"], values["imported"], values["skipped"], values["failed"]
+            ),
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    total = result["created"] + result["skipped"] + len(result["errors"])
-    updated_count = sum(1 for r in result.get("successful_rows", []) if r["action"] == "updated")
+        updated_count = sum(
+            1 for row in result.get("successful_rows", [])
+            if row["action"] == "updated"
+        )
+        total = len(result.get("successful_rows", [])) + result["skipped"] + len(result["errors"])
+        failed_count = len(result["errors"])
+        response = {
+            "success": not result["errors"],
+            "filename": filename,
+            "summary": {
+                "total_rows": total,
+                "successful": len(result.get("successful_rows", [])),
+                "imported": len(result.get("successful_rows", [])),
+                "failed": failed_count,
+                "skipped": result["skipped"],
+                "created": result["created"] - updated_count,
+                "updated": updated_count,
+            },
+            "successful_rows": result.get("successful_rows", []),
+            "failed_rows": result["errors"],
+            "skipped_rows": result.get("skipped_rows", []),
+        }
+        return response
+
+    try:
+        record = runtime.excel_imports.submit(
+            "personnel_excel",
+            filename,
+            _.id,
+            processor,
+        )
+    except queue.Full:
+        raise HTTPException(503, "صف ورود فایل‌های اکسل پر است؛ بعداً دوباره تلاش کنید.")
     return {
-        "summary": {
-            "total_rows": total,
-            "successful": result["created"],
-            "failed": len(result["errors"]),
-            "skipped": result["skipped"],
-            "created": result["created"],
-            "updated": updated_count,
-        },
-        "successful_rows": result.get("successful_rows", []),
-        "failed_rows": [
-            {
-                "row": e["row"],
-                "national_code": e.get("national_code", ""),
-                "field_errors": e.get("field_errors", []),
-            }
-            for e in result["errors"]
-        ],
-        "skipped_rows": [
-            {
-                "row": s["row"],
-                "national_code": s.get("national_code", ""),
-                "field_errors": s.get("field_errors", []),
-            }
-            for s in result.get("skipped_rows", [])
-        ],
+        "job_id": record.id,
+        "progress_id": record.id,
+        "status": record.status,
+        "status_url": f"/api/v1/import-progress/{record.id}",
+        "message": "فایل دریافت شد و پردازش آن در صف قرار گرفت.",
     }
 
 

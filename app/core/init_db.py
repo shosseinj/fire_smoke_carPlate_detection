@@ -27,8 +27,12 @@ from app.core.types import TaskName
 
 LOGGER = logging.getLogger(__name__)
 
-_SEED_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
-_SEED_SHIFT_END_DATE: date = parse_jalali_date("1405-12-29")
+_SEED_FIRST_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
+_SEED_FIRST_SHIFT_END_DATE: date = parse_jalali_date("1405-02-31")
+_SEED_SECOND_SHIFT_START_DATE: date = parse_jalali_date("1405-03-01")
+_SEED_SECOND_SHIFT_END_DATE: date = parse_jalali_date("1405-12-29")
+_LEGACY_SEED_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
+_LEGACY_SEED_SHIFT_END_DATE: date = parse_jalali_date("1405-12-29")
 
 # ── Code maps (from the legacy init_database.py) ───────────────────────
 _EMPLOYEE_TYPE_CODE_MAP: dict[str, str] = {
@@ -355,48 +359,48 @@ def create_default_personnel(
     return count
 
 
-def create_default_detection_logs(
-    detection_log_store: DetectionLogStore,
-    personnel_ids: list[int],
-    room_id: int | None = None,
-    target_count: int = 100,
-) -> int:
-    """Create sample detection logs if the table is empty.
+# def create_default_detection_logs(
+#     detection_log_store: DetectionLogStore,
+#     personnel_ids: list[int],
+#     room_id: int | None = None,
+#     target_count: int = 100,
+# ) -> int:
+#     """Create sample detection logs if the table is empty.
 
-    Logs are spread across the available personnel and assigned
-    ``log_type="camera_rtsp"`` to match the old project convention.
-    Roughly 20% of logs have ``access_granted=False``.
+#     Logs are spread across the available personnel and assigned
+#     ``log_type="camera_rtsp"`` to match the old project convention.
+#     Roughly 20% of logs have ``access_granted=False``.
 
-    Returns the number of logs created (0 if the table already
-    contained records).
-    """
-    by_status = detection_log_store.count_by_status()
-    if by_status and any("log_type:" in k for k in by_status):
-        return 0
-    if not personnel_ids:
-        return 0
+#     Returns the number of logs created (0 if the table already
+#     contained records).
+#     """
+#     by_status = detection_log_store.count_by_status()
+#     if by_status and any("log_type:" in k for k in by_status):
+#         return 0
+#     if not personnel_ids:
+#         return 0
 
-    base_time = datetime.now(timezone.utc)
-    count = 0
-    for i in range(target_count):
-        personnel_id = random.choice(personnel_ids)
-        detection_time = base_time - timedelta(minutes=i * 30)
-        try:
-            detection_log_store.create(
-                source_system="face_recognition",
-                person=f"Personnel_{personnel_id}",
-                confidence=random.uniform(0.5, 1.0),
-                detection_time=detection_time.isoformat(),
-                room_id=room_id,
-                camera_id=None,
-                access_granted=random.random() > 0.2,
-                counts_for_attendance=True,
-                log_type="camera_rtsp",
-            )
-            count += 1
-        except Exception as exc:
-            LOGGER.warning("INIT_DB skip detection log %d: %s", i, exc)
-    return count
+#     base_time = datetime.now(timezone.utc)
+#     count = 0
+#     for i in range(target_count):
+#         personnel_id = random.choice(personnel_ids)
+#         detection_time = base_time - timedelta(minutes=i * 30)
+#         try:
+#             detection_log_store.create(
+#                 source_system="face_recognition",
+#                 person=f"Personnel_{personnel_id}",
+#                 confidence=random.uniform(0.5, 1.0),
+#                 detection_time=detection_time.isoformat(),
+#                 room_id=room_id,
+#                 camera_id=None,
+#                 access_granted=random.random() > 0.2,
+#                 counts_for_attendance=True,
+#                 log_type="camera_rtsp",
+#             )
+#             count += 1
+#         except Exception as exc:
+#             LOGGER.warning("INIT_DB skip detection log %d: %s", i, exc)
+#     return count
 
 
 # ── Default shifts (from the legacy init_database.py) ────────────────
@@ -497,17 +501,36 @@ _DEFAULT_SHIFTS: list[dict[str, Any]] = [
         "works_thursday": False,
         "works_friday": False,
     },
+    {
+        "shift_name": "شیفت جنگ",
+        "shift_type": "morning",
+        "start_time": "07:00",
+        "end_time": "14:00",
+        "max_overtime_hours": 0.0,
+        "max_minutes_delay": 15,
+        "max_minutes_early": 0,
+        "works_saturday": True,
+        "works_sunday": True,
+        "works_monday": True,
+        "works_tuesday": True,
+        "works_wednesday": True,
+        "works_thursday": False,
+        "works_friday": False,
+    },
 ]
 
 
 def _create_all_default_shifts(shift_store: ShiftStore) -> list[Any]:
-    """Idempotently create all default shifts. Returns existing shift list if any exist."""
+    """Idempotently create missing default shifts and return all seeded defaults."""
     existing, _ = shift_store.list(limit=100)
-    if existing:
-        return existing
+    existing_by_name = {shift.shift_name: shift for shift in existing}
 
     created: list[Any] = []
     for s in _DEFAULT_SHIFTS:
+        existing_shift = existing_by_name.get(s["shift_name"])
+        if existing_shift is not None:
+            created.append(existing_shift)
+            continue
         try:
             shift = shift_store.create(
                 shift_name=s["shift_name"],
@@ -669,6 +692,9 @@ def init_database(
         existing, _ = shift_store.list(limit=1)
         if existing:
             shift = existing[0]
+    shifts_by_name = {item.shift_name: item for item in shifts}
+    first_seed_shift = shifts_by_name.get("شیفت جنگ")
+    second_seed_shift = shifts_by_name.get("شیفت صبح")
 
     # ── Seed official Iran 1405 holidays ─────────────────────────────
     if holiday_store is not None:
@@ -694,29 +720,57 @@ def init_database(
             seeded = True
         personnel_records, _ = personnel_store.list(limit=1000)
         for person in personnel_records:
-            effective_shift_id = person.shift_id or shift_id
-            if effective_shift_id is None or shift_store is None:
-                continue
-            if shift_store.list_assignments(
-                person.id,
-                start_date=_SEED_SHIFT_START_DATE,
-                end_date=_SEED_SHIFT_END_DATE,
+            if (
+                shift_store is None
+                or first_seed_shift is None
+                or second_seed_shift is None
             ):
                 continue
-            try:
-                shift_store.assign_personnel(
-                    person.id,
-                    effective_shift_id,
-                    _SEED_SHIFT_START_DATE,
-                    _SEED_SHIFT_END_DATE,
-                )
+            desired_assignments = (
+                (
+                    first_seed_shift.id,
+                    _SEED_FIRST_SHIFT_START_DATE,
+                    _SEED_FIRST_SHIFT_END_DATE,
+                ),
+                (
+                    second_seed_shift.id,
+                    _SEED_SECOND_SHIFT_START_DATE,
+                    _SEED_SECOND_SHIFT_END_DATE,
+                ),
+            )
+            existing_assignments = shift_store.list_assignments(person.id)
+            if (
+                len(existing_assignments) == 1
+                and existing_assignments[0].shift_id == second_seed_shift.id
+                and existing_assignments[0].start_date == _LEGACY_SEED_SHIFT_START_DATE
+                and existing_assignments[0].end_date == _LEGACY_SEED_SHIFT_END_DATE
+            ):
+                shift_store.delete_assignment(existing_assignments[0].id)
+                existing_assignments = []
                 seeded = True
-            except ValueError as exc:
-                LOGGER.warning(
-                    "INIT_DB skip dated shift assignment for personnel %s: %s",
-                    person.id,
-                    exc,
-                )
+            for desired_shift_id, assignment_start, assignment_end in desired_assignments:
+                if any(
+                    assignment.shift_id == desired_shift_id
+                    and assignment.start_date == assignment_start
+                    and assignment.end_date == assignment_end
+                    for assignment in existing_assignments
+                ):
+                    continue
+                try:
+                    assignment = shift_store.assign_personnel(
+                        person.id,
+                        desired_shift_id,
+                        assignment_start,
+                        assignment_end,
+                    )
+                    existing_assignments.append(assignment)
+                    seeded = True
+                except ValueError as exc:
+                    LOGGER.warning(
+                        "INIT_DB skip dated shift assignment for personnel %s: %s",
+                        person.id,
+                        exc,
+                    )
 
     # ── Seed sample detection logs ──────────────────────────────────
     if (
@@ -727,12 +781,12 @@ def init_database(
         personnel_records, _ = personnel_store.list(limit=1000)
         personnel_ids = [p.id for p in personnel_records]
         room_id = room.id if room is not None else None
-        created = create_default_detection_logs(
-            detection_log_store,
-            personnel_ids=personnel_ids,
-            room_id=room_id,
-            target_count=target_log_count,
-        )
+        # created = create_default_detection_logs(
+        #     detection_log_store,
+        #     personnel_ids=personnel_ids,
+        #     room_id=room_id,
+        #     target_count=target_log_count,
+        # )
         if created > 0:
             LOGGER.info("INIT_DB created %d detection log(s)", created)
             seeded = True

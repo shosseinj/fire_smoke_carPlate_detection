@@ -32,6 +32,7 @@ class ImportProgressRecord:
     updated_at_utc: str
 
     def to_dict(self) -> dict[str, Any]:
+        terminal = self.status in ("completed", "completed_with_errors", "failed")
         return {
             "id": self.id,
             "import_type": self.import_type,
@@ -45,8 +46,11 @@ class ImportProgressRecord:
             "result": self.result,
             "processed_rows": self.imported_rows + self.skipped_rows + self.failed_rows,
             "progress_percent": (
-                round(min(100.0, (self.imported_rows + self.skipped_rows + self.failed_rows) * 100.0 / self.total_rows), 1)
-                if self.total_rows > 0 else (100.0 if self.status in ("completed", "completed_with_errors") else 0.0)
+                100.0
+                if terminal
+                else round(min(100.0, (self.imported_rows + self.skipped_rows + self.failed_rows) * 100.0 / self.total_rows), 1)
+                if self.total_rows > 0
+                else 0.0
             ),
             "created_by": self.created_by,
             "created_at": self.created_at_utc,

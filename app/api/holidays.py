@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+import io
+import queue
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -12,6 +14,7 @@ from app.api.holiday_schemas import (
     HolidayResponse,
     HolidayUpdate,
 )
+from app.api.import_progress import ImportJobAccepted
 from app.core.auth import require_role
 from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.holiday_import import (
@@ -127,8 +130,7 @@ def download_holiday_import_template(
     )
 
 
-@router.post("/import-excel")
-def import_official_holidays_excel(
+def _import_official_holidays_excel_sync(
     year: int = Query(
         ...,
         ge=MIN_OFFICIAL_IMPORT_YEAR,
@@ -202,6 +204,77 @@ def import_official_holidays_excel(
             "invalid_rows": 0,
         },
         **result,
+    }
+
+
+@router.post(
+    "/import-excel",
+    status_code=202,
+    response_model=ImportJobAccepted,
+)
+async def import_official_holidays_excel(
+    year: int = Query(
+        ...,
+        ge=MIN_OFFICIAL_IMPORT_YEAR,
+        le=MAX_OFFICIAL_IMPORT_YEAR,
+        description="سال جلالی؛ فقط از 1406 تا 1500",
+    ),
+    file: UploadFile = File(..., description="Completed official-holiday Excel template"),
+    current_user: dict = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    filename = file.filename or "holidays.xlsx"
+    if not filename.casefold().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "فقط فایل‌های .xlsx و .xlsm پذیرفته می‌شوند")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "فایل اکسل بارگذاری‌شده خالی است")
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل اکسل بارگذاری‌شده بیشتر از ۵ مگابایت است")
+
+    def processor(report):
+        upload = UploadFile(filename=filename, file=io.BytesIO(contents))
+        try:
+            result = _import_official_holidays_excel_sync(
+                year=year,
+                file=upload,
+                current_user=current_user,
+            )
+            result["success"] = True
+            result["summary"]["total_rows"] = result["summary"]["total_data_rows"]
+            result["summary"]["imported"] = result.get("imported_count", 0)
+            result["summary"]["failed"] = 0
+            return result
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                result = {"success": False, **detail}
+                summary = result.setdefault("summary", {})
+                total = int(summary.get("total_data_rows", 0))
+                failed = int(summary.get("invalid_rows", 0))
+                summary.update(total_rows=total, imported=0, skipped=max(0, total - failed), failed=failed)
+                return result
+            return {
+                "success": False,
+                "message": str(detail),
+                "database_changed": False,
+                "summary": {"total_rows": 1, "imported": 0, "skipped": 0, "failed": 1},
+                "file_errors": [{"code": "invalid_workbook", "message": str(detail)}],
+            }
+
+    try:
+        runtime = get_runtime()
+        user_id = current_user.get("id") if isinstance(current_user, dict) else getattr(current_user, "id", None)
+        record = runtime.excel_imports.submit(
+            "holidays_excel", filename, user_id, processor
+        )
+    except queue.Full:
+        raise HTTPException(503, "صف ورود فایل‌های اکسل پر است؛ بعداً دوباره تلاش کنید.")
+    return {
+        "job_id": record.id,
+        "progress_id": record.id,
+        "status": record.status,
+        "status_url": f"/api/v1/import-progress/{record.id}",
+        "message": "فایل دریافت شد و پردازش آن در صف قرار گرفت.",
     }
 
 

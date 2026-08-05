@@ -41,7 +41,11 @@ def _shift() -> SummaryShift:
     )
 
 
-def _daily_summary(monkeypatch, detection_hours: list[int]) -> dict:
+def _daily_summary(
+    monkeypatch,
+    detection_hours: list[int],
+    requests_by_day: dict[int, dict[date, list[SummaryRequest]]] | None = None,
+) -> dict:
     shift = _shift()
     person = SummaryPersonnel(
         id=1,
@@ -93,7 +97,11 @@ def _daily_summary(monkeypatch, detection_hours: list[int]) -> dict:
     monkeypatch.setattr(service, "_personnel", lambda: [person])
     monkeypatch.setattr(service, "_logs", lambda *_: {person.national_code: logs})
     monkeypatch.setattr(service, "_holiday_dates", lambda *_: set())
-    monkeypatch.setattr(service, "_accepted_requests_by_person_day", lambda *_: {})
+    monkeypatch.setattr(
+        service,
+        "_accepted_requests_by_person_day",
+        lambda *_: requests_by_day or {},
+    )
 
     rows = service.daily_summary(
         period=TimePeriod.CUSTOM,
@@ -120,11 +128,55 @@ def test_daily_summary_two_detections_keeps_first_and_last(monkeypatch) -> None:
     assert row["last_detection"] == "17:00"
 
 
+def test_daily_summary_absent_day_uses_daily_request_type_as_status(monkeypatch) -> None:
+    request = SummaryRequest(
+        id=1,
+        personnel_id=1,
+        request_type="sick_leave",
+        duration_type="daily",
+        start_date=REPORT_DAY,
+        end_date=REPORT_DAY,
+        start_time=None,
+        end_time=None,
+        duration_days=1.0,
+        duration_minutes=None,
+        status="approved",
+    )
+
+    row = _daily_summary(
+        monkeypatch,
+        [],
+        {1: {REPORT_DAY: [request]}},
+    )
+
+    assert row["status"] == "sick_leave"
+
+
 def test_daily_summary_first_last_span_is_not_clipped_to_shift(monkeypatch) -> None:
     row = _daily_summary(monkeypatch, [6, 20])
 
     assert row["first_last_span_time"] == "14:00"
-    assert row["raw_worked_time"] == "11:00"
+    assert row["raw_worked_time"] == "14:00"
+    assert row["net_worked_time"] == "11:00"
+
+
+def test_daily_worked_times_exclude_middle_gaps_and_clip_only_net_to_shift() -> None:
+    stats = _daily_summary_stats(
+        REPORT_DAY,
+        [
+            _log_at(6, 0, log_id=1),
+            _log_at(9, 0, log_id=2),
+            _log_at(14, 0, log_id=3),
+            _log_at(20, 0, log_id=4),
+        ],
+        _shift(),
+        requests=[],
+        is_workday=True,
+    )
+
+    assert stats["first_last_span_time"] == 14 * 60
+    assert stats["raw_worked_time"] == 9 * 60
+    assert stats["net_worked_time"] == 6 * 60
 
 
 def test_daily_summary_first_last_span_is_null_for_odd_or_zero_detections(
@@ -343,6 +395,8 @@ def test_non_working_day_counts_only_paired_presence_as_holiday_overtime() -> No
     )
 
     assert stats["holiday_overtime_minutes"] == 7 * 60
+    assert stats["raw_worked_time"] == 7 * 60
+    assert stats["net_worked_time"] == 7 * 60
     assert stats["overtime_minutes"] == 0
     assert stats["illegal_presence_minutes"] == 0
 

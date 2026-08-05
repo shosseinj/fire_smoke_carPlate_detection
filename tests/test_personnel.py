@@ -738,8 +738,23 @@ def test_import_excel(tmp_path: Path) -> None:
             files={"file": ("import.xlsx", buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
+        assert resp.status_code == 202, resp.text
+        job = resp.json()
+        deadline = time.monotonic() + 5
+        progress = None
+        while time.monotonic() < deadline:
+            polled = client.get(
+                job["status_url"],
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert polled.status_code == 200
+            progress = polled.json()
+            if progress["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.01)
+        assert progress is not None and progress["status"] == "completed"
+        assert progress["progress_percent"] == 100.0
+        body = progress["result"]
         assert body["summary"]["created"] == 2
         assert body["summary"]["skipped"] == 0
         assert len(body["failed_rows"]) == 0

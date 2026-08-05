@@ -236,6 +236,7 @@ def _runtime_for_shutdown(coordinator: object, events: list[str]) -> SimpleNames
 
     return SimpleNamespace(
         broadcast=component("broadcast"), personnel_zip_imports=component("zip"),
+        excel_imports=component("excel"),
         model_conversions=component("models"), recording_coordinator=coordinator,
         recording_redis=component("redis"), media_preview=component("preview"),
         live_branch=component("live"), static_video_ingestor=component("static"),

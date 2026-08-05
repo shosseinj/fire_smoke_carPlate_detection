@@ -940,6 +940,7 @@ class PersonnelStore:
         *,
         update_existing: bool = False,
         skip_invalid_rows: bool = True,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> dict[str, Any]:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data))
@@ -997,6 +998,10 @@ class PersonnelStore:
         errors: list[dict[str, Any]] = []
         successful_rows: list[dict[str, Any]] = []
         skipped_rows: list[dict[str, Any]] = []
+        total_rows = sum(1 for row in excel_rows if row and any(cell is not None for cell in row))
+        processed_rows = 0
+        if progress_callback is not None:
+            progress_callback({"total": total_rows, "imported": 0, "skipped": 0, "failed": 0})
 
         for row_idx, row in enumerate(excel_rows, start=2):
             if not row or all(cell is None for cell in row):
@@ -1200,11 +1205,12 @@ class PersonnelStore:
                         "national_code": nc,
                         "field_errors": [{"field": None, "message": str(exc)}],
                     })
-                errors.append({
-                    "row": row_idx,
-                    "national_code": nc,
-                    "field_errors": [{"field": None, "message": str(exc)}],
-                })
+                else:
+                    errors.append({
+                        "row": row_idx,
+                        "national_code": nc,
+                        "field_errors": [{"field": None, "message": str(exc)}],
+                    })
             except Exception as exc:
                 msg = f"{type(exc).__name__}: {exc}"
                 nc = locals().get("national_code", "")
@@ -1215,11 +1221,21 @@ class PersonnelStore:
                         "national_code": nc,
                         "field_errors": [{"field": None, "message": msg}],
                     })
-                errors.append({
-                    "row": row_idx,
-                    "national_code": nc,
-                    "field_errors": [{"field": None, "message": msg}],
-                })
+                else:
+                    errors.append({
+                        "row": row_idx,
+                        "national_code": nc,
+                        "field_errors": [{"field": None, "message": msg}],
+                    })
+            finally:
+                processed_rows += 1
+                if progress_callback is not None:
+                    progress_callback({
+                        "total": total_rows,
+                        "imported": created,
+                        "skipped": skipped,
+                        "failed": max(0, processed_rows - created - skipped),
+                    })
         return {
             "created": created,
             "skipped": skipped,

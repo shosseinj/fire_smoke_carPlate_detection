@@ -4,8 +4,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import io
 import threading
-from typing import Any
+import queue
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import jdatetime
@@ -17,6 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
 from app.core.auth import require_role
+from app.api.import_progress import ImportJobAccepted
 from app.core.attendance_summary_service import AttendanceSummaryService, TimePeriod
 from app.core.detection_log_store import DetectionLogRecord, DetectionLogStore
 from app.core.detection_media import (
@@ -846,12 +849,12 @@ def import_excel_template(
     )
 
 
-@router.post("/import-excel")
-def import_excel(
+def _import_excel_sync(
     file: UploadFile,
     calendar: str = Query("jalali", pattern="^(jalali|gregorian)$"),
     skip_duplicates: bool = Query(True),
     current_user: dict = Depends(require_role("operator")),
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
 ) -> dict:
     if file.filename and not (file.filename.endswith(".xlsx") or file.filename.endswith(".xlsm")):
         raise HTTPException(400, "فقط فایل‌های .xlsx یا .xlsm پذیرفته می‌شوند")
@@ -870,9 +873,24 @@ def import_excel(
 
     parsed_rows: list[dict[str, Any]] = []
     failed = 0
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        if not row or all(v is None for v in row):
-            continue
+    skipped = 0
+    imported = 0
+    failed_row_details: list[dict[str, Any]] = []
+    skipped_row_details: list[dict[str, Any]] = []
+    successful_rows: list[dict[str, Any]] = []
+    excel_rows = [
+        (row_idx, row)
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2)
+        if row and any(value is not None for value in row)
+    ]
+    total_rows = len(excel_rows)
+
+    def emit_progress() -> None:
+        if progress_callback is not None:
+            progress_callback(total_rows, imported, skipped, failed)
+
+    emit_progress()
+    for row_idx, row in excel_rows:
         try:
             national_code = _excel_text(row[0]).replace(" ", "")
             year = int(_excel_text(row[1])) if row[1] is not None else None
@@ -895,8 +913,15 @@ def import_excel(
                 .astimezone(timezone.utc)
                 .isoformat()
             )
-        except (ValueError, TypeError, IndexError):
+        except (ValueError, TypeError, IndexError) as exc:
             failed += 1
+            failed_row_details.append({
+                "row": row_idx,
+                "national_code": _excel_text(row[0]) if row else "",
+                "code": "invalid_row",
+                "message": str(exc),
+            })
+            emit_progress()
             continue
         parsed_rows.append({
             "row_idx": row_idx,
@@ -917,10 +942,16 @@ def import_excel(
         )
         if personnel is None:
             failed += 1
+            failed_row_details.append({
+                "row": row["row_idx"],
+                "national_code": row["national_code"],
+                "code": "personnel_not_found",
+                "message": "پرسنل با کد ملی داده‌شده یافت نشد.",
+            })
+            emit_progress()
             continue
         resolved_rows.append({**row, "personnel": personnel})
 
-    skipped = 0
     accepted_rows: list[dict[str, Any]] = []
     duplicate_candidate_indexes: set[int] = set()
     candidate_index_by_row: dict[int, int] = {}
@@ -945,6 +976,12 @@ def import_excel(
             candidate_index = candidate_index_by_row.get(row_position)
             if candidate_index in duplicate_candidate_indexes:
                 skipped += 1
+                skipped_row_details.append({
+                    "row": row["row_idx"],
+                    "national_code": row["national_code"],
+                    "code": "duplicate_existing",
+                })
+                emit_progress()
                 continue
             current_time = datetime.fromisoformat(str(row["detection_time"]))
             key = (personnel.id, room_id)
@@ -954,6 +991,12 @@ def import_excel(
                 for previous in accepted_times[key]
             ):
                 skipped += 1
+                skipped_row_details.append({
+                    "row": row["row_idx"],
+                    "national_code": row["national_code"],
+                    "code": "duplicate_in_file",
+                })
+                emit_progress()
                 continue
             accepted_times[key].append(current_time)
         accepted_rows.append(row)
@@ -992,25 +1035,109 @@ def import_excel(
             "created_by": user_id,
         })
 
-    imported = 0
     for start in range(0, len(payloads), 500):
         batch = payloads[start:start + 500]
+        source_batch = accepted_rows[start:start + 500]
         try:
-            imported += len(store.create_many(batch, batch_size=len(batch)))
+            records = store.create_many(batch, batch_size=len(batch))
+            imported += len(records)
+            successful_rows.extend({
+                "row": source["row_idx"],
+                "national_code": source["national_code"],
+                "detection_log_id": record.id,
+            } for source, record in zip(source_batch, records))
+            emit_progress()
         except Exception:
             # Preserve the previous row-level partial-success behavior if one
             # exceptional record prevents a whole optimized batch insert.
-            for payload in batch:
+            for payload, source in zip(batch, source_batch):
                 try:
-                    store.create(**payload)
+                    record = store.create(**payload)
                     imported += 1
-                except Exception:
+                    successful_rows.append({
+                        "row": source["row_idx"],
+                        "national_code": source["national_code"],
+                        "detection_log_id": record.id,
+                    })
+                    emit_progress()
+                except Exception as exc:
                     failed += 1
+                    failed_row_details.append({
+                        "row": source["row_idx"],
+                        "national_code": source["national_code"],
+                        "code": "database_insert_failed",
+                        "message": type(exc).__name__,
+                    })
+                    emit_progress()
 
     return {
         "imported_rows": imported,
         "skipped_rows": skipped,
         "failed_rows": failed,
+        "successful_row_details": successful_rows,
+        "skipped_row_details": skipped_row_details,
+        "failed_row_details": failed_row_details,
+    }
+
+
+@router.post(
+    "/import-excel",
+    status_code=202,
+    response_model=ImportJobAccepted,
+)
+async def import_excel(
+    file: UploadFile,
+    calendar: str = Query("jalali", pattern="^(jalali|gregorian)$"),
+    skip_duplicates: bool = Query(True),
+    current_user: dict = Depends(require_role("operator")),
+) -> dict[str, Any]:
+    filename = file.filename or "detection-logs.xlsx"
+    if not filename.casefold().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "فقط فایل‌های .xlsx یا .xlsm پذیرفته می‌شوند")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(422, "فایل اکسل خالی است")
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل اکسل نباید بیشتر از ۱۰ مگابایت باشد.")
+
+    def processor(report):
+        upload = UploadFile(filename=filename, file=io.BytesIO(contents))
+        result = _import_excel_sync(
+            upload,
+            calendar=calendar,
+            skip_duplicates=skip_duplicates,
+            current_user=current_user,
+            progress_callback=report,
+        )
+        total = result["imported_rows"] + result["skipped_rows"] + result["failed_rows"]
+        return {
+            "success": result["failed_rows"] == 0,
+            "filename": filename,
+            **result,
+            "summary": {
+                "total_rows": total,
+                "imported": result["imported_rows"],
+                "skipped": result["skipped_rows"],
+                "failed": result["failed_rows"],
+            },
+        }
+
+    try:
+        runtime = get_runtime()
+        record = runtime.excel_imports.submit(
+            "detection_logs_excel",
+            filename,
+            _get_current_user_id(current_user),
+            processor,
+        )
+    except queue.Full:
+        raise HTTPException(503, "صف ورود فایل‌های اکسل پر است؛ بعداً دوباره تلاش کنید.")
+    return {
+        "job_id": record.id,
+        "progress_id": record.id,
+        "status": record.status,
+        "status_url": f"/api/v1/import-progress/{record.id}",
+        "message": "فایل دریافت شد و پردازش آن در صف قرار گرفت.",
     }
 
 

@@ -47,6 +47,7 @@ from app.core.recent_detection_service import (
     get_single_detection_payload_by_id,
 )
 from app.core.import_progress_store import ImportProgressStore
+from app.core.excel_import_manager import ExcelImportManager
 from app.core.personnel_zip_import_manager import PersonnelZipImportManager
 from app.core.static_video_store import StaticVideoStore
 from app.core.static_video_lifecycle import StaticVideoLifecycle
@@ -107,6 +108,7 @@ class Runtime:
     request_store: RequestStore
     detection_log_store: DetectionLogStore
     import_progress: ImportProgressStore
+    excel_imports: ExcelImportManager
     personnel_zip_imports: PersonnelZipImportManager
     static_video_store: StaticVideoStore
     static_video_lifecycle: StaticVideoLifecycle
@@ -386,6 +388,7 @@ class Runtime:
         # wait forever for frontend clients that still have streams open.
         self.broadcast.close()
         self.personnel_zip_imports.close()
+        self.excel_imports.close()
         self.model_conversions.close()
         coordinator_error: Exception | None = None
         if self.recording_coordinator is not None:
@@ -607,6 +610,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     holiday_store = HolidayStore(database)
     request_store = RequestStore(database)
     import_progress = ImportProgressStore(database)
+    excel_imports = ExcelImportManager(import_progress)
     static_video_store = StaticVideoStore(database)
 
     # Seed database with foundational records and sample data (idempotent)
@@ -1128,6 +1132,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         request_store=request_store,
         detection_log_store=detection_log_store,
         import_progress=import_progress,
+        excel_imports=excel_imports,
         personnel_zip_imports=personnel_zip_imports,
         static_video_store=static_video_store,
         static_video_lifecycle=static_video_lifecycle,

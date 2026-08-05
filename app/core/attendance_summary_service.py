@@ -492,24 +492,24 @@ def _daily_summary_stats(
 
     raw_worked_time: int | None = None
     first_last_span_time: int | None = None
+    net_worked_time: int | None = None
     if even_detection_count and first_dt and last_dt:
         first_last_span_time = max(
             0,
             int((last_dt - first_dt).total_seconds() // 60),
         )
-        effective_first_dt = min(max(first_dt, shift_start), shift_end)
-        effective_last_dt = max(min(last_dt, shift_end), shift_start)
-        raw_worked_time = max(
-            0,
-            int((effective_last_dt - effective_first_dt).total_seconds() // 60),
-        )
+        raw_worked_time = _interval_minutes(paired_presence_intervals)
+        if is_workday:
+            regular_presence_intervals: list[tuple[datetime, datetime]] = []
+            for presence_start, presence_end in paired_presence_intervals:
+                regular_start = max(presence_start, shift_start)
+                regular_end = min(presence_end, shift_end)
+                if regular_end > regular_start:
+                    regular_presence_intervals.append((regular_start, regular_end))
+            net_worked_time = _interval_minutes(regular_presence_intervals)
+        else:
+            net_worked_time = raw_worked_time
 
-    gross_internal_absence = _interval_minutes(internal_absence_intervals)
-    net_worked_time = (
-        max(0, raw_worked_time - gross_internal_absence)
-        if raw_worked_time is not None
-        else None
-    )
     net_worked_time_with_overtime = (
         net_worked_time + overtime_minutes if net_worked_time is not None else None
     )
@@ -722,6 +722,17 @@ def _full_day_request_category(requests: list[SummaryRequest]) -> str | None:
         if request_type in available:
             return request_type
     return None
+
+
+def _daily_request_status(requests: list[SummaryRequest]) -> str | None:
+    category = _full_day_request_category(requests)
+    if category is not None:
+        return category
+    daily_requests = sorted(
+        (request for request in requests if request.duration_type == "daily"),
+        key=lambda request: request.id,
+    )
+    return daily_requests[0].request_type if daily_requests else None
 
 
 def _empty_shift_stats(message: str | None = None) -> dict[str, Any]:
@@ -1444,12 +1455,15 @@ class AttendanceSummaryService:
                 requests = requests_map.get(person.id, {}).get(day, [])
                 stats = _daily_summary_stats(day, day_logs, shift, requests, is_workday)
                 request_minutes = stats["request_minutes"]
+                daily_request_category = _daily_request_status(requests)
                 if is_custom_holiday:
                     status_value = "holiday"
                 elif day_logs and len(day_logs) % 2 != 0:
                     status_value = "absence"
                 elif day_logs:
                     status_value = "present"
+                elif is_workday and daily_request_category is not None:
+                    status_value = daily_request_category
                 elif sum(request_minutes.values()) > 0:
                     status_value = "approved_request"
                 elif is_workday:

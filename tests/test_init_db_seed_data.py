@@ -13,9 +13,11 @@ from app.core.shift_store import ShiftStore
 from app.core.jalali_utils import parse_jalali_date
 from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.init_db import (
+    _DEFAULT_SHIFTS,
+    _create_all_default_shifts,
     DEFAULT_PERSONNEL_SEED_DATA,
     create_default_cam_records,
-    create_default_detection_logs,
+    # create_default_detection_logs,
     create_default_personnel,
     create_rooms_for_cameras,
     init_database,
@@ -65,75 +67,75 @@ def test_create_default_personnel_seeds_when_empty(
     assert personnel_store.count() == len(DEFAULT_PERSONNEL_SEED_DATA)
 
 
-@pytest.mark.postgresql
-def test_create_default_detection_logs_seeds_when_empty(
-    postgres_database: Database,
-) -> None:
-    personnel_store = _make_personnel_store(postgres_database)
-    log_store = _make_log_store(postgres_database)
-    location_store = LocationStore(postgres_database)
+# @pytest.mark.postgresql
+# def test_create_default_detection_logs_seeds_when_empty(
+#     postgres_database: Database,
+# ) -> None:
+#     personnel_store = _make_personnel_store(postgres_database)
+#     log_store = _make_log_store(postgres_database)
+#     location_store = LocationStore(postgres_database)
 
-    # Seed dependencies: building → section → room, shift, personnel
-    building = location_store.create_building("Test Building")
-    section = location_store.create_section("Test Section", building_id=building.id)
-    room = location_store.create_room("Test Room", section_id=section.id)
-    shift_store = ShiftStore(postgres_database)
-    shift = shift_store.create(
-        shift_name="Test Shift",
-        shift_type="morning",
-        start_time="08:00",
-        end_time="16:00",
-        timezone_name="Asia/Tehran",
-        works_saturday=True,
-    )
-    personnel_store.create(
-        fname="Test",
-        lname="User",
-        national_code="0311344119",
-        employee_type="employee",
-        shift_id=shift.id,
-        department_id=section.id,
-    )
-    personnel_ids = [p.id for p in personnel_store.list(limit=100)[0]]
+#     # Seed dependencies: building → section → room, shift, personnel
+#     building = location_store.create_building("Test Building")
+#     section = location_store.create_section("Test Section", building_id=building.id)
+#     room = location_store.create_room("Test Room", section_id=section.id)
+#     shift_store = ShiftStore(postgres_database)
+#     shift = shift_store.create(
+#         shift_name="Test Shift",
+#         shift_type="morning",
+#         start_time="08:00",
+#         end_time="16:00",
+#         timezone_name="Asia/Tehran",
+#         works_saturday=True,
+#     )
+#     personnel_store.create(
+#         fname="Test",
+#         lname="User",
+#         national_code="0311344119",
+#         employee_type="employee",
+#         shift_id=shift.id,
+#         department_id=section.id,
+#     )
+#     personnel_ids = [p.id for p in personnel_store.list(limit=100)[0]]
 
-    created = create_default_detection_logs(
-        log_store,
-        personnel_ids=personnel_ids,
-        room_id=room.id,
-        target_count=100,
-    )
-    assert created == 100
+#     created = create_default_detection_logs(
+#         log_store,
+#         personnel_ids=personnel_ids,
+#         room_id=room.id,
+#         target_count=100,
+#     )
+#     assert created == 100
 
-    by_status = log_store.count_by_status()
-    # count_by_status returns per-log_type and per-access_granted entries
-    # The log_type:camera_rtsp count represents the total number of logs
-    assert by_status.get("log_type:camera_rtsp", 0) == 100
+#     by_status = log_store.count_by_status()
+#     # count_by_status returns per-log_type and per-access_granted entries
+#     # The log_type:camera_rtsp count represents the total number of logs
+#     assert by_status.get("log_type:camera_rtsp", 0) == 100
 
-    # At least some logs have access_granted True and some False
-    assert "access_granted:True" in by_status
-    assert "access_granted:False" in by_status
+#     # At least some logs have access_granted True and some False
+#     assert "access_granted:True" in by_status
+#     assert "access_granted:False" in by_status
 
-    # Idempotent: second call returns 0
-    created2 = create_default_detection_logs(
-        log_store,
-        personnel_ids=personnel_ids,
-        room_id=room.id,
-        target_count=100,
-    )
-    assert created2 == 0
+#     # Idempotent: second call returns 0
+#     created2 = create_default_detection_logs(
+#         log_store,
+#         personnel_ids=personnel_ids,
+#         room_id=room.id,
+#         target_count=100,
+#     )
+#     assert created2 == 0
 
 
-@pytest.mark.postgresql
-def test_create_default_detection_logs_skips_when_no_personnel(
-    postgres_database: Database,
-) -> None:
-    log_store = _make_log_store(postgres_database)
-    created = create_default_detection_logs(
-        log_store,
-        personnel_ids=[],
-        target_count=100,
-    )
-    assert created == 0
+# @pytest.mark.postgresql
+# def test_create_default_detection_logs_skips_when_no_personnel(
+#     postgres_database: Database,
+# ) -> None:
+#     log_store = _make_log_store(postgres_database)
+#     created = create_default_detection_logs(
+#         log_store,
+#         personnel_ids=[],
+#         target_count=100,
+#     )
+#     assert created == 0
 
 
 @pytest.mark.postgresql
@@ -169,9 +171,15 @@ def test_init_database_seeds_everything_when_empty(
     assert personnel
     for person in personnel:
         assignments = shift_store.list_assignments(person.id)
-        assert len(assignments) == 1
+        assert len(assignments) == 2
         assert assignments[0].start_date == parse_jalali_date("1405-01-01")
-        assert assignments[0].end_date == parse_jalali_date("1405-12-29")
+        assert assignments[0].end_date == parse_jalali_date("1405-02-31")
+        assert assignments[1].start_date == parse_jalali_date("1405-03-01")
+        assert assignments[1].end_date == parse_jalali_date("1405-12-29")
+        first_shift = shift_store.get(assignments[0].shift_id)
+        second_shift = shift_store.get(assignments[1].shift_id)
+        assert first_shift is not None and first_shift.shift_name == "شیفت جنگ"
+        assert second_shift is not None and second_shift.shift_name == "شیفت صبح"
 
     # Detection logs created
     by_status = log_store.count_by_status()
@@ -332,3 +340,33 @@ def test_init_database_preserves_room_assignment_for_non_seed_source(
     assert rooms[0].id == assigned_source.room_id
     assert rooms[0].cam_id is None
     assert cam_store.count() == 0
+def test_default_shifts_include_shifte_jang_schedule() -> None:
+    shift = next(item for item in _DEFAULT_SHIFTS if item["shift_name"] == "شیفت جنگ")
+
+    assert shift["start_time"] == "07:00"
+    assert shift["end_time"] == "14:00"
+    assert shift["max_minutes_delay"] == 15
+    assert shift["max_overtime_hours"] == 0.0
+
+
+def test_default_shift_seeding_adds_shifte_jang_when_other_shifts_exist() -> None:
+    existing = [
+        type("Shift", (), {"shift_name": item["shift_name"]})()
+        for item in _DEFAULT_SHIFTS
+        if item["shift_name"] != "شیفت جنگ"
+    ]
+    created: list[dict] = []
+
+    class ShiftStore:
+        def list(self, *, limit: int):
+            assert limit == 100
+            return existing, len(existing)
+
+        def create(self, **values):
+            created.append(values)
+            return type("Shift", (), {"id": 100, **values})()
+
+    seeded = _create_all_default_shifts(ShiftStore())  # type: ignore[arg-type]
+
+    assert [item["shift_name"] for item in created] == ["شیفت جنگ"]
+    assert any(shift.shift_name == "شیفت جنگ" for shift in seeded)
