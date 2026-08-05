@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_FLOOR
 from enum import Enum
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -837,16 +838,20 @@ def _logs_for_report_day(
 
 
 def _calculate_monthly_earned_leave_days(
-    eligible_days: int,
-    expected_working_days: int,
+    absent_days: int,
+    unpaid_leave_days: int,
+    sick_leave_days: int,
 ) -> float:
-    if expected_working_days <= 0:
-        return 0.0
-    eligible_ratio = max(
+    excluded_days = max(
         0.0,
-        min(1.0, float(eligible_days) / float(expected_working_days)),
+        min(30.0, float(absent_days + unpaid_leave_days + sick_leave_days)),
     )
+    eligible_ratio = (30.0 - excluded_days) / 30.0
     return round(MONTHLY_EARNED_LEAVE_DAYS * eligible_ratio, 4)
+
+
+def _floor_to_two_decimal_places(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR))
 
 
 def _earned_leave_request_days_in_range(
@@ -1646,28 +1651,27 @@ class AttendanceSummaryService:
 
                 day_category: str | None = None
                 if is_workday:
-                    if day_logs:
+                    request_category = _full_day_request_category(requests)
+                    if request_category == REQUEST_MISSION:
+                        mission_days += 1
+                        day_category = "mission"
+                    elif request_category == REQUEST_SICK_LEAVE:
+                        sick_leave_days += 1
+                        day_category = "sick_leave"
+                    elif request_category == REQUEST_EARNED_LEAVE:
+                        earned_leave_days += 1
+                        day_category = "earned_leave"
+                    elif request_category == REQUEST_UNPAID_LEAVE:
+                        unpaid_leave_days += 1
+                        day_category = "unpaid_leave"
+                    elif day_logs:
                         present_days += 1
                         day_category = "present"
                         stats = _compute_shift_day_stats(day, day_logs, shift)
                         early_minutes += stats["early_leave_minutes"]
                         delay_minutes += stats["delay_minutes"]
                     else:
-                        request_category = _full_day_request_category(requests)
-                        if request_category == REQUEST_MISSION:
-                            mission_days += 1
-                            day_category = "mission"
-                        elif request_category == REQUEST_SICK_LEAVE:
-                            sick_leave_days += 1
-                            day_category = "sick_leave"
-                        elif request_category == REQUEST_EARNED_LEAVE:
-                            earned_leave_days += 1
-                            day_category = "earned_leave"
-                        elif request_category == REQUEST_UNPAID_LEAVE:
-                            unpaid_leave_days += 1
-                            day_category = "unpaid_leave"
-                        else:
-                            day_category = "absent"
+                        day_category = "absent"
                 elif day_logs:
                     day_category = "holiday_overtime"
                 elif is_custom_holiday:
@@ -1717,7 +1721,10 @@ class AttendanceSummaryService:
             final_working_days = (
                 present_days + mission_days + earned_leave_days + sick_leave_days
             )
-            absent_days = max(0, month_working_days - final_working_days)
+            absent_days = max(
+                0,
+                month_working_days - final_working_days - unpaid_leave_days,
+            )
             total_hourly_absent_minutes = early_minutes + delay_minutes
             result_item: dict[str, Any] = {
                 "personnel_id": person.id,
@@ -1829,8 +1836,9 @@ class AttendanceSummaryService:
                     {day: shift for day, shift in yearly_shifts.items() if month_start <= day <= month_end},
                 )
                 earned_leave_days = _calculate_monthly_earned_leave_days(
-                    attendance["final_working_days"],
-                    attendance["month_working_days"],
+                    attendance["absent_days"],
+                    attendance["unpaid_leave_days"],
+                    attendance["sick_leave_days"],
                 )
                 used_leave_days = round(sum(
                     1.0
@@ -1843,9 +1851,8 @@ class AttendanceSummaryService:
                 ), 4)
                 cumulative_earned_days += earned_leave_days
                 cumulative_used_days += used_leave_days
-                remaining_leave_days = round(
-                    cumulative_earned_days - cumulative_used_days,
-                    4,
+                remaining_leave_days = _floor_to_two_decimal_places(
+                    cumulative_earned_days - cumulative_used_days
                 )
                 months.append(
                     {

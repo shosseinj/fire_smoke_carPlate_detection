@@ -64,6 +64,7 @@ def test_generate_fake_requests_uses_all_personnel_pages_and_calculated_fields(
         count=1,
         from_date=None,
         to_date=None,
+        remove_logs_in_request_dates=True,
         admin_user=object(),
     )
 
@@ -123,6 +124,7 @@ def test_generate_fake_requests_review_metadata_matches_each_status(monkeypatch)
         count=3,
         from_date=None,
         to_date=None,
+        remove_logs_in_request_dates=False,
         admin_user=object(),
     )
 
@@ -188,16 +190,67 @@ def test_generate_fake_requests_has_no_count_upper_bound(monkeypatch) -> None:
         parameter for parameter in operation["parameters"] if parameter["name"] == "count"
     )
     assert "maximum" not in count_parameter["schema"]
+    remove_parameter = next(
+        parameter
+        for parameter in operation["parameters"]
+        if parameter["name"] == "remove_logs_in_request_dates"
+    )
+    assert remove_parameter["schema"]["default"] is True
 
     response = personnel_requests.generate_fake_requests(
         count=51,
         from_date="1405-05-01",
         to_date="1405-05-01",
+        remove_logs_in_request_dates=False,
         admin_user=object(),
     )
 
     assert response["count"] == 51
     assert len(request_store.created) == 51
+
+
+def test_generate_fake_daily_request_removes_only_personnel_logs_in_dates(
+    monkeypatch,
+) -> None:
+    _configure_single_eligible_person(monkeypatch)
+    deletion_calls: list[tuple[int, str, str]] = []
+
+    class DetectionStore:
+        def delete_personnel_in_time_range(
+            self,
+            personnel_id: int,
+            utc_start: str,
+            utc_end: str,
+        ) -> list[object]:
+            deletion_calls.append((personnel_id, utc_start, utc_end))
+            return [object(), object()]
+
+    monkeypatch.setattr(
+        personnel_requests,
+        "get_detection_log_store",
+        lambda: DetectionStore(),
+    )
+
+    response = personnel_requests.generate_fake_requests(
+        count=1,
+        from_date="1405-05-01",
+        to_date="1405-05-01",
+        remove_logs_in_request_dates=True,
+        admin_user=object(),
+    )
+
+    request_day = personnel_requests.parse_jalali_date("1405-05-01")
+    expected_start, expected_end = personnel_requests.local_date_range_bounds_utc(
+        request_day,
+        request_day,
+        personnel_requests.ZoneInfo(
+            personnel_requests.settings.business_timezone_name
+        ),
+    )
+    assert deletion_calls == [
+        (8, expected_start.isoformat(), expected_end.isoformat())
+    ]
+    assert response["removed_logs_count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -221,6 +274,7 @@ def test_generate_fake_requests_validates_paired_jalali_range(
             count=1,
             from_date=from_date,
             to_date=to_date,
+            remove_logs_in_request_dates=False,
             admin_user=object(),
         )
 
@@ -242,6 +296,7 @@ def test_generate_fake_requests_uses_inclusive_jalali_range_and_clamps_daily_end
         count=2,
         from_date="1405-05-01",
         to_date="1405-05-02",
+        remove_logs_in_request_dates=False,
         admin_user=object(),
     )
 
@@ -258,6 +313,33 @@ def test_generate_fake_requests_uses_inclusive_jalali_range_and_clamps_daily_end
     )
 
 
+def test_generate_fake_daily_request_is_at_most_three_calendar_days(
+    monkeypatch,
+) -> None:
+    request_store = _configure_single_eligible_person(monkeypatch)
+    calls = 0
+
+    def randint(low: int, high: int) -> int:
+        nonlocal calls
+        calls += 1
+        return low if calls == 1 else high
+
+    monkeypatch.setattr(personnel_requests._random, "randint", randint)
+
+    personnel_requests.generate_fake_requests(
+        count=1,
+        from_date="1405-05-01",
+        to_date="1405-05-20",
+        remove_logs_in_request_dates=False,
+        admin_user=object(),
+    )
+
+    created = request_store.created[0]
+    request_start = date.fromisoformat(created["start_date"])
+    request_end = date.fromisoformat(created["end_date"])
+    assert (request_end - request_start).days == 2
+
+
 def test_generate_fake_requests_default_range_remains_last_180_days(monkeypatch) -> None:
     request_store = _configure_single_eligible_person(monkeypatch)
     randint_values = iter((0, 0, 180, 0))
@@ -271,6 +353,7 @@ def test_generate_fake_requests_default_range_remains_last_180_days(monkeypatch)
         count=2,
         from_date=None,
         to_date=None,
+        remove_logs_in_request_dates=False,
         admin_user=object(),
     )
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import random as _random
 from datetime import date, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.core.auth import require_role, get_current_user
 from app.core.legacy_service import (
     LEGACY_DURATION_TYPES,
@@ -25,7 +27,7 @@ from app.core.personnel_store import PersonnelRecord
 from app.core.shift_store import WorkShiftRecord
 
 from app.core.request_store import PersonnelRequestRecord
-from app.core.jalali_utils import parse_jalali_date
+from app.core.jalali_utils import local_date_range_bounds_utc, parse_jalali_date
 from app.time_utils import utc_now_text
 
 LEGACY_STATUSES = frozenset({"waiting", "accepted", "rejected"})
@@ -48,6 +50,50 @@ class BulkPersonnelRequestCreate(BaseModel):
     requests: list[BulkPersonnelRequestItem] = Field(min_length=1, max_length=200)
 
 
+class PersonnelRequestCreate(BaseModel):
+    personnel_id: int = Field(gt=0)
+    request_type: str = "earned_leave"
+    duration_type: str = "daily"
+    start_date: str = Field(min_length=1)
+    end_date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    description: str | None = None
+
+
+class PersonnelRequestResponse(BaseModel):
+    id: int
+    personnel_id: int
+    full_name: str | None
+    request_type: str
+    duration_type: str | None
+    start_date: str
+    end_date: str
+    start_time: str | None
+    end_time: str | None
+    description: str | None
+    duration_days: float | None
+    duration_minutes: int | None
+    duration_time: str | None
+    status: str
+    admin_notes: str | None
+    rejection_reason: str | None
+    created_at: str | None
+    updated_at: str | None
+    reviewed_by: int | None
+    reviewed_at: str | None
+
+
+class PersonnelRequestCreateResponse(PersonnelRequestResponse):
+    removed_logs_count: int
+
+
+class BulkPersonnelRequestResponse(BaseModel):
+    personnel_id: int
+    count: int
+    requests: list[PersonnelRequestResponse]
+
+
 def get_runtime() -> Any:
     from app.main import runtime
     return runtime
@@ -67,6 +113,30 @@ def get_holiday_store() -> Any:
 
 def get_personnel_store() -> Any:
     return get_runtime().personnel_store
+
+
+def get_detection_log_store() -> Any:
+    return get_runtime().detection_log_store
+
+
+def _remove_detection_logs_for_daily_request(
+    personnel_id: int,
+    start_date: date,
+    end_date: date,
+) -> int:
+    local_tz = ZoneInfo(settings.business_timezone_name)
+    utc_start, utc_end = local_date_range_bounds_utc(
+        start_date,
+        end_date,
+        local_tz,
+    )
+    return len(
+        get_detection_log_store().delete_personnel_in_time_range(
+            personnel_id,
+            utc_start.isoformat(),
+            utc_end.isoformat(),
+        )
+    )
 
 
 def _get_user_id(current_user: Any) -> int:
@@ -225,7 +295,7 @@ def _prepare_bulk_request(
 # ── List ──────────────────────────────────────────────────────────────────
 
 
-@router.get("/")
+@router.get("/", response_model=list[PersonnelRequestResponse])
 def list_requests(
     personnel_id: int | None = Query(None),
     request_type: str | None = Query(None),
@@ -262,7 +332,7 @@ def list_requests(
 # ── My requests ───────────────────────────────────────────────────────────
 
 
-@router.get("/my-requests")
+@router.get("/my-requests", response_model=list[PersonnelRequestResponse])
 def get_my_requests(
     status: str | None = Query(None),
     skip: int = Query(0, ge=0),
@@ -416,20 +486,25 @@ def admin_statistics(
 # ── Create ────────────────────────────────────────────────────────────────
 
 
-@router.post("/", status_code=201)
+@router.post(
+    "/",
+    status_code=201,
+    response_model=PersonnelRequestCreateResponse,
+)
 def create_request(
-    body: dict[str, Any],
+    body: PersonnelRequestCreate,
+    remove_logs_in_request_dates: bool = False,
     _: Any = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     store = get_request_store()
-    personnel_id = int(body.get("personnel_id", 0))
-    request_type = str(body.get("request_type", "earned_leave"))
-    duration_type = str(body.get("duration_type", "daily"))
-    start_date_str = str(body.get("start_date", ""))
-    end_date_str = str(body.get("end_date", ""))
-    start_time_str = body.get("start_time")
-    end_time_str = body.get("end_time")
-    description = body.get("description")
+    personnel_id = body.personnel_id
+    request_type = body.request_type
+    duration_type = body.duration_type
+    start_date_str = body.start_date
+    end_date_str = body.end_date
+    start_time_str = body.start_time
+    end_time_str = body.end_time
+    description = body.description
 
     if request_type not in LEGACY_REQUEST_TYPES:
         raise HTTPException(400, f"نوع درخواست معتبر نیست: {request_type!r}")
@@ -491,13 +566,27 @@ def create_request(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
-    return legacy_request_response(record, full_name=_full_name(personnel))
+    removed_logs_count = 0
+    if remove_logs_in_request_dates and duration_type == "daily":
+        removed_logs_count = _remove_detection_logs_for_daily_request(
+            personnel_id,
+            s,
+            e,
+        )
+
+    response = legacy_request_response(record, full_name=_full_name(personnel))
+    response["removed_logs_count"] = removed_logs_count
+    return response
 
 
 # ── Generate fake (admin only) ────────────────────────────────────────────
 
 
-@router.post("/bulk", status_code=201)
+@router.post(
+    "/bulk",
+    status_code=201,
+    response_model=BulkPersonnelRequestResponse,
+)
 def create_bulk_requests(
     body: BulkPersonnelRequestCreate,
     _: Any = Depends(require_role("operator")),
@@ -533,6 +622,10 @@ def generate_fake_requests(
     count: int = Query(10, ge=1, description="تعداد درخواست آزمایشی برای ایجاد"),
     from_date: str | None = Query(None, description="تاریخ شروع شمسی YYYY-MM-DD"),
     to_date: str | None = Query(None, description="تاریخ پایان شمسی YYYY-MM-DD"),
+    remove_logs_in_request_dates: bool = Query(
+        True,
+        description="حذف لاگ‌های همان پرسنل در تاریخ درخواست‌های روزانه ایجادشده",
+    ),
     admin_user: Any = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     if bool(from_date) != bool(to_date):
@@ -579,6 +672,7 @@ def generate_fake_requests(
         raise HTTPException(404, "هیچ پرسنل دارای شیفتی یافت نشد")
 
     created = 0
+    removed_logs_count = 0
     request_types_list = (
         "earned_leave",
         "sick_leave",
@@ -601,7 +695,7 @@ def generate_fake_requests(
         if duration_type == "daily":
             remaining_days = (generation_end - request_start).days
             request_end = request_start + timedelta(
-                days=_random.randint(0, min(10, remaining_days))
+                days=_random.randint(0, min(2, remaining_days))
             )
             st = None
             et = None
@@ -644,17 +738,27 @@ def generate_fake_requests(
                 reviewed_at=reviewed_at,
                 rejection_reason=rejection_reason,
             )
-            created += 1
         except (ValueError, Exception):
             continue
+        created += 1
+        if remove_logs_in_request_dates and duration_type == "daily":
+            removed_logs_count += _remove_detection_logs_for_daily_request(
+                person.id,
+                request_start,
+                request_end,
+            )
 
-    return {"message": f"{created} درخواست آزمایشی ایجاد شد", "count": created}
+    return {
+        "message": f"{created} درخواست آزمایشی ایجاد شد",
+        "count": created,
+        "removed_logs_count": removed_logs_count,
+    }
 
 
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
-@router.get("/{request_id}")
+@router.get("/{request_id}", response_model=PersonnelRequestResponse)
 def get_request(
     request_id: int,
     _: Any = Depends(require_role("operator")),
@@ -673,7 +777,7 @@ def get_request(
 # ── PATCH (update status) ────────────────────────────────────────────────
 
 
-@router.patch("/{request_id}")
+@router.patch("/{request_id}", response_model=PersonnelRequestResponse)
 def patch_request(
     request_id: int,
     body: dict[str, Any],
@@ -717,7 +821,7 @@ def patch_request(
 # ── Approve ────────────────────────────────────────────────────────────────
 
 
-@router.patch("/{request_id}/approve")
+@router.patch("/{request_id}/approve", response_model=PersonnelRequestResponse)
 def approve_request(
     request_id: int,
     admin_notes: str | None = Query(None),
@@ -750,7 +854,7 @@ def approve_request(
 # ── Reject ────────────────────────────────────────────────────────────────
 
 
-@router.patch("/{request_id}/reject")
+@router.patch("/{request_id}/reject", response_model=PersonnelRequestResponse)
 def reject_request(
     request_id: int,
     rejection_reason: str = Query(..., min_length=1),

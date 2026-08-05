@@ -7,11 +7,13 @@ from app.core.attendance_summary_service import (
     AttendanceSummaryService,
     SummaryLog,
     SummaryPersonnel,
+    SummaryRequest,
     SummaryShift,
     TimePeriod,
     _calculate_monthly_earned_leave_days,
     _compute_shift_day_stats,
     _daily_summary_stats,
+    _floor_to_two_decimal_places,
     _yearly_leave_month_attendance,
 )
 
@@ -517,17 +519,23 @@ def test_yearly_month_attendance_deduplicates_overlapping_holiday_total() -> Non
     assert stats["month_working_days"] == 5
 
 
-def test_monthly_earned_leave_is_full_when_all_expected_days_are_eligible() -> None:
-    assert _calculate_monthly_earned_leave_days(22, 22) == 2.5
+def test_monthly_earned_leave_is_full_without_excluded_days() -> None:
+    assert _calculate_monthly_earned_leave_days(0, 0, 0) == 2.5
 
 
-def test_monthly_earned_leave_reduces_for_absence_and_unpaid_leave() -> None:
-    # Twenty expected days, with one absence and one unpaid-leave day.
-    assert _calculate_monthly_earned_leave_days(18, 20) == 2.25
+def test_monthly_earned_leave_uses_fixed_30_day_denominator() -> None:
+    # Six excluded days earn 24 / 30 of the monthly 2.5-day allowance.
+    assert _calculate_monthly_earned_leave_days(2, 1, 3) == 2.0
 
 
-def test_monthly_earned_leave_is_zero_without_expected_workdays() -> None:
-    assert _calculate_monthly_earned_leave_days(0, 0) == 0.0
+def test_monthly_earned_leave_is_zero_when_all_30_days_are_excluded() -> None:
+    assert _calculate_monthly_earned_leave_days(10, 10, 10) == 0.0
+
+
+def test_remaining_leave_days_floor_to_two_decimal_places() -> None:
+    assert _floor_to_two_decimal_places(1.239) == 1.23
+    assert _floor_to_two_decimal_places(2.3) == 2.3
+    assert _floor_to_two_decimal_places(-1.231) == -1.24
 
 
 def test_yearly_leave_uses_previous_month_21_to_current_month_20(
@@ -568,6 +576,80 @@ def test_yearly_leave_uses_previous_month_21_to_current_month_20(
     assert row["months"][0]["period_end"] == "1405-01-20"
     assert row["months"][11]["period_start"] == "1405-11-21"
     assert row["months"][11]["period_end"] == "1405-12-20"
+
+
+def test_monthly_summary_full_day_leave_overrides_detection_logs(monkeypatch) -> None:
+    first_day = date(2026, 4, 7)
+    last_day = date(2026, 4, 8)
+    person = SummaryPersonnel(
+        id=3,
+        fname="Test",
+        lname="Person",
+        national_code="123",
+        department_id=None,
+        section_name=None,
+        shift_id=1,
+        shift=None,
+    )
+    shift_record = _shift_record(1, "daily")
+    for weekday in (
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday",
+    ):
+        setattr(shift_record, f"works_{weekday}", True)
+    service = AttendanceSummaryService(
+        database=None,  # type: ignore[arg-type]
+        shift_store=_FakeShiftStore(
+            [SimpleNamespace(
+                personnel_id=person.id,
+                shift_id=1,
+                start_date=first_day,
+                end_date=last_day,
+            )],
+            {1: shift_record},
+        ),
+    )
+    logs = [
+        SummaryLog(1, person.national_code, person.id, datetime(2026, 4, 7, 9, tzinfo=timezone.utc)),
+        SummaryLog(2, person.national_code, person.id, datetime(2026, 4, 8, 9, tzinfo=timezone.utc)),
+    ]
+    requests = {
+        person.id: {
+            first_day: [SummaryRequest(
+                1, person.id, "sick_leave", "daily", first_day, first_day,
+                None, None, 1.0, None, "approved",
+            )],
+            last_day: [SummaryRequest(
+                2, person.id, "unpaid_leave", "daily", last_day, last_day,
+                None, None, 1.0, None, "approved",
+            )],
+        }
+    }
+    monkeypatch.setattr(
+        attendance_module,
+        "_jalali_moving_month_range",
+        lambda *_: (first_day, last_day),
+    )
+    monkeypatch.setattr(service, "_personnel", lambda *_: [person])
+    monkeypatch.setattr(service, "_logs", lambda *_: {person.national_code: logs})
+    monkeypatch.setattr(service, "_holiday_dates", lambda *_: set())
+    monkeypatch.setattr(service, "_accepted_requests_by_person_day", lambda *_: requests)
+
+    row = service.monthly_summary(
+        jalali_year=1405,
+        jalali_month=1,
+        personnel_id="3",
+        section_id=None,
+        shift_id=None,
+        include_daily_rows=True,
+        move_days=10,
+    )[0]
+
+    assert row["sick_leave_days"] == 1
+    assert row["unpaid_leave_days"] == 1
+    assert row["present_days"] == 0
+    assert row["absent_days"] == 0
+    assert [day["status"] for day in row["days"]] == ["sick_leave", "unpaid_leave"]
 
 
 def test_monthly_summary_uses_dated_shift_assignments_and_preserves_gaps(

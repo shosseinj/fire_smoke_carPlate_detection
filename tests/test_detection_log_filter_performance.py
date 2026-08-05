@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import app.api.detection_logs as api
+import pytest
+from fastapi import HTTPException
 from app.core.detection_log_store import DetectionLogRecord
 
 
@@ -232,3 +235,32 @@ def test_filter_store_query_skips_unused_total(monkeypatch):
     assert calls[0]["include_thumbnails"] is False
     assert calls[0]["offset"] == 0
     assert calls[0]["limit"] == 200
+
+
+def test_filter_jalali_dates_imply_custom_period_when_period_is_omitted() -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        "all",
+        "1405-01-18",
+        "1405-01-19",
+    )
+
+    assert datetime.fromisoformat(utc_start) == datetime(
+        2026, 4, 6, 20, 30, tzinfo=timezone.utc
+    )
+    assert datetime.fromisoformat(utc_end) == datetime(
+        2026, 4, 8, 20, 30, tzinfo=timezone.utc
+    )
+
+
+def test_filter_rejects_incomplete_implicit_custom_period() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("all", "1405-01-18", None)
+
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_rejects_reversed_implicit_custom_period() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("all", "1405-01-19", "1405-01-18")
+
+    assert exc_info.value.status_code == 400
