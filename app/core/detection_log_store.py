@@ -351,6 +351,24 @@ class DetectionLogStore:
             ).fetchall()
             return [self._row_to_log(row) for row in rows]
 
+    def delete_personnel_in_time_range(
+        self,
+        personnel_id: int,
+        from_date_utc: str,
+        to_date_utc: str,
+    ) -> list[DetectionLogRecord]:
+        """Delete one person's logs in the half-open UTC interval [start, end)."""
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "DELETE FROM detection_logs "
+                "WHERE personnel_id = ? "
+                "AND detection_time >= ?::timestamptz "
+                "AND detection_time < ?::timestamptz "
+                "RETURNING *",
+                (personnel_id, from_date_utc, to_date_utc),
+            ).fetchall()
+            return [self._row_to_log(row) for row in rows]
+
     def find_dedup(
         self,
         personnel_id: int,

@@ -28,6 +28,7 @@ from app.core.jalali_utils import (
     _get_tehran_tz,
     gregorian_to_jalali_str,
     jalali_month_utc_range,
+    local_date_range_bounds_utc,
     local_day_utc_range,
     parse_jalali_date,
 )
@@ -470,6 +471,8 @@ def _period_to_utc_range(
     from_date_jalali: str | None,
     to_date_jalali: str | None,
 ) -> tuple[str | None, str | None]:
+    if period == "all" and (from_date_jalali or to_date_jalali):
+        period = "custom"
     if period == "today":
         now_tehran = datetime.now(_get_tehran_tz())
         today_local = now_tehran.date()
@@ -496,8 +499,10 @@ def _period_to_utc_range(
             raise HTTPException(400, "برای بازه سفارشی، from_date_jalali و to_date_jalali الزامی هستند")
         from_g = parse_jalali_date(from_date_jalali)
         to_g = parse_jalali_date(to_date_jalali)
-        utc_start, _ = local_day_utc_range(from_g)
-        _, utc_end = local_day_utc_range(to_g)
+        try:
+            utc_start, utc_end = local_date_range_bounds_utc(from_g, to_g)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return utc_start.isoformat(), utc_end.isoformat()
     raise HTTPException(400, f"بازه زمانی ناشناخته است: {period!r}")
 
