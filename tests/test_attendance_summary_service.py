@@ -17,11 +17,22 @@ from app.core.attendance_summary_service import (
     _compute_shift_day_stats,
     _daily_summary_stats,
     _floor_to_two_decimal_places,
+    _is_holiday_overtime_day,
+    _monthly_presence_minutes,
     _yearly_leave_month_attendance,
 )
 
 
 REPORT_DAY = date(2026, 7, 27)
+
+
+def test_holiday_overtime_days_are_only_friday_or_configured_holiday() -> None:
+    friday = date(2026, 7, 31)
+    ordinary_day = date(2026, 7, 30)
+
+    assert _is_holiday_overtime_day(friday, set()) is True
+    assert _is_holiday_overtime_day(ordinary_day, {ordinary_day}) is True
+    assert _is_holiday_overtime_day(ordinary_day, set()) is False
 
 
 def test_daily_summary_explicit_jalali_range_overrides_default_today_period() -> None:
@@ -419,6 +430,7 @@ def test_non_working_day_counts_only_paired_presence_as_holiday_overtime() -> No
         _shift(),
         requests=[],
         is_workday=False,
+        is_holiday_overtime_day=True,
     )
 
     assert stats["holiday_overtime_minutes"] == 7 * 60
@@ -440,6 +452,7 @@ def test_non_working_day_holiday_overtime_excludes_between_pair_gaps() -> None:
         _shift(),
         requests=[],
         is_workday=False,
+        is_holiday_overtime_day=True,
     )
 
     assert stats["first_last_span_time"] == 11 * 60
@@ -457,6 +470,7 @@ def test_non_working_day_odd_detection_ignores_only_unmatched_final_entry() -> N
         _shift(),
         requests=[],
         is_workday=False,
+        is_holiday_overtime_day=True,
     )
 
     assert stats["holiday_overtime_minutes"] == 3 * 60
@@ -464,6 +478,30 @@ def test_non_working_day_odd_detection_ignores_only_unmatched_final_entry() -> N
     assert stats["raw_worked_time"] is None
     assert stats["net_worked_time"] is None
     assert stats["message"] is not None
+
+
+def test_ordinary_non_working_day_is_normal_overtime() -> None:
+    logs = [_log_at(7, 0, log_id=1), _log_at(14, 0, log_id=2)]
+
+    daily = _daily_summary_stats(
+        REPORT_DAY,
+        logs,
+        _shift(),
+        requests=[],
+        is_workday=False,
+        is_holiday_overtime_day=False,
+    )
+    monthly = _monthly_presence_minutes(
+        REPORT_DAY,
+        logs,
+        _shift(),
+        is_workday=False,
+        is_holiday_overtime_day=False,
+    )
+
+    assert daily["overtime_minutes"] == 7 * 60
+    assert daily["holiday_overtime_minutes"] == 0
+    assert monthly == {"regular": 0, "overtime": 7 * 60, "holiday_overtime": 0}
 
 
 def _monthly_summary_date_range(
