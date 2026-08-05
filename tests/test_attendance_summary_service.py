@@ -2,6 +2,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 from datetime import date, datetime, time, timedelta, timezone
 
+import pytest
+from fastapi import HTTPException
+
 import app.core.attendance_summary_service as attendance_module
 from app.core.attendance_summary_service import (
     AttendanceSummaryService,
@@ -19,6 +22,30 @@ from app.core.attendance_summary_service import (
 
 
 REPORT_DAY = date(2026, 7, 27)
+
+
+def test_daily_summary_explicit_jalali_range_overrides_default_today_period() -> None:
+    start_utc, end_utc, start_day, end_day = AttendanceSummaryService._resolve_daily_date_range(
+        TimePeriod.TODAY,
+        "1405-01-18",
+        "1405-01-19",
+    )
+
+    assert start_day == date(2026, 4, 7)
+    assert end_day == date(2026, 4, 8)
+    assert start_utc == datetime(2026, 4, 6, 20, 30, tzinfo=timezone.utc)
+    assert end_utc == datetime(2026, 4, 8, 20, 30, tzinfo=timezone.utc)
+
+
+def test_daily_summary_requires_both_jalali_range_boundaries() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        AttendanceSummaryService._resolve_daily_date_range(
+            TimePeriod.TODAY,
+            "1405-01-18",
+            None,
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 def _shift() -> SummaryShift:
