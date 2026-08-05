@@ -252,9 +252,32 @@ def test_filter_jalali_dates_imply_custom_period_when_period_is_omitted() -> Non
     )
 
 
+@pytest.mark.parametrize("period", ["today", "last_week", "last_month"])
+def test_filter_explicit_jalali_dates_override_preset_period(period: str) -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        period,
+        "1405-01-18",
+        "1405-01-19",
+    )
+
+    assert datetime.fromisoformat(utc_start) == datetime(
+        2026, 4, 6, 20, 30, tzinfo=timezone.utc
+    )
+    assert datetime.fromisoformat(utc_end) == datetime(
+        2026, 4, 8, 20, 30, tzinfo=timezone.utc
+    )
+
+
 def test_filter_rejects_incomplete_implicit_custom_period() -> None:
     with pytest.raises(HTTPException) as exc_info:
         api._period_to_utc_range("all", "1405-01-18", None)
+
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_rejects_invalid_explicit_jalali_date() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("today", "not-a-date", "1405-01-18")
 
     assert exc_info.value.status_code == 400
 

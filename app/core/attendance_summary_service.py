@@ -1310,6 +1310,22 @@ class AttendanceSummaryService:
         now_utc = utc_now()
         today_local = _utc_to_local(now_utc, DEFAULT_LOCAL_TZ_NAME).date()
         try:
+            # Explicit date parameters always take precedence over the default
+            # ``period=today`` value used by the API.
+            if period == TimePeriod.CUSTOM or from_date_jalali or to_date_jalali:
+                if not from_date_jalali or not to_date_jalali:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="برای فیلتر تاریخ، تاریخ شروع و پایان شمسی الزامی است",
+                    )
+                start_day = parse_jalali_date(from_date_jalali)
+                end_day = parse_jalali_date(to_date_jalali)
+                start_utc, end_utc = _local_date_range_bounds_utc(
+                    start_day,
+                    end_day,
+                    DEFAULT_LOCAL_TZ_NAME,
+                )
+                return start_utc, end_utc, start_day, end_day
             if period == TimePeriod.TODAY:
                 start_utc, end_utc = _local_day_bounds_utc(
                     today_local,
@@ -1332,20 +1348,6 @@ class AttendanceSummaryService:
                     _utc_to_local(start_utc).date(),
                     today_local,
                 )
-            if period == TimePeriod.CUSTOM or from_date_jalali or to_date_jalali:
-                if not from_date_jalali or not to_date_jalali:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="برای فیلتر تاریخ، تاریخ شروع و پایان شمسی الزامی است",
-                    )
-                start_day = parse_jalali_date(from_date_jalali)
-                end_day = parse_jalali_date(to_date_jalali)
-                start_utc, end_utc = _local_date_range_bounds_utc(
-                    start_day,
-                    end_day,
-                    DEFAULT_LOCAL_TZ_NAME,
-                )
-                return start_utc, end_utc, start_day, end_day
         except HTTPException:
             raise
         except Exception as exc:
