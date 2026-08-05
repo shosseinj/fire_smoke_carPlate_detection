@@ -374,6 +374,7 @@ def _daily_summary_stats(
     shift: SummaryShift | None,
     requests: list[SummaryRequest],
     is_workday: bool,
+    is_holiday_overtime_day: bool = False,
 ) -> dict[str, Any]:
     window = _shift_window(day, shift)
     if window is None:
@@ -484,8 +485,10 @@ def _daily_summary_stats(
             overtime_start = max(presence_start, shift_end)
             if presence_end > overtime_start:
                 overtime_intervals.append((overtime_start, presence_end))
-    else:
+    elif is_holiday_overtime_day:
         holiday_overtime_minutes = _interval_minutes(paired_presence_intervals)
+    else:
+        overtime_intervals.extend(paired_presence_intervals)
 
     illegal_presence_minutes = _interval_minutes(illegal_presence_intervals)
     overtime_minutes = _interval_minutes(overtime_intervals)
@@ -681,6 +684,7 @@ def _monthly_presence_minutes(
     day_logs: list[SummaryLog],
     shift: SummaryShift | None,
     is_workday: bool,
+    is_holiday_overtime_day: bool = False,
 ) -> dict[str, int]:
     if not day_logs or not shift:
         return {"regular": 0, "overtime": 0, "holiday_overtime": 0}
@@ -689,7 +693,9 @@ def _monthly_presence_minutes(
     last_dt = _to_shift_local(local_logs[-1].detection_time, shift)
     total_span = max(0, int((last_dt - first_dt).total_seconds() // 60))
     if not is_workday:
-        return {"regular": 0, "overtime": 0, "holiday_overtime": total_span}
+        if is_holiday_overtime_day:
+            return {"regular": 0, "overtime": 0, "holiday_overtime": total_span}
+        return {"regular": 0, "overtime": total_span, "holiday_overtime": 0}
     window = _shift_window(day, shift)
     if window is None:
         return {"regular": 0, "overtime": 0, "holiday_overtime": 0}
@@ -865,6 +871,10 @@ def _floor_to_two_decimal_places(value: float) -> float:
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR))
 
 
+def _is_holiday_overtime_day(day: date, holiday_days: set[date]) -> bool:
+    return day.weekday() == 4 or day in holiday_days
+
+
 def _earned_leave_request_days_in_range(
     request_item: SummaryRequest,
     range_start: date,
@@ -921,12 +931,13 @@ def _yearly_leave_month_attendance(
                 total_holidays += 1
             continue
         is_shift_day = _shift_expected_on_day(day, shift)
-        is_workday = is_shift_day and not is_custom_holiday
+        is_friday = day.weekday() == 4
+        is_workday = is_shift_day and not is_custom_holiday and not is_friday
         if not is_shift_day:
             off_days += 1
         if is_custom_holiday:
             custom_holidays += 1
-        if not is_shift_day or is_custom_holiday:
+        if not is_shift_day or is_custom_holiday or is_friday:
             total_holidays += 1
         if not is_workday:
             continue
@@ -1442,7 +1453,9 @@ class AttendanceSummaryService:
 
                 is_shift_day = _shift_expected_on_day(day, shift)
                 is_custom_holiday = day in holiday_days
-                is_workday = is_shift_day and not is_custom_holiday
+                is_friday = day.weekday() == 4
+                is_workday = is_shift_day and not is_custom_holiday and not is_friday
+                is_holiday_overtime_day = _is_holiday_overtime_day(day, holiday_days)
                 day_logs = _logs_for_report_day(
                     logs_by_person.get(person.national_code, []),
                     day,
@@ -1455,10 +1468,17 @@ class AttendanceSummaryService:
                     continue
 
                 requests = requests_map.get(person.id, {}).get(day, [])
-                stats = _daily_summary_stats(day, day_logs, shift, requests, is_workday)
+                stats = _daily_summary_stats(
+                    day,
+                    day_logs,
+                    shift,
+                    requests,
+                    is_workday,
+                    is_holiday_overtime_day,
+                )
                 request_minutes = stats["request_minutes"]
                 daily_request_category = _daily_request_status(requests)
-                if is_custom_holiday:
+                if is_custom_holiday or is_friday:
                     status_value = "holiday"
                 elif day_logs and len(day_logs) % 2 != 0:
                     status_value = "absence"
@@ -1634,12 +1654,14 @@ class AttendanceSummaryService:
                         })
                     continue
                 is_shift_day = _shift_expected_on_day(day, shift)
-                is_workday = is_shift_day and not is_custom_holiday
+                is_friday = day.weekday() == 4
+                is_workday = is_shift_day and not is_custom_holiday and not is_friday
+                is_holiday_overtime_day = _is_holiday_overtime_day(day, holiday_days)
                 if not is_shift_day:
                     off_days += 1
                 if is_custom_holiday:
                     custom_holidays += 1
-                if not is_shift_day or is_custom_holiday:
+                if not is_shift_day or is_custom_holiday or is_friday:
                     total_holidays += 1
                 if is_workday:
                     month_working_days += 1
@@ -1660,7 +1682,13 @@ class AttendanceSummaryService:
                 if is_workday:
                     hourly_leave_minutes += request_minutes["hourly_leave_minutes"]
 
-                presence = _monthly_presence_minutes(day, day_logs, shift, is_workday)
+                presence = _monthly_presence_minutes(
+                    day,
+                    day_logs,
+                    shift,
+                    is_workday,
+                    is_holiday_overtime_day,
+                )
                 work_time_minutes += presence["regular"]
                 overtime_minutes += presence["overtime"]
                 holiday_overtime_minutes += presence["holiday_overtime"]
@@ -1689,7 +1717,11 @@ class AttendanceSummaryService:
                     else:
                         day_category = "absent"
                 elif day_logs:
-                    day_category = "holiday_overtime"
+                    day_category = (
+                        "holiday_overtime"
+                        if is_holiday_overtime_day
+                        else "overtime"
+                    )
                 elif is_custom_holiday:
                     day_category = "custom_holiday"
                 else:
