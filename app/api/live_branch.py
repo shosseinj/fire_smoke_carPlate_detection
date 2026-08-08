@@ -44,17 +44,32 @@ def _manager(runtime: Runtime) -> Any:
 
 
 def _browser_whep_url(url: str, request: Request) -> str:
+    browser_port = 8789
     if url.startswith(("http://", "https://")):
         parsed = urlsplit(url)
         hostname = parsed.hostname or ""
-        if hostname not in {"mediamtx", "video-ai-router"} and "." in hostname:
+        internal_hosts = {
+            "mediamtx",
+            "video-ai-router",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+        request_host = request.headers.get("host", "127.0.0.1").split(":", 1)[0]
+        if hostname not in internal_hosts:
             return url if url.endswith("/whep") else f"{url.rstrip('/')}/whep"
+        if hostname in {"localhost", "127.0.0.1", "::1"} and request_host in {
+            "localhost", "127.0.0.1", "::1"
+        }:
+            return url if url.endswith("/whep") else f"{url.rstrip('/')}/whep"
+        if hostname in {"localhost", "127.0.0.1", "::1"} and parsed.port:
+            browser_port = parsed.port
         path = parsed.path
     else:
         path = url
     host = request.headers.get("host", "127.0.0.1").split(":", 1)[0]
     scheme = "https" if request.url.scheme == "https" else "http"
-    return f"{scheme}://{host}:8889/{path.strip('/')}/whep"
+    return f"{scheme}://{host}:{browser_port}/{path.strip('/')}/whep"
 
 
 def _acquire(profile: Profile, payload: LiveBranchAcquire, request: Request, runtime: Runtime) -> dict[str, Any]:

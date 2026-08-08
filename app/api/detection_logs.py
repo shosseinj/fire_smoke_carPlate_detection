@@ -34,6 +34,7 @@ from app.core.jalali_utils import (
     local_date_range_bounds_utc,
     local_day_utc_range,
     parse_jalali_date,
+    parse_jalali_datetime,
 )
 from app.core.legacy_detection_service import (
     calculate_access,
@@ -46,15 +47,29 @@ from app.core.personnel_store import normalize_national_code
 
 
 class DetectionLogUpdate(BaseModel):
-    """Request body for PATCH /{log_id}/person."""
+    """Request body for PATCH /{log_id}/person.
 
-    person: str
+    ``person`` assigns the log to a national code (or ``unknown``) while
+    ``detection_time`` rewrites the detection moment from a Jalali datetime
+    string in local (Asia/Tehran) time, e.g. ``1404-05-17 08:30:00``.
+    At least one editable field must be provided.
+    """
+
+    person: str | None = None
+    detection_time: str | None = None
 
     @model_validator(mode="after")
-    def _require_person(self) -> DetectionLogUpdate:
-        self.person = self.person.strip()
-        if not self.person:
-            raise ValueError("شخص باید ارسال شود")
+    def _require_editable_field(self) -> DetectionLogUpdate:
+        if self.person is not None:
+            self.person = self.person.strip()
+            if not self.person:
+                raise ValueError("شخص باید ارسال شود")
+        if self.detection_time is not None:
+            self.detection_time = self.detection_time.strip()
+            if not self.detection_time:
+                raise ValueError("زمان تشخیص باید ارسال شود")
+        if self.person is None and self.detection_time is None:
+            raise ValueError("حداقل یکی از فیلدهای person یا detection_time باید ارسال شود")
         return self
 
 
@@ -1331,11 +1346,29 @@ def patch_log_person(
     update_data: DetectionLogUpdate,
     current_user: dict = Depends(require_role("admin")),
 ) -> dict:
-    """Assign a detection log to a national code or mark it unknown."""
+    """Assign a detection log to a national code, mark it unknown, or rewrite
+    its detection time from a Jalali datetime in local time."""
     store = get_detection_log_store()
     record = store.get(log_id)
     if record is None:
         raise HTTPException(404, "لاگ تشخیص یافت نشد")
+
+    # ── Resolve detection time (Jalali, local time) ───────────────────
+    kwargs: dict[str, Any] = {
+        "updated_by": _get_current_user_id(current_user),
+    }
+    if update_data.detection_time:
+        try:
+            local_dt = parse_jalali_datetime(update_data.detection_time)
+            kwargs["detection_time"] = local_dt.astimezone(timezone.utc).isoformat()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    if update_data.person is None:
+        updated = store.update(log_id, **kwargs)
+        if updated is None:
+            raise HTTPException(404, "لاگ تشخیص یافت نشد")
+        return _build_response(updated, include_detail=True)
 
     # ── Resolve current / new personnel ──────────────────────────────
     personnel_store = get_personnel_store()
@@ -1375,14 +1408,13 @@ def patch_log_person(
     )
 
     # ── Persist ──────────────────────────────────────────────────────
-    kwargs: dict[str, Any] = {
+    kwargs.update({
         "person": person,
         "personnel_id": new_personnel_id,
         "access_granted": access_granted,
         "ref_img_id": new_ref_img_id,
         "confidence": confidence,
-        "updated_by": _get_current_user_id(current_user),
-    }
+    })
 
     updated = store.update(log_id, **kwargs)
     if updated is None:

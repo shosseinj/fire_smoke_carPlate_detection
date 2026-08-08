@@ -1039,6 +1039,45 @@ class TestDetectionLogsApi:
         )
         assert resp.status_code == 422
 
+    def test_patch_log_detection_time_jalali(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+        resp = crud.client.patch(
+            f"{base}/{log_id}/person",
+            json={"detection_time": "1404-05-17 08:30:00"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["detection_time"] == "1404-05-17 08:30"
+        assert data["id"] == log_id
+
+    def test_patch_log_detection_time_invalid(self, crud):
+        log_id = self._first_log_id(crud)
+        resp = crud.client.patch(
+            f"/api/v1/logs/{log_id}/person",
+            json={"detection_time": "not-a-date"},
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 400
+
+    def test_patch_log_person_and_detection_time_together(self, crud):
+        base = "/api/v1/logs"
+        log_id = self._first_log_id(crud)
+        pid, national_code = self._first_personnel(crud)
+        resp = crud.client.patch(
+            f"{base}/{log_id}/person",
+            json={
+                "person": national_code,
+                "detection_time": "1404-05-17 14:45:00",
+            },
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["personnel_id"] == pid
+        assert data["detection_time"] == "1404-05-17 14:45"
+
 
 class TestPersonnelRequestsApi:
     MODULE = "personnel_requests"

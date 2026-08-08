@@ -264,9 +264,11 @@ class GpuLiveBranchManager:
                 sink.set_property("latency", 0)
             for element in elements:
                 source.pipeline.add(element)
-            tee_pad = source.tee.get_request_pad("src_%u")
-            if tee_pad is None or not tee_pad.link(queue.get_static_pad("sink")) == Gst.PadLinkReturn.OK:
-                raise RuntimeError("could not acquire/link live tee request pad")
+            # Fully assemble and start the downstream chain before exposing it
+            # to the already-playing decoder tee. Linking the tee first allows
+            # a live buffer to reach an incomplete branch and can leave
+            # rtspclientsink permanently unpublished while the API still
+            # reports the branch as enabled.
             if not queue.link(converter) or not converter.link(capsfilter) or not capsfilter.link(encoder):
                 raise RuntimeError("could not link GPU live conversion branch")
             if not encoder.link(parser):
@@ -274,7 +276,13 @@ class GpuLiveBranchManager:
             if not parser.link(sink):
                 raise RuntimeError("could not link H264 parser to RTSP publisher")
             for element in elements:
-                element.sync_state_with_parent()
+                if element.sync_state_with_parent() is False:
+                    raise RuntimeError(
+                        f"live branch element failed to inherit pipeline state: {element.get_name()}"
+                    )
+            tee_pad = source.tee.get_request_pad("src_%u")
+            if tee_pad is None or tee_pad.link(queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                raise RuntimeError("could not acquire/link live tee request pad")
             return LiveBranch(source.source_id, profile, live_stream_path(source.source_id, profile), source.pipeline, source.tee, tee_pad, elements, sink)
         except Exception:
             if tee_pad is not None:

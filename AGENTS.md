@@ -204,9 +204,11 @@ as base64 with `frame_interval` and `max_frames` controls.
 Detection-log person updates use the single authenticated
 `PATCH /api/v1/logs/{log_id}/person` route. The separate attendance PATCH route
 is intentionally not exposed; attendance remains part of the persisted log state.
-The person PATCH accepts `person`, `personnel_id`, and `confidence`, requires an
-identity field, recalculates access, and rejects reassignment to personnel without
-a reference image, matching the old person-update contract.
+The person PATCH accepts `person` and/or `detection_time` (a Jalali datetime
+string in Asia/Tehran local time, e.g. `1404-05-17 08:30:00`), requires at least
+one of them, recalculates access, and rejects reassignment to personnel without
+a reference image, matching the old person-update contract. `detection_time` is
+parsed by `app.core.jalali_utils.parse_jalali_datetime()` and persisted as UTC.
 
 ## Polygon zone system
 
