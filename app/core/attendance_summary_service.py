@@ -1708,6 +1708,8 @@ class AttendanceSummaryService:
                     elif request_category == REQUEST_UNPAID_LEAVE:
                         unpaid_leave_days += 1
                         day_category = "unpaid_leave"
+                    elif day_logs and len(day_logs) % 2 != 0:
+                        day_category = "absent"
                     elif day_logs:
                         present_days += 1
                         day_category = "present"

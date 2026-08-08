@@ -771,6 +771,59 @@ def test_monthly_summary_full_day_leave_overrides_detection_logs(monkeypatch) ->
     assert [day["status"] for day in row["days"]] == ["sick_leave", "unpaid_leave"]
 
 
+def test_monthly_summary_marks_odd_detection_counts_as_absent(monkeypatch) -> None:
+    day = date(2026, 4, 7)
+    person = SummaryPersonnel(
+        id=4,
+        fname="Test",
+        lname="Person",
+        national_code="456",
+        department_id=None,
+        section_name=None,
+        shift_id=1,
+        shift=None,
+    )
+    shift_record = _shift_record(1, "daily")
+    for weekday in (
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday",
+    ):
+        setattr(shift_record, f"works_{weekday}", True)
+    service = AttendanceSummaryService(
+        database=None,  # type: ignore[arg-type]
+        shift_store=_FakeShiftStore(
+            [SimpleNamespace(personnel_id=person.id, shift_id=1, start_date=day, end_date=day)],
+            {1: shift_record},
+        ),
+    )
+    logs = [
+        SummaryLog(1, person.national_code, person.id, datetime(2026, 4, 7, 9, tzinfo=timezone.utc)),
+    ]
+    monkeypatch.setattr(
+        attendance_module,
+        "_jalali_moving_month_range",
+        lambda *_: (day, day),
+    )
+    monkeypatch.setattr(service, "_personnel", lambda *_: [person])
+    monkeypatch.setattr(service, "_logs", lambda *_: {person.national_code: logs})
+    monkeypatch.setattr(service, "_holiday_dates", lambda *_: set())
+    monkeypatch.setattr(service, "_accepted_requests_by_person_day", lambda *_: {})
+
+    row = service.monthly_summary(
+        jalali_year=1405,
+        jalali_month=1,
+        personnel_id="4",
+        section_id=None,
+        shift_id=None,
+        include_daily_rows=True,
+        move_days=10,
+    )[0]
+
+    assert row["days"][0]["status"] == "absent"
+    assert row["present_days"] == 0
+    assert row["absent_days"] == 1
+
+
 def test_monthly_summary_uses_dated_shift_assignments_and_preserves_gaps(
     monkeypatch,
 ) -> None:
