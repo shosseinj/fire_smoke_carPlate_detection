@@ -190,8 +190,34 @@ class ExpiringByteTracker(FakeByteTracker):
         return np.empty((0, 8), dtype=np.float32)
 
 
-def test_tracker_emits_a_track_once_when_byte_track_expires() -> None:
-    tracker = SourceFaceTracker(
+class BackendTrack:
+    def __init__(self, track_id: int) -> None:
+        self.track_id = track_id
+        self.idx = 0
+        self.is_activated = True
+
+
+class SequencedByteTracker:
+    def __init__(self, states: list[tuple[str, int | None]]) -> None:
+        self.states = states
+        self.tracked_stracks: list[BackendTrack] = []
+        self.lost_stracks: list[BackendTrack] = []
+
+    def update(self, detections: object) -> np.ndarray:
+        state, track_id = self.states.pop(0)
+        self.tracked_stracks = []
+        self.lost_stracks = []
+        if state == "active":
+            assert track_id is not None
+            self.tracked_stracks = [BackendTrack(track_id)]
+        elif state == "lost":
+            assert track_id is not None
+            self.lost_stracks = [BackendTrack(track_id)]
+        return np.empty((0, 8), dtype=np.float32)
+
+
+def make_source_tracker(backend: object) -> SourceFaceTracker:
+    return SourceFaceTracker(
         high_threshold=0.5,
         low_threshold=0.1,
         new_threshold=0.5,
@@ -199,8 +225,12 @@ def test_tracker_emits_a_track_once_when_byte_track_expires() -> None:
         max_missed=2,
         history_size=4,
         stable_min_hits=1,
-        backend=ExpiringByteTracker(),
+        backend=backend,
     )
+
+
+def test_tracker_emits_a_track_once_when_byte_track_expires() -> None:
+    tracker = make_source_tracker(ExpiringByteTracker())
 
     tracker.update([[5, 5, 100, 115]], [0.95])
     tracker.update([], [])
@@ -210,6 +240,48 @@ def test_tracker_emits_a_track_once_when_byte_track_expires() -> None:
 
     assert [state.track_id for state in disappeared] == [1]
     assert tracker.consume_disappeared() == []
+
+
+def test_tracker_preserves_history_across_objects_with_same_live_backend_id() -> None:
+    tracker = make_source_tracker(
+        SequencedByteTracker([("active", 41), ("lost", 41), ("active", 41)])
+    )
+
+    assert tracker.update([[5, 5, 100, 115]], [0.95]) == [1]
+    tracker.observe(1, FaceMatch("Alice", 0.91, "reference-1"))
+    tracker.record_face_quality(1, 0.87)
+    assert tracker.update([], []) == []
+    assert tracker.consume_disappeared() == []
+    assert tracker.update([[6, 5, 101, 115]], [0.94]) == [1]
+
+    assert tracker.identity(1).person == "Alice"
+    assert tracker.best_quality(1) == 0.87
+    assert tracker.consume_disappeared() == []
+
+
+def test_tracker_reused_backend_id_gets_new_local_id_after_expiry() -> None:
+    tracker = make_source_tracker(
+        SequencedByteTracker(
+            [("active", 7), ("gone", None), ("gone", None), ("active", 7)]
+        )
+    )
+
+    assert tracker.update([[5, 5, 100, 115]], [0.95]) == [1]
+    tracker.update([], [])
+    assert [state.track_id for state in tracker.consume_disappeared()] == [1]
+    tracker.update([], [])
+    assert tracker.consume_disappeared() == []
+    assert tracker.update([[5, 5, 100, 115]], [0.95]) == [2]
+
+
+def test_tracker_different_backend_id_gets_different_local_id() -> None:
+    tracker = make_source_tracker(
+        SequencedByteTracker([("active", 7), ("active", 8)])
+    )
+
+    assert tracker.update([[5, 5, 100, 115]], [0.95]) == [1]
+    assert tracker.update([[5, 5, 100, 115]], [0.95]) == [2]
+    assert [state.track_id for state in tracker.consume_disappeared()] == [1]
 
 
 def packet(source_id: str, frame_index: int) -> FramePacket:
