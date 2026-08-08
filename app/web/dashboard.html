@@ -733,11 +733,15 @@
           await waitForIceGatheringBounded(peer);
           if (!isCurrent()) return null;
           let whep;
-          for (let attempt = 0; attempt < 20 && isCurrent(); attempt += 1) {
+          // A newly attached NVENC/RTSP branch can take several seconds to
+          // publish its first keyframe. Keep the session alive while MediaMTX
+          // reports that the path is not ready yet.
+          const maxWhepAttempts = 80;
+          for (let attempt = 0; attempt < maxWhepAttempts && isCurrent(); attempt += 1) {
             whep = await fetch(result.whep_url, {
               method: "POST", headers: { "Content-Type": "application/sdp" }, body: peer.localDescription.sdp,
             });
-            if (whep.status !== 404 || attempt === 19) break;
+            if (whep.status !== 404 || attempt === maxWhepAttempts - 1) break;
             await new Promise((resolve) => window.setTimeout(resolve, 250));
           }
           if (!isCurrent()) return null;

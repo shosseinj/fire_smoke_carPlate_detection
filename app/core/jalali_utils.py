@@ -78,6 +78,32 @@ def parse_jalali_date(s: str) -> date:
         raise ValueError(f"تاریخ شمسی نامعتبر {s!r}: {exc}")
 
 
+def parse_jalali_datetime(s: str) -> datetime:
+    """Parse a Jalali datetime string to a Tehran-aware datetime.
+
+    Accepts ``YYYY-MM-DD HH:MM[:SS]`` or ``YYYY/M/D HH:MM`` (also ``T`` as
+    the date/time separator) and handles Persian/Arabic digits.
+    """
+    s = normalize_digits(s.strip())
+    match = re.match(
+        r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$",
+        s,
+    )
+    if not match:
+        raise ValueError(f"فرمت تاریخ و ساعت شمسی نامعتبر: {s!r}")
+    j_year, j_month, j_day = (int(match.group(i)) for i in (1, 2, 3))
+    hour, minute = int(match.group(4)), int(match.group(5))
+    second = int(match.group(6)) if match.group(6) else 0
+    if hour > 23 or minute > 59 or second > 59:
+        raise ValueError(f"ساعت شمسی خارج از محدوده: {s!r}")
+    try:
+        j_dt = jdatetime.datetime(j_year, j_month, j_day, hour, minute, second)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"تاریخ و ساعت شمسی نامعتبر {s!r}: {exc}")
+    g_dt = j_dt.togregorian()
+    return g_dt.replace(tzinfo=_get_tehran_tz())
+
+
 def gregorian_to_jalali(g_date: date) -> tuple[int, int, int]:
     """Convert a Gregorian date to (jalali_year, jalali_month, jalali_day)."""
     j_date = jdatetime.date.fromgregorian(date=g_date)

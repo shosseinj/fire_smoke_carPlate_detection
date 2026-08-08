@@ -35,6 +35,24 @@ def test_person_patch_requires_identity_and_trims_person() -> None:
     with pytest.raises(ValidationError):
         DetectionLogUpdate(person="   ")
 
+    with pytest.raises(ValidationError):
+        DetectionLogUpdate()
+
+    with pytest.raises(ValidationError):
+        DetectionLogUpdate(detection_time="   ")
+
+
+def test_person_patch_accepts_jalali_detection_time_only() -> None:
+    update = DetectionLogUpdate(detection_time="1404-05-17 08:30:00")
+    assert update.person is None
+    assert update.detection_time == "1404-05-17 08:30:00"
+
+    combined = DetectionLogUpdate(
+        person=" 0311344119 ", detection_time="۱۴۰۴/۰۵/۱۷ ۰۸:۳۰"
+    )
+    assert combined.person == "0311344119"
+    assert combined.detection_time == "۱۴۰۴/۰۵/۱۷ ۰۸:۳۰"
+
 
 def test_person_patch_reads_user_id_from_dict_or_user_record() -> None:
     assert _get_current_user_id({"id": 7}) == 7
