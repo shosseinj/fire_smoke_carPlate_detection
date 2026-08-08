@@ -296,6 +296,10 @@ class HumanLogStore:
         return national_code or fallback
 
     @staticmethod
+    def _persistence_name(name: str, track_id: int) -> str:
+        return f"Unknown #{track_id}" if name == "Unknown" else name
+
+    @staticmethod
     def _concat_reference_and_face(
         reference_image: np.ndarray,
         face_image: np.ndarray,
@@ -1205,8 +1209,15 @@ class HumanLogStore:
                 if should_save_snapshot
                 else max(current_snapshot_quality, 0.0)
             )
-            stored_name = event.name
-            if existing and event.name == "Unknown" and existing["name"] != "Unknown":
+            unknown_persistence_name = self._persistence_name(
+                "Unknown", event.track_id
+            )
+            stored_name = self._persistence_name(event.name, event.track_id)
+            if (
+                existing
+                and event.name == "Unknown"
+                and existing["name"] not in ("Unknown", unknown_persistence_name)
+            ):
                 stored_name = str(existing["name"])
             stored_recognition_score = event.recognition_score
             stored_ref_img_id = event.ref_img_id
@@ -1281,6 +1292,9 @@ class HumanLogStore:
         ):
             detection_person = self._detection_person(
                 event.personnel_id, event.name
+            )
+            detection_person = self._persistence_name(
+                detection_person, event.track_id
             )
             finalized_video_key = (
                 str(human_row["video_url"] or "") if human_row is not None else video_key

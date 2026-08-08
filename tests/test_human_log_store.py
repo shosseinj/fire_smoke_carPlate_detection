@@ -40,6 +40,12 @@ def assert_jpeg_has_dominant_channel(path: Path, channel: int) -> None:
     assert int(np.argmax(means)) == channel, (path, means)
 
 
+def test_persistence_name_formats_only_exact_unknown_sentinel() -> None:
+    assert HumanLogStore._persistence_name("Unknown", 13) == "Unknown #13"
+    assert HumanLogStore._persistence_name("Alice", 13) == "Alice"
+    assert HumanLogStore._persistence_name("1234567891", 13) == "1234567891"
+
+
 def result(
     source: FramePacket,
     name: str,
@@ -1058,11 +1064,30 @@ def test_unknown_track_uses_frames_before_first_seen_and_after_disappearance(
 
         records, total = detection_logs.list_filter(camera_id="camera-01")
         assert total == 1
-        assert records[0].person == "Unknown"
+        assert records[0].person == "Unknown #13"
         assert records[0].room_id == room.id
         assert records[0].face_image is None
         assert records[0].body_image
         assert records[0].snapshot_image
+        human_rows = store.list(track_id=13)
+        assert len(human_rows) == 1
+        assert human_rows[0]["name"] == "Unknown #13"
+
+        # Re-finalizing an idempotent bridge uses the same persistence format
+        # on the detection-log update path as on initial creation.
+        store.video_post_roll_frames = 0
+        store.observe_result(
+            disappeared,
+            disappeared_result,
+            room_ids_by_track={13: room.id},
+            observed_room_ids_by_track={13: {room.id}},
+        )
+        store.flush()
+        updated = detection_logs.get_by_source_event_key(
+            "human-track:session-a:camera-01:13"
+        )
+        assert updated is not None
+        assert updated.person == "Unknown #13"
         assert store.status()["pending_post_roll_tracks"] == 0
         videos = list((tmp_path / "media" / "human" / "videos").glob("*.mp4"))
         assert len(videos) == 1
