@@ -148,7 +148,7 @@ def test_unconfirmed_named_log_does_not_concatenate_reference(
             raise AssertionError("unknown logs must not query a reference image")
 
     row = _row("/media/human/body_images/body.jpg")
-    row.update({"person": "Alice", "ref_img_id": "7", "confidence": 0.30})
+    row.update({"person": "Alice", "ref_img_id": "7", "confidence": 0.0})
     payload = _build_payload_from_enriched_row(
         _runtime(tmp_path, SimpleNamespace(connection=lambda: Connection())),
         row,
@@ -244,9 +244,9 @@ def test_recent_detections_classifies_nonzero_confidence_as_known(
 
         def execute(self, query: str, params: tuple[int]) -> Result:
             assert params == (50,)
-            if "d.personnel_id IS NOT NULL OR" in query:
+            if "d.confidence != 0" in query:
                 return Result([known])
-            assert "d.personnel_id IS NULL AND" in query
+            assert "d.confidence = 0" in query
             return Result([unknown])
 
     message = build_recent_detections_message(
@@ -292,9 +292,9 @@ def test_recent_detections_selects_known_and_unknown_independently(
 
         def execute(self, query: str, params: tuple[int]) -> Result:
             assert params == (50,)
-            if "d.personnel_id IS NOT NULL OR" in query:
+            if "d.confidence != 0" in query:
                 return Result([known])
-            assert "d.personnel_id IS NULL AND" in query
+            assert "d.confidence = 0" in query
             return Result([unknown])
 
     message = build_recent_detections_message(
