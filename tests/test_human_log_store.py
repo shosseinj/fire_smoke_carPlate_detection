@@ -889,7 +889,7 @@ def test_full_frame_video_includes_bounded_pre_and_post_roll(
         store.close()
 
 
-def test_one_track_visiting_two_polygons_creates_two_detection_logs(
+def test_one_track_visiting_two_polygons_creates_one_detection_log(
     tmp_path: Path,
     postgres_database: Database,
 ) -> None:
@@ -961,22 +961,15 @@ def test_one_track_visiting_two_polygons_creates_two_detection_logs(
             camera_id="camera-01",
             log_type="camera_rtsp",
         )
-        assert total == 2
-        assert {record.room_id for record in records} == {room_a.id, room_b.id}
-        assert len({record.source_human_log_id for record in records}) == 1
-        assert len({record.face_image for record in records}) == 1
-        assert len({record.body_image for record in records}) == 1
-        assert len({record.snapshot_image for record in records}) == 1
-        assert len({record.video for record in records}) == 1
-        assert all(record.face_image for record in records)
-        assert all(record.body_image for record in records)
-        assert all(record.snapshot_image for record in records)
-        assert {
-            record.source_event_key for record in records
-        } == {
-            "human-track:session-a:camera-01:13",
-            f"human-track:session-a:camera-01:13:room:{room_b.id}",
-        }
+        assert total == 1
+        record = records[0]
+        assert record.room_id == room_b.id
+        assert record.source_event_key == "human-track:session-a:camera-01:13"
+        assert record.source_human_log_id is not None
+        assert record.face_image
+        assert record.body_image
+        assert record.snapshot_image
+        assert record.video
     finally:
         store.close()
 

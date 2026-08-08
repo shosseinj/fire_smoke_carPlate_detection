@@ -308,13 +308,13 @@ def get_recent_detection_payloads(runtime: Runtime, limit: int = RECENT_DETECTIO
     with runtime.database.connection() as conn:
         known_rows = conn.execute(
             select
-            + f"WHERE d.personnel_id IS NOT NULL OR {normalized_person} NOT IN ('', 'unknown') "
+            + f"WHERE d.personnel_id IS NOT NULL OR {normalized_person} NOT IN ('', 'unknown', 'uknown') "
             "ORDER BY d.detection_time DESC, d.id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         unknown_rows = conn.execute(
             select
-            + f"WHERE d.personnel_id IS NULL AND {normalized_person} IN ('', 'unknown') "
+            + f"WHERE d.personnel_id IS NULL AND {normalized_person} IN ('', 'unknown', 'uknown') "
             "ORDER BY d.detection_time DESC, d.id DESC LIMIT ?",
             (limit,),
         ).fetchall()

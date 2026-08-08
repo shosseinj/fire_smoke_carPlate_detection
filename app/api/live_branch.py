@@ -53,6 +53,7 @@ def _browser_whep_url(url: str, request: Request) -> str:
             "video-ai-router",
             "localhost",
             "127.0.0.1",
+            "192.168.10.3",
             "::1",
         }
         request_host = request.headers.get("host", "127.0.0.1").split(":", 1)[0]

@@ -210,6 +210,54 @@ def test_recent_detections_message_contains_database_log(tmp_path: Path) -> None
     assert message["detections"][0]["body_image_base64"]
 
 
+def test_recent_detections_classifies_nonzero_confidence_as_known(
+    tmp_path: Path,
+) -> None:
+    known = _row()
+    known.update(
+        id=2,
+        person="Alice",
+        personnel_id=None,
+        confidence=0.3,
+        detection_time="2026-07-26T12:00:00+00:00",
+    )
+    unknown = _row()
+    unknown.update(
+        id=3,
+        confidence=0.0,
+        detection_time="2026-07-26T13:00:00+00:00",
+    )
+
+    class Result:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self.rows = rows
+
+        def fetchall(self) -> list[dict[str, object]]:
+            return self.rows
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, query: str, params: tuple[int]) -> Result:
+            assert params == (50,)
+            if "d.personnel_id IS NOT NULL OR" in query:
+                return Result([known])
+            assert "d.personnel_id IS NULL AND" in query
+            return Result([unknown])
+
+    message = build_recent_detections_message(
+        _runtime(tmp_path, SimpleNamespace(connection=lambda: Connection()))
+    )
+
+    assert message is not None
+    assert [item["classification"] for item in message["detections"]] == ["unknown", "known"]
+    assert [item["id"] for item in message["detections"]] == [3, 2]
+
+
 def test_recent_detections_selects_known_and_unknown_independently(
     tmp_path: Path,
 ) -> None:
@@ -224,6 +272,7 @@ def test_recent_detections_selects_known_and_unknown_independently(
     unknown = _row()
     unknown.update(
         id=3,
+        confidence=0.0,
         detection_time="2026-07-26T13:00:00+00:00",
     )
 
