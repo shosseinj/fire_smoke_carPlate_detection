@@ -264,7 +264,7 @@ class SourceFaceTracker:
             )
         self._backend = backend
         self._next_id = 1
-        self._object_track_ids: dict[int, int] = {}
+        self._backend_track_ids: dict[tuple[str, int], int] = {}
         self._visible_boxes: dict[int, list[float]] = {}
         self.tracks: dict[int, TrackState] = {}
         self._disappeared: list[TrackState] = []
@@ -287,10 +287,12 @@ class SourceFaceTracker:
         self._disappeared = []
         active_objects = list(getattr(self._backend, "tracked_stracks", []))
         lost_objects = list(getattr(self._backend, "lost_stracks", []))
-        alive_object_ids = {id(track) for track in active_objects + lost_objects}
-        for object_id, local_id in list(self._object_track_ids.items()):
-            if object_id not in alive_object_ids:
-                self._object_track_ids.pop(object_id, None)
+        alive_keys = {
+            self._backend_track_key(track) for track in active_objects + lost_objects
+        }
+        for backend_key, local_id in list(self._backend_track_ids.items()):
+            if backend_key not in alive_keys:
+                self._backend_track_ids.pop(backend_key, None)
                 state = self.tracks.pop(local_id, None)
                 if state is not None:
                     self._disappeared.append(
@@ -316,12 +318,12 @@ class SourceFaceTracker:
             detection_index = int(getattr(track, "idx", -1))
             if not 0 <= detection_index < len(assigned):
                 continue
-            object_id = id(track)
-            track_id = self._object_track_ids.get(object_id)
+            backend_key = self._backend_track_key(track)
+            track_id = self._backend_track_ids.get(backend_key)
             if track_id is None:
                 track_id = self._next_id
                 self._next_id += 1
-                self._object_track_ids[object_id] = track_id
+                self._backend_track_ids[backend_key] = track_id
                 self.tracks[track_id] = TrackState(
                     track_id=track_id,
                     bbox=[float(value) for value in box_values[detection_index]],
@@ -340,6 +342,17 @@ class SourceFaceTracker:
             if track_id not in visible_ids:
                 state.missed += 1
         return assigned
+
+    @staticmethod
+    def _backend_track_key(track: Any) -> tuple[str, int]:
+        backend_track_id = getattr(track, "track_id", None)
+        if (
+            isinstance(backend_track_id, (int, np.integer))
+            and not isinstance(backend_track_id, bool)
+            and int(backend_track_id) > 0
+        ):
+            return ("track_id", int(backend_track_id))
+        return ("object_id", id(track))
 
     def consume_disappeared(self) -> list[TrackState]:
         disappeared = self._disappeared

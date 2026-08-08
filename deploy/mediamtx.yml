@@ -15,6 +15,12 @@ srt: no
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts:
+  - 192.168.10.1
+  - 192.168.10.6
+  - 192.168.10.9
+  - 192.168.10.3
+  - 192.168.86.65
 
 paths:
   all_others:
