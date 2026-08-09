@@ -122,7 +122,7 @@ class Settings:
     media_preview_whep_base_url: str = os.getenv(
         "MEDIA_PREVIEW_WHEP_BASE_URL", ""
     ).rstrip("/")
-    live_branch_enabled: bool = _env_bool("LIVE_BRANCH_ENABLED", False)
+    live_branch_enabled: bool = _env_bool("LIVE_BRANCH_ENABLED", True)
     live_branch_publish_base: str = os.getenv(
         "LIVE_BRANCH_PUBLISH_BASE", "rtsp://mediamtx:8554"
     ).strip()
