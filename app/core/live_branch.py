@@ -176,6 +176,11 @@ class GpuLiveBranchManager:
                 int(width_match.group(1)) if width_match else None,
                 int(height_match.group(1)) if height_match else None,
             )
+        owner_id = f"continuous:{hashlib.sha256(source_id.encode()).hexdigest()}"
+        try:
+            self.acquire_durable(source_id, owner_id)
+        except Exception:
+            LOGGER.warning("Could not start continuous full-resolution recording: %s", source_id, exc_info=True)
         return True
 
     def detach_source(self, source_id: str) -> None:
@@ -253,16 +258,17 @@ class GpuLiveBranchManager:
         encoder = self._make("nvv4l2h264enc", f"live_encoder_{suffix}")
         parser = self._make("h264parse", f"live_parser_{suffix}")
         sink = self._make("rtspclientsink", f"live_sink_{suffix}")
-        h264_tee = self._make("tee", f"live_h264_tee_{suffix}")
-        rtsp_queue = self._make("queue", f"live_rtsp_queue_{suffix}")
-        save_queue = self._make("queue", f"live_save_queue_{suffix}")
-        save_sink = self._make("splitmuxsink", f"live_save_sink_{suffix}")
-        save_muxer = self._make("mp4mux", f"live_save_muxer_{suffix}")
-        elements = [
-            queue, converter, capsfilter, encoder, parser, sink,
-            h264_tee, rtsp_queue, save_queue, save_sink,
-        ]
+        recording = profile == "fullscreen"
+        h264_tee = self._make("tee", f"live_h264_tee_{suffix}") if recording else None
+        rtsp_queue = self._make("queue", f"live_rtsp_queue_{suffix}") if recording else None
+        save_queue = self._make("queue", f"live_save_queue_{suffix}") if recording else None
+        save_sink = self._make("splitmuxsink", f"live_save_sink_{suffix}") if recording else None
+        save_muxer = self._make("mp4mux", f"live_save_muxer_{suffix}") if recording else None
+        elements = [queue, converter, capsfilter, encoder, parser, sink]
+        if recording:
+            elements.extend([h264_tee, rtsp_queue, save_queue, save_sink])
         tee_pad = None
+        recording_state: dict[str, Path | None] = {}
         try:
             if profile == "wall":
                 capsfilter.set_property("caps", Gst.Caps.from_string(
@@ -274,34 +280,38 @@ class GpuLiveBranchManager:
                 ))
             queue.set_property("leaky", 2)
             queue.set_property("max-size-buffers", 2)
-            save_queue.set_property("leaky", 2)
-            save_queue.set_property("max-size-buffers", 120)
-            save_queue.set_property("max-size-bytes", 0)
-            save_queue.set_property("max-size-time", 0)
-            self.recording_spool_path.mkdir(parents=True, exist_ok=True)
-            session = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            location = self.recording_spool_path / f"live-{suffix}-{session}-%05d.mp4"
-            save_muxer.set_property("fragment-duration", 1000)
-            save_muxer.set_property("streamable", True)
-            save_sink.set_property("muxer", save_muxer)
-            save_sink.set_property("location", str(location))
-            save_sink.set_property("max-size-time", int(self.recording_segment_seconds * 1_000_000_000))
-            recording_state: dict[str, Path | None] = {"current": None}
+            if recording:
+                save_queue.set_property("leaky", 0)
+                save_queue.set_property("max-size-buffers", 0)
+                save_queue.set_property("max-size-bytes", 0)
+                save_queue.set_property("max-size-time", 0)
+                self.recording_spool_path.mkdir(parents=True, exist_ok=True)
+                session = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                location = self.recording_spool_path / f"live-{suffix}-{session}-%05d.mp4"
+                save_muxer.set_property("fragment-duration", 1000)
+                save_muxer.set_property("fragment-mode", 1)
+                save_muxer.set_property("streamable", True)
+                save_sink.set_property("muxer", save_muxer)
+                save_sink.set_property("location", str(location))
+                save_sink.set_property(
+                    "max-size-time", int(self.recording_segment_seconds * 1_000_000_000)
+                )
+                recording_state["current"] = None
 
-            def format_location(_splitmux: Any, fragment_id: int) -> str:
-                previous = recording_state["current"]
-                if previous is not None:
-                    LOGGER.info("fMP4 fragment written: %s", previous)
-                    LOGGER.info("Recording file completed: %s", previous)
-                    self._upload_queue.put(previous)
-                opened = Path(str(location) % fragment_id)
-                recording_state["current"] = opened
-                LOGGER.info("fMP4 file opened: %s", opened)
-                return str(opened)
+                def format_location(_splitmux: Any, fragment_id: int) -> str:
+                    previous = recording_state["current"]
+                    if previous is not None:
+                        LOGGER.info("fMP4 fragment written: %s", previous)
+                        LOGGER.info("Recording file completed: %s", previous)
+                        self._upload_queue.put(previous)
+                    opened = Path(str(location) % fragment_id)
+                    recording_state["current"] = opened
+                    LOGGER.info("fMP4 file opened: %s", opened)
+                    return str(opened)
 
-            connect = getattr(save_sink, "connect", None)
-            if connect is not None:
-                connect("format-location", format_location)
+                connect = getattr(save_sink, "connect", None)
+                if connect is not None:
+                    connect("format-location", format_location)
             find_property = getattr(encoder, "find_property", None)
             if find_property is None or find_property("insert-sps-pps") is not None:
                 encoder.set_property("insert-sps-pps", True)
@@ -326,10 +336,13 @@ class GpuLiveBranchManager:
                 raise RuntimeError("could not link GPU live conversion branch")
             if not encoder.link(parser):
                 raise RuntimeError("could not link NVENC to H264 parser")
-            if not parser.link(h264_tee) or not h264_tee.link(rtsp_queue) or not rtsp_queue.link(sink):
+            if recording:
+                if not parser.link(h264_tee) or not h264_tee.link(rtsp_queue) or not rtsp_queue.link(sink):
+                    raise RuntimeError("could not link H264 parser to RTSP publisher")
+                if not h264_tee.link(save_queue) or not save_queue.link(save_sink):
+                    raise RuntimeError("could not link bounded H264 save branch")
+            elif not parser.link(sink):
                 raise RuntimeError("could not link H264 parser to RTSP publisher")
-            if not h264_tee.link(save_queue) or not save_queue.link(save_sink):
-                raise RuntimeError("could not link bounded H264 save branch")
             for element in elements:
                 if element.sync_state_with_parent() is False:
                     raise RuntimeError(
@@ -338,7 +351,8 @@ class GpuLiveBranchManager:
             tee_pad = source.tee.get_request_pad("src_%u")
             if tee_pad is None or tee_pad.link(queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
                 raise RuntimeError("could not acquire/link live tee request pad")
-            LOGGER.info("Recording branch started: source=%s profile=%s", source.source_id, profile)
+            if recording:
+                LOGGER.info("Recording branch started: source=%s profile=%s", source.source_id, profile)
             return LiveBranch(
                 source.source_id, profile, live_stream_path(source.source_id, profile),
                 source.pipeline, source.tee, tee_pad, elements, sink,

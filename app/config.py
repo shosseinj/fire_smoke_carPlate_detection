@@ -131,6 +131,9 @@ class Settings:
     live_branch_heartbeat_timeout_seconds: float = _env_float(
         "LIVE_BRANCH_HEARTBEAT_TIMEOUT_SECONDS", 15.0
     )
+    live_recording_segment_seconds: float = _env_float(
+        "LIVE_RECORDING_SEGMENT_SECONDS", 120.0
+    ) # video durance in seconds
     recording_enabled: bool = _env_bool("RECORDING_ENABLED", False)
     recording_redis_url: str = os.getenv("RECORDING_REDIS_URL", "redis://redis:6379/0")
     recording_minio_endpoint: str = os.getenv("RECORDING_MINIO_ENDPOINT", "minio:9000")

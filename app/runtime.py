@@ -985,6 +985,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         enabled=app_settings.live_branch_enabled,
         grace_seconds=app_settings.live_branch_grace_seconds,
         heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
+        recording_segment_seconds=app_settings.live_recording_segment_seconds,
     )
     recording_coordinator = None
     recording_redis = None
