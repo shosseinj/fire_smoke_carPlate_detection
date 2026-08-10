@@ -26,9 +26,9 @@ if branch != "live":
 
 baseline = git("rev-parse", "HEAD")
 try:
-    ai_ref = git("rev-parse", "ai-branch")
+    ai_ref = git("rev-parse", "main")
 except SystemExit:
-    print("ERROR: local branch/ref 'ai-branch' was not found.")
+    print("ERROR: local branch/ref 'main' was not found.")
     sys.exit(1)
 
 status = git("status", "--porcelain")
@@ -49,7 +49,7 @@ STATE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 print("Phase started.")
 print(f"live baseline : {baseline}")
-print(f"ai-branch ref : {ai_ref}")
+print(f"main ref : {ai_ref}")
 print("Allowed paths:")
 if args.allow:
     for path in args.allow:

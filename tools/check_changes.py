@@ -28,16 +28,16 @@ if not STATE.exists():
 
 state = json.loads(STATE.read_text(encoding="utf-8"))
 branch, _ = git("branch", "--show-current")
-current_ai, ai_rc = git("rev-parse", "ai-branch", check=False)
+current_ai, ai_rc = git("rev-parse", "main", check=False)
 
 errors = []
 if branch != state["required_branch"]:
     errors.append(f"Current branch changed: expected {state['required_branch']}, got {branch}")
 if ai_rc != 0:
-    errors.append("ai-branch ref can no longer be resolved")
+    errors.append("main ref can no longer be resolved")
 elif current_ai != state["ai_branch_commit"]:
     errors.append(
-        "ai-branch CHANGED: "
+        "main CHANGED: "
         f"expected {state['ai_branch_commit']}, got {current_ai}"
     )
 
@@ -64,7 +64,7 @@ expected = sorted(p for p in changed if is_workflow_file(p) or allowed(p, allowe
 print("\nGit protection report")
 print("=" * 60)
 print(f"Branch: {branch}")
-print(f"ai-branch unchanged: {'YES' if ai_rc == 0 and current_ai == state['ai_branch_commit'] else 'NO'}")
+print(f"main unchanged: {'YES' if ai_rc == 0 and current_ai == state['ai_branch_commit'] else 'NO'}")
 
 print("\nAllowed/expected changed files:")
 if expected:
