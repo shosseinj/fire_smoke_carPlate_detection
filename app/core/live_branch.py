@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import queue as queue_module
@@ -40,7 +41,7 @@ class LiveBranch:
     references: set[str] = field(default_factory=set)
     last_heartbeat: dict[str, float] = field(default_factory=dict)
     durable_references: set[str] = field(default_factory=set)
-    recording_state: dict[str, Path | None] = field(default_factory=dict)
+    recording_state: dict[str, Any] = field(default_factory=dict)
     removing: bool = False
 
 
@@ -49,9 +50,19 @@ class LiveSource:
     source_id: str
     tee: Any
     pipeline: Any
+    camera_id: str | None = None
     native_width: int | None = None
     native_height: int | None = None
     attached: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingUpload:
+    path: Path
+    camera_id: str
+    start_time: str
+    end_time: str
+    object_name: str
 
 
 class GpuLiveBranchManager:
@@ -83,6 +94,7 @@ class GpuLiveBranchManager:
         grace_seconds: float = 5.0,
         heartbeat_timeout_seconds: float = 15.0,
         recording_segment_seconds: float | None = None,
+        camera_id_resolver: Callable[[str], int | str | None] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] | None = None,
     ) -> None:
         self.publish_base = self._validate_base(publish_base)
@@ -97,6 +109,7 @@ class GpuLiveBranchManager:
         self.recording_spool_path = Path(
             os.getenv("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
         )
+        self.camera_id_resolver = camera_id_resolver
         self.gst_loader = gst_loader
         self._gst: Any | None = None
         self._glib: Any | None = None
@@ -106,7 +119,7 @@ class GpuLiveBranchManager:
         self._pending_removal: dict[tuple[str, str], float] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._upload_queue: queue_module.Queue[Path] = queue_module.Queue()
+        self._upload_queue: queue_module.Queue[RecordingUpload] = queue_module.Queue()
         self._upload_thread: threading.Thread | None = None
         self._closed = False
 
@@ -171,10 +184,16 @@ class GpuLiveBranchManager:
             caps_text = caps.to_string()
             width_match = re.search(r"width=(?:\(int\))?(\d+)", caps_text)
             height_match = re.search(r"height=(?:\(int\))?(\d+)", caps_text)
+            resolved_camera_id = (
+                self.camera_id_resolver(source_id) if self.camera_id_resolver is not None else None
+            )
             self._sources[source_id] = LiveSource(
-                source_id, tee, pipeline,
-                int(width_match.group(1)) if width_match else None,
-                int(height_match.group(1)) if height_match else None,
+                source_id=source_id,
+                tee=tee,
+                pipeline=pipeline,
+                camera_id=str(resolved_camera_id) if resolved_camera_id is not None else None,
+                native_width=int(width_match.group(1)) if width_match else None,
+                native_height=int(height_match.group(1)) if height_match else None,
             )
         owner_id = f"continuous:{hashlib.sha256(source_id.encode()).hexdigest()}"
         try:
@@ -268,7 +287,7 @@ class GpuLiveBranchManager:
         if recording:
             elements.extend([h264_tee, rtsp_queue, save_queue, save_sink])
         tee_pad = None
-        recording_state: dict[str, Path | None] = {}
+        recording_state: dict[str, Any] = {}
         try:
             if profile == "wall":
                 capsfilter.set_property("caps", Gst.Caps.from_string(
@@ -286,8 +305,9 @@ class GpuLiveBranchManager:
                 save_queue.set_property("max-size-bytes", 0)
                 save_queue.set_property("max-size-time", 0)
                 self.recording_spool_path.mkdir(parents=True, exist_ok=True)
+                camera_id = getattr(source, "camera_id", None) or suffix
                 session = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                location = self.recording_spool_path / f"live-{suffix}-{session}-%05d.mp4"
+                location = self.recording_spool_path / f"camera-{camera_id}-{session}-%05d.mp4"
                 save_muxer.set_property("fragment-duration", 1000)
                 save_muxer.set_property("fragment-mode", 1)
                 save_muxer.set_property("streamable", True)
@@ -297,15 +317,21 @@ class GpuLiveBranchManager:
                     "max-size-time", int(self.recording_segment_seconds * 1_000_000_000)
                 )
                 recording_state["current"] = None
+                recording_state["start_time"] = None
 
                 def format_location(_splitmux: Any, fragment_id: int) -> str:
                     previous = recording_state["current"]
                     if previous is not None:
+                        end_time = datetime.now(timezone.utc)
+                        upload = self._recording_upload(
+                            previous, camera_id, recording_state["start_time"], end_time
+                        )
                         LOGGER.info("fMP4 fragment written: %s", previous)
                         LOGGER.info("Recording file completed: %s", previous)
-                        self._upload_queue.put(previous)
+                        self._upload_queue.put(upload)
                     opened = Path(str(location) % fragment_id)
                     recording_state["current"] = opened
+                    recording_state["start_time"] = datetime.now(timezone.utc)
                     LOGGER.info("fMP4 file opened: %s", opened)
                     return str(opened)
 
@@ -404,9 +430,17 @@ class GpuLiveBranchManager:
                 pass
         completed_path = branch.recording_state.get("current")
         if completed_path is not None and completed_path.is_file():
+            source = self._sources.get(branch.source_id)
+            camera_id = source.camera_id if source and source.camera_id else "unknown"
+            upload = self._recording_upload(
+                completed_path,
+                camera_id,
+                branch.recording_state.get("start_time") or datetime.now(timezone.utc),
+                datetime.now(timezone.utc),
+            )
             LOGGER.info("fMP4 fragment written: %s", completed_path)
             LOGGER.info("Recording file completed: %s", completed_path)
-            self._upload_queue.put(completed_path)
+            self._upload_queue.put(upload)
             branch.recording_state["current"] = None
         try:
             branch.tee_pad.unlink(branch.elements[0].get_static_pad("sink"))
@@ -468,18 +502,66 @@ class GpuLiveBranchManager:
         while not self._stop.wait(0.5):
             self._expire()
 
+    @staticmethod
+    def _recording_upload(
+        path: Path, camera_id: str, start_time: datetime, end_time: datetime
+    ) -> RecordingUpload:
+        object_name = f"continuous/{camera_id}/{start_time:%Y/%m/%d}/{path.name}"
+        return RecordingUpload(
+            path=path,
+            camera_id=camera_id,
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            object_name=object_name,
+        )
+
+    @staticmethod
+    def _upload_sidecar(upload: RecordingUpload) -> Path:
+        return upload.path.with_suffix(".json")
+
+    def _persist_upload(self, upload: RecordingUpload) -> None:
+        self._upload_sidecar(upload).write_text(
+            json.dumps(
+                {
+                    "camera_id": upload.camera_id,
+                    "start_time": upload.start_time,
+                    "end_time": upload.end_time,
+                    "object_name": upload.object_name,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _recover_upload(self, path: Path) -> RecordingUpload:
+        sidecar = path.with_suffix(".json")
+        if sidecar.is_file():
+            value = json.loads(sidecar.read_text(encoding="utf-8"))
+            return RecordingUpload(
+                path=path,
+                camera_id=str(value["camera_id"]),
+                start_time=str(value["start_time"]),
+                end_time=str(value["end_time"]),
+                object_name=str(value["object_name"]),
+            )
+        camera_id = path.name.split("-", 2)[1] if path.name.startswith("camera-") else "unknown"
+        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        return self._recording_upload(path, camera_id, modified, modified)
+
     def _run_uploads(self) -> None:
         client = None
         bucket = os.getenv("RECORDING_MINIO_BUCKET", "recordings")
-        for path in self.recording_spool_path.glob("live-*.mp4"):
-            self._upload_queue.put(path)
+        for pattern in ("camera-*.mp4", "live-*.mp4"):
+            for path in self.recording_spool_path.glob(pattern):
+                self._upload_queue.put(self._recover_upload(path))
         while not self._stop.is_set():
             try:
-                path = self._upload_queue.get(timeout=0.5)
+                upload = self._upload_queue.get(timeout=0.5)
             except queue_module.Empty:
                 continue
+            path = upload.path
             if not path.is_file():
                 continue
+            self._persist_upload(upload)
             LOGGER.info("Recording upload started: %s", path)
             try:
                 if client is None:
@@ -494,15 +576,33 @@ class GpuLiveBranchManager:
                     )
                     if not client.bucket_exists(bucket):
                         client.make_bucket(bucket)
-                object_name = f"continuous/{path.name}"
-                client.fput_object(bucket, object_name, str(path), content_type="video/mp4")
+                client.fput_object(
+                    bucket,
+                    upload.object_name,
+                    str(path),
+                    content_type="video/mp4",
+                    metadata={
+                        "camera-id": upload.camera_id,
+                        "start-time": upload.start_time,
+                        "end-time": upload.end_time,
+                        "object-name": upload.object_name,
+                    },
+                )
+                sidecar = self._upload_sidecar(upload)
+                client.fput_object(
+                    bucket,
+                    f"{upload.object_name}.json",
+                    str(sidecar),
+                    content_type="application/json",
+                )
                 path.unlink()
-                LOGGER.info("Recording upload succeeded: %s", object_name)
+                sidecar.unlink(missing_ok=True)
+                LOGGER.info("Recording upload succeeded: %s", upload.object_name)
             except Exception as exc:
                 client = None
                 LOGGER.warning("Recording upload failed: path=%s error=%s", path, type(exc).__name__)
                 if not self._stop.wait(5.0):
-                    self._upload_queue.put(path)
+                    self._upload_queue.put(upload)
 
     def close(self) -> None:
         with self._lock:

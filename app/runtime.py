@@ -986,6 +986,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         grace_seconds=app_settings.live_branch_grace_seconds,
         heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
         recording_segment_seconds=app_settings.live_recording_segment_seconds,
+        camera_id_resolver=lambda source_id: (
+            record.id if (record := registry.get(source_id)) is not None else None
+        ),
     )
     recording_coordinator = None
     recording_redis = None
