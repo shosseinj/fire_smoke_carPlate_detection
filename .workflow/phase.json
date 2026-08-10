@@ -1,6 +1,6 @@
 {
   "required_branch": "live",
-  "baseline_commit": "f7b2b78a7915df50ea3919cdcd7c54f8d8114d8a",
+  "baseline_commit": "c60ad1e9166ee176880c575b92ac73f239876f3f",
   "ai_branch_commit": "70b0575ef80724e4bad535a5a9d060acee50fd42",
   "allowed_paths": []
 }
