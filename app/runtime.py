@@ -38,6 +38,7 @@ from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsSt
 from app.core.location_store import LocationStore
 from app.core.cam_store import CamStore
 from app.core.personnel_store import PersonnelStore
+from app.core.employee_type_store import EmployeeTypeStore
 from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
@@ -101,6 +102,7 @@ class Runtime:
     face_quality_settings: FaceQualitySettingsStore
     face_processor: BatchProcessor
     personnel_store: PersonnelStore
+    employee_type_store: EmployeeTypeStore
     location_store: LocationStore
     cam_store: CamStore
     shift_store: ShiftStore
@@ -602,6 +604,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         database,
         app_settings.saved_media_path,
     )
+    employee_type_store = EmployeeTypeStore(database)
     location_store = LocationStore(
         database,
     )
@@ -617,6 +620,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     try:
         init_database(
             personnel_store=personnel_store,
+            employee_type_store=employee_type_store,
             detection_log_store=detection_log_store,
             location_store=location_store,
             shift_store=shift_store,
@@ -1125,6 +1129,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         face_quality_settings=face_quality_settings,
         face_processor=face_processor,
         personnel_store=personnel_store,
+        employee_type_store=employee_type_store,
         location_store=location_store,
         cam_store=cam_store,
         shift_store=shift_store,

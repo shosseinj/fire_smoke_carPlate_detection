@@ -7,6 +7,7 @@ import pytest
 from app.database import Database
 from app.core.cam_store import CamStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.employee_type_store import EmployeeTypeStore
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
 from app.core.shift_store import ShiftStore
@@ -15,9 +16,11 @@ from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.init_db import (
     _DEFAULT_SHIFTS,
     _create_all_default_shifts,
+    DEFAULT_EMPLOYEE_TYPE_SEED_DATA,
     DEFAULT_PERSONNEL_SEED_DATA,
     create_default_cam_records,
-    # create_default_detection_logs,
+    create_default_employee_types,
+    create_default_detection_logs,
     create_default_personnel,
     create_rooms_for_cameras,
     init_database,
@@ -45,11 +48,35 @@ def test_detection_logs_table_metadata_registered() -> None:
 
 
 @pytest.mark.postgresql
+def test_default_employee_types_are_seeded_from_init_db_in_persian(
+    postgres_database: Database,
+) -> None:
+    store = EmployeeTypeStore(postgres_database)
+    with postgres_database.engine.begin() as connection:
+        connection.exec_driver_sql("DELETE FROM employee_types")
+
+    created = create_default_employee_types(store)
+    assert created == len(DEFAULT_EMPLOYEE_TYPE_SEED_DATA)
+    records = store.list()
+    assert [record.name for record in records] == [
+        "پیمانکار",
+        "مشتری",
+        "مهمان",
+        "کارمند",
+        "نامشخص",
+    ]
+    report_types = [r.name for r in records if r.include_in_attendance_reports]
+    assert report_types == ["کارمند"]
+    assert create_default_employee_types(store) == 0
+
+
+@pytest.mark.postgresql
 def test_create_default_personnel_seeds_when_empty(
     postgres_database: Database,
 ) -> None:
     personnel_store = _make_personnel_store(postgres_database)
-    created = create_default_personnel(personnel_store)
+    employee_type_store = EmployeeTypeStore(postgres_database)
+    created = create_default_personnel(personnel_store, employee_type_store)
     assert created == len(DEFAULT_PERSONNEL_SEED_DATA)
     assert personnel_store.count() == len(DEFAULT_PERSONNEL_SEED_DATA)
 
@@ -59,10 +86,10 @@ def test_create_default_personnel_seeds_when_empty(
     assert "0410500666" in national_codes
     assert "0010691782" in national_codes
     assert all(len(r.national_code) == 10 for r in records)
-    assert all(r.employee_type == "employee" for r in records)
+    assert all(r.employee_type == "کارمند" for r in records)
 
     # Idempotent: second call returns 0
-    created2 = create_default_personnel(personnel_store)
+    created2 = create_default_personnel(personnel_store, employee_type_store)
     assert created2 == 0
     assert personnel_store.count() == len(DEFAULT_PERSONNEL_SEED_DATA)
 
@@ -141,14 +168,18 @@ def test_create_default_personnel_seeds_when_empty(
 @pytest.mark.postgresql
 def test_init_database_seeds_everything_when_empty(
     postgres_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("app.core.init_db.CREATE_SAMPLE_DETECTION_LOGS", True)
     personnel_store = _make_personnel_store(postgres_database)
+    employee_type_store = EmployeeTypeStore(postgres_database)
     log_store = _make_log_store(postgres_database)
     location_store = LocationStore(postgres_database)
     shift_store = ShiftStore(postgres_database)
 
     result = init_database(
         personnel_store=personnel_store,
+        employee_type_store=employee_type_store,
         detection_log_store=log_store,
         location_store=location_store,
         shift_store=shift_store,
@@ -191,10 +222,12 @@ def test_init_database_does_not_seed_detection_logs_by_default(
     postgres_database: Database,
 ) -> None:
     personnel_store = _make_personnel_store(postgres_database)
+    employee_type_store = EmployeeTypeStore(postgres_database)
     log_store = _make_log_store(postgres_database)
 
     result = init_database(
         personnel_store=personnel_store,
+        employee_type_store=employee_type_store,
         detection_log_store=log_store,
     )
 
@@ -206,8 +239,11 @@ def test_init_database_does_not_seed_detection_logs_by_default(
 @pytest.mark.postgresql
 def test_init_database_is_idempotent(
     postgres_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("app.core.init_db.CREATE_SAMPLE_DETECTION_LOGS", True)
     personnel_store = _make_personnel_store(postgres_database)
+    employee_type_store = EmployeeTypeStore(postgres_database)
     log_store = _make_log_store(postgres_database)
     location_store = LocationStore(postgres_database)
     shift_store = ShiftStore(postgres_database)
@@ -215,6 +251,7 @@ def test_init_database_is_idempotent(
     # First call seeds everything
     result1 = init_database(
         personnel_store=personnel_store,
+        employee_type_store=employee_type_store,
         detection_log_store=log_store,
         location_store=location_store,
         shift_store=shift_store,
@@ -226,6 +263,7 @@ def test_init_database_is_idempotent(
     # Second call should seed nothing
     result2 = init_database(
         personnel_store=personnel_store,
+        employee_type_store=employee_type_store,
         detection_log_store=log_store,
         location_store=location_store,
         shift_store=shift_store,

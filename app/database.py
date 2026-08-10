@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260803_0049"
+ALEMBIC_HEAD_REVISION = "20260810_0053"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -252,17 +252,31 @@ work_shifts = Table(
     )], *_audit_columns(),
 )
 
+employee_types = Table(
+    "employee_types", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", String(200), nullable=False),
+    Column("description", Text),
+    Column("is_active", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("include_in_attendance_reports", Boolean, nullable=False, server_default=text("FALSE")),
+    *_audit_columns(), *_user_audit_columns(),
+    UniqueConstraint("name", name="uq_employee_types_name"),
+)
+Index("idx_employee_types_active", employee_types.c.is_active)
+
 personnel = Table(
     "personnel", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("fname", Text, nullable=False),
     Column("lname", Text, nullable=False), Column("national_code", Text, nullable=False, unique=True),
-    Column("employee_type", Text, nullable=False, server_default="unknown"), Column("degree", Text),
+    Column("employee_type_id", Integer, ForeignKey("employee_types.id", ondelete="RESTRICT"), nullable=False),
+    Column("degree", Text),
     Column("shift_id", Integer),
     Column("department_id", Integer),
     Column("last_seen", UTC_TS), *_audit_columns(), *_user_audit_columns(),
 )
 Index("idx_personnel_national_code", personnel.c.national_code)
 Index("idx_personnel_name", personnel.c.lname, personnel.c.fname)
+Index("idx_personnel_employee_type", personnel.c.employee_type_id)
 Index("idx_personnel_shift", personnel.c.shift_id)
 Index("idx_personnel_department", personnel.c.department_id)
 

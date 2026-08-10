@@ -62,6 +62,18 @@ def _truncate_application_tables(database: Database) -> None:
         connection.exec_driver_sql(
             f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"
         )
+        connection.exec_driver_sql(
+            "INSERT INTO employee_types "
+            "(id, name, is_active, include_in_attendance_reports) VALUES "
+            "(1, 'پیمانکار', TRUE, FALSE), "
+            "(2, 'مشتری', TRUE, FALSE), "
+            "(3, 'مهمان', TRUE, FALSE), "
+            "(4, 'کارمند', TRUE, TRUE), "
+            "(5, 'نامشخص', TRUE, FALSE)"
+        )
+        connection.exec_driver_sql(
+            "SELECT setval(pg_get_serial_sequence('employee_types', 'id'), 5, true)"
+        )
 
 
 @pytest.fixture

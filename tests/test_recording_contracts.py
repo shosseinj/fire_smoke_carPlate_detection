@@ -26,7 +26,7 @@ def test_recording_schema_is_timezone_aware_and_duration_bounded() -> None:
 
 
 def test_database_metadata_exposes_authoritative_recording_table() -> None:
-    assert ALEMBIC_HEAD_REVISION == "20260803_0049"
+    assert ALEMBIC_HEAD_REVISION == "20260810_0053"
     assert recording_jobs.c.scheduled_start_utc.type.timezone is True
     assert recording_jobs.c.scheduled_end_utc.type.timezone is True
     assert {constraint.name for constraint in recording_jobs.constraints} >= {

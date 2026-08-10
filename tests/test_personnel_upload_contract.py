@@ -32,6 +32,7 @@ class _Store:
             lname="User",
             national_code="1234567891",
             employee_type="employee",
+            employee_type_id=4,
             degree=None,
             shift_id=None,
             department_id=None,

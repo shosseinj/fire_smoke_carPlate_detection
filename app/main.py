@@ -31,6 +31,7 @@ from app.api.auth import router as auth_router
 from app.api.faces import router as faces_router
 from app.api.humans import router as humans_router
 from app.api.personnel import router as personnel_router
+from app.api.employee_types import router as employee_types_router
 from app.api.locations import buildings_router, sections_router, rooms_router
 from app.api.shifts import router as shifts_router
 from app.api.holidays import router as holidays_router
@@ -80,6 +81,7 @@ OPENAPI_TAGS = [
     {"name": "face-recognition"},
     {"name": "human-tracking"},
     {"name": "personnel"},
+    {"name": "Employee Types"},
     {"name": "plate-settings"},
     {"name": "Shifts"},
     {"name": "Holidays"},
@@ -160,6 +162,7 @@ app.include_router(fire_logs_router)
 app.include_router(faces_router)
 app.include_router(humans_router)
 app.include_router(personnel_router)
+app.include_router(employee_types_router)
 app.include_router(shifts_router)
 app.include_router(holidays_router)
 app.include_router(requests_router)

@@ -140,7 +140,7 @@ def test_create_personnel(tmp_path: Path) -> None:
         assert body["fname"] == "Ali"
         assert body["lname"] == "Mohammadi"
         assert body["national_code"] == VALID_CODE_1
-        assert body["employee_type"] == "employee"
+        assert body["employee_type"] == "کارمند"
         assert body["degree"] == "Bachelor"
         assert body["id"] > 0
         assert body["created_at"] is not None

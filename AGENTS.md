@@ -54,3 +54,11 @@ Always report:
 The phase is controlled by `.workflow/phase.json` created by `tools/start_phase.py`.
 Only paths explicitly listed there are allowed to change during this phase.
 All other changed paths must be reported.
+
+## Personnel employee types
+
+Personnel employee type is normalized through the `employee_types` lookup table. The table uses `id` plus a unique `name` and does not have a separate code field. `personnel.employee_type_id` is a required foreign key with `ON DELETE RESTRICT`; the public personnel API keeps the resolved employee-type `name` in `employee_type` and also exposes `employee_type_id`. Employee-type CRUD is available under `/api/v1/employee-types`, and deletion must be rejected while any personnel record references the type. Personnel Excel templates/imports resolve employee types dynamically from active lookup rows by ID or name rather than from a hardcoded choice list. Default employee types are seeded only from `app/core/init_db.py` and use Persian names: `پیمانکار`, `مشتری`, `مهمان`, `کارمند`, `نامشخص`. The default `کارمند` row has `include_in_attendance_reports=true`; the others default false. Legacy English personnel inputs are accepted as aliases but persisted/resolved to the Persian lookup names. Detection-log attendance summaries (`daily-summary`, `monthly-summary`, `yearly-leave-summary`) select personnel only through this flag, not by hardcoded type name/ID. `is_active` remains independent from report eligibility so deactivation does not silently change report membership.
+
+## Seed data ownership
+
+Normal deployment seed data is owned by `app/core/init_db.py`, not Alembic migrations. Top-level `CREATE_*` switches in that file control employee types, buildings, sections, rooms, cameras, shifts, holidays, personnel, dated personnel shift assignments, and optional sample detection logs. Alembic may migrate pre-existing row values when a schema changes, but it must not be used as the normal source of default seed records.

@@ -1055,7 +1055,11 @@ class AttendanceSummaryService:
         section_id: int | None = None,
         shift_id: int | None = None,
     ) -> list[SummaryPersonnel]:
-        where: list[str] = []
+        # Report eligibility belongs to the employee type rather than to a
+        # hardcoded type name or ID. This keeps report response/calculation
+        # contracts unchanged while allowing administrators to decide which
+        # personnel categories participate in attendance reports.
+        where: list[str] = ["et.include_in_attendance_reports = TRUE"]
         params: list[Any] = []
         if personnel_id:
             personnel_text = str(personnel_id)
@@ -1085,6 +1089,7 @@ class AttendanceSummaryService:
             "ws.works_saturday AS shift_works_saturday, "
             "ws.works_sunday AS shift_works_sunday "
             "FROM personnel p "
+            "JOIN employee_types et ON et.id = p.employee_type_id "
             "LEFT JOIN sections s ON s.id = p.department_id "
             "LEFT JOIN work_shifts ws ON ws.id = p.shift_id"
             f"{where_sql} ORDER BY p.lname, p.fname"

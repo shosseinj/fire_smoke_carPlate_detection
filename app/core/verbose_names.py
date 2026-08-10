@@ -88,6 +88,7 @@ FIELD_VERBOSE_NAMES: Dict[str, Dict[str, str]] = {
         "lname": "نام خانوادگی",
         "national_code": "کد ملی",
         "employee_type": "نوع استخدام",
+        "employee_type_id": "شناسه نوع استخدام",
         "degree": "مدرک تحصیلی",
         "department_id": "شناسه بخش",
         "shift_id": "شناسه شیفت کاری",

@@ -16,6 +16,7 @@ from typing import Any
 
 from app.core.cam_store import CamRecord, CamStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.employee_type_store import EmployeeTypeStore
 from app.core.location_store import LocationStore
 from app.core.holiday_import import seed_default_official_holidays
 from app.core.holiday_store import HolidayStore
@@ -27,6 +28,20 @@ from app.core.types import TaskName
 
 LOGGER = logging.getLogger(__name__)
 
+# ── Seed switches ─────────────────────────────────────────────────────
+# Toggle initial/default data from this single file.  Schema creation and
+# structural data migrations remain Alembic's responsibility.
+CREATE_EMPLOYEE_TYPES = True
+CREATE_BUILDINGS = True
+CREATE_SECTIONS = True
+CREATE_ROOMS = True
+CREATE_CAMERAS = True
+CREATE_SHIFTS = True
+CREATE_HOLIDAYS = True
+CREATE_PERSONNEL = True
+CREATE_PERSONNEL_SHIFT_ASSIGNMENTS = True
+CREATE_SAMPLE_DETECTION_LOGS = False
+
 _SEED_FIRST_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
 _SEED_FIRST_SHIFT_END_DATE: date = parse_jalali_date("1405-02-31")
 _SEED_SECOND_SHIFT_START_DATE: date = parse_jalali_date("1405-03-01")
@@ -35,14 +50,6 @@ _LEGACY_SEED_SHIFT_START_DATE: date = parse_jalali_date("1405-01-01")
 _LEGACY_SEED_SHIFT_END_DATE: date = parse_jalali_date("1405-12-29")
 
 # ── Code maps (from the legacy init_database.py) ───────────────────────
-_EMPLOYEE_TYPE_CODE_MAP: dict[str, str] = {
-    "1": "contractor",
-    "2": "customer",
-    "3": "guest",
-    "4": "employee",
-    "5": "unknown",
-}
-
 _DEGREE_CODE_MAP: dict[str, str] = {
     "1": "بیسواد",
     "2": "زیر دیپلم",
@@ -54,13 +61,23 @@ _DEGREE_CODE_MAP: dict[str, str] = {
     "8": "نامشخص",
 }
 
+# Default employee types.  Names are intentionally Persian because the lookup
+# table no longer has a separate machine ``code`` field.
+DEFAULT_EMPLOYEE_TYPE_SEED_DATA: list[dict[str, Any]] = [
+    {"name": "پیمانکار", "include_in_attendance_reports": False},
+    {"name": "مشتری", "include_in_attendance_reports": False},
+    {"name": "مهمان", "include_in_attendance_reports": False},
+    {"name": "کارمند", "include_in_attendance_reports": True},
+    {"name": "نامشخص", "include_in_attendance_reports": False},
+]
+
 # Personnel seed data from the legacy init_database.py.
 DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
     {
         "fname": "رضا",
         "lname": "محمدلو",
         "national_code": "0311344119",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -69,7 +86,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "حسین",
         "lname": "حسین زاده",
         "national_code": "0410500666",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -78,7 +95,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "پوریا",
         "lname": "ابوحمزه",
         "national_code": "0430205562",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -87,7 +104,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "علی",
         "lname": "ابوحمزه",
         "national_code": "0430212097",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -96,7 +113,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "حسین",
         "lname": "جعفری",
         "national_code": "1451141981",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -105,7 +122,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "امین",
         "lname": "شریفی",
         "national_code": "3920139313",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -114,7 +131,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "صفی اله",
         "lname": "کریمی",
         "national_code": "3932041755",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
         "degree_code": "5",
@@ -123,12 +140,40 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "fname": "امید",
         "lname": "کریمی",
         "national_code": "0010691782",
-        "employee_type_code": "4",
+        "employee_type_name": "کارمند",
         "department_id": None,
         "shift_id": None,
         "degree_code": None,
     },
 ]
+
+
+def create_default_employee_types(employee_type_store: EmployeeTypeStore) -> int:
+    """Create the default employee types only when the table is empty.
+
+    This is initial deployment seed data, not a reconciliation job.  If an
+    administrator later renames or deletes an unused type, startup must not
+    recreate or overwrite it.
+    """
+    if employee_type_store.list():
+        return 0
+
+    created = 0
+    for item in DEFAULT_EMPLOYEE_TYPE_SEED_DATA:
+        name = str(item["name"])
+        try:
+            record = employee_type_store.create(
+                name=name,
+                is_active=True,
+                include_in_attendance_reports=bool(
+                    item.get("include_in_attendance_reports", False)
+                ),
+            )
+            created += 1
+            LOGGER.info("INIT_DB created employee type '%s' id=%d", record.name, record.id)
+        except ValueError as exc:
+            LOGGER.warning("INIT_DB skip employee type '%s': %s", name, exc)
+    return created
 
 
 # ── Camera URLs (from the legacy init_database.py) ────────────────────
@@ -328,79 +373,88 @@ def _seed_normalize_national_code(value: Any) -> str:
 
 def create_default_personnel(
     personnel_store: PersonnelStore,
+    employee_type_store: EmployeeTypeStore,
     department_id: int | None = None,
     shift_id: int | None = None,
 ) -> int:
     """Create default personnel from seed data if the table is empty.
 
-    Returns the number of personnel created (0 if the table already
-    contained records).
+    Employee types are resolved by Persian name rather than hardcoded IDs, so
+    seed correctness does not depend on sequence values.
     """
     if personnel_store.count() > 0:
         return 0
+
+    type_ids_by_name = {
+        record.name: record.id for record in employee_type_store.list()
+    }
     count = 0
     for item in DEFAULT_PERSONNEL_SEED_DATA:
         try:
             national_code = _seed_normalize_national_code(item.get("national_code"))
-            employee_type_code = str(item.get("employee_type_code") or "5")
+            employee_type_name = str(item.get("employee_type_name") or "نامشخص")
+            employee_type_id = type_ids_by_name.get(employee_type_name)
+            if employee_type_id is None:
+                raise ValueError(
+                    f"Employee type seed '{employee_type_name}' does not exist"
+                )
             degree_code = item.get("degree_code")
             personnel_store.create(
                 fname=item["fname"],
                 lname=item["lname"],
                 national_code=national_code,
-                employee_type=_EMPLOYEE_TYPE_CODE_MAP.get(employee_type_code, "employee"),
+                employee_type=None,
+                employee_type_id=employee_type_id,
                 degree=_DEGREE_CODE_MAP.get(str(degree_code)) if degree_code is not None else None,
                 shift_id=shift_id,
                 department_id=department_id,
             )
             count += 1
         except ValueError as exc:
-            LOGGER.warning("INIT_DB skip personnel %s %s: %s", item.get("fname"), item.get("lname"), exc)
+            LOGGER.warning(
+                "INIT_DB skip personnel %s %s: %s",
+                item.get("fname"),
+                item.get("lname"),
+                exc,
+            )
     return count
 
 
-# def create_default_detection_logs(
-#     detection_log_store: DetectionLogStore,
-#     personnel_ids: list[int],
-#     room_id: int | None = None,
-#     target_count: int = 100,
-# ) -> int:
-#     """Create sample detection logs if the table is empty.
+def create_default_detection_logs(
+    detection_log_store: DetectionLogStore,
+    personnel_ids: list[int],
+    room_id: int | None = None,
+    target_count: int = 100,
+) -> int:
+    """Create development-only sample detection logs when the table is empty."""
+    by_status = detection_log_store.count_by_status()
+    if by_status and any("log_type:" in key for key in by_status):
+        return 0
+    if not personnel_ids:
+        return 0
 
-#     Logs are spread across the available personnel and assigned
-#     ``log_type="camera_rtsp"`` to match the old project convention.
-#     Roughly 20% of logs have ``access_granted=False``.
-
-#     Returns the number of logs created (0 if the table already
-#     contained records).
-#     """
-#     by_status = detection_log_store.count_by_status()
-#     if by_status and any("log_type:" in k for k in by_status):
-#         return 0
-#     if not personnel_ids:
-#         return 0
-
-#     base_time = datetime.now(timezone.utc)
-#     count = 0
-#     for i in range(target_count):
-#         personnel_id = random.choice(personnel_ids)
-#         detection_time = base_time - timedelta(minutes=i * 30)
-#         try:
-#             detection_log_store.create(
-#                 source_system="face_recognition",
-#                 person=f"Personnel_{personnel_id}",
-#                 confidence=random.uniform(0.5, 1.0),
-#                 detection_time=detection_time.isoformat(),
-#                 room_id=room_id,
-#                 camera_id=None,
-#                 access_granted=random.random() > 0.2,
-#                 counts_for_attendance=True,
-#                 log_type="camera_rtsp",
-#             )
-#             count += 1
-#         except Exception as exc:
-#             LOGGER.warning("INIT_DB skip detection log %d: %s", i, exc)
-#     return count
+    base_time = datetime.now(timezone.utc)
+    count = 0
+    for i in range(target_count):
+        personnel_id = random.choice(personnel_ids)
+        detection_time = base_time - timedelta(minutes=i * 30)
+        try:
+            detection_log_store.create(
+                source_system="face_recognition",
+                personnel_id=personnel_id,
+                person=f"Personnel_{personnel_id}",
+                confidence=random.uniform(0.5, 1.0),
+                detection_time=detection_time.isoformat(),
+                room_id=room_id,
+                camera_id=None,
+                access_granted=random.random() > 0.2,
+                counts_for_attendance=True,
+                log_type="camera_rtsp",
+            )
+            count += 1
+        except Exception as exc:
+            LOGGER.warning("INIT_DB skip detection log %d: %s", i, exc)
+    return count
 
 
 # ── Default shifts (from the legacy init_database.py) ────────────────
@@ -558,6 +612,7 @@ def _create_all_default_shifts(shift_store: ShiftStore) -> list[Any]:
 def init_database(
     *,
     personnel_store: PersonnelStore | None = None,
+    employee_type_store: EmployeeTypeStore | None = None,
     detection_log_store: DetectionLogStore | None = None,
     location_store: LocationStore | None = None,
     shift_store: ShiftStore | None = None,
@@ -567,41 +622,27 @@ def init_database(
     target_log_count: int = 100,
     seed_sample_detections: bool = False,
 ) -> bool:
-    """Seed the database with foundational records and sample data.
+    """Seed enabled initial/default data.
 
-    Creates a seed building → section → room hierarchy, default
-    work shifts, default personnel from
-    :data:`DEFAULT_PERSONNEL_SEED_DATA`, and sample detection logs.
-    Every operation is idempotent.
-
-    Call this function from ``build_runtime()`` (or the startup
-    entrypoint) after all stores have been constructed.
-
-    Parameters
-    ----------
-    personnel_store, detection_log_store, location_store, shift_store,
-    holiday_store, registry, cam_store:
-        Store instances through which seed operations are performed.
-        Any store that is ``None`` is skipped.
-    target_log_count:
-        Desired number of detection logs when seeding from empty.
-    seed_sample_detections:
-        Create development-only sample detection logs when true. Disabled by
-        default so production startup never invents detection history.
-
-    Returns
-    -------
-    True if any seed data was written.
+    Every seed category is controlled by the ``CREATE_*`` switches at the top
+    of this file and is idempotent.  Alembic is responsible only for schema
+    changes and migration of pre-existing data, not normal default seed rows.
     """
     seeded = False
 
-    # ── Seed building → section → room ──────────────────────────────
+    # ── Employee types ─────────────────────────────────────────────
+    if CREATE_EMPLOYEE_TYPES and employee_type_store is not None:
+        if create_default_employee_types(employee_type_store) > 0:
+            seeded = True
+
+    # ── Building / section / base room ─────────────────────────────
     section: Any = None
     room: Any = None
-    _DEFAULT_POLYGON = json.dumps([[0, 0], [640, 0], [640, 640], [0, 640]])
+    default_polygon = json.dumps([[0, 0], [640, 0], [640, 640], [0, 640]])
     if location_store is not None:
         building_records, _ = location_store.list_buildings(limit=1)
-        if not building_records:
+        building = building_records[0] if building_records else None
+        if building is None and CREATE_BUILDINGS:
             building = location_store.create_building(
                 name="مرغاب",
                 address="Tehran",
@@ -609,40 +650,47 @@ def init_database(
             )
             LOGGER.info("INIT_DB created building id=%d", building.id)
             seeded = True
-        else:
-            building = building_records[0]
 
         section_records, _ = location_store.list_sections(limit=1)
-        if not section_records:
-            section = location_store.create_section(
-                name="معاونت هوش مصنوعی",
-                building_id=building.id,
-                description="شاخه هوش مصنوعی",
-            )
-            LOGGER.info("INIT_DB created section id=%d", section.id)
-            seeded = True
-        else:
-            section = section_records[0]
+        section = section_records[0] if section_records else None
+        if section is None and CREATE_SECTIONS:
+            if building is None:
+                LOGGER.warning(
+                    "INIT_DB cannot create section: no building exists and CREATE_BUILDINGS is disabled"
+                )
+            else:
+                section = location_store.create_section(
+                    name="معاونت هوش مصنوعی",
+                    building_id=building.id,
+                    description="شاخه هوش مصنوعی",
+                )
+                LOGGER.info("INIT_DB created section id=%d", section.id)
+                seeded = True
 
         room_records, _ = location_store.list_rooms(limit=1)
-        if not room_records:
-            room = location_store.create_room(
-                name="اتاق نظارت",
-                section_id=section.id,
-                description="اتاق پایش و نظارت تصویری",
-                polygon_json=_DEFAULT_POLYGON,
-            )
-            LOGGER.info("INIT_DB created room id=%d", room.id)
-            seeded = True
-        else:
-            room = room_records[0]
+        room = room_records[0] if room_records else None
+        if room is None and CREATE_ROOMS:
+            if section is None:
+                LOGGER.warning(
+                    "INIT_DB cannot create room: no section exists and CREATE_SECTIONS is disabled/unavailable"
+                )
+            else:
+                room = location_store.create_room(
+                    name="اتاق نظارت",
+                    section_id=section.id,
+                    description="اتاق پایش و نظارت تصویری",
+                    polygon_json=default_polygon,
+                )
+                LOGGER.info("INIT_DB created room id=%d", room.id)
+                seeded = True
 
-    # ── Seed default cameras and per-camera rooms ────────────────────
-    if registry is not None and section is not None:
+    # ── Cameras (source registry + cam hierarchy records) ───────────
+    if CREATE_CAMERAS and registry is not None and section is not None:
         source_count_before = len(registry.list())
         seed_cameras = create_default_cameras(registry)
         if len(seed_cameras) > source_count_before:
             seeded = True
+
         seed_cam_records: list[CamRecord] = []
         if cam_store is not None:
             seed_urls = [
@@ -651,13 +699,12 @@ def init_database(
                 if source.source_uri in _SEED_CAMERA_URLS
             ]
             seed_cam_records, cams_created = create_default_cam_records(
-                cam_store,
-                section.id,
-                urls=seed_urls,
+                cam_store, section.id, urls=seed_urls
             )
             if cams_created:
                 seeded = True
-        if location_store is not None and seed_cameras:
+
+        if CREATE_ROOMS and location_store is not None and seed_cameras:
             rooms_created = create_rooms_for_cameras(
                 location_store,
                 seed_cameras,
@@ -665,39 +712,46 @@ def init_database(
                 cam_records=seed_cam_records,
             )
             if rooms_created > 0:
-                LOGGER.info("INIT_DB created %d room(s) for seed cameras", rooms_created)
+                LOGGER.info(
+                    "INIT_DB created %d room(s) for seed cameras", rooms_created
+                )
                 seeded = True
+
             rooms, _ = location_store.list_rooms(section_id=section.id, limit=1000)
             rooms_by_name = {item.name: item for item in rooms}
             cams_by_url = {item.url: item for item in seed_cam_records}
             for source in seed_cameras:
-                room = rooms_by_name.get(source.name)
+                source_room = rooms_by_name.get(source.name)
                 cam = cams_by_url.get(source.source_uri)
-                if room is None:
+                if source_room is None:
                     continue
-                if cam is not None and room.cam_id != cam.id:
+                if cam is not None and source_room.cam_id != cam.id:
                     LOGGER.warning(
                         "INIT_DB skip source room assignment for '%s': cam ownership mismatch",
                         source.name,
                     )
                     continue
-                if source.room_id != room.id:
-                    registry.update(source.source_uri, room_id=room.id)
+                if source.room_id != source_room.id:
+                    registry.update(source.source_uri, room_id=source_room.id)
                     seeded = True
 
-    # ── Seed all default shifts ─────────────────────────────────────
-    shifts = _create_all_default_shifts(shift_store) if shift_store is not None else []
+    # ── Shifts ─────────────────────────────────────────────────────
+    shifts: list[Any] = []
+    if shift_store is not None:
+        if CREATE_SHIFTS:
+            shift_count_before = shift_store.count()
+            shifts = _create_all_default_shifts(shift_store)
+            if shift_store.count() > shift_count_before:
+                seeded = True
+        else:
+            shifts, _ = shift_store.list(limit=100)
     shift = shifts[0] if shifts else None
-    if not seeded and shift_store is not None:
-        existing, _ = shift_store.list(limit=1)
-        if existing:
-            shift = existing[0]
     shifts_by_name = {item.shift_name: item for item in shifts}
     first_seed_shift = shifts_by_name.get("شیفت جنگ")
     second_seed_shift = shifts_by_name.get("شیفت صبح")
 
-    # ── Seed official Iran 1405 holidays ─────────────────────────────
-    if holiday_store is not None:
+    # ── Official Iran holidays ─────────────────────────────────────
+    if CREATE_HOLIDAYS and holiday_store is not None:
         holiday_seed = seed_default_official_holidays(holiday_store)
         if bool(holiday_seed["seeded"]):
             LOGGER.info(
@@ -706,26 +760,35 @@ def init_database(
             )
             seeded = True
 
-    # ── Seed default personnel ──────────────────────────────────────
-    if personnel_store is not None:
-        dept_id = section.id if section is not None else None
-        shift_id = shift.id if shift is not None else None
-        created = create_default_personnel(
-            personnel_store,
-            department_id=dept_id,
-            shift_id=shift_id,
-        )
-        if created > 0:
-            LOGGER.info("INIT_DB created %d personnel record(s)", created)
-            seeded = True
+    # ── Personnel ──────────────────────────────────────────────────
+    if CREATE_PERSONNEL and personnel_store is not None:
+        if employee_type_store is None:
+            LOGGER.warning(
+                "INIT_DB cannot create personnel: employee_type_store is unavailable"
+            )
+        else:
+            dept_id = section.id if section is not None else None
+            shift_id = shift.id if shift is not None else None
+            created = create_default_personnel(
+                personnel_store,
+                employee_type_store,
+                department_id=dept_id,
+                shift_id=shift_id,
+            )
+            if created > 0:
+                LOGGER.info("INIT_DB created %d personnel record(s)", created)
+                seeded = True
+
+    # ── Dated personnel shift assignments ──────────────────────────
+    if (
+        CREATE_PERSONNEL_SHIFT_ASSIGNMENTS
+        and personnel_store is not None
+        and shift_store is not None
+        and first_seed_shift is not None
+        and second_seed_shift is not None
+    ):
         personnel_records, _ = personnel_store.list(limit=1000)
         for person in personnel_records:
-            if (
-                shift_store is None
-                or first_seed_shift is None
-                or second_seed_shift is None
-            ):
-                continue
             desired_assignments = (
                 (
                     first_seed_shift.id,
@@ -748,6 +811,7 @@ def init_database(
                 shift_store.delete_assignment(existing_assignments[0].id)
                 existing_assignments = []
                 seeded = True
+
             for desired_shift_id, assignment_start, assignment_end in desired_assignments:
                 if any(
                     assignment.shift_id == desired_shift_id
@@ -772,21 +836,24 @@ def init_database(
                         exc,
                     )
 
-    # ── Seed sample detection logs ──────────────────────────────────
+    # ── Optional development detection logs ────────────────────────
+    # Sample detections are intentionally disabled by default.  Keep both the
+    # source-code seed switch and the runtime setting as explicit opt-ins.
     if (
-        seed_sample_detections
+        CREATE_SAMPLE_DETECTION_LOGS
+        and seed_sample_detections
         and detection_log_store is not None
         and personnel_store is not None
     ):
         personnel_records, _ = personnel_store.list(limit=1000)
-        personnel_ids = [p.id for p in personnel_records]
+        personnel_ids = [person.id for person in personnel_records]
         room_id = room.id if room is not None else None
-        # created = create_default_detection_logs(
-        #     detection_log_store,
-        #     personnel_ids=personnel_ids,
-        #     room_id=room_id,
-        #     target_count=target_log_count,
-        # )
+        created = create_default_detection_logs(
+            detection_log_store,
+            personnel_ids=personnel_ids,
+            room_id=room_id,
+            target_count=target_log_count,
+        )
         if created > 0:
             LOGGER.info("INIT_DB created %d detection log(s)", created)
             seeded = True

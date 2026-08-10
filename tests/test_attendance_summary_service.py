@@ -973,3 +973,39 @@ def test_overnight_logs_remain_owned_by_assignment_start_day() -> None:
 
     assert _logs_for_report_day(logs, date(2026, 7, 27), overnight, use_shift_window=True) == logs
     assert _logs_for_report_day(logs, date(2026, 7, 28), overnight, use_shift_window=True) == []
+
+
+def test_personnel_query_filters_by_employee_type_report_eligibility() -> None:
+    class _Rows:
+        def fetchall(self):
+            return []
+
+    class _Connection:
+        def __init__(self, captured):
+            self.captured = captured
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params):
+            self.captured.append((sql, list(params)))
+            return _Rows()
+
+    class _Database:
+        def __init__(self):
+            self.captured = []
+
+        def connection(self):
+            return _Connection(self.captured)
+
+    database = _Database()
+    service = AttendanceSummaryService(database=database, shift_store=SimpleNamespace())  # type: ignore[arg-type]
+
+    assert service._personnel() == []
+    sql, params = database.captured[0]
+    assert "JOIN employee_types et ON et.id = p.employee_type_id" in sql
+    assert "et.include_in_attendance_reports = TRUE" in sql
+    assert params == []

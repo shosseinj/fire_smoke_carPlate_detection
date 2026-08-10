@@ -72,6 +72,7 @@ class PersonnelCreateRequest(BaseModel):
     lname: str = Field(min_length=1, max_length=200)
     national_code: str = Field(min_length=1, max_length=20)
     employee_type: Optional[str] = None
+    employee_type_id: Optional[int] = Field(default=None, ge=1)
     degree: Optional[str] = Field(default=None, max_length=200)
     department_id: Optional[int] = None
     shift_id: Optional[int] = None
@@ -94,6 +95,7 @@ class PersonnelUpdateRequest(BaseModel):
     lname: Optional[str] = Field(default=None, min_length=1, max_length=200)
     national_code: Optional[str] = Field(default=None, min_length=1, max_length=20)
     employee_type: Optional[str] = None
+    employee_type_id: Optional[int] = Field(default=None, ge=1)
     degree: Optional[str] = Field(default=None, max_length=200)
     department_id: Optional[int] = None
     shift_id: Optional[int] = None
@@ -117,6 +119,7 @@ class SimplePersonnelResponse(BaseModel):
     lname: str
     national_code: str
     employee_type: Optional[str] = None
+    employee_type_id: int
     department_name: Optional[str] = None
     shift_name: Optional[str] = None
     degree: Optional[str] = None
@@ -233,6 +236,7 @@ def _personnel_simple(
         lname=p.lname,
         national_code=p.national_code,
         employee_type=p.employee_type,
+        employee_type_id=p.employee_type_id,
         department_name=(
             department_names.get(p.department_id)
             if department_names is not None
@@ -269,6 +273,7 @@ def list_personnel(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
     employee_type: str | None = Query(default=None),
+    employee_type_id: int | None = Query(default=None, ge=1),
     section_id: int | None = Query(default=None, ge=1),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
     runtime: Runtime = Depends(get_runtime),
@@ -279,6 +284,7 @@ def list_personnel(
         offset=skip,
         limit=limit,
         employee_type=employee_type,
+        employee_type_id=employee_type_id,
         department_id=section_id,
         search=search,
     )
@@ -321,6 +327,7 @@ def create_personnel(
             lname=payload.lname,
             national_code=payload.national_code,
             employee_type=payload.employee_type,
+            employee_type_id=payload.employee_type_id,
             degree=payload.degree,
             shift_id=payload.shift_id,
             department_id=payload.department_id,
@@ -362,7 +369,8 @@ async def create_personnel_with_images(
     fname: str = Form(...),
     lname: str = Form(...),
     national_code: str = Form(...),
-    employee_type: str = Form(default="unknown"),
+    employee_type: str | None = Form(default=None),
+    employee_type_id: int | None = Form(default=None),
     degree: str | None = Form(default=None),
     department_id: int | None = Form(default=None),
     shift_id: int | None = Form(default=None),
@@ -393,6 +401,7 @@ async def create_personnel_with_images(
             lname=lname,
             national_code=national_code,
             employee_type=employee_type,
+            employee_type_id=employee_type_id,
             degree=degree,
             department_id=department_id,
             shift_id=shift_id,

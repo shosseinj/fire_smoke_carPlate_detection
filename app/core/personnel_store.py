@@ -21,7 +21,6 @@ from app.core.jalali_utils import parse_jalali_date
 
 LOGGER = logging.getLogger("uvicorn.error")
 
-_VALID_EMPLOYEE_TYPES = frozenset({"contractor", "customer", "guest", "employee", "unknown"})
 _NATIONAL_CODE_CONSTRAINT = "personnel_national_code_key"
 _DEPARTMENT_CONSTRAINT = "personnel_department_id_fkey"
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -34,6 +33,7 @@ class PersonnelRecord:
     lname: str
     national_code: str
     employee_type: str
+    employee_type_id: int
     degree: str | None
     shift_id: int | None
     department_id: int | None
@@ -133,6 +133,22 @@ def _parse_zip_entry_personnel(name: str) -> tuple[str, str, str]:
     return "Unknown", "Unknown", ""
 
 
+_LEGACY_EMPLOYEE_TYPE_NAME_ALIASES: dict[str, str] = {
+    "contractor": "پیمانکار",
+    "customer": "مشتری",
+    "guest": "مهمان",
+    "employee": "کارمند",
+    "unknown": "نامشخص",
+}
+
+
+def _employee_type_lookup_name(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return normalized
+    return _LEGACY_EMPLOYEE_TYPE_NAME_ALIASES.get(normalized.casefold(), normalized)
+
+
 class PersonnelStore:
     """PostgreSQL-backed store for personnel records and images."""
 
@@ -226,24 +242,29 @@ class PersonnelStore:
 
     # ── Personnel CRUD ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _personnel_select_columns() -> str:
+        return (
+            "p.id, p.fname, p.lname, p.national_code, p.employee_type_id, "
+            "et.name AS employee_type, p.degree, p.shift_id, p.department_id, "
+            "p.last_seen, p.created_at_utc, p.updated_at_utc, p.created_by, p.updated_by"
+        )
+
+    @staticmethod
+    def _personnel_from_clause() -> str:
+        return "personnel AS p JOIN employee_types AS et ON et.id = p.employee_type_id"
+
     def _row_to_personnel(self, row: Row) -> PersonnelRecord:
-        last_seen: str | None = None
-        if "last_seen" in row.keys():
-            last_seen = row["last_seen"]
-        shift_id: int | None = None
-        if "shift_id" in row.keys():
-            raw = row["shift_id"]
-            shift_id = int(raw) if raw is not None else None
-        department_id: int | None = None
-        if "department_id" in row.keys():
-            raw = row["department_id"]
-            department_id = int(raw) if raw is not None else None
+        last_seen: str | None = row["last_seen"] if "last_seen" in row.keys() else None
+        shift_id = int(row["shift_id"]) if row.get("shift_id") is not None else None
+        department_id = int(row["department_id"]) if row.get("department_id") is not None else None
         return PersonnelRecord(
-            id=row["id"],
-            fname=row["fname"],
-            lname=row["lname"],
-            national_code=row["national_code"],
-            employee_type=row["employee_type"],
+            id=int(row["id"]),
+            fname=str(row["fname"]),
+            lname=str(row["lname"]),
+            national_code=str(row["national_code"]),
+            employee_type=str(row["employee_type"]),
+            employee_type_id=int(row["employee_type_id"]),
             degree=row["degree"],
             shift_id=shift_id,
             department_id=department_id,
@@ -254,21 +275,66 @@ class PersonnelStore:
             updated_by=row.get("updated_by"),
         )
 
-    def _personnel_columns(self) -> str:
-        return ("id, fname, lname, national_code, employee_type, degree, "
-                "shift_id, department_id, last_seen, created_at_utc, updated_at_utc, "
-                "created_by, updated_by")
+    def _get_personnel_with_connection(
+        self, conn: Connection, personnel_id: int
+    ) -> PersonnelRecord | None:
+        row = conn.execute(
+            f"SELECT {self._personnel_select_columns()} "
+            f"FROM {self._personnel_from_clause()} WHERE p.id = ?",
+            (personnel_id,),
+        ).fetchone()
+        return self._row_to_personnel(row) if row is not None else None
+
+    @staticmethod
+    def _resolve_employee_type(
+        conn: Connection,
+        *,
+        employee_type: str | None,
+        employee_type_id: int | None,
+        use_default: bool = True,
+    ) -> tuple[int, str]:
+        name = employee_type.strip() if employee_type is not None and employee_type.strip() else None
+        if employee_type_id is None and name is None and use_default:
+            name = "نامشخص"
+
+        if name is not None:
+            name = _employee_type_lookup_name(name)
+
+        row_by_id = None
+        row_by_name = None
+        if employee_type_id is not None:
+            row_by_id = conn.execute(
+                "SELECT id, name FROM employee_types WHERE id = ?",
+                (employee_type_id,),
+            ).fetchone()
+            if row_by_id is None:
+                raise ValueError(f"Employee type not found: {employee_type_id}")
+        if name is not None:
+            row_by_name = conn.execute(
+                "SELECT id, name FROM employee_types WHERE LOWER(name) = LOWER(?)",
+                (name,),
+            ).fetchone()
+            if row_by_name is None:
+                raise ValueError(f"Invalid employee_type '{employee_type}'")
+
+        selected = row_by_id or row_by_name
+        if selected is None:
+            raise ValueError("employee_type_id or employee_type is required")
+        if row_by_id is not None and row_by_name is not None and int(row_by_id["id"]) != int(row_by_name["id"]):
+            raise ValueError("employee_type_id does not match employee_type")
+        return int(selected["id"]), str(selected["name"])
 
     def create(
         self,
         fname: str,
         lname: str,
         national_code: str,
-        employee_type: str = "unknown",
+        employee_type: str | None = None,
         degree: str | None = None,
         shift_id: int | None = None,
         department_id: int | None = None,
         created_by: int | None = None,
+        employee_type_id: int | None = None,
     ) -> PersonnelRecord:
         fname = fname.strip()
         lname = lname.strip()
@@ -277,63 +343,52 @@ class PersonnelStore:
         raw_code = normalize_national_code(national_code)
         if not validate_national_code(raw_code):
             raise ValueError(f"Invalid Iranian national code: {national_code}")
-        if employee_type not in _VALID_EMPLOYEE_TYPES:
-            raise ValueError(
-                f"Invalid employee_type '{employee_type}'. "
-                f"Must be one of: {sorted(_VALID_EMPLOYEE_TYPES)}"
-            )
         now = self._now()
         with self._lock, self._connection() as conn:
+            resolved_type_id, _ = self._resolve_employee_type(
+                conn, employee_type=employee_type, employee_type_id=employee_type_id
+            )
             try:
-                row = conn.execute(
+                inserted = conn.execute(
                     "INSERT INTO personnel "
-                    "(fname, lname, national_code, employee_type, degree, shift_id, department_id, "
+                    "(fname, lname, national_code, employee_type_id, degree, shift_id, department_id, "
                     "created_at_utc, updated_at_utc, created_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    f"RETURNING {self._personnel_columns()}",
-                    (fname, lname, raw_code, employee_type, degree, shift_id, department_id, now, now, created_by),
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                    (fname, lname, raw_code, resolved_type_id, degree, shift_id, department_id, now, now, created_by),
                 ).fetchone()
-                if row is None:
+                if inserted is None:
                     raise RuntimeError("Failed to retrieve created personnel record")
-                return self._row_to_personnel(row)
+                record = self._get_personnel_with_connection(conn, int(inserted["id"]))
+                if record is None:
+                    raise RuntimeError("Failed to retrieve created personnel record")
+                return record
             except IntegrityError as exc:
                 raise ValueError(
                     _personnel_integrity_message(
-                        exc,
-                        national_code=raw_code,
-                        department_id=department_id,
+                        exc, national_code=raw_code, department_id=department_id
                     )
                 ) from exc
 
     def get(self, personnel_id: int) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
-            row = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            return self._row_to_personnel(row)
+            return self._get_personnel_with_connection(conn, personnel_id)
 
     def get_by_national_code(self, national_code: str) -> PersonnelRecord | None:
         code = normalize_national_code(national_code)
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel WHERE national_code = ?", (code,)
+                f"SELECT {self._personnel_select_columns()} "
+                f"FROM {self._personnel_from_clause()} WHERE p.national_code = ?",
+                (code,),
             ).fetchone()
-            if row is None:
-                return None
-            return self._row_to_personnel(row)
+            return self._row_to_personnel(row) if row is not None else None
 
     def get_by_national_codes(
         self, national_codes: set[str] | list[str] | tuple[str, ...]
     ) -> dict[str, PersonnelRecord]:
         """Load personnel for many national codes with one query."""
         codes = sorted(
-            {
-                normalized
-                for raw in national_codes
-                if (normalized := normalize_national_code(str(raw)))
-            }
+            {normalized for raw in national_codes if (normalized := normalize_national_code(str(raw)))}
         )
         if not codes:
             return {}
@@ -343,27 +398,22 @@ class PersonnelStore:
                 batch = codes[start:start + 5000]
                 placeholders = ", ".join("?" for _ in batch)
                 rows = conn.execute(
-                    f"SELECT {self._personnel_columns()} FROM personnel "
-                    f"WHERE national_code IN ({placeholders})",
+                    f"SELECT {self._personnel_select_columns()} "
+                    f"FROM {self._personnel_from_clause()} "
+                    f"WHERE p.national_code IN ({placeholders})",
                     batch,
                 ).fetchall()
-                result.update(
-                    {
-                        str(row["national_code"]): self._row_to_personnel(row)
-                        for row in rows
-                    }
-                )
+                result.update({str(row["national_code"]): self._row_to_personnel(row) for row in rows})
         return result
 
     def get_by_name(self, fname: str, lname: str) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel WHERE fname = ? AND lname = ?",
+                f"SELECT {self._personnel_select_columns()} "
+                f"FROM {self._personnel_from_clause()} WHERE p.fname = ? AND p.lname = ?",
                 (fname.strip(), lname.strip()),
             ).fetchone()
-            if row is None:
-                return None
-            return self._row_to_personnel(row)
+            return self._row_to_personnel(row) if row is not None else None
 
     def update(
         self,
@@ -376,48 +426,48 @@ class PersonnelStore:
         shift_id: int | None = None,
         department_id: int | None = None,
         updated_by: int | None = None,
+        employee_type_id: int | None = None,
     ) -> PersonnelRecord | None:
         with self._lock, self._connection() as conn:
-            existing = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
-            ).fetchone()
+            existing = self._get_personnel_with_connection(conn, personnel_id)
             if existing is None:
                 return None
-            new_fname = fname.strip() if fname else existing["fname"]
-            new_lname = lname.strip() if lname is not None else existing["lname"]
+            new_fname = fname.strip() if fname is not None else existing.fname
+            new_lname = lname.strip() if lname is not None else existing.lname
             if fname is not None and not new_fname:
                 raise ValueError("fname cannot be blank")
-            raw_code = existing["national_code"]
+            raw_code = existing.national_code
             if national_code is not None:
                 raw_code = normalize_national_code(national_code)
                 if not validate_national_code(raw_code):
                     raise ValueError(f"Invalid Iranian national code: {national_code}")
-            new_employee_type = employee_type if employee_type is not None else existing["employee_type"]
-            if employee_type is not None and new_employee_type not in _VALID_EMPLOYEE_TYPES:
-                raise ValueError(
-                    f"Invalid employee_type '{new_employee_type}'. "
-                    f"Must be one of: {sorted(_VALID_EMPLOYEE_TYPES)}"
+            new_employee_type_id = existing.employee_type_id
+            if employee_type is not None or employee_type_id is not None:
+                new_employee_type_id, _ = self._resolve_employee_type(
+                    conn,
+                    employee_type=employee_type,
+                    employee_type_id=employee_type_id,
+                    use_default=False,
                 )
-            new_degree = degree if degree is not None else existing["degree"]
-            new_shift_id = shift_id if shift_id is not None else existing["shift_id"]
-            new_department_id = department_id if department_id is not None else existing["department_id"]
+            new_degree = degree if degree is not None else existing.degree
+            new_shift_id = shift_id if shift_id is not None else existing.shift_id
+            new_department_id = department_id if department_id is not None else existing.department_id
             now = self._now()
             try:
-                row = conn.execute(
+                updated = conn.execute(
                     "UPDATE personnel SET fname=?, lname=?, national_code=?, "
-                    "employee_type=?, degree=?, shift_id=?, department_id=?, "
-                    "updated_at_utc=?, updated_by=? WHERE id=? "
-                    f"RETURNING {self._personnel_columns()}",
-                    (new_fname, new_lname, raw_code, new_employee_type, new_degree,
+                    "employee_type_id=?, degree=?, shift_id=?, department_id=?, "
+                    "updated_at_utc=?, updated_by=? WHERE id=? RETURNING id",
+                    (new_fname, new_lname, raw_code, new_employee_type_id, new_degree,
                      new_shift_id, new_department_id, now, updated_by, personnel_id),
                 ).fetchone()
-                return self._row_to_personnel(row) if row is not None else None
+                if updated is None:
+                    return None
+                return self._get_personnel_with_connection(conn, personnel_id)
             except IntegrityError as exc:
                 raise ValueError(
                     _personnel_integrity_message(
-                        exc,
-                        national_code=raw_code,
-                        department_id=new_department_id,
+                        exc, national_code=raw_code, department_id=new_department_id
                     )
                 ) from exc
 
@@ -427,11 +477,6 @@ class PersonnelStore:
         with self._lock, self._connection() as conn:
             existing = conn.execute(
                 "SELECT id FROM personnel WHERE id = ?", (personnel_id,)
-            ).fetchone()
-            if existing is None:
-                return False
-            existing = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel WHERE id = ?", (personnel_id,)
             ).fetchone()
             if existing is None:
                 return False
@@ -485,32 +530,34 @@ class PersonnelStore:
         employee_type: str | None = None,
         department_id: int | None = None,
         search: str | None = None,
+        employee_type_id: int | None = None,
     ) -> tuple[list[PersonnelRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
+        if employee_type_id is not None:
+            where_clauses.append("p.employee_type_id = ?")
+            params.append(employee_type_id)
         if employee_type is not None:
-            where_clauses.append("employee_type = ?")
-            params.append(employee_type)
+            where_clauses.append("LOWER(et.name) = LOWER(?)")
+            params.append(_employee_type_lookup_name(employee_type))
         if department_id is not None:
-            where_clauses.append("department_id = ?")
+            where_clauses.append("p.department_id = ?")
             params.append(department_id)
         if search is not None:
-            where_clauses.append("(fname LIKE ? OR lname LIKE ? OR national_code LIKE ?)")
+            where_clauses.append("(p.fname LIKE ? OR p.lname LIKE ? OR p.national_code LIKE ?)")
             pattern = f"%{search}%"
             params.extend([pattern, pattern, pattern])
-        where = ""
-        if where_clauses:
-            where = " WHERE " + " AND ".join(where_clauses)
+        where = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         with self._lock, self._connection() as conn:
             total = conn.execute(
-                f"SELECT COUNT(*) FROM personnel{where}", params
+                f"SELECT COUNT(*) FROM {self._personnel_from_clause()}{where}", params
             ).fetchone()[0]
             rows = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT {self._personnel_select_columns()} FROM {self._personnel_from_clause()}"
+                f"{where} ORDER BY p.id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
-            records = [self._row_to_personnel(r) for r in rows]
-            return records, int(total)
+            return [self._row_to_personnel(row) for row in rows], int(total)
 
     def list_with_images(
         self,
@@ -520,7 +567,8 @@ class PersonnelStore:
         with self._lock, self._connection() as conn:
             total = conn.execute("SELECT COUNT(*) FROM personnel").fetchone()[0]
             rows = conn.execute(
-                f"SELECT {self._personnel_columns()} FROM personnel ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT {self._personnel_select_columns()} FROM {self._personnel_from_clause()} "
+                "ORDER BY p.id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
             personnel_ids = [int(row["id"]) for row in rows]
@@ -758,6 +806,7 @@ class PersonnelStore:
         # ── Fetch live data ──────────────────────────────────────────
         shifts: list[tuple[int, str]] = []
         sections: list[tuple[int, str]] = []
+        employee_types: list[tuple[int, str]] = []
         try:
             with self._connection() as conn:
                 shift_rows = conn.execute(
@@ -768,6 +817,12 @@ class PersonnelStore:
                     "SELECT id, name FROM sections ORDER BY id"
                 ).fetchall()
                 sections = [(int(r["id"]), str(r["name"])) for r in section_rows]
+                type_rows = conn.execute(
+                    "SELECT id, name FROM employee_types WHERE is_active = TRUE ORDER BY id"
+                ).fetchall()
+                employee_types = [
+                    (int(r["id"]), str(r["name"])) for r in type_rows
+                ]
         except Exception:
             pass
 
@@ -777,7 +832,7 @@ class PersonnelStore:
         ws.sheet_view.rightToLeft = True
         headers = [
             "نام", "نام خانوادگی",
-            "کد ملی", "نوع کارمند (کد)", "دپارتمان (شناسه)",
+            "کد ملی", "نوع کارمند (شناسه/نام)", "دپارتمان (شناسه)",
             "شیفت کاری (شناسه)", "تاریخ شروع شیفت", "تاریخ پایان شیفت",
             "مدرک تحصیلی",
         ]
@@ -812,7 +867,7 @@ class PersonnelStore:
             ("A: نام", "نام شخص (اجباری)"),
             ("B: نام خانوادگی", "نام خانوادگی شخص (اجباری)"),
             ("C: کد ملی", "کد ملی ۱۰ رقمی معتبر (اجباری) — صفرهای ابتدا را حتماً وارد کنید، مثال: 0012345678"),
-            ("D: نوع کارمند", "1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"),
+            ("D: نوع کارمند", "شناسه یا نام نوع کارمند از جدول انواع کارمند زیر؛ در صورت خالی بودن از unknown استفاده می‌شود"),
             ("E: دپارتمان", "شناسه دپارتمان از جدول دپارتمان‌های زیر (اختیاری)"),
             ("F: شیفت کاری", "شناسه شیفت از جدول شیفت‌های زیر (اختیاری)"),
             ("G: تاریخ شروع شیفت", "تاریخ شمسی YYYY-MM-DD؛ در صورت انتخاب شیفت الزامی است"),
@@ -825,10 +880,10 @@ class PersonnelStore:
             r += 1
         r += 1
 
-        # ── Employee type code table ──────────────────────────────────
-        ws_guide.cell(row=r, column=1, value="کدهای نوع کارمند").font = Font(bold=True, size=12)
+        # ── Employee type table ───────────────────────────────────────
+        ws_guide.cell(row=r, column=1, value="انواع کارمند").font = Font(bold=True, size=12)
         r += 1
-        et_header = ["کد", "عنوان فارسی", "عنوان انگلیسی"]
+        et_header = ["شناسه", "نام"]
         for c, val in enumerate(et_header, 1):
             cell = ws_guide.cell(row=r, column=c, value=val)
             cell.font = header_font
@@ -836,13 +891,10 @@ class PersonnelStore:
             cell.alignment = center_align
             cell.border = thin_border
         r += 1
-        for code, fa, en in [("1", "پیمانکار", "contractor"), ("2", "مشتری", "customer"),
-                              ("3", "مهمان", "guest"), ("4", "کارمند", "employee"),
-                              ("5", "نامشخص", "unknown")]:
-            ws_guide.cell(row=r, column=1, value=code).alignment = center_align
-            ws_guide.cell(row=r, column=2, value=fa).alignment = right_align
-            ws_guide.cell(row=r, column=3, value=en).alignment = Alignment(horizontal="left")
-            for c in range(1, 4):
+        for type_id, name in employee_types:
+            ws_guide.cell(row=r, column=1, value=type_id).alignment = center_align
+            ws_guide.cell(row=r, column=2, value=name).alignment = right_align
+            for c in range(1, 3):
                 ws_guide.cell(row=r, column=c).border = thin_border
             r += 1
         r += 1
@@ -951,6 +1003,8 @@ class PersonnelStore:
         # ── Pre-fetch valid reference IDs ──────────────────────────
         valid_shift_ids: set[int] = set()
         valid_section_ids: set[int] = set()
+        employee_type_map: dict[str, str] = {}
+        employee_type_ids_by_name: dict[str, int] = {}
         try:
             with self._connection() as conn:
                 valid_shift_ids = {
@@ -961,17 +1015,21 @@ class PersonnelStore:
                     int(r["id"])
                     for r in conn.execute("SELECT id FROM sections").fetchall()
                 }
+                type_rows = conn.execute(
+                    "SELECT id, name FROM employee_types WHERE is_active = TRUE ORDER BY id"
+                ).fetchall()
+                for type_row in type_rows:
+                    type_id = int(type_row["id"])
+                    type_name = str(type_row["name"]).strip()
+                    employee_type_map[str(type_id)] = type_name
+                    employee_type_map[type_name.lower()] = type_name
+                    employee_type_ids_by_name[type_name] = type_id
+                for legacy_name, persian_name in _LEGACY_EMPLOYEE_TYPE_NAME_ALIASES.items():
+                    resolved_name = employee_type_map.get(persian_name.lower())
+                    if resolved_name is not None:
+                        employee_type_map[legacy_name] = resolved_name
         except Exception:
             pass
-
-        employee_type_map = {
-            "1": "contractor", "2": "customer", "3": "guest",
-            "4": "employee", "5": "unknown",
-            "contractor": "contractor", "customer": "customer",
-            "guest": "guest", "employee": "employee", "unknown": "unknown",
-            "پیمانکار": "contractor", "مشتری": "customer", "مهمان": "guest",
-            "کارمند": "employee", "نامشخص": "unknown",
-        }
         degree_map = {
             "1": "illiterate", "2": "below_diploma", "3": "diploma",
             "4": "associate", "5": "bachelor", "6": "master",
@@ -1037,18 +1095,26 @@ class PersonnelStore:
                 et_raw = row[3] if len(row) > 3 else None
                 employee_type: str | None = None
                 if et_raw is not None and str(et_raw).strip():
-                    et_key = str(et_raw).strip().lower()
+                    if isinstance(et_raw, (int, float)):
+                        et_key = str(int(float(et_raw)))
+                    else:
+                        et_key = str(et_raw).strip().lower()
                     employee_type = employee_type_map.get(et_key)
                     if employee_type is None:
                         row_field_errors.append({
                             "field": "employee_type",
                             "message": (
-                                f"کد نوع کارمند نامعتبر: '{et_raw}'. "
-                                "کدهای مجاز: 1=پیمانکار, 2=مشتری, 3=مهمان, 4=کارمند, 5=نامشخص"
+                                f"نوع کارمند نامعتبر: '{et_raw}'. "
+                                "از شناسه یا نام یکی از انواع کارمند فعال استفاده کنید"
                             ),
                         })
                 else:
-                    employee_type = "unknown"
+                    employee_type = employee_type_map.get("نامشخص".lower())
+                    if employee_type is None:
+                        row_field_errors.append({
+                            "field": "employee_type",
+                            "message": "نوع کارمند پیش‌فرض نامشخص در سیستم وجود ندارد",
+                        })
 
                 # ── Parse & validate department_id ────────────────
                 dept_val = row[4] if len(row) > 4 else None
@@ -1186,6 +1252,7 @@ class PersonnelStore:
                     "fname": fname,
                     "lname": lname,
                     "employee_type": employee_type,
+                    "employee_type_id": employee_type_ids_by_name.get(employee_type or ""),
                     "degree": degree,
                     "shift_id": shift_id,
                     "shift_start_date": (
@@ -1336,7 +1403,7 @@ class PersonnelStore:
                             fname=rec.get("fname", ""),
                             lname=rec.get("lname", ""),
                             national_code=rec.get("national_code", ""),
-                            employee_type=rec.get("employee_type", "unknown"),
+                            employee_type=rec.get("employee_type", "نامشخص"),
                             degree=rec.get("degree"),
                         )
                         created_personnel += 1
@@ -1367,7 +1434,7 @@ class PersonnelStore:
                                 fname=display_fname,
                                 lname=display_lname,
                                 national_code=nc_candidate,
-                                employee_type="unknown",
+                                employee_type="نامشخص",
                             )
                             created_personnel += 1
                         except ValueError as exc:
