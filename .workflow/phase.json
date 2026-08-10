@@ -1,6 +1,8 @@
 {
   "required_branch": "live",
-  "baseline_commit": "c60ad1e9166ee176880c575b92ac73f239876f3f",
+  "baseline_commit": "f8ba3990fb596fed0eab26a6db3bace0024ca994",
   "ai_branch_commit": "70b0575ef80724e4bad535a5a9d060acee50fd42",
-  "allowed_paths": []
+  "allowed_paths": [
+    "app/core/live_branch.py"
+  ]
 }
