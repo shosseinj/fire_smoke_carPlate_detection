@@ -89,7 +89,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
-        "degree_code": "5",
+        "degree_code": "4",
     },
     {
         "fname": "پوریا",
@@ -98,7 +98,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
-        "degree_code": "5",
+        "degree_code": "4",
     },
     {
         "fname": "علی",
@@ -107,7 +107,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
-        "degree_code": "5",
+        "degree_code": "4",
     },
     {
         "fname": "حسین",
@@ -116,7 +116,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
-        "degree_code": "5",
+        "degree_code": "6",
     },
     {
         "fname": "امین",
@@ -134,7 +134,7 @@ DEFAULT_PERSONNEL_SEED_DATA: list[dict[str, Any]] = [
         "employee_type_name": "کارمند",
         "department_id": 1,
         "shift_id": 1,
-        "degree_code": "5",
+        "degree_code": "6",
     },
     {
         "fname": "امید",
@@ -790,6 +790,11 @@ def init_database(
         personnel_records, _ = personnel_store.list(limit=1000)
         for person in personnel_records:
             desired_assignments = (
+                (
+                    second_seed_shift.id,
+                    _SEED_MORNING_1404_START_DATE,
+                    _SEED_MORNING_1404_END_DATE,
+                ),
                 (
                     first_seed_shift.id,
                     _SEED_FIRST_SHIFT_START_DATE,

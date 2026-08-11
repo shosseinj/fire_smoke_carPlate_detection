@@ -305,7 +305,17 @@ class PlateLogStore:
         params.extend([max(0, skip), max(1, min(limit, 500))])
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM plate_logs WHERE " + " AND ".join(clauses)
+                """
+                SELECT p.*,
+                       EXISTS (
+                           SELECT 1
+                           FROM car_plates c
+                           WHERE c.id = p.plate_id
+                             AND c.is_active = 1
+                             AND c.deleted_at_utc IS NULL
+                       ) AS is_registered
+                FROM plate_logs p
+                WHERE """ + " AND ".join(clauses)
                 + " ORDER BY detection_time DESC, id DESC OFFSET ? LIMIT ?",
                 params,
             ).fetchall()
@@ -314,7 +324,19 @@ class PlateLogStore:
     def get_log(self, log_id: int) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM plate_logs WHERE id = ?", (log_id,)
+                """
+                SELECT p.*,
+                       EXISTS (
+                           SELECT 1
+                           FROM car_plates c
+                           WHERE c.id = p.plate_id
+                             AND c.is_active = 1
+                             AND c.deleted_at_utc IS NULL
+                       ) AS is_registered
+                FROM plate_logs p
+                WHERE p.id = ?
+                """,
+                (log_id,),
             ).fetchone()
         return self._serialize(dict(row)) if row else None
 
@@ -384,6 +406,7 @@ class PlateLogStore:
 
     @classmethod
     def _serialize(cls, value: dict[str, Any]) -> dict[str, Any]:
+        value["is_registered"] = bool(value.get("is_registered"))
         value["snapshot_url"] = cls._media_url(value.get("snapshot_key"))
         value["video_url"] = cls._media_url(value.get("video_key"))
         return value

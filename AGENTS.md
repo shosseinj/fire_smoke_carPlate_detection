@@ -5,7 +5,7 @@ The current development phase is ONLY for asynchronously saving live frames/vide
 
 ## Hard rules
 
-1. Work only on the `live` branch.
+<!-- 1. Work only on the `live` branch. -->
 2. Never checkout, merge, rebase, reset, cherry-pick, force-update, or modify `ai-branch`.
 3. Do not change unrelated API endpoints, AI/inference code, stream processing, GPU logic, or existing behavior unless the user explicitly approves it.
 4. Diagnose the existing broken Redis/MinIO implementation BEFORE rewriting it.

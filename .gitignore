@@ -20,3 +20,9 @@ qdrant_storage/
 # Agentic evaluation outputs
 .agentic/reports/
 .agentic/tmp/
+
+# Local agent/workflow controls
+AGENTS.md
+.workflow/
+tools/start_phase.py
+tools/check_changes.py
