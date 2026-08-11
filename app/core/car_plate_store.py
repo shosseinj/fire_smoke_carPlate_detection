@@ -65,6 +65,15 @@ class CarPlateStore:
                 f"VALUES ({', '.join('?' for _ in columns)}) RETURNING *",
                 parameters,
             ).fetchone()
+            if row is not None:
+                connection.execute(
+                    """
+                    UPDATE plate_logs
+                    SET plate_id = ?, updated_at = ?
+                    WHERE plate_id IS NULL AND plate_number = ?
+                    """,
+                    (int(row["id"]), now, str(row["normalized_plate"])),
+                )
         return self._serialize(dict(row)) if row is not None else {}
 
     def update(self, plate_id: int, values: dict[str, Any]) -> dict[str, Any] | None:

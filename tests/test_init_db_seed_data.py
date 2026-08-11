@@ -202,15 +202,19 @@ def test_init_database_seeds_everything_when_empty(
     assert personnel
     for person in personnel:
         assignments = shift_store.list_assignments(person.id)
-        assert len(assignments) == 2
-        assert assignments[0].start_date == parse_jalali_date("1405-01-01")
-        assert assignments[0].end_date == parse_jalali_date("1405-02-31")
-        assert assignments[1].start_date == parse_jalali_date("1405-03-01")
-        assert assignments[1].end_date == parse_jalali_date("1405-12-29")
+        assert len(assignments) == 3
+        assert assignments[0].start_date == parse_jalali_date("1404-01-01")
+        assert assignments[0].end_date == parse_jalali_date("1404-12-29")
+        assert assignments[1].start_date == parse_jalali_date("1405-01-01")
+        assert assignments[1].end_date == parse_jalali_date("1405-02-31")
+        assert assignments[2].start_date == parse_jalali_date("1405-03-01")
+        assert assignments[2].end_date == parse_jalali_date("1405-12-29")
         first_shift = shift_store.get(assignments[0].shift_id)
         second_shift = shift_store.get(assignments[1].shift_id)
-        assert first_shift is not None and first_shift.shift_name == "شیفت جنگ"
-        assert second_shift is not None and second_shift.shift_name == "شیفت صبح"
+        third_shift = shift_store.get(assignments[2].shift_id)
+        assert first_shift is not None and first_shift.shift_name == "شیفت صبح"
+        assert second_shift is not None and second_shift.shift_name == "شیفت جنگ"
+        assert third_shift is not None and third_shift.shift_name == "شیفت صبح"
 
     # Detection logs created
     by_status = log_store.count_by_status()

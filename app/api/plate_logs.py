@@ -95,6 +95,7 @@ class PlateLogResponse(BaseModel):
     created_by_user_id: int | None = None
     updated_by_user_id: int | None = None
     plate_id: int | None = None
+    is_registered: bool
     plate_number: str | None = None
     raw_plate_text: str | None = None
     confidence: float | None = None
