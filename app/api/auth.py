@@ -4,24 +4,27 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.auth_schemas import (
+    AccessDefinitionResponse,
     ChangePasswordRequest,
     CreateUserRequest,
     CreateUserResponse,
-    LegacyPasswordChangeRequest,
-    LegacyRoleChangeResponse,
     LoginRequest,
     LogoutRequest,
     LogoutResponse,
     PasswordChangeResponse,
     RefreshRequest,
-    RoleInfoResponse,
+    SetUserAccessRequest,
     TokenResponse,
+    UserPermissionGrant,
+    WebSocketTicketRequest,
+    WebSocketTicketResponse,
+    UserAccessResponse,
     UserResponse,
-    validate_legacy_password_strength,
+    validate_password_strength,
 )
 from app.config import settings
 from app.database import IntegrityError
@@ -31,16 +34,20 @@ from app.core.auth import (
     create_refresh_token,
     decode_access_token,
     decode_refresh_token,
+    effective_permissions,
     get_auth_store,
     get_current_user,
+    has_scoped_permission,
     hash_password,
-    normalize_role,
+    require_permission,
     resolve_user_from_payload,
     revoke_access_token,
     revoke_refresh_token,
+    token_matches_user_version,
     verify_password,
 )
-from app.core.auth_store import UserRecord
+from app.core.access_matrix import ACCESS_DEFINITIONS
+from app.core.auth_store import UserPermissionGrantRecord, UserRecord
 
 LOGGER = logging.getLogger("uvicorn.error")
 
@@ -54,12 +61,12 @@ def _user_to_response(user: UserRecord) -> UserResponse:
         username=user.username,
         email=user.email,
         full_name=user.full_name,
-        role=normalize_role(user.role),
         is_active=user.is_active,
         created_at=_parse_utc(user.created_at_utc) or datetime.now(timezone.utc),
         last_login=_parse_utc(user.last_login_utc),
         created_at_jalali=utc_iso_to_jalali_datetime(user.created_at_utc) or "",
         last_login_jalali=utc_iso_to_jalali_datetime(user.last_login_utc),
+        permissions=sorted(effective_permissions(user)),
     )
 
 
@@ -68,56 +75,18 @@ def _create_user_response(user: UserRecord, message: str) -> CreateUserResponse:
         message=message,
         user_id=user.id,
         username=user.username,
-        role=normalize_role(user.role),
     )
 
 
 def _build_token_response(user: UserRecord) -> TokenResponse:
-    role = normalize_role(user.role)
     return TokenResponse(
-        access_token=create_access_token(user.id, user.username, role),
-        refresh_token=create_refresh_token(user.id, user.username, role),
+        access_token=create_access_token(user.id, user.username, auth_version=user.auth_version),
+        refresh_token=create_refresh_token(user.id, user.username, auth_version=user.auth_version),
         token_type="bearer",
         user_id=user.id,
         username=user.username,
-        role=role,
+        permissions=sorted(effective_permissions(user)),
     )
-
-
-def _require_admin(user: UserRecord) -> None:
-    if normalize_role(user.role) not in {"superadmin", "admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="برای مدیریت کاربران، دسترسی مدیر یا سوپرادمین لازم است",
-        )
-
-
-def _require_superadmin(user: UserRecord) -> None:
-    if normalize_role(user.role) != "superadmin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="برای این درخواست فقط دسترسی سوپرادمین مجاز است",
-        )
-
-
-def _require_creation_permission(current_user: UserRecord, requested_role: str) -> str:
-    actor_role = normalize_role(current_user.role)
-    target_role = normalize_role(requested_role)
-    if target_role not in {"superadmin", "admin", "user"}:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="نقش ایجادشده باید یکی از «superadmin»، «admin» یا «user» باشد",
-        )
-    allowed = {
-        "superadmin": {"superadmin", "admin", "user"},
-        "admin": {"admin", "user"},
-    }.get(actor_role, set())
-    if target_role not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما اجازه ایجاد کاربر با این نقش را ندارید",
-        )
-    return target_role
 
 
 def _parse_utc(value: str | None) -> datetime | None:
@@ -163,12 +132,7 @@ def _extract_refresh_token(
     return token
 
 
-def _validate_legacy_creation(payload: CreateUserRequest) -> None:
-    if not payload.email:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ایمیل برای درخواست قدیمی الزامی است",
-        )
+def _validate_user_creation(payload: CreateUserRequest) -> None:
     if payload.confirm_password is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -179,7 +143,7 @@ def _validate_legacy_creation(payload: CreateUserRequest) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="رمز عبور و تایید رمز عبور یکسان نیست",
         )
-    errors = validate_legacy_password_strength(payload.password)
+    errors = validate_password_strength(payload.password)
     if errors:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -189,7 +153,6 @@ def _validate_legacy_creation(payload: CreateUserRequest) -> None:
 
 def _create_user_record(
     payload: CreateUserRequest,
-    role: str,
     *,
     is_active: bool,
 ) -> UserRecord:
@@ -209,7 +172,6 @@ def _create_user_record(
         return store.create_user(
             username=payload.username,
             password_hash=hash_password(payload.password),
-            role=normalize_role(role),
             email=payload.email,
             is_active=is_active,
             full_name=payload.full_name,
@@ -317,7 +279,7 @@ def refresh(
         )
 
     user = resolve_user_from_payload(refresh_payload)
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or not token_matches_user_version(refresh_payload, user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="کاربر یافت نشد یا حساب کاربری غیرفعال است",
@@ -349,86 +311,89 @@ def logout(
 
 
 @router.post(
-    "/create-admin",
+    "/users",
     response_model=CreateUserResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={200: {"description": "Update User Role"}},
-)
-def create_admin(
-    payload: CreateUserRequest,
-    response: Response,
-    current_user: UserRecord = Depends(get_current_user),
-) -> CreateUserResponse:
-    _require_superadmin(current_user)
-    _validate_legacy_creation(payload)
-    response.status_code = status.HTTP_200_OK
-    user = _create_user_record(
-        payload,
-        role="admin",
-        is_active=True,
-    )
-    return _create_user_response(user, "کاربر ادمین با موفقیت ساخته شد.")
-
-
-@router.post(
-    "/create-user",
-    response_model=CreateUserResponse,
-    status_code=status.HTTP_201_CREATED,
-    responses={200: {"description": "Legacy-compatible regular-user creation"}},
 )
 def create_user(
     payload: CreateUserRequest,
-    response: Response,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_permission("auth.manage")),
 ) -> CreateUserResponse:
-    role = _require_creation_permission(current_user, payload.role)
-    _validate_legacy_creation(payload)
-    response.status_code = status.HTTP_200_OK
+    _validate_user_creation(payload)
     user = _create_user_record(
         payload,
-        role=role,
         is_active=True,
     )
     return _create_user_response(user, "کاربر با موفقیت ساخته شد.")
 
 
-_ROLE_INFORMATION = [
-    {
-        "role": "superadmin",
-        "title": "سوپرادمین",
-        "description": "دسترسی کامل مدیریتی و امکان ایجاد سوپرادمین، ادمین و کاربر.",
-        "allowed_actions": ["مدیریت کاربران", "مدیریت تنظیمات", "مشاهده و مدیریت همه داده‌ها"],
-    },
-    {
-        "role": "admin",
-        "title": "ادمین",
-        "description": "مدیریت عمومی سامانه و امکان ایجاد ادمین و کاربر، بدون ایجاد سوپرادمین.",
-        "allowed_actions": ["مدیریت کاربران عادی", "مشاهده و مدیریت داده‌های مجاز"],
-    },
-    {
-        "role": "user",
-        "title": "کاربر",
-        "description": "استفاده از امکاناتی که برای کاربر عادی فعال شده است.",
-        "allowed_actions": ["مشاهده امکانات مجاز"],
-    },
-]
+@router.get("/access/definitions", response_model=list[AccessDefinitionResponse])
+def access_definitions(_: UserRecord = Depends(require_permission("auth.manage"))) -> list[AccessDefinitionResponse]:
+    return [AccessDefinitionResponse(application=item.application, title=item.title, actions=list(item.actions), scope_types=list(item.scope_types)) for item in ACCESS_DEFINITIONS]
 
 
-@router.get(
-    "/roles",
-    response_model=RoleInfoResponse,
-    summary="راهنمای نقش‌های کاربری",
-)
-@router.get(
-    "/role-info",
-    response_model=RoleInfoResponse,
-    include_in_schema=False,
-)
-def role_information() -> RoleInfoResponse:
-    return RoleInfoResponse(
-        message="راهنمای عمومی نقش‌های کاربری سامانه",
-        roles=_ROLE_INFORMATION,
+@router.post("/websocket-ticket", response_model=WebSocketTicketResponse)
+def create_websocket_ticket(
+    payload: WebSocketTicketRequest,
+    current_user: UserRecord = Depends(get_current_user),
+) -> WebSocketTicketResponse:
+    permission = f"{payload.application}.read"
+    if not has_scoped_permission(current_user, permission, payload.scope_type, payload.scope_id):
+        raise HTTPException(status_code=403, detail="برای اتصال به این جریان زنده دسترسی ندارید")
+    ticket, expires_in = get_auth_store().issue_websocket_ticket(
+        current_user.id, payload.application, payload.scope_type, payload.scope_id
     )
+    return WebSocketTicketResponse(ticket=ticket, expires_in=expires_in)
+
+
+@router.get("/users/{user_id}/access", response_model=UserAccessResponse)
+def get_user_access(
+    user_id: int,
+    _: UserRecord = Depends(require_permission("auth.manage")),
+) -> UserAccessResponse:
+    store = get_auth_store()
+    user = store.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
+    grants = store.list_user_grants(user.id) or []
+    return UserAccessResponse(user_id=user.id, grants=[UserPermissionGrant(application=g.application, action=g.action, scope_type=g.scope_type, scope_id=g.scope_id) for g in grants])
+
+
+@router.put("/users/{user_id}/access", response_model=UserAccessResponse)
+def replace_user_access(
+    user_id: int,
+    payload: SetUserAccessRequest,
+    current_user: UserRecord = Depends(require_permission("auth.manage")),
+) -> UserAccessResponse:
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="امکان تغییر دسترسی‌های حساب خودتان وجود ندارد")
+    store = get_auth_store()
+    target = store.get_user_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
+    if target.username == settings.auth_default_admin_username:
+        raise HTTPException(status_code=403, detail="دسترسی‌های مدیر اصلی قابل تغییر نیست")
+    actor_permissions = effective_permissions(current_user)
+    requested = {f"{grant.application}.{grant.action}" for grant in payload.grants}
+    if "*" not in actor_permissions and not requested.issubset(actor_permissions):
+        raise HTTPException(status_code=403, detail="امکان اعطای دسترسی‌ای که خودتان ندارید وجود ندارد")
+    if "*" not in actor_permissions and any(
+        not store.has_scoped_permission(
+            current_user.id,
+            f"{grant.application}.{grant.action}",
+            grant.scope_type,
+            grant.scope_id,
+        )
+        for grant in payload.grants
+    ):
+        raise HTTPException(status_code=403, detail="امکان اعطای دسترسی در محدوده‌ای که خودتان ندارید وجود ندارد")
+    records = tuple(UserPermissionGrantRecord(g.application, g.action, g.scope_type, g.scope_id) for g in payload.grants)
+    try:
+        saved = store.replace_user_grants(user_id, records, current_user.id) or []
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    store.record_audit_event(current_user.id, "user.access_replaced", "user", str(user_id), f"{len(saved)} grants")
+    return UserAccessResponse(user_id=user_id, grants=[UserPermissionGrant(application=g.application, action=g.action, scope_type=g.scope_type, scope_id=g.scope_id) for g in saved])
 
 
 # ── Current user and password changes ───────────────────────────────
@@ -463,23 +428,6 @@ def _change_password(
         )
 
 
-# @router.put(
-#     "/me/password",
-#     response_model=PasswordChangeResponse,
-#     summary="Legacy-compatible password change",
-# )
-# def change_password_legacy(
-#     payload: LegacyPasswordChangeRequest,
-#     current_user: UserRecord = Depends(get_current_user),
-# ) -> PasswordChangeResponse:
-#     _change_password(
-#         current_user,
-#         payload.old_password,
-#         payload.new_password,
-#     )
-#     return PasswordChangeResponse(message="رمز عبور با موفقیت تغییر کرد")
-
-
 @router.post(
     "/me/password",
     response_model=PasswordChangeResponse,
@@ -508,74 +456,19 @@ def change_password(
 def list_users(
     skip: int | None = Query(default=None, ge=0),
     limit: int | None = Query(default=None, ge=1, le=200),
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_permission("auth.manage")),
 ) -> list[UserResponse]:
-    _require_admin(current_user)
     effective_skip = skip or 0
     effective_limit = limit or 100
     users, _ = get_auth_store().list_users(effective_skip, effective_limit)
     return [_user_to_response(user) for user in users]
 
 
-def _change_user_role(user_id: int, requested_role: str) -> UserRecord:
-    store = get_auth_store()
-    role = normalize_role(requested_role)
-    if role not in {"admin", "user"}:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="نقش کاربر باید یکی از این موارد باشد: ['user', 'admin']",
-        )
-    user = store.get_user_by_id(user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
-    if normalize_role(user.role) == "superadmin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="تغییر نقش حساب سوپرادمین مجاز نیست",
-        )
-    if normalize_role(user.role) == "admin" and role != "admin" and user.is_active:
-        if store.count_active_admins() <= 1:
-            raise HTTPException(
-                status_code=400,
-                detail="امکان تغییر نقش آخرین مدیر فعال وجود ندارد",
-            )
-    updated = store.set_user_role(user_id, role)
-    if updated is None:
-        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
-    return updated
-
-
-@router.put(
-    "/users/{user_id}/role",
-    response_model=LegacyRoleChangeResponse,
-    summary="Legacy-compatible role change",
-)
-def change_role_legacy(
-    user_id: int,
-    role: str = Query(...),
-    current_user: UserRecord = Depends(get_current_user),
-) -> LegacyRoleChangeResponse:
-    _require_admin(current_user)
-    if normalize_role(role) not in {"user", "admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="نقش کاربر باید یکی از این موارد باشد: ['user', 'admin']",
-        )
-    updated = _change_user_role(user_id, normalize_role(role))
-    public = _user_to_response(updated)
-    return LegacyRoleChangeResponse(
-        **public.model_dump(),
-        user_id=updated.id,
-        message=f"نقش کاربر به {normalize_role(updated.role)} تغییر کرد",
-    )
-
-
 @router.delete("/users/{user_id}", response_model=LogoutResponse)
 def delete_user(
     user_id: int,
-    current_user: UserRecord = Depends(get_current_user),
+    current_user: UserRecord = Depends(require_permission("auth.manage")),
 ) -> LogoutResponse:
-    _require_admin(current_user)
     if user_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -585,17 +478,11 @@ def delete_user(
     user = store.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="کاربر یافت نشد")
-    if normalize_role(user.role) == "superadmin":
+    if user.username == settings.auth_default_admin_username:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="حذف حساب سوپرادمین مجاز نیست",
         )
-    if normalize_role(user.role) == "admin" and user.is_active:
-        if store.count_active_admins() <= 1:
-            raise HTTPException(
-                status_code=400,
-                detail="امکان حذف آخرین مدیر فعال وجود ندارد",
-            )
     if not store.delete_user(user_id):
         raise HTTPException(status_code=404, detail="کاربر یافت نشد")
     return LogoutResponse(message="کاربر با موفقیت حذف شد")

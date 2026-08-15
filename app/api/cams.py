@@ -7,7 +7,7 @@ import cv2
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.auth import require_role
+from app.core.auth import accessible_scope_ids, enforce_scoped_permission, get_current_user
 from app.core.auth_store import UserRecord
 from app.core.cam_store import CamRecord
 from app.core.common_schemas import UserBrief, resolve_user_brief
@@ -194,8 +194,9 @@ def check_cam_health(
 def create_cam(
     payload: CamCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> CamResponse:
+    enforce_scoped_permission(current_user, "cameras.create", "section", payload.section_id)
     try:
         record = runtime.cam_store.create(**payload.model_dump(), created_by=current_user.id)
     except ValueError as exc:
@@ -217,14 +218,16 @@ def list_cams(
     section_id: int | None = Query(default=None, ge=1),
     source_type: CamSourceType | None = Query(default=None),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> CamListResponse:
+    allowed_ids = accessible_scope_ids(current_user, "cameras.read", "camera")
     try:
         records, total = runtime.cam_store.list(
             offset=skip,
             limit=limit,
             section_id=section_id,
             source_type=source_type,
+            allowed_ids=allowed_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -242,11 +245,12 @@ def list_cams(
 def get_cam(
     cam_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> CamResponse:
     record = runtime.cam_store.get(cam_id)
     if record is None:
         raise HTTPException(status_code=404, detail="دوربین یافت نشد")
+    enforce_scoped_permission(current_user, "cameras.read", "camera", cam_id)
     with runtime.cam_store.database.connection() as conn:
         return _response(record, conn)
 
@@ -256,9 +260,15 @@ def update_cam(
     cam_id: int,
     payload: CamUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> CamResponse:
+    existing = runtime.cam_store.get(cam_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
+    enforce_scoped_permission(current_user, "cameras.edit", "camera", cam_id)
     changes = payload.model_dump(exclude_unset=True)
+    if changes.get("section_id") not in (None, existing.section_id):
+        enforce_scoped_permission(current_user, "cameras.edit", "section", changes["section_id"])
     if not changes:
         raise HTTPException(status_code=422, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     if any(value is None for value in changes.values()):
@@ -284,8 +294,11 @@ def update_cam(
 def delete_cam(
     cam_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("superuser")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> Response:
+    if runtime.cam_store.get(cam_id) is None:
+        raise HTTPException(status_code=404, detail="دوربین یافت نشد")
+    enforce_scoped_permission(current_user, "cameras.delete", "camera", cam_id)
     try:
         deleted = runtime.cam_store.delete(cam_id)
     except ValueError as exc:

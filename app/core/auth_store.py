@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.database import Connection, Database, Row, ensure_database
 from app.time_utils import utc_now_text
 
 import threading
+import hashlib
+import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
+
+from app.core.access_matrix import ACCESS_REGISTRY, permission_key
 
 
 _USER_COLUMNS = (
-    "id, username, password_hash, role, is_active, created_at_utc, email, "
+    "id, username, password_hash, is_active, created_at_utc, email, "
     "full_name, last_login_utc, login_attempts, locked_until_utc"
+    ", auth_version"
 )
 
 
@@ -20,7 +24,6 @@ class UserRecord:
     id: int
     username: str
     password_hash: str
-    role: str
     is_active: bool
     created_at_utc: str
     email: str | None = None
@@ -28,6 +31,27 @@ class UserRecord:
     last_login_utc: str | None = None
     login_attempts: int = 0
     locked_until_utc: str | None = None
+    auth_version: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UserPermissionGrantRecord:
+    application: str
+    action: str
+    scope_type: str
+    scope_id: int
+
+    @property
+    def permission(self) -> str:
+        return f"{self.application}.{self.action}"
+
+
+@dataclass(frozen=True, slots=True)
+class WebSocketTicketRecord:
+    user_id: int
+    application: str
+    scope_type: str
+    scope_id: int
 
 
 class AuthStore:
@@ -46,10 +70,7 @@ class AuthStore:
         return self.database.connection()
 
     def _init_db(self) -> None:
-        with self._lock, self._connection() as conn:
-            conn.execute("UPDATE users SET role = 'superadmin' WHERE role = 'superuser'")
-            conn.execute("UPDATE users SET role = 'user' WHERE role IN ('viewer', 'operator')")
-
+        pass
 
     @staticmethod
     def _row_to_record(row: Row) -> UserRecord:
@@ -57,7 +78,6 @@ class AuthStore:
             id=int(row["id"]),
             username=str(row["username"]),
             password_hash=str(row["password_hash"]),
-            role=_normalize_stored_role(str(row["role"])),
             is_active=bool(row["is_active"]),
             created_at_utc=str(row["created_at_utc"]),
             email=row["email"],
@@ -65,6 +85,7 @@ class AuthStore:
             last_login_utc=row["last_login_utc"],
             login_attempts=int(row["login_attempts"] or 0),
             locked_until_utc=row["locked_until_utc"],
+            auth_version=int(row["auth_version"] or 0),
         )
 
     def _select_user(self, conn: Connection, where: str, value: object) -> UserRecord | None:
@@ -77,7 +98,6 @@ class AuthStore:
         self,
         username: str,
         password: str,
-        role: str = "admin",
         email: str | None = None,
         full_name: str | None = None,
     ) -> UserRecord | None:
@@ -86,26 +106,26 @@ class AuthStore:
             if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0:
                 return None
             cursor = conn.execute(
-                "INSERT INTO users (username, password_hash, role, email, full_name) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (username, _hash(password), _normalize_stored_role(role), email, full_name),
+                "INSERT INTO users (username, password_hash, email, full_name) "
+                "VALUES (?, ?, ?, ?)",
+                (username, _hash(password), email, full_name),
             )
-            return self._select_user(conn, "id = ?", cursor.lastrowid)
+            created = self._select_user(conn, "id = ?", cursor.lastrowid)
+            return created
 
     def ensure_default_admin(
         self,
         username: str,
         password: str,
-        role: str = "admin",
         email: str | None = None,
         full_name: str | None = None,
     ) -> UserRecord:
         """Ensure the configured administrator exists without resetting its password."""
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO users (username, password_hash, role, email, full_name) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING",
-                (username, _hash(password), _normalize_stored_role(role), email, full_name),
+                "INSERT INTO users (username, password_hash, email, full_name) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (username) DO NOTHING",
+                (username, _hash(password), email, full_name),
             )
             if cursor.lastrowid is not None:
                 created = self._select_user(conn, "id = ?", cursor.lastrowid)
@@ -116,11 +136,6 @@ class AuthStore:
             existing = self._select_user(conn, "username = ?", username)
             if existing is None:
                 raise RuntimeError("Default administrator could not be ensured")
-            if existing.role != role:
-                conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, existing.id))
-                existing = self._select_user(conn, "id = ?", existing.id)
-                if existing is None:
-                    raise RuntimeError("Default administrator could not be reloaded")
             return existing
 
     def verify_credentials(self, username: str, password: str) -> UserRecord | None:
@@ -150,7 +165,6 @@ class AuthStore:
         self,
         username: str,
         password_hash: str,
-        role: str,
         email: str | None = None,
         is_active: bool = True,
         full_name: str | None = None,
@@ -158,9 +172,9 @@ class AuthStore:
         with self._lock, self._connection() as conn:
             cursor = conn.execute(
                 "INSERT INTO users "
-                "(username, password_hash, role, email, is_active, full_name) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (username, password_hash, _normalize_stored_role(role), email, int(is_active), full_name),
+                "(username, password_hash, email, is_active, full_name) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (username, password_hash, email, int(is_active), full_name),
             )
             user = self._select_user(conn, "id = ?", cursor.lastrowid)
             if user is None:
@@ -203,22 +217,159 @@ class AuthStore:
                 )
             return self._select_user(conn, "id = ?", user_id)
 
-    def set_user_role(self, user_id: int, role: str) -> UserRecord | None:
+    def has_scoped_permission(self, user_id: int, permission: str, scope_type: str, scope_id: int = 0) -> bool:
+        if scope_type not in {"global", "building", "section", "camera"}:
+            raise ValueError("نوع محدوده انتخاب‌شده معتبر نیست")
+        application, action = permission_key(*permission.strip().lower().split(".", 1)).split(".", 1)
+        with self._lock, self._connection() as conn:
+            params: list[object] = [user_id, application, action]
+            targets = ["(scope_type = 'global' AND scope_id = 0)"]
+            if scope_type == "building":
+                targets.append("(scope_type = 'building' AND scope_id = ?)")
+                params.append(scope_id)
+            elif scope_type == "section":
+                targets.extend((
+                    "(scope_type = 'section' AND scope_id = ?)",
+                    "(scope_type = 'building' AND scope_id = (SELECT building_id FROM sections WHERE id = ?))",
+                ))
+                params.extend((scope_id, scope_id))
+            elif scope_type == "camera":
+                targets.extend((
+                    "(scope_type = 'camera' AND scope_id = ?)",
+                    "(scope_type = 'section' AND scope_id = (SELECT section_id FROM cam WHERE id = ?))",
+                    "(scope_type = 'building' AND scope_id = (SELECT se.building_id FROM cam c JOIN sections se ON se.id = c.section_id WHERE c.id = ?))",
+                ))
+                params.extend((scope_id, scope_id, scope_id))
+            row = conn.execute(
+                "SELECT 1 FROM user_permission_grants WHERE user_id = ? AND application = ? "
+                "AND action = ? AND (" + " OR ".join(targets) + ") LIMIT 1",
+                params,
+            ).fetchone()
+            return row is not None
+
+    def accessible_scope_ids(self, user_id: int, permission: str, target_type: str) -> set[int] | None:
+        """Return allowed target IDs, or None when a global grant allows every target."""
+        if target_type not in {"building", "section", "camera"}:
+            raise ValueError("نوع منبع انتخاب‌شده معتبر نیست")
+        application, action = permission_key(*permission.strip().lower().split(".", 1)).split(".", 1)
+        with self._lock, self._connection() as conn:
+            grants = conn.execute(
+                "SELECT scope_type, scope_id FROM user_permission_grants "
+                "WHERE user_id = ? AND application = ? AND action = ?",
+                (user_id, application, action),
+            ).fetchall()
+            if any(row["scope_type"] == "global" for row in grants):
+                return None
+            building_ids = [int(row["scope_id"]) for row in grants if row["scope_type"] == "building"]
+            section_ids = [int(row["scope_id"]) for row in grants if row["scope_type"] == "section"]
+            camera_ids = {int(row["scope_id"]) for row in grants if row["scope_type"] == "camera"}
+            if target_type == "building":
+                return set(building_ids)
+            if target_type == "section":
+                result = set(section_ids)
+                if building_ids:
+                    marks = ", ".join("?" for _ in building_ids)
+                    result.update(int(row["id"]) for row in conn.execute(f"SELECT id FROM sections WHERE building_id IN ({marks})", building_ids).fetchall())
+                return result
+            if section_ids:
+                marks = ", ".join("?" for _ in section_ids)
+                camera_ids.update(int(row["id"]) for row in conn.execute(f"SELECT id FROM cam WHERE section_id IN ({marks})", section_ids).fetchall())
+            if building_ids:
+                marks = ", ".join("?" for _ in building_ids)
+                camera_ids.update(int(row["id"]) for row in conn.execute(f"SELECT c.id FROM cam c JOIN sections s ON s.id = c.section_id WHERE s.building_id IN ({marks})", building_ids).fetchall())
+            return camera_ids
+
+    def get_effective_permissions(self, user_id: int) -> frozenset[str]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT application, action FROM user_permission_grants WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            return frozenset(f"{row['application']}.{row['action']}" for row in rows)
+
+    def list_user_grants(self, user_id: int) -> list[UserPermissionGrantRecord] | None:
         with self._lock, self._connection() as conn:
             if self._select_user(conn, "id = ?", user_id) is None:
                 return None
+            rows = conn.execute(
+                "SELECT application, action, scope_type, scope_id FROM user_permission_grants "
+                "WHERE user_id = ? ORDER BY application, action, scope_type, scope_id", (user_id,)
+            ).fetchall()
+            return [UserPermissionGrantRecord(str(row["application"]), str(row["action"]), str(row["scope_type"]), int(row["scope_id"])) for row in rows]
+
+    def replace_user_grants(self, user_id: int, grants: tuple[UserPermissionGrantRecord, ...], assigned_by: int | None) -> list[UserPermissionGrantRecord] | None:
+        with self._lock, self._connection() as conn:
+            if self._select_user(conn, "id = ?", user_id) is None:
+                return None
+            for grant in grants:
+                permission_key(grant.application, grant.action)
+                definition = ACCESS_REGISTRY[(grant.application, grant.action)]
+                if grant.scope_type not in definition.scope_types:
+                    raise ValueError("محدوده برای این دسترسی معتبر نیست")
+                if (grant.scope_type == "global") != (grant.scope_id == 0):
+                    raise ValueError("شناسه محدوده معتبر نیست")
+                table = {"building": "buildings", "section": "sections", "camera": "cam"}.get(grant.scope_type)
+                if table and conn.execute(f"SELECT id FROM {table} WHERE id = ?", (grant.scope_id,)).fetchone() is None:
+                    raise ValueError("منبع انتخاب‌شده یافت نشد")
+            conn.execute("DELETE FROM user_permission_grants WHERE user_id = ?", (user_id,))
+            for grant in dict.fromkeys(grants):
+                conn.execute(
+                    "INSERT INTO user_permission_grants (user_id, application, action, scope_type, scope_id, assigned_by) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, grant.application, grant.action, grant.scope_type, grant.scope_id, assigned_by),
+                )
+        return self.list_user_grants(user_id)
+
+    def record_audit_event(
+        self,
+        actor_user_id: int | None,
+        action: str,
+        target_type: str,
+        target_id: str,
+        details: str | None = None,
+    ) -> None:
+        with self._lock, self._connection() as conn:
             conn.execute(
-                "UPDATE users SET role = ? WHERE id = ?",
-                (_normalize_stored_role(role), user_id),
+                "INSERT INTO auth_audit_log "
+                "(actor_user_id, action, target_type, target_id, details) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (actor_user_id, action, target_type, target_id, details),
             )
-            return self._select_user(conn, "id = ?", user_id)
+
+    def issue_websocket_ticket(
+        self, user_id: int, application: str, scope_type: str, scope_id: int, ttl_seconds: int = 30
+    ) -> tuple[str, int]:
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "INSERT INTO websocket_tickets (token_hash, user_id, application, scope_type, scope_id, expires_at_utc) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (token_hash, user_id, application, scope_type, scope_id, expires_at),
+            )
+            conn.execute("DELETE FROM websocket_tickets WHERE expires_at_utc < CURRENT_TIMESTAMP")
+        return token, ttl_seconds
+
+    def consume_websocket_ticket(self, token: str, application: str) -> WebSocketTicketRecord | None:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "UPDATE websocket_tickets SET consumed_at_utc = CURRENT_TIMESTAMP "
+                "WHERE token_hash = ? AND application = ? AND consumed_at_utc IS NULL "
+                "AND expires_at_utc > CURRENT_TIMESTAMP "
+                "RETURNING user_id, application, scope_type, scope_id",
+                (token_hash, application),
+            ).fetchone()
+            if row is None:
+                return None
+            return WebSocketTicketRecord(int(row["user_id"]), str(row["application"]), str(row["scope_type"]), int(row["scope_id"]))
 
     def update_password(self, user_id: int, new_password_hash: str) -> UserRecord | None:
         with self._lock, self._connection() as conn:
             if self._select_user(conn, "id = ?", user_id) is None:
                 return None
             conn.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
+                "UPDATE users SET password_hash = ?, auth_version = auth_version + 1 WHERE id = ?",
                 (new_password_hash, user_id),
             )
             return self._select_user(conn, "id = ?", user_id)
@@ -269,14 +420,6 @@ class AuthStore:
         with self._lock, self._connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
 
-    def count_active_admins(self) -> int:
-        with self._lock, self._connection() as conn:
-            return int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM users WHERE role IN ('admin', 'superadmin') AND is_active = 1"
-                ).fetchone()[0]
-            )
-
     def revoke_token(self, jti: str, expires_at_utc: str) -> None:
         now = _utc_now_text()
         with self._lock, self._connection() as conn:
@@ -321,14 +464,3 @@ def _checkpw(plain: bytes, stored: bytes) -> bool:
     import bcrypt
 
     return bcrypt.checkpw(plain, stored)
-
-
-def _normalize_stored_role(role: str) -> str:
-    return {
-        "superuser": "superadmin",
-        "superadmin": "superadmin",
-        "admin": "admin",
-        "operator": "user",
-        "viewer": "user",
-        "user": "user",
-    }.get(role.strip().lower(), role.strip().lower())

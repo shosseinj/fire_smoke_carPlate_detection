@@ -601,6 +601,8 @@
       let synchronizationRunning = false;
       let broadcastSocket = null;
       let resultSocket = null;
+      let broadcastTicketPending = false;
+      let resultTicketPending = false;
       let reconnectTimer = null;
       let fullscreenSourceId = null;
       let previewBaseUrl = "";
@@ -1330,11 +1332,39 @@
         }
       }
 
-      function connectResultSocket() {
+      async function requestWebSocketTicket(application) {
+        const accessToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
+        if (!accessToken) throw new Error("توکن ورود یافت نشد");
+        const response = await fetch("/api/v1/auth/websocket-ticket", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ application, scope_type: "global", scope_id: 0 }),
+        });
+        if (!response.ok) throw new Error("دریافت مجوز اتصال زنده انجام نشد");
+        return (await response.json()).ticket;
+      }
+
+      async function connectResultSocket() {
         if (!broadcasting || !previewAvailable) return;
+        if (resultTicketPending) return;
         if (resultSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(resultSocket.readyState)) return;
+        resultTicketPending = true;
+        let ticket;
+        try {
+          ticket = await requestWebSocketTicket("results");
+        } catch (error) {
+          console.warn(error.message);
+          if (broadcasting && previewAvailable) window.setTimeout(connectResultSocket, 1000);
+          return;
+        } finally {
+          resultTicketPending = false;
+        }
+        if (!broadcasting || !previewAvailable) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/results/ws`);
+        const socket = new WebSocket(`${scheme}://${window.location.host}/api/v1/results/ws?ticket=${encodeURIComponent(ticket)}`);
         resultSocket = socket;
         socket.addEventListener("message", (event) => {
           if (resultSocket !== socket) return;
@@ -1360,11 +1390,29 @@
         socket.close(1000, "پیش‌نمایش غیرفعال شد");
       }
 
-      function connectBroadcastSocket() {
+      async function connectBroadcastSocket() {
         if (!broadcasting) return;
+        if (broadcastTicketPending) return;
         if (broadcastSocket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(broadcastSocket.readyState)) return;
+        broadcastTicketPending = true;
+        const application = sourceOnlyWall ? "video_wall" : "broadcast";
+        let ticket;
+        try {
+          ticket = await requestWebSocketTicket(application);
+        } catch (error) {
+          console.warn(error.message);
+          if (broadcasting) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = window.setTimeout(connectBroadcastSocket, 1000);
+          }
+          return;
+        } finally {
+          broadcastTicketPending = false;
+        }
+        if (!broadcasting) return;
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
         const parameters = new URLSearchParams();
+        parameters.set("ticket", ticket);
         parameters.set("wall", "true");
         if (sourceOnlyWall) parameters.set("batch", "true");
         if (!useJpegFallback) {

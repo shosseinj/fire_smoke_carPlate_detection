@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.auth import require_role
+from app.core.auth import accessible_scope_ids, enforce_scoped_permission, get_current_user, require_permission
 from app.core.auth_store import UserRecord
 from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.jalali_utils import utc_iso_to_jalali_datetime
@@ -333,10 +333,11 @@ def list_buildings(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
-    records, _ = store.list_buildings(offset=skip, limit=limit)
+    allowed_ids = accessible_scope_ids(current_user, "buildings.read", "building")
+    records, _ = store.list_buildings(offset=skip, limit=limit, allowed_ids=allowed_ids)
     sections_by_building = store.list_sections_for_buildings(
         {record.id for record in records}
     )
@@ -360,12 +361,13 @@ def list_buildings(
 def get_building(
     building_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     b = store.get_building(building_id)
     if not b:
         raise HTTPException(status_code=404, detail="ساختمان یافت نشد")
+    enforce_scoped_permission(current_user, "buildings.read", "building", building_id)
     return _build_response(store, b)
 
 
@@ -373,8 +375,9 @@ def get_building(
 def create_building(
     payload: BuildingCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
+    enforce_scoped_permission(current_user, "buildings.create", "global", 0)
     try:
         b = _store(runtime).create_building(
             name=payload.name,
@@ -392,8 +395,9 @@ def update_building(
     building_id: int,
     payload: BuildingUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
+    enforce_scoped_permission(current_user, "buildings.edit", "building", building_id)
     changes: dict[str, Any] = {}
     if payload.name is not None:
         changes["name"] = payload.name
@@ -411,6 +415,7 @@ def update_building(
         raise HTTPException(status_code=422, detail=str(exc))
     if not b:
         raise HTTPException(status_code=404, detail="ساختمان یافت نشد")
+    enforce_scoped_permission(current_user, "buildings.delete", "building", building_id)
     return _build_response(store, b)
 
 
@@ -418,7 +423,7 @@ def update_building(
 def delete_building(
     building_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("superuser")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     b = store.get_building(building_id)
@@ -449,10 +454,11 @@ def list_sections(
     skip: int = 0,
     limit: int = 100,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
-    records, _ = store.list_sections(offset=skip, limit=limit, building_id=building_id)
+    allowed_ids = accessible_scope_ids(current_user, "sections.read", "section")
+    records, _ = store.list_sections(offset=skip, limit=limit, building_id=building_id, allowed_ids=allowed_ids)
     building_names = store.get_building_names_by_ids(
         {record.building_id for record in records if record.building_id is not None}
     )
@@ -474,12 +480,13 @@ def list_sections(
 def get_section(
     section_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     s = store.get_section(section_id)
     if not s:
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
+    enforce_scoped_permission(current_user, "sections.read", "section", section_id)
     return _section_response(store, s)
 
 
@@ -487,12 +494,13 @@ def get_section(
 def get_section_cameras(
     section_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     if not store.get_section(section_id):
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
-    cams, _ = runtime.cam_store.list(section_id=section_id, limit=1000)
+    allowed_ids = accessible_scope_ids(current_user, "cameras.read", "camera")
+    cams, _ = runtime.cam_store.list(section_id=section_id, limit=1000, allowed_ids=allowed_ids)
     return [
         CameraMinimal(
             id=cam.id,
@@ -512,8 +520,9 @@ def get_section_cameras(
 def create_section(
     payload: SectionCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
+    enforce_scoped_permission(current_user, "sections.create", "building", payload.building_id)
     store = _store(runtime)
     with store.database.connection() as connection:
         bld = connection.execute(
@@ -540,7 +549,7 @@ def update_section(
     section_id: int,
     payload: SectionUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     s = store.get_section(section_id)
@@ -581,7 +590,7 @@ def assign_source_to_room(
     room_id: int,
     source_uri: str = Query(...),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ):
     store = _store(runtime)
     room = store.get_room(room_id)
@@ -604,7 +613,7 @@ def assign_source_to_room(
 #     room_id: int,
 #     cam_id: int,
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_role("admin")),
+#     _: UserRecord = Depends(require_permission("application.manage")),
 # ):
 #     store = _store(runtime)
 #     if not store.get_room(room_id):
@@ -624,12 +633,16 @@ def assign_source_to_room(
 def delete_section(
     section_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("superuser")),
+    current_user: UserRecord = Depends(get_current_user),
 ):
     store = _store(runtime)
     s = store.get_section(section_id)
     if not s:
         raise HTTPException(status_code=404, detail="بخش یافت نشد")
+    enforce_scoped_permission(current_user, "sections.edit", "section", section_id)
+    if payload.building_id is not None and payload.building_id != s.building_id:
+        enforce_scoped_permission(current_user, "sections.edit", "building", payload.building_id)
+    enforce_scoped_permission(current_user, "sections.delete", "section", section_id)
     registry = runtime.registry
     room_ids = {room.id for room in store.list_rooms(section_id=section_id, limit=1000)[0]}
     assigned = [c for c in registry.list() if c.room_id in room_ids]
@@ -657,7 +670,7 @@ def list_rooms(
     limit: int = 100,
     camera_id: int | None = Query(default=None, ge=1),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_permission("application.read")),
 ):
     records, _ = _store(runtime).list_rooms(
         offset=skip, limit=limit, cam_id=camera_id
@@ -690,7 +703,7 @@ def check_access(
 def get_room_by_id(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_permission("application.read")),
 ):
     r = _store(runtime).get_room(room_id)
     if not r:
@@ -702,7 +715,7 @@ def get_room_by_id(
 def get_room_access_list(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_permission("application.read")),
 ):
     store = _store(runtime)
     r = store.get_room(room_id)
@@ -716,7 +729,7 @@ def get_room_access_list(
 def get_personnel_rooms_list(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_permission("application.read")),
 ):
     store = _store(runtime)
     rooms = store.list_personnel_rooms(personnel_id)
@@ -727,7 +740,7 @@ def get_personnel_rooms_list(
 def create_new_room(
     payload: RoomCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
 ):
     if payload.polygon_points and len(payload.polygon_points) < 3:
         raise HTTPException(status_code=400, detail="چندضلعی باید حداقل ۳ نقطه داشته باشد")
@@ -796,7 +809,7 @@ def patch_room(
     room_id: int,
     payload: RoomUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
 ):
     return _update_room(room_id, payload, runtime, current_user)
 
@@ -806,7 +819,7 @@ def update_room_info(
     room_id: int,
     payload: LegacyRoomUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
 ):
     return _update_room(room_id, payload, runtime, current_user)
 
@@ -817,7 +830,7 @@ def grant_access(
     personnel_id: int,
     assigned_by: str | None = None,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ):
     try:
         record = _store(runtime).grant_room_access(
@@ -840,7 +853,7 @@ def revoke_access(
     room_id: int,
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ):
     success = _store(runtime).revoke_room_access(
         personnel_id=personnel_id, room_id=room_id
@@ -854,7 +867,7 @@ def revoke_access(
 def remove_room(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("superuser")),
+    _: UserRecord = Depends(require_permission("application.system")),
 ):
     r = _store(runtime).get_room(room_id)
     if not r:
@@ -879,7 +892,7 @@ def remove_room(
 #     offset: int = Query(default=0, ge=0),
 #     transition_type: str | None = Query(default=None, description="Filter by 'entered' or 'exited'"),
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_role("operator")),
+#     _: UserRecord = Depends(require_permission("application.read")),
 # ) -> dict:
 #     """List zone entry/exit events for a specific room/polygon.
 
@@ -924,7 +937,7 @@ def remove_room(
 #     limit: int = Query(default=50, ge=1, le=1000),
 #     offset: int = Query(default=0, ge=0),
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_role("operator")),
+#     _: UserRecord = Depends(require_permission("application.read")),
 # ) -> dict:
 #     store = _store(runtime)
 #     room = store.get_room(room_id)

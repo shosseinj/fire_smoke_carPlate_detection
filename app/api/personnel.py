@@ -15,7 +15,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
-from app.core.auth import require_role
+from app.core.auth import accessible_scope_ids, enforce_scoped_permission, get_current_user, require_permission
 from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.jalali_utils import parse_jalali_date
@@ -277,9 +277,10 @@ def list_personnel(
     section_id: int | None = Query(default=None, ge=1),
     search: str | None = Query(default=None, description="Search by fname, lname, or national_code"),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> list:
     store = _store(runtime)
+    allowed_sections = accessible_scope_ids(current_user, "personnel.read", "section")
     records, _ = store.list(
         offset=skip,
         limit=limit,
@@ -287,6 +288,7 @@ def list_personnel(
         employee_type_id=employee_type_id,
         department_id=section_id,
         search=search,
+        allowed_department_ids=allowed_sections,
     )
     department_names = store._resolve_department_names_bulk(
         {record.department_id for record in records}
@@ -318,8 +320,9 @@ def list_personnel(
 def create_personnel(
     payload: PersonnelCreateRequest,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> SimplePersonnelResponse:
+    enforce_scoped_permission(current_user, "personnel.create", "section" if payload.department_id else "global", payload.department_id or 0)
     store = _store(runtime)
     try:
         record = store.create(
@@ -342,7 +345,8 @@ def create_personnel(
             )
             record = store.get(record.id) or record
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        LOGGER.info("اعتبارسنجی ایجاد پرسنل ناموفق بود: %s", exc)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="اطلاعات واردشده برای ایجاد پرسنل معتبر نیست") from exc
     return _personnel_simple(record, store)
 
 
@@ -350,11 +354,13 @@ def create_personnel(
 def search_personnel(
     national_code: str,
     runtime: Runtime = Depends(get_runtime),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> SimplePersonnelResponse | None:
     store = _store(runtime)
     record = store.get_by_national_code(national_code)
     if record is None:
         return None
+    enforce_scoped_permission(current_user, "personnel.read", "section" if record.department_id else "global", record.department_id or 0)
     return _personnel_simple(record, store)
 
 
@@ -366,6 +372,7 @@ def search_personnel(
 @router.post("/with-images", summary="ایجاد پرسنل با تصاویر", status_code=status.HTTP_201_CREATED)
 async def create_personnel_with_images(
     runtime: Runtime = Depends(get_runtime),
+    current_user: UserRecord = Depends(get_current_user),
     fname: str = Form(...),
     lname: str = Form(...),
     national_code: str = Form(...),
@@ -389,6 +396,7 @@ async def create_personnel_with_images(
     ),
     enable_cropping: bool = Form(default=False),
 ) -> Any:
+    enforce_scoped_permission(current_user, "personnel.create", "section" if department_id else "global", department_id or 0)
     store = _store(runtime)
     if shift_id is not None and (not shift_start_date or not shift_end_date):
         raise HTTPException(
@@ -405,6 +413,7 @@ async def create_personnel_with_images(
             degree=degree,
             department_id=department_id,
             shift_id=shift_id,
+            created_by=current_user.id,
         )
         if shift_id is not None:
             runtime.shift_store.assign_personnel(
@@ -415,7 +424,8 @@ async def create_personnel_with_images(
             )
             person = store.get(person.id) or person
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        LOGGER.info("اعتبارسنجی ایجاد پرسنل همراه تصویر ناموفق بود: %s", exc)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="اطلاعات واردشده برای ایجاد پرسنل معتبر نیست") from exc
 
     processor = _image_processor(runtime)
     person_name = f"{person.fname} {person.lname}"
@@ -452,7 +462,7 @@ async def create_personnel_with_images(
             except Exception:
                 processor.delete_vector(embedding_id)
                 store.delete_image(img_record.id)
-                errors.append(f"{img_file.filename}: failed to persist vector reference")
+                errors.append(f"{img_file.filename}: ذخیره مرجع بردار چهره انجام نشد")
                 continue
         else:
             errors.append(f"{img_file.filename}: {process_result.failure_message}")
@@ -482,11 +492,14 @@ async def create_personnel_with_images(
 )
 async def import_excel(
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
     file: UploadFile = File(...),
     update_existing: bool = Form(default=False),
     skip_invalid_rows: bool = Form(default=True),
 ) -> dict:
+    enforce_scoped_permission(current_user, "personnel.create", "global", 0)
+    if update_existing:
+        enforce_scoped_permission(current_user, "personnel.edit", "global", 0)
     store = _store(runtime)
     raw = await file.read()
     if not raw:
@@ -555,7 +568,7 @@ async def import_excel(
 )
 def import_template(
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ) -> Response:
     data = _store(runtime).generate_import_template()
     return Response(
@@ -574,7 +587,7 @@ async def start_personnel_zip_import(
     runtime: Runtime = Depends(get_runtime),
     file: UploadFile = File(...),
     enable_cropping: bool = Form(default=True),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     raw = await file.read()
     if not raw:
@@ -612,12 +625,13 @@ async def start_personnel_zip_import(
 def get_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> SimplePersonnelResponse:
     store = _store(runtime)
     record = store.get(personnel_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    enforce_scoped_permission(current_user, "personnel.read", "section" if record.department_id else "global", record.department_id or 0)
     return _personnel_simple(record, store)
 
 
@@ -627,11 +641,13 @@ def get_personnel_shifts(
     start_date: str | None = Query(default=None, description="بازه شروع (شمسی یا میلادی)"),
     end_date: str | None = Query(default=None, description="بازه پایان (شمسی یا میلادی)"),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> list[PersonnelShiftAssignmentResponse]:
     store = _store(runtime)
-    if store.get(personnel_id) is None:
+    person = store.get(personnel_id)
+    if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    enforce_scoped_permission(current_user, "personnel.read", "section" if person.department_id else "global", person.department_id or 0)
     try:
         start = validate_jalali_date(start_date) if start_date else None
         end = validate_jalali_date(end_date) if end_date else None
@@ -655,14 +671,21 @@ def update_personnel(
     personnel_id: int,
     payload: PersonnelUpdateRequest,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> SimplePersonnelResponse:
     store = _store(runtime)
+    existing = store.get(personnel_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    enforce_scoped_permission(current_user, "personnel.edit", "section" if existing.department_id else "global", existing.department_id or 0)
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="هیچ فیلدی برای به‌روزرسانی وارد نشده است")
     shift_start_date = changes.pop("shift_start_date", None)
     shift_end_date = changes.pop("shift_end_date", None)
+    destination = changes.get("department_id")
+    if destination is not None and destination != existing.department_id:
+        enforce_scoped_permission(current_user, "personnel.edit", "section", destination)
     changes["updated_by"] = current_user.id
     try:
         record = store.update(
@@ -678,7 +701,8 @@ def update_personnel(
             )
             record = store.get(personnel_id) or record
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        LOGGER.info("اعتبارسنجی ویرایش پرسنل ناموفق بود: %s", exc)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="اطلاعات واردشده برای ویرایش پرسنل معتبر نیست") from exc
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
     return _personnel_simple(record, store)
@@ -688,12 +712,13 @@ def update_personnel(
 def delete_personnel(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("superuser")),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> Response:
     store = _store(runtime)
     personnel = store.get(personnel_id)
     if personnel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="پرسنل یافت نشد")
+    enforce_scoped_permission(current_user, "personnel.delete", "section" if personnel.department_id else "global", personnel.department_id or 0)
     images = store.list_images(personnel_id)
     embedding_ids = [img.embedding_id for img in images if img.embedding_id]
     if embedding_ids:
@@ -718,7 +743,7 @@ def delete_personnel(
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
@@ -749,7 +774,7 @@ async def upload_personnel_images(
         ),
     ] = None,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
     enable_cropping: bool = Form(default=False),
     is_primary: str | None = Form(default=None),
 ) -> dict:

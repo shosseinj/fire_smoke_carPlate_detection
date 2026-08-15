@@ -256,14 +256,23 @@ class LocationStore:
             return cursor.rowcount > 0
 
     def list_buildings(
-        self, offset: int = 0, limit: int = 50, search: str | None = None
+        self, offset: int = 0, limit: int = 50, search: str | None = None,
+        allowed_ids: set[int] | None = None,
     ) -> tuple[list[BuildingRecord], int]:
         where = ""
         params: list[Any] = []
+        clauses: list[str] = []
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return [], 0
+            clauses.append("id IN (" + ", ".join("?" for _ in allowed_ids) + ")")
+            params.extend(sorted(allowed_ids))
         if search is not None:
-            where = " WHERE name LIKE ? OR description LIKE ?"
+            clauses.append("(name LIKE ? OR description LIKE ?)")
             pattern = f"%{search}%"
-            params = [pattern, pattern]
+            params.extend([pattern, pattern])
+        if clauses:
+            where = " WHERE " + " AND ".join(clauses)
         with self._lock, self._connection() as conn:
             total = conn.execute(
                 f"SELECT COUNT(*) FROM buildings{where}", params
@@ -384,9 +393,15 @@ class LocationStore:
         limit: int = 50,
         building_id: int | None = None,
         search: str | None = None,
+        allowed_ids: set[int] | None = None,
     ) -> tuple[list[SectionRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return [], 0
+            where_clauses.append("id IN (" + ", ".join("?" for _ in allowed_ids) + ")")
+            params.extend(sorted(allowed_ids))
         if building_id is not None:
             where_clauses.append("building_id = ?")
             params.append(building_id)

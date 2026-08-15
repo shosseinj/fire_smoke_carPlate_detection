@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
 from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.detection_media import DetectionMediaStorage, InvalidMediaKey
@@ -254,7 +254,7 @@ def get_plate_log(
 @router.post("", response_model=PlateLogResponse, status_code=status.HTTP_201_CREATED)
 def create_plate_log(
     log_data: PlateLogCreate,
-    admin_user: UserRecord = Depends(require_role("admin")),
+    admin_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     payload = log_data.model_dump(mode="python")
@@ -274,7 +274,7 @@ def create_plate_log(
 def update_plate_log(
     log_id: int,
     log_data: PlateLogUpdate,
-    user: UserRecord = Depends(require_role("admin")),
+    user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     _get_log_or_404(log_id, runtime)
@@ -337,7 +337,7 @@ def get_plate_video(
 @router.delete("/{log_id}")
 def delete_plate_log(
     log_id: int,
-    _: UserRecord = Depends(require_role("superadmin")),
+    _: UserRecord = Depends(require_permission("application.system")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_log_or_404(log_id, runtime)

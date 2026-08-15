@@ -6,7 +6,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator, model_validator, computed_field
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
 from app.core.plate_constants import (
     PLATE_ALPHABETS_BY_USAGE,
@@ -203,7 +203,7 @@ def get_car_plate(
 @router.post("/", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
 def create_car_plate(
     payload: CarPlateCreate,
-    admin_user: UserRecord = Depends(require_role("admin")),
+    admin_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     data = payload.model_dump(mode="json")
@@ -221,7 +221,7 @@ def create_car_plate(
 def update_car_plate(
     plate_id: int,
     payload: CarPlateUpdate,
-    admin_user: UserRecord = Depends(require_role("admin")),
+    admin_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     plate = _get_plate_or_404(plate_id, runtime)
@@ -236,7 +236,7 @@ def update_car_plate(
 @router.delete("/{plate_id}")
 def delete_car_plate(
     plate_id: int,
-    superuser: UserRecord = Depends(require_role("superuser")),
+    superuser: UserRecord = Depends(require_permission("application.system")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_plate_or_404(plate_id, runtime)

@@ -91,7 +91,7 @@ class TestAuthCrud:
         assert "access_token" in body
         assert "refresh_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] in ("admin", "superadmin")
+        assert "superadmin" in body["roles"]
 
     def test_login_invalid(self, crud):
         resp = crud.client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"})
@@ -138,26 +138,27 @@ class TestAuthCrud:
         assert "id" in body
 
     def test_roles(self, crud):
-        resp = crud.client.get("/api/v1/auth/roles")
+        resp = crud.client.get(
+            "/api/v1/auth/rbac/roles",
+            headers={"Authorization": f"Bearer {crud.admin_token}"},
+        )
         assert resp.status_code == 200
         data = resp.json()
-        assert "roles" in data
-        assert len(data["roles"]) >= 3
+        assert len(data) >= 3
 
     def test_create_user(self, crud):
         resp = crud.client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "cruduser1", "password": "StrongPass1!", "email": "crud1@test.local", "confirm_password": "StrongPass1!", "role": "user"},
+            "/api/v1/auth/users",
+            json={"username": "cruduser1", "password": "StrongPass1!", "email": "crud1@test.local", "confirm_password": "StrongPass1!", "roles": ["user"]},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["username"] == "cruduser1"
-        assert body["role"] == "user"
 
     def test_create_user_validation_error(self, crud):
         resp = crud.client.post(
-            "/api/v1/auth/create-user",
+            "/api/v1/auth/users",
             json={"username": "x", "password": "short", "email": "", "confirm_password": ""},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
@@ -165,8 +166,8 @@ class TestAuthCrud:
 
     def test_create_user_duplicate(self, crud):
         resp = crud.client.post(
-            "/api/v1/auth/create-user",
-            json={"username": "admin", "password": "StrongPass1!", "email": "dup@test.local", "confirm_password": "StrongPass1!", "role": "user"},
+            "/api/v1/auth/users",
+            json={"username": "admin", "password": "StrongPass1!", "email": "dup@test.local", "confirm_password": "StrongPass1!", "roles": ["user"]},
             headers={"Authorization": f"Bearer {crud.admin_token}"},
         )
         assert resp.status_code == 400

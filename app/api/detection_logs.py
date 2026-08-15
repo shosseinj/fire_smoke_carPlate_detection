@@ -18,7 +18,7 @@ from openpyxl.styles import Alignment
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
-from app.core.auth import require_role
+from app.core.auth import require_permission
 from app.api.import_progress import ImportJobAccepted
 from app.core.attendance_summary_service import AttendanceSummaryService, TimePeriod
 from app.core.detection_log_store import DetectionLogRecord, DetectionLogStore
@@ -533,7 +533,7 @@ def _period_to_utc_range(
 @router.post("/log", response_model=DetectionLogResponse)
 def create_detection_log(
     body: dict[str, Any],
-    current_user: dict = Depends(require_role("operator")),
+    current_user: dict = Depends(require_permission("application.read")),
 ) -> dict:
     store = get_detection_log_store()
     ls = get_location_store()
@@ -665,7 +665,7 @@ def filter_logs(
     include_thumbnails: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
     from_date_utc, to_date_utc = _period_to_utc_range(period, from_date_jalali, to_date_jalali)
 
@@ -710,7 +710,7 @@ def daily_summary(
     to_date_jalali: str | None = Query(None),
     include_non_workdays: bool = Query(False),
     include_absent: bool = Query(True),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
     service = AttendanceSummaryService(get_runtime().database)
     return service.daily_summary(
@@ -745,7 +745,7 @@ def monthly_summary(
             "تا روز ۲۰ ماه جاری محاسبه می‌کند. مقدار صفر بازه عادی ماه را برمی‌گرداند"
         ),
     ),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
     service = AttendanceSummaryService(get_runtime().database)
     return service.monthly_summary(
@@ -764,7 +764,7 @@ def monthly_performance(
     jalali_year: int = Query(..., ge=1400, le=1500),
     jalali_month: int = Query(..., ge=1, le=12),
     section_id: int | None = Query(None),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
     utc_start, utc_end = jalali_month_utc_range(jalali_year, jalali_month)
     store = get_detection_log_store()
@@ -799,7 +799,7 @@ def monthly_performance(
 @router.get("/yearly-leave-summary")
 def yearly_leave_summary(
     jalali_year: int = Query(..., description="سال شمسی، مثال: ۱۴۰۵"),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
     service = AttendanceSummaryService(get_runtime().database)
     return service.yearly_leave_summary(jalali_year=jalali_year)
@@ -807,7 +807,7 @@ def yearly_leave_summary(
 
 @router.get("/import-excel/template")
 def import_excel_template(
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ):
     import io
     wb = openpyxl.Workbook()
@@ -870,7 +870,7 @@ def _import_excel_sync(
     file: UploadFile,
     calendar: str = Query("jalali", pattern="^(jalali|gregorian)$"),
     skip_duplicates: bool = Query(True),
-    current_user: dict = Depends(require_role("operator")),
+    current_user: dict = Depends(require_permission("application.read")),
     progress_callback: Callable[[int, int, int, int], None] | None = None,
 ) -> dict:
     if file.filename and not (file.filename.endswith(".xlsx") or file.filename.endswith(".xlsm")):
@@ -1106,7 +1106,7 @@ async def import_excel(
     file: UploadFile,
     calendar: str = Query("jalali", pattern="^(jalali|gregorian)$"),
     skip_duplicates: bool = Query(True),
-    current_user: dict = Depends(require_role("operator")),
+    current_user: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     filename = file.filename or "detection-logs.xlsx"
     if not filename.casefold().endswith((".xlsx", ".xlsm")):
@@ -1160,7 +1160,7 @@ async def import_excel(
 
 @router.delete("/delete-all-logs")
 def delete_all_logs(
-    current_user: dict = Depends(require_role("superuser")),
+    current_user: dict = Depends(require_permission("application.system")),
 ) -> dict:
     store = get_detection_log_store()
     media_storage = get_detection_media_storage()
@@ -1182,7 +1182,7 @@ def generate_fake_detections(
         False,
         description="حذف همه تشخیص‌های موجود در بازه پیش از تولید",
     ),
-    admin_user: Any = Depends(require_role("admin")),
+    admin_user: Any = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     """Generate fake detection logs for testing/demo purposes.
 
@@ -1331,7 +1331,7 @@ def generate_fake_detections(
 @router.get("/{log_id}", response_model=DetectionLogResponse)
 def get_log(
     log_id: int,
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict:
     store = get_detection_log_store()
     record = store.get(log_id)
@@ -1344,7 +1344,7 @@ def get_log(
 def patch_log_person(
     log_id: int,
     update_data: DetectionLogUpdate,
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> dict:
     """Assign a detection log to a national code, mark it unknown, or rewrite
     its detection time from a Jalali datetime in local time."""
@@ -1525,7 +1525,7 @@ def _get_media_path(
 def get_thumbnail(
     log_id: int,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     record = get_detection_log_store().get(log_id)
     if record is None:
@@ -1553,7 +1553,7 @@ def get_face(
     log_id: int,
     request: Request,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     _, path = _get_media_path(log_id, "face")
     return _serve_media_file(path, request, download)
@@ -1565,7 +1565,7 @@ def get_body(
     log_id: int,
     request: Request,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     _, path = _get_media_path(log_id, "body")
     return _serve_media_file(path, request, download)
@@ -1577,7 +1577,7 @@ def get_snapshot(
     log_id: int,
     request: Request,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     _, path = _get_media_path(log_id, "snapshot")
     return _serve_media_file(path, request, download)
@@ -1589,7 +1589,7 @@ def get_video(
     log_id: int,
     request: Request,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     _, path = _get_media_path(log_id, "video")
     return _serve_media_file(path, request, download)
@@ -1601,7 +1601,7 @@ def get_face_video(
     log_id: int,
     request: Request,
     download: bool = Query(False),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> Response:
     _, path = _get_media_path(log_id, "face-video")
     return _serve_media_file(path, request, download)
@@ -1610,7 +1610,7 @@ def get_face_video(
 @router.delete("/{log_id}")
 def delete_log(
     log_id: int,
-    _: dict = Depends(require_role("superuser")),
+    _: dict = Depends(require_permission("application.system")),
 ) -> dict:
     store = get_detection_log_store()
     record = store.get(log_id)

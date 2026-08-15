@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.auth import require_role
+from app.core.auth import require_permission
 from app.core.auth_store import UserRecord
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.fps_diagnostics import build_fps_report
@@ -272,7 +272,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
 )
 def restart_camera_pipeline(
     camera_id: str,
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     ingestor = runtime.video_ingestor

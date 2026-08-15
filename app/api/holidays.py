@@ -15,7 +15,7 @@ from app.api.holiday_schemas import (
     HolidayUpdate,
 )
 from app.api.import_progress import ImportJobAccepted
-from app.core.auth import require_role
+from app.core.auth import require_permission
 from app.core.common_schemas import UserBrief, resolve_user_brief
 from app.core.holiday_import import (
     MAX_OFFICIAL_IMPORT_YEAR,
@@ -82,7 +82,7 @@ def list_holidays(
     is_active: bool | None = Query(True),
     holiday_type: str | None = Query(None),
     every_year: bool | None = Query(None),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> list[HolidayResponse]:
     store = get_holiday_store()
     records, _ = store.list(offset=0, limit=10000, holiday_type=holiday_type, is_active=is_active)
@@ -96,7 +96,7 @@ def list_holidays(
 def get_holidays_in_range(
     start_date: str = Query(..., description="تاریخ شروع شمسی (مثلاً 1404-01-01)"),
     end_date: str = Query(..., description="تاریخ پایان شمسی (مثلاً 1404-12-29)"),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> HolidayRangeResponse:
     try:
         start_day = parse_jalali_date(start_date)
@@ -117,7 +117,7 @@ def get_holidays_in_range(
 
 @router.get("/import-excel/template")
 def download_holiday_import_template(
-    _: dict = Depends(require_role("admin")),
+    _: dict = Depends(require_permission("application.manage")),
 ) -> Response:
     """Download the Excel template used for official yearly imports."""
     content = build_holiday_excel_template()
@@ -138,7 +138,7 @@ def _import_official_holidays_excel_sync(
         description="سال جلالی؛ فقط از 1406 تا 1500",
     ),
     file: UploadFile = File(..., description="Completed official-holiday Excel template"),
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     """Validate the entire workbook, then atomically replace one official year."""
     filename = file.filename or ""
@@ -220,7 +220,7 @@ async def import_official_holidays_excel(
         description="سال جلالی؛ فقط از 1406 تا 1500",
     ),
     file: UploadFile = File(..., description="Completed official-holiday Excel template"),
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     filename = file.filename or "holidays.xlsx"
     if not filename.casefold().endswith((".xlsx", ".xlsm")):
@@ -281,7 +281,7 @@ async def import_official_holidays_excel(
 @router.get("/{holiday_id}", response_model=HolidayResponse)
 def get_holiday(
     holiday_id: int,
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> HolidayResponse:
     store = get_holiday_store()
     record = store.get(holiday_id)
@@ -293,7 +293,7 @@ def get_holiday(
 @router.post("/", response_model=HolidayResponse, status_code=201)
 def create_holiday(
     body: HolidayCreate,
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> HolidayResponse:
     store = get_holiday_store()
     current_user_id: int | None = body.id if isinstance(body, dict) else None
@@ -322,7 +322,7 @@ def create_holiday(
 def patch_holiday(
     holiday_id: int,
     body: HolidayUpdate,
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> HolidayResponse:
     store = get_holiday_store()
     current_user_id: int | None = None
@@ -359,7 +359,7 @@ def patch_holiday(
 @router.delete("/{holiday_id}", response_model=dict)
 def delete_holiday(
     holiday_id: int,
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     store = get_holiday_store()
     record = store.get(holiday_id)

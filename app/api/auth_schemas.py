@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
-
-
-VALID_ROLES = frozenset({"superadmin", "admin", "user"})
-LEGACY_ROLE_VALUES = frozenset({"superuser", "superadmin", "admin", "user", "viewer", "operator"})
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -22,7 +18,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: int
     username: str
-    role: str
+    permissions: list[str] = Field(default_factory=list)
 
 
 class RefreshRequest(BaseModel):
@@ -42,12 +38,12 @@ class UserResponse(BaseModel):
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
-    role: str
     is_active: bool
     created_at: datetime
     last_login: Optional[datetime] = None
     created_at_jalali: str = ""
     last_login_jalali: str | None = None
+    permissions: list[str] = Field(default_factory=list)
 
 
 class AuthError(BaseModel):
@@ -55,73 +51,27 @@ class AuthError(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(
         min_length=3,
         max_length=200,
         pattern=r"^[a-zA-Z0-9_-]+$",
     )
     password: str = Field(min_length=8, max_length=72)
-    email: str
+    email: Optional[str] = None
     confirm_password: str
-    role: str = Field(default="user", min_length=1, max_length=30)
     full_name: Optional[str] = None
-
-    @field_validator("role")
-    @classmethod
-    def valid_role(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in LEGACY_ROLE_VALUES:
-            raise ValueError("نقش کاربر نامعتبر است")
-        return normalized
-
-
-class RoleInfo(BaseModel):
-    role: str
-    title: str
-    description: str
-    allowed_actions: list[str]
-
-
-class RoleInfoResponse(BaseModel):
-    message: str
-    roles: list[RoleInfo]
 
 
 class CreateUserResponse(BaseModel):
     message: str
     user_id: int
     username: str
-    role: str
 
 
 class DuplicateError(BaseModel):
     detail: str
-
-
-class LegacyRoleChangeResponse(UserResponse):
-    user_id: int
-    message: str
-
-
-class LegacyPasswordChangeRequest(BaseModel):
-    old_password: str = Field(min_length=1, max_length=500)
-    new_password: str = Field(min_length=8, max_length=72)
-    confirm_new_password: str = Field(min_length=1, max_length=72)
-
-    @field_validator("new_password")
-    @classmethod
-    def strong_password(cls, value: str) -> str:
-        errors = validate_legacy_password_strength(value)
-        if errors:
-            raise ValueError("; ".join(errors))
-        return value
-
-    @field_validator("confirm_new_password")
-    @classmethod
-    def passwords_match(cls, value: str, info) -> str:
-        if info.data.get("new_password") is not None and value != info.data["new_password"]:
-            raise ValueError("رمز عبور جدید و تایید آن یکسان نیست")
-        return value
 
 
 class ChangePasswordRequest(BaseModel):
@@ -132,7 +82,7 @@ class ChangePasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def strong_password(cls, value: str) -> str:
-        errors = validate_legacy_password_strength(value)
+        errors = validate_password_strength(value)
         if errors:
             raise ValueError("; ".join(errors))
         return value
@@ -149,7 +99,59 @@ class PasswordChangeResponse(BaseModel):
     message: str
 
 
-def validate_legacy_password_strength(password: str) -> list[str]:
+class UserPermissionGrant(BaseModel):
+    application: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_-]*$")
+    action: str = Field(min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9_-]*$")
+    scope_type: Literal["global", "building", "section", "camera"]
+    scope_id: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_scope_id(self):
+        if self.scope_type == "global" and self.scope_id != 0:
+            raise ValueError("Global grants must use scope_id 0")
+        if self.scope_type != "global" and self.scope_id < 1:
+            raise ValueError("Resource grants require a positive scope_id")
+        return self
+
+
+class SetUserAccessRequest(BaseModel):
+    grants: list[UserPermissionGrant]
+
+
+class UserAccessResponse(BaseModel):
+    user_id: int
+    grants: list[UserPermissionGrant]
+
+
+class AccessDefinitionResponse(BaseModel):
+    application: str
+    title: str
+    actions: list[str]
+    scope_types: list[Literal["global", "building", "section", "camera"]]
+
+
+class WebSocketTicketRequest(BaseModel):
+    application: Literal["broadcast", "video_wall", "results"]
+    scope_type: Literal["global", "building", "section", "camera"] = "global"
+    scope_id: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.scope_type == "global" and self.scope_id != 0:
+            raise ValueError("محدوده سراسری باید شناسه صفر داشته باشد")
+        if self.scope_type != "global" and self.scope_id < 1:
+            raise ValueError("محدوده منبع باید شناسه مثبت داشته باشد")
+        if self.application == "results" and self.scope_type != "global":
+            raise ValueError("نتایج زنده در حال حاضر فقط دسترسی سراسری را پشتیبانی می‌کند")
+        return self
+
+
+class WebSocketTicketResponse(BaseModel):
+    ticket: str
+    expires_in: int
+
+
+def validate_password_strength(password: str) -> list[str]:
     errors: list[str] = []
     if len(password) < 8:
         errors.append("رمز عبور باید حداقل ۸ کاراکتر باشد")

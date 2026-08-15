@@ -86,7 +86,7 @@ def _admin_token(client: TestClient) -> str:
 def _operator_token(client: TestClient) -> str:
     admin_token = _admin_token(client)
     client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json={"username": "operator1", "password": "operator123", "role": "operator"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -100,7 +100,7 @@ def _operator_token(client: TestClient) -> str:
 def _viewer_token(client: TestClient) -> str:
     admin_token = _admin_token(client)
     client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json={"username": "viewer1", "password": "viewer1234", "role": "viewer"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
