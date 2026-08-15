@@ -254,7 +254,7 @@ def get_plate_log(
 @router.post("", response_model=PlateLogResponse, status_code=status.HTTP_201_CREATED)
 def create_plate_log(
     log_data: PlateLogCreate,
-    admin_user: UserRecord = Depends(require_permission("application.manage")),
+    admin_user: UserRecord = Depends(require_permission("plate_logs.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     payload = log_data.model_dump(mode="python")
@@ -274,7 +274,7 @@ def create_plate_log(
 def update_plate_log(
     log_id: int,
     log_data: PlateLogUpdate,
-    user: UserRecord = Depends(require_permission("application.manage")),
+    user: UserRecord = Depends(require_permission("plate_logs.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     _get_log_or_404(log_id, runtime)
@@ -337,7 +337,7 @@ def get_plate_video(
 @router.delete("/{log_id}")
 def delete_plate_log(
     log_id: int,
-    _: UserRecord = Depends(require_permission("application.system")),
+    _: UserRecord = Depends(require_permission("plate_logs.delete")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_log_or_404(log_id, runtime)

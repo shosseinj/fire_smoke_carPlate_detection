@@ -105,7 +105,7 @@ def get_import_progress(
     if record is None:
         raise HTTPException(status_code=404, detail="رکورد پیشرفت ورود اطلاعات یافت نشد")
     permissions = effective_permissions(current_user)
-    if record.created_by != current_user.id and not {"application.manage", "*"} & permissions:
+    if record.created_by != current_user.id and not {"import_progress.read", "*"} & permissions:
         raise HTTPException(status_code=403, detail="شما فقط می‌توانید رکوردهای خود را مشاهده کنید")
     return record.to_dict()
 
@@ -120,6 +120,6 @@ def delete_import_progress(
     if record is None:
         raise HTTPException(status_code=404, detail="رکورد پیشرفت ورود اطلاعات یافت نشد")
     permissions = effective_permissions(current_user)
-    if record.created_by != current_user.id and not {"application.manage", "*"} & permissions:
+    if record.created_by != current_user.id and not {"import_progress.read", "*"} & permissions:
         raise HTTPException(status_code=403, detail="شما فقط می‌توانید رکوردهای خود را حذف کنید")
     runtime.import_progress.delete(progress_id)

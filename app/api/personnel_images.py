@@ -58,7 +58,7 @@ def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("personnel_images.read")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
@@ -75,7 +75,7 @@ def list_personnel_images(
 async def upload_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel_images.create")),
     images: list[UploadFile] = File(...),
     enable_cropping: bool = Form(default=False),
     is_primary: bool = Form(default=False),
@@ -138,7 +138,7 @@ async def upload_personnel_images(
 def delete_personnel_image(
     image_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel_images.create")),
 ) -> Response:
     deleted = _store(runtime).delete_image(image_id)
     if not deleted:

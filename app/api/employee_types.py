@@ -83,7 +83,7 @@ def _response(record: EmployeeTypeRecord, store: EmployeeTypeStore) -> EmployeeT
 def list_employee_types(
     is_active: bool | None = Query(default=None),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("employee_types.read")),
 ) -> list[EmployeeTypeResponse]:
     store = _store(runtime)
     return [_response(record, store) for record in store.list(is_active=is_active)]
@@ -93,7 +93,7 @@ def list_employee_types(
 def get_employee_type(
     employee_type_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("employee_types.read")),
 ) -> EmployeeTypeResponse:
     store = _store(runtime)
     record = store.get(employee_type_id)
@@ -106,7 +106,7 @@ def get_employee_type(
 def create_employee_type(
     payload: EmployeeTypeCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("employee_types.create")),
 ) -> EmployeeTypeResponse:
     store = _store(runtime)
     try:
@@ -127,7 +127,7 @@ def update_employee_type(
     employee_type_id: int,
     payload: EmployeeTypeUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("employee_types.edit")),
 ) -> EmployeeTypeResponse:
     store = _store(runtime)
     try:
@@ -150,7 +150,7 @@ def update_employee_type(
 def delete_employee_type(
     employee_type_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("employee_types.delete")),
 ) -> Response:
     store = _store(runtime)
     try:
