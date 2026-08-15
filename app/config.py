@@ -136,6 +136,12 @@ class Settings:
     ) # video durance in seconds
     recording_enabled: bool = _env_bool("RECORDING_ENABLED", False)
     recording_redis_url: str = os.getenv("RECORDING_REDIS_URL", "redis://redis:6379/0")
+    detection_events_enabled: bool = _env_bool("DETECTION_EVENTS_ENABLED", True)
+    detection_events_queue_capacity: int = _env_int("DETECTION_EVENTS_QUEUE_CAPACITY", 256)
+    detection_events_human_stream: str = os.getenv("DETECTION_EVENTS_HUMAN_STREAM", "detection:human:v1").strip()
+    detection_events_fire_smoke_stream: str = os.getenv("DETECTION_EVENTS_FIRE_SMOKE_STREAM", "detection:fire:v1").strip()
+    detection_events_plate_stream: str = os.getenv("DETECTION_EVENTS_PLATE_STREAM", "detection:plate:v1").strip()
+    detection_events_recording_segment_stream: str = os.getenv("DETECTION_EVENTS_RECORDING_SEGMENT_STREAM", "recording:segments:v1").strip()
     recording_minio_endpoint: str = os.getenv("RECORDING_MINIO_ENDPOINT", "minio:9000")
     recording_minio_access_key: str = os.getenv("RECORDING_MINIO_ACCESS_KEY", "")
     recording_minio_secret_key: str = os.getenv("RECORDING_MINIO_SECRET_KEY", "")

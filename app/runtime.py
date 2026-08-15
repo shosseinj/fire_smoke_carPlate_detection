@@ -43,6 +43,8 @@ from app.core.shift_store import ShiftStore
 from app.core.holiday_store import HolidayStore
 from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.detection_event_publisher import DetectionEventPublisher
+from app.core.human_detection_event_observer import HumanDetectionEventObserver
 from app.core.recent_detection_service import (
     build_recent_detection_refresh_message,
     get_single_detection_payload_by_id,
@@ -72,6 +74,22 @@ from app.processors.ultralytics_loader import preload_model_dependencies
 
 
 LOGGER = logging.getLogger("uvicorn.error")
+
+
+def _observe_human_detection_event_once(
+    observer: HumanDetectionEventObserver,
+    packet: FramePacket,
+    result: TaskResult,
+    room_ids_by_track: dict[int, int],
+    counts_for_attendance: bool,
+) -> None:
+    """Narrow runtime seam that keeps event observation independent of legacy persistence."""
+    observer.observe(
+        packet,
+        result,
+        room_ids_by_track=room_ids_by_track,
+        counts_for_attendance=counts_for_attendance,
+    )
 
 
 def _safe_int(value: object) -> int | None:
@@ -124,6 +142,11 @@ class Runtime:
     recording_redis: object | None = None
     recording_storage: RecordingStorageService | None = None
     recording_error: str | None = None
+    detection_event_publisher: DetectionEventPublisher | None = None
+    detection_event_redis: object | None = None
+    detection_event_error: str | None = None
+    _closed: bool = False
+    _general_teardown_complete: bool = False
 
     def operational_settings(self):
         gs = self.general_settings.get()
@@ -386,40 +409,72 @@ class Runtime:
             raise
 
     def close(self) -> None:
-        # End long-lived MJPEG responses first so Uvicorn reload/shutdown cannot
-        # wait forever for frontend clients that still have streams open.
-        self.broadcast.close()
-        self.personnel_zip_imports.close()
-        self.excel_imports.close()
-        self.model_conversions.close()
-        coordinator_error: Exception | None = None
-        if self.recording_coordinator is not None:
+        if self._closed:
+            return
+        publisher_stopped = True
+        detection_shutdown_error: Exception | None = None
+        if self.detection_event_publisher is not None:
             try:
-                self.recording_coordinator.close()
+                publisher_stopped = self.detection_event_publisher.close()
+                if not publisher_stopped:
+                    self.detection_event_error = "shutdown_timed_out"
+                    detection_shutdown_error = RuntimeError("detection event publisher is still active; Redis dependency was preserved")
             except Exception as exc:
-                coordinator_error = exc
-                self.recording_error = type(exc).__name__
-                LOGGER.error("RECORDING_SHUTDOWN_BLOCKED error=%s", type(exc).__name__)
-        if coordinator_error is None and self.recording_redis is not None and hasattr(self.recording_redis, "close"):
-            self.recording_redis.close()
-        if self.media_preview is not None:
-            self.media_preview.close()
-        if coordinator_error is None and self.live_branch is not None:
-            self.live_branch.close()
-        if self.static_video_ingestor is not None:
-            self.static_video_ingestor.close()
-        if self.video_ingestor is not None:
-            self.video_ingestor.close()
-        self.static_video_lifecycle.close()
-        self.router.close()
-        self.fire_smoke_logs.close()
-        self.plate_logs.close()
-        self.human_logs.close()
-        self.registry.close()
-        if coordinator_error is None:
-            self.database.dispose()
+                publisher_stopped = False
+                detection_shutdown_error = exc
+                self.detection_event_error = type(exc).__name__
+                LOGGER.error("DETECTION_EVENT_PUBLISHER_SHUTDOWN_FAILED error=%s", type(exc).__name__)
+        if publisher_stopped and self.detection_event_redis is not None and hasattr(self.detection_event_redis, "close"):
+            try:
+                self.detection_event_redis.close()
+                self.detection_event_redis = None
+                self.detection_event_error = None
+            except Exception as exc:
+                detection_shutdown_error = exc
+                self.detection_event_error = type(exc).__name__
+                LOGGER.error("DETECTION_EVENT_REDIS_SHUTDOWN_FAILED error=%s", type(exc).__name__)
+        coordinator_error: Exception | None = None
+        if not self._general_teardown_complete:
+            # These dependencies are independent of detection-event publishing and
+            # must not be closed again merely because its Redis shutdown is retried.
+            self.broadcast.close()
+            self.personnel_zip_imports.close()
+            self.excel_imports.close()
+            self.model_conversions.close()
+            if self.recording_coordinator is not None:
+                try:
+                    self.recording_coordinator.close()
+                except Exception as exc:
+                    coordinator_error = exc
+                    self.recording_error = type(exc).__name__
+                    LOGGER.error("RECORDING_SHUTDOWN_BLOCKED error=%s", type(exc).__name__)
+            if coordinator_error is None and self.recording_redis is not None and hasattr(self.recording_redis, "close"):
+                self.recording_redis.close()
+            if self.media_preview is not None:
+                self.media_preview.close()
+            if coordinator_error is None and self.live_branch is not None:
+                self.live_branch.close()
+            if self.static_video_ingestor is not None:
+                self.static_video_ingestor.close()
+            if self.video_ingestor is not None:
+                self.video_ingestor.close()
+            self.static_video_lifecycle.close()
+            self.router.close()
+            self.fire_smoke_logs.close()
+            self.plate_logs.close()
+            self.human_logs.close()
+            self.registry.close()
+            if coordinator_error is None:
+                self.database.dispose()
+                self._general_teardown_complete = True
         if coordinator_error is not None:
-            raise RuntimeError("recording coordinator is still active; recording dependencies were preserved") from coordinator_error
+            message = "recording coordinator is still active; recording dependencies were preserved"
+            if detection_shutdown_error is not None:
+                message += "; detection event publisher shutdown was also incomplete"
+            raise RuntimeError(message) from coordinator_error
+        if detection_shutdown_error is not None:
+            raise RuntimeError("detection event publisher shutdown was incomplete; Redis dependency was preserved") from detection_shutdown_error
+        self._closed = True
 
     def status(self) -> dict:
         value = self.router.status()
@@ -451,6 +506,15 @@ class Runtime:
         )
         if self.recording_error is not None:
             value["recording"]["error"] = self.recording_error
+        value["detection_events"] = (
+            self.detection_event_publisher.status()
+            if self.detection_event_publisher is not None
+            else {"enabled": self.settings.detection_events_enabled, "running": False, "closed": False,
+                  "published": 0, "queued": 0, "dropped": 0,
+                  "retried": 0, "failed": 0, "error": self.detection_event_error}
+        )
+        if self.detection_event_error is not None:
+            value["detection_events"]["error"] = self.detection_event_error
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
@@ -822,6 +886,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
         return location_observer
 
+    human_event_observer = HumanDetectionEventObserver(
+        lambda: detection_event_publisher
+    )
+
     def _build_face_polygon_observer(
         ls: LocationStore,
         reg: SourceRegistry,
@@ -895,6 +963,18 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                             inside_match.room_id
                         )
             # Cache only evidence captured while the track is inside the room.
+            try:
+                _observe_human_detection_event_once(
+                    human_event_observer,
+                    packet,
+                    result,
+                    valid_room_ids_by_track,
+                    cam.counts_for_attendance,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Human detection event observer failed: source=%s", source_id
+                )
             try:
                 human_log_store.observe_result(
                     packet,
@@ -998,6 +1078,41 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     recording_redis = None
     recording_storage = None
     recording_error = None
+    detection_event_publisher = None
+    detection_event_redis = None
+    detection_event_error = None
+    if app_settings.detection_events_enabled:
+        try:
+            if app_settings.detection_events_queue_capacity <= 0:
+                raise ValueError("DETECTION_EVENTS_QUEUE_CAPACITY must be positive")
+            if not all((app_settings.detection_events_human_stream,
+                        app_settings.detection_events_fire_smoke_stream,
+                        app_settings.detection_events_plate_stream,
+                        app_settings.detection_events_recording_segment_stream)):
+                raise ValueError("detection event stream names must not be empty")
+            import redis
+            detection_event_redis = redis.Redis.from_url(
+                app_settings.recording_redis_url, decode_responses=True,
+                socket_connect_timeout=3.0, socket_timeout=5.0, retry_on_timeout=False,
+            )
+            detection_event_publisher = DetectionEventPublisher(
+                detection_event_redis,
+                {"human": app_settings.detection_events_human_stream,
+                 "fire_smoke": app_settings.detection_events_fire_smoke_stream,
+                 "plate": app_settings.detection_events_plate_stream,
+                 "recording_segment": app_settings.detection_events_recording_segment_stream},
+                queue_capacity=app_settings.detection_events_queue_capacity,
+            )
+        except Exception as exc:
+            detection_event_error = type(exc).__name__
+            if detection_event_redis is not None and hasattr(detection_event_redis, "close"):
+                try:
+                    detection_event_redis.close()
+                except Exception as close_exc:
+                    detection_event_error = f"{type(exc).__name__}; cleanup={type(close_exc).__name__}"
+                    LOGGER.warning("DETECTION_EVENT_REDIS_CLEANUP_FAILED error=%s", type(close_exc).__name__)
+                detection_event_redis = None
+            LOGGER.warning("DETECTION_EVENT_PUBLISHER_NOT_READY error=%s", type(exc).__name__)
     if app_settings.recording_enabled:
         try:
             import redis
@@ -1155,6 +1270,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         recording_redis=recording_redis,
         recording_storage=recording_storage,
         recording_error=recording_error,
+        detection_event_publisher=detection_event_publisher,
+        detection_event_redis=detection_event_redis,
+        detection_event_error=detection_event_error,
     )
 
     def _publish_detection_change(action: str, record: object) -> None:
