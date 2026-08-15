@@ -63,6 +63,8 @@ class RecordingUpload:
     start_time: str
     end_time: str
     object_name: str
+    quality_preset: str = "medium"
+    retention_days: int = 30
 
 
 class GpuLiveBranchManager:
@@ -95,6 +97,7 @@ class GpuLiveBranchManager:
         heartbeat_timeout_seconds: float = 15.0,
         recording_segment_seconds: float | None = None,
         camera_id_resolver: Callable[[str], int | str | None] | None = None,
+        recording_policy_resolver: Callable[[str], dict[str, Any]] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] | None = None,
     ) -> None:
         self.publish_base = self._validate_base(publish_base)
@@ -110,6 +113,7 @@ class GpuLiveBranchManager:
             os.getenv("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
         )
         self.camera_id_resolver = camera_id_resolver
+        self.recording_policy_resolver = recording_policy_resolver
         self.gst_loader = gst_loader
         self._gst: Any | None = None
         self._glib: Any | None = None
@@ -195,11 +199,13 @@ class GpuLiveBranchManager:
                 native_width=int(width_match.group(1)) if width_match else None,
                 native_height=int(height_match.group(1)) if height_match else None,
             )
-        owner_id = f"continuous:{hashlib.sha256(source_id.encode()).hexdigest()}"
-        try:
-            self.acquire_durable(source_id, owner_id)
-        except Exception:
-            LOGGER.warning("Could not start continuous full-resolution recording: %s", source_id, exc_info=True)
+        policy = self._recording_policy(source_id)
+        if policy["continuous_enabled"]:
+            owner_id = self.continuous_owner(source_id)
+            try:
+                self.acquire_durable(source_id, owner_id)
+            except Exception:
+                LOGGER.warning("Could not start continuous recording: %s", source_id, exc_info=True)
         return True
 
     def detach_source(self, source_id: str) -> None:
@@ -227,7 +233,7 @@ class GpuLiveBranchManager:
                 raise RuntimeError("source has no confirmed NVMM decoder tee")
             branch = self._branches.get(key)
             if branch is None:
-                branch = self._build(source, profile)
+                branch = self._build(source, profile, recording=False)
                 self._branches[key] = branch
             branch.references.add(viewer_id)
             branch.last_heartbeat[viewer_id] = now
@@ -237,10 +243,32 @@ class GpuLiveBranchManager:
     def acquire_durable(self, source_id: str, owner_id: str) -> dict[str, Any]:
         """Keep the fullscreen branch alive without viewer heartbeat expiry."""
         with self._lock:
-            contract = self.acquire(source_id, "fullscreen", owner_id)
+            key = (source_id, "fullscreen")
+            branch = self._branches.get(key)
+            if branch is not None and not branch.recording_state.get("enabled"):
+                references = set(branch.references)
+                heartbeats = dict(branch.last_heartbeat)
+                durable = set(branch.durable_references)
+                self._remove(key)
+                source = self._sources.get(source_id)
+                if source is None:
+                    raise RuntimeError("source has no confirmed NVMM decoder tee")
+                branch = self._build(source, "fullscreen", recording=True)
+                branch.references.update(references)
+                branch.last_heartbeat.update(heartbeats)
+                branch.durable_references.update(durable)
+                self._branches[key] = branch
+            elif branch is None:
+                source = self._sources.get(source_id)
+                if source is None:
+                    raise RuntimeError("source has no confirmed NVMM decoder tee")
+                branch = self._build(source, "fullscreen", recording=True)
+                self._branches[key] = branch
+            branch.references.add(owner_id)
+            branch.last_heartbeat[owner_id] = time.monotonic()
+            contract = self._contract(branch)
             if not contract.get("enabled"):
                 return contract
-            branch = self._branches[(source_id, "fullscreen")]
             branch.durable_references.add(owner_id)
         return contract
 
@@ -268,7 +296,49 @@ class GpuLiveBranchManager:
     def release_durable(self, source_id: str, owner_id: str) -> bool:
         return self.release(source_id, "fullscreen", owner_id)
 
-    def _build(self, source: LiveSource, profile: str) -> LiveBranch:
+    def _recording_policy(self, source_id: str) -> dict[str, Any]:
+        defaults = {"continuous_enabled": False, "quality_preset": "medium", "segment_seconds": 120,
+                    "retention_days": 30, "output": {"width": 1280, "height": 720, "fps": 15,
+                    "bitrate_bps": 2_000_000}}
+        if self.recording_policy_resolver is None:
+            return defaults
+        return {**defaults, **self.recording_policy_resolver(source_id)}
+
+    @staticmethod
+    def continuous_owner(source_id: str) -> str:
+        return f"continuous:{hashlib.sha256(source_id.encode()).hexdigest()}"
+
+    def apply_recording_policy(self, source_id: str) -> None:
+        """Finalize the current fragment and rebuild the branch with the effective policy."""
+        owner = self.continuous_owner(source_id)
+        with self._lock:
+            branch = self._branches.get((source_id, "fullscreen"))
+            references = set(branch.references) if branch else set()
+            heartbeats = dict(branch.last_heartbeat) if branch else {}
+            durable = set(branch.durable_references) if branch else set()
+            source = self._sources.get(source_id)
+        if branch is not None:
+            self._remove((source_id, "fullscreen"))
+        policy = self._recording_policy(source_id)
+        if policy["continuous_enabled"]:
+            references.add(owner)
+            heartbeats[owner] = time.monotonic()
+            durable.add(owner)
+        else:
+            references.discard(owner)
+            heartbeats.pop(owner, None)
+            durable.discard(owner)
+        if source is None or not references:
+            return
+        recording = bool(durable)
+        rebuilt = self._build(source, "fullscreen", recording=recording)
+        rebuilt.references.update(references)
+        rebuilt.last_heartbeat.update(heartbeats)
+        rebuilt.durable_references.update(durable)
+        with self._lock:
+            self._branches[(source_id, "fullscreen")] = rebuilt
+
+    def _build(self, source: LiveSource, profile: str, recording: bool = False) -> LiveBranch:
         Gst = self._require_gst()
         suffix = hashlib.sha256(f"{source.source_id}:{profile}".encode()).hexdigest()[:12]
         queue = self._make("queue", f"live_queue_{suffix}")
@@ -277,7 +347,8 @@ class GpuLiveBranchManager:
         encoder = self._make("nvv4l2h264enc", f"live_encoder_{suffix}")
         parser = self._make("h264parse", f"live_parser_{suffix}")
         sink = self._make("rtspclientsink", f"live_sink_{suffix}")
-        recording = profile == "fullscreen"
+        recording = bool(recording and profile == "fullscreen")
+        policy = self._recording_policy(source.source_id)
         h264_tee = self._make("tee", f"live_h264_tee_{suffix}") if recording else None
         rtsp_queue = self._make("queue", f"live_rtsp_queue_{suffix}") if recording else None
         save_queue = self._make("queue", f"live_save_queue_{suffix}") if recording else None
@@ -291,12 +362,15 @@ class GpuLiveBranchManager:
         try:
             if profile == "wall":
                 capsfilter.set_property("caps", Gst.Caps.from_string(
-                    "video/x-raw(memory:NVMM),format=NV12,width=320,height=260"
+                    "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
                 ))
             else:
-                capsfilter.set_property("caps", Gst.Caps.from_string(
-                    "video/x-raw(memory:NVMM),format=NV12"
-                ))
+                output = policy["output"]
+                size = ""
+                if recording and output.get("width") and output.get("height"):
+                    size = f",width={int(output['width'])},height={int(output['height'])}"
+                fps = f",framerate={int(output['fps'])}/1" if recording and output.get("fps") else ""
+                capsfilter.set_property("caps", Gst.Caps.from_string(f"video/x-raw(memory:NVMM),format=NV12{size}{fps}"))
             queue.set_property("leaky", 2)
             queue.set_property("max-size-buffers", 2)
             if recording:
@@ -314,7 +388,7 @@ class GpuLiveBranchManager:
                 save_sink.set_property("muxer", save_muxer)
                 save_sink.set_property("location", str(location))
                 save_sink.set_property(
-                    "max-size-time", int(self.recording_segment_seconds * 1_000_000_000)
+                    "max-size-time", int(float(policy["segment_seconds"]) * 1_000_000_000)
                 )
                 recording_state["current"] = None
                 recording_state["start_time"] = None
@@ -324,7 +398,8 @@ class GpuLiveBranchManager:
                     if previous is not None:
                         end_time = datetime.now(timezone.utc)
                         upload = self._recording_upload(
-                            previous, camera_id, recording_state["start_time"], end_time
+                            previous, camera_id, recording_state["start_time"], end_time,
+                            policy["quality_preset"], int(policy["retention_days"]),
                         )
                         LOGGER.info("fMP4 fragment written: %s", previous)
                         LOGGER.info("Recording file completed: %s", previous)
@@ -345,6 +420,8 @@ class GpuLiveBranchManager:
                 encoder.set_property("idrinterval", 15)
             if find_property is None or find_property("iframeinterval") is not None:
                 encoder.set_property("iframeinterval", 15)
+            if recording and (find_property is None or find_property("bitrate") is not None):
+                encoder.set_property("bitrate", int(policy["output"]["bitrate_bps"]))
             sink.set_property("location", self.publish_uri(source.source_id, profile))
             sink_find_property = getattr(sink, "find_property", None)
             if sink_find_property is None or sink_find_property("protocols") is not None:
@@ -382,7 +459,7 @@ class GpuLiveBranchManager:
             return LiveBranch(
                 source.source_id, profile, live_stream_path(source.source_id, profile),
                 source.pipeline, source.tee, tee_pad, elements, sink,
-                recording_state=recording_state,
+                recording_state={"enabled": recording, "policy": policy, **recording_state},
             )
         except Exception:
             if tee_pad is not None:
@@ -437,6 +514,8 @@ class GpuLiveBranchManager:
                 camera_id,
                 branch.recording_state.get("start_time") or datetime.now(timezone.utc),
                 datetime.now(timezone.utc),
+                str(branch.recording_state.get("policy", {}).get("quality_preset", "medium")),
+                int(branch.recording_state.get("policy", {}).get("retention_days", 30)),
             )
             LOGGER.info("fMP4 fragment written: %s", completed_path)
             LOGGER.info("Recording file completed: %s", completed_path)
@@ -504,7 +583,8 @@ class GpuLiveBranchManager:
 
     @staticmethod
     def _recording_upload(
-        path: Path, camera_id: str, start_time: datetime, end_time: datetime
+        path: Path, camera_id: str, start_time: datetime, end_time: datetime,
+        quality_preset: str = "medium", retention_days: int = 30,
     ) -> RecordingUpload:
         object_name = f"continuous/{camera_id}/{start_time:%Y/%m/%d}/{path.name}"
         return RecordingUpload(
@@ -513,6 +593,8 @@ class GpuLiveBranchManager:
             start_time=start_time.isoformat(),
             end_time=end_time.isoformat(),
             object_name=object_name,
+            quality_preset=quality_preset,
+            retention_days=retention_days,
         )
 
     @staticmethod
@@ -527,10 +609,19 @@ class GpuLiveBranchManager:
                     "start_time": upload.start_time,
                     "end_time": upload.end_time,
                     "object_name": upload.object_name,
+                    "quality_preset": upload.quality_preset,
+                    "retention_days": upload.retention_days,
                 }
             ),
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _object_tags(retention_days: int):
+        from minio.commonconfig import Tags
+        tags = Tags.new_object_tags()
+        tags["retention-days"] = str(retention_days)
+        return tags
 
     def _recover_upload(self, path: Path) -> RecordingUpload:
         sidecar = path.with_suffix(".json")
@@ -542,6 +633,8 @@ class GpuLiveBranchManager:
                 start_time=str(value["start_time"]),
                 end_time=str(value["end_time"]),
                 object_name=str(value["object_name"]),
+                quality_preset=str(value.get("quality_preset", "medium")),
+                retention_days=int(value.get("retention_days", 30)),
             )
         camera_id = path.name.split("-", 2)[1] if path.name.startswith("camera-") else "unknown"
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
@@ -586,7 +679,10 @@ class GpuLiveBranchManager:
                         "start-time": upload.start_time,
                         "end-time": upload.end_time,
                         "object-name": upload.object_name,
+                        "quality-preset": upload.quality_preset,
+                        "retention-days": str(upload.retention_days),
                     },
+                    tags=self._object_tags(upload.retention_days),
                 )
                 sidecar = self._upload_sidecar(upload)
                 client.fput_object(
@@ -594,6 +690,7 @@ class GpuLiveBranchManager:
                     f"{upload.object_name}.json",
                     str(sidecar),
                     content_type="application/json",
+                    tags=self._object_tags(upload.retention_days),
                 )
                 path.unlink()
                 sidecar.unlink(missing_ok=True)

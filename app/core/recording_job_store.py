@@ -56,6 +56,12 @@ class RecordingJob:
     error: str | None = None
     is_partial: bool = False
     attempt_count: int = 0
+    quality_preset: str = "medium"
+    retention_days: int = 30
+    output_width: int | None = None
+    output_height: int | None = None
+    output_fps: int | None = None
+    output_bitrate_bps: int | None = None
     object_expires_at_utc: datetime | None = None
     spool_expires_at_utc: datetime | None = None
     created_at_utc: datetime | None = None
@@ -87,6 +93,12 @@ class RecordingJobStore:
         scheduled_end_utc: datetime,
         created_by: int | None,
         idempotency_key: str | None = None,
+        quality_preset: str = "medium",
+        retention_days: int = 30,
+        output_width: int | None = None,
+        output_height: int | None = None,
+        output_fps: int | None = None,
+        output_bitrate_bps: int | None = None,
         now: datetime | None = None,
     ) -> tuple[RecordingJob, bool]:
         start = _utc(scheduled_start_utc, "scheduled_start_utc")
@@ -126,9 +138,11 @@ class RecordingJobStore:
                     raise RecordingOverlapError("recording overlaps an active job for this source")
                 connection.execute(
                     "INSERT INTO recording_jobs (id, source_uri, created_by, idempotency_key, status, "
-                    "scheduled_start_utc, scheduled_end_utc, created_at_utc, updated_at_utc) "
-                    "VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)",
-                    (job_id, source_uri, created_by, key, start, end, current, current),
+                    "scheduled_start_utc, scheduled_end_utc, quality_preset, retention_days, output_width, "
+                    "output_height, output_fps, output_bitrate_bps, created_at_utc, updated_at_utc) "
+                    "VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, source_uri, created_by, key, start, end, quality_preset, retention_days,
+                     output_width, output_height, output_fps, output_bitrate_bps, current, current),
                 )
         except IntegrityError as exc:
             if key:
@@ -183,7 +197,9 @@ class RecordingJobStore:
         if target not in _TRANSITIONS.get(current.status, frozenset()):
             raise InvalidRecordingTransition(f"cannot transition {current.status} to {target}")
         instant = _utc(now or datetime.now(timezone.utc), "now")
-        allowed = {"object_key", "content_type", "size_bytes", "spool_path", "is_partial"}
+        allowed = {"object_key", "content_type", "size_bytes", "spool_path", "is_partial",
+                   "quality_preset", "retention_days", "output_width", "output_height", "output_fps",
+                   "output_bitrate_bps"}
         if set(fields) - allowed:
             raise ValueError("unsupported recording update field")
         updates: dict[str, Any] = {"status": target, "updated_at_utc": instant}
@@ -198,7 +214,7 @@ class RecordingJobStore:
         if target in TERMINAL_STATUSES:
             updates["finished_at_utc"] = instant
         if target in {"completed", "partial"}:
-            updates["object_expires_at_utc"] = instant + OBJECT_RETENTION
+            updates["object_expires_at_utc"] = instant + timedelta(days=current.retention_days)
         if target == "failed" and (fields.get("spool_path") or current.spool_path):
             updates["spool_expires_at_utc"] = instant + FAILED_SPOOL_RETENTION
         sets = ", ".join(f"{name} = ?" for name in updates)
@@ -277,4 +293,6 @@ class RecordingJobStore:
         values["attempt_count"] = int(values["attempt_count"] or 0)
         values["is_partial"] = bool(values["is_partial"])
         values["size_bytes"] = int(values["size_bytes"]) if values["size_bytes"] is not None else None
+        for name in ("retention_days", "output_width", "output_height", "output_fps", "output_bitrate_bps"):
+            values[name] = int(values[name]) if values[name] is not None else None
         return RecordingJob(**values)

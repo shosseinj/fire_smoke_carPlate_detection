@@ -532,6 +532,15 @@
       .live-branch-card h3 { margin: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .live-branch-card [data-live-status] { color: #ffd166; min-height: 1.5em; padding: 4px; }
       .live-branch-error { color: #ff8b8b; background: #421d28; padding: 10px; margin-bottom: 12px; }
+      .recording-settings { margin: 0 24px 24px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+      .recording-settings h2 { margin: 0 0 14px; font-size: 17px; }
+      .recording-settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+      .recording-settings label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+      .recording-settings select, .recording-settings input { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); }
+      .recording-settings .checkbox { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+      .recording-settings .checkbox input { width: auto; }
+      .recording-settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .recording-settings-status { min-height: 1.5em; margin-top: 10px; color: var(--muted); }
     </style>
   </head>
   <body>
@@ -572,6 +581,29 @@
         </aside>
       </div>
     </main>
+    <section id="recordingSettingsPanel" class="recording-settings" hidden>
+      <h2>تنظیمات ذخیره ویدئو</h2>
+      <form id="recordingSettingsForm" class="recording-settings-form">
+        <label>سطح تنظیم
+          <select id="recordingSettingsCamera"><option value="">پیش‌فرض همه دوربین‌ها</option></select>
+        </label>
+        <label class="checkbox"><input id="recordingContinuous" type="checkbox" /> ذخیره پیوسته فعال باشد</label>
+        <label>کیفیت
+          <select id="recordingQuality"><option value="low">کم</option><option value="medium">متوسط</option><option value="high">زیاد</option><option value="original">اصلی</option></select>
+        </label>
+        <label>مدت هر قطعه
+          <select id="recordingSegment"><option value="60">۱ دقیقه</option><option value="120">۲ دقیقه</option><option value="300">۵ دقیقه</option><option value="900">۱۵ دقیقه</option></select>
+        </label>
+        <label>نگهداری
+          <select id="recordingRetention"><option value="7">۷ روز</option><option value="30">۳۰ روز</option><option value="90">۹۰ روز</option><option value="365">۳۶۵ روز</option></select>
+        </label>
+        <div class="recording-settings-actions">
+          <button type="submit">ذخیره تنظیمات</button>
+          <button id="recordingSettingsReset" type="button">بازنشانی</button>
+        </div>
+      </form>
+      <div id="recordingSettingsStatus" class="recording-settings-status" role="status"></div>
+    </section>
     <section id="liveBranchSection" class="live-branch-section" hidden aria-live="polite">
       <div class="live-branch-header">
         <h2>شاخه زنده GPU</h2>
@@ -594,6 +626,15 @@
       const liveBranchGrid = document.getElementById("liveBranchGrid");
       const liveBranchError = document.getElementById("liveBranchError");
       const liveBranchBack = document.getElementById("liveBranchBack");
+      const recordingSettingsPanel = document.getElementById("recordingSettingsPanel");
+      const recordingSettingsForm = document.getElementById("recordingSettingsForm");
+      const recordingSettingsCamera = document.getElementById("recordingSettingsCamera");
+      const recordingContinuous = document.getElementById("recordingContinuous");
+      const recordingQuality = document.getElementById("recordingQuality");
+      const recordingSegment = document.getElementById("recordingSegment");
+      const recordingRetention = document.getElementById("recordingRetention");
+      const recordingSettingsReset = document.getElementById("recordingSettingsReset");
+      const recordingSettingsStatus = document.getElementById("recordingSettingsStatus");
       let sources = [];
       let liveBranchSources = [];
       let broadcasting = false;
@@ -605,6 +646,7 @@
       let resultTicketPending = false;
       let reconnectTimer = null;
       let fullscreenSourceId = null;
+      let recordingSettingsWritable = true;
       let previewBaseUrl = "";
       let previewAvailable = false;
       let useJpegFallback = false;
@@ -1709,6 +1751,66 @@
       liveBranchButton.addEventListener("click", () => setLiveBranchView(!liveBranchView));
       liveBranchBack.addEventListener("click", () => setLiveBranchView(false));
 
+      function renderRecordingSettings(snapshot) {
+        const policy = snapshot.effective;
+        recordingContinuous.checked = Boolean(policy.continuous_enabled);
+        recordingQuality.value = policy.quality_preset;
+        recordingSegment.value = String(policy.segment_seconds);
+        recordingRetention.value = String(policy.retention_days);
+        for (const control of recordingSettingsForm.elements) control.disabled = !recordingSettingsWritable;
+        recordingSettingsPanel.hidden = false;
+      }
+
+      async function loadRecordingSettings(sourceRef = "") {
+        const suffix = sourceRef ? `/cameras/${encodeURIComponent(sourceRef)}` : "";
+        const response = await fetch(`/api/v1/recording-settings${suffix}`);
+        if (response.status === 401 || response.status === 403) {
+          recordingSettingsPanel.hidden = true;
+          return;
+        }
+        if (!response.ok) throw new Error("خواندن تنظیمات ذخیره ویدئو ممکن نیست");
+        const snapshot = await response.json();
+        if (!sourceRef && recordingSettingsCamera.options.length === 1) {
+          for (const camera of snapshot.cameras || []) {
+            const option = document.createElement("option");
+            option.value = camera.source_ref;
+            option.textContent = camera.source_name;
+            recordingSettingsCamera.appendChild(option);
+          }
+        }
+        renderRecordingSettings(snapshot);
+      }
+
+      recordingSettingsCamera.addEventListener("change", () => {
+        recordingSettingsStatus.textContent = "";
+        loadRecordingSettings(recordingSettingsCamera.value).catch((error) => recordingSettingsStatus.textContent = error.message);
+      });
+
+      recordingSettingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const sourceRef = recordingSettingsCamera.value;
+        const suffix = sourceRef ? `/cameras/${encodeURIComponent(sourceRef)}` : "";
+        const response = await fetch(`/api/v1/recording-settings${suffix}`, {
+          method: "PATCH", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({continuous_enabled: recordingContinuous.checked, quality_preset: recordingQuality.value,
+            segment_seconds: Number(recordingSegment.value), retention_days: Number(recordingRetention.value)}),
+        });
+        if (response.status === 403) recordingSettingsWritable = false;
+        if (!response.ok) throw new Error("ذخیره تنظیمات ویدئو انجام نشد");
+        renderRecordingSettings(await response.json());
+        recordingSettingsStatus.textContent = "تنظیمات ذخیره شد و از قطعه بعدی اعمال می‌شود";
+      });
+
+      recordingSettingsReset.addEventListener("click", async () => {
+        const sourceRef = recordingSettingsCamera.value;
+        const response = await fetch(sourceRef ? `/api/v1/recording-settings/cameras/${encodeURIComponent(sourceRef)}` : "/api/v1/recording-settings/reset", {
+          method: sourceRef ? "DELETE" : "POST",
+        });
+        if (!response.ok) throw new Error("بازنشانی تنظیمات ویدئو انجام نشد");
+        renderRecordingSettings(await response.json());
+        recordingSettingsStatus.textContent = "تنظیمات بازنشانی شد";
+      });
+
       document.addEventListener("fullscreenchange", () => {
         const fullscreenElement = document.fullscreenElement;
         const nextFullscreenSourceId = fullscreenElement?.classList.contains("camera-card") ? fullscreenElement.dataset.sourceId : null;
@@ -1747,6 +1849,7 @@
       if (location.hash === "#live-branch") setLiveBranchView(true);
 
       synchronizeDashboard();
+      loadRecordingSettings().catch((error) => recordingSettingsStatus.textContent = error.message);
       updateStreamModeButton();
       window.setInterval(synchronizeDashboard, 2000);
       window.setInterval(updateFrameMetrics, 500);

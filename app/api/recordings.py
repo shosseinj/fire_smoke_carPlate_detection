@@ -75,6 +75,12 @@ class RecordingResponse(BaseModel):
     is_partial: bool
     size_bytes: int | None
     attempt_count: int
+    quality_preset: str
+    retention_days: int
+    output_width: int | None
+    output_height: int | None
+    output_fps: int | None
+    output_bitrate_bps: int | None
     object_expires_at_utc: datetime | None
     created_at_utc: datetime | None
     updated_at_utc: datetime | None
@@ -163,12 +169,18 @@ def create_recording(
     if coordinator.spool.status().high_water_exceeded:
         raise HTTPException(status_code=507, detail="فضای موقت ضبط از حد مجاز عبور کرده است")
     try:
+        policy = runtime.recording_settings.effective(source.source_uri)
+        output = policy.to_dict()["output"]
         job, created = store.create(
             source_uri=source.source_uri,
             scheduled_start_utc=payload.scheduled_start_utc,
             scheduled_end_utc=payload.scheduled_end_utc,
             created_by=current_user.id,
             idempotency_key=idempotency_key,
+            quality_preset=policy.quality_preset,
+            retention_days=policy.retention_days,
+            output_width=output["width"], output_height=output["height"],
+            output_fps=output["fps"], output_bitrate_bps=output["bitrate_bps"],
         )
     except RecordingOverlapError as exc:
         raise HTTPException(status_code=409, detail="این بازه با ضبط فعال دیگری برای همین منبع هم‌پوشانی دارد") from exc

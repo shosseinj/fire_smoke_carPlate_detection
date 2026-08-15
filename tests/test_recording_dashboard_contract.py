@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -10,44 +9,37 @@ def _dashboard() -> str:
     return (ROOT / "app" / "web" / "dashboard.html").read_text(encoding="utf-8")
 
 
-def test_dashboard_exposes_persian_scheduled_recording_controls() -> None:
+def test_dashboard_exposes_persian_recording_settings_controls() -> None:
     html = _dashboard()
     assert '<html lang="fa" dir="rtl">' in html
-    assert "ضبط زمان‌بندی‌شده" in html
-    assert 'list="recordingCameraOptions"' in html
-    assert html.count('type="datetime-local"') == 2
-    assert "نام دوربین را جست‌وجو کنید" in html
-    assert "زمان‌بندی ضبط" in html
-    assert "مدت:" in html
-    assert 'return detected || "Asia/Tehran"' in html
+    assert "تنظیمات ذخیره ویدئو" in html
+    assert "ذخیره پیوسته فعال باشد" in html
+    assert 'id="recordingQuality"' in html
+    assert 'id="recordingSegment"' in html
+    assert 'id="recordingRetention"' in html
 
 
-def test_recording_client_uses_opaque_source_ref_and_secure_routes() -> None:
+def test_recording_settings_client_uses_opaque_source_references() -> None:
     html = _dashboard()
-    recording_start = html.index("const recordingStatusLabels")
-    recording_end = html.index("document.addEventListener(\"fullscreenchange\"")
-    recording_code = html[recording_start:recording_end]
-    submit_start = recording_code.index('recordingForm.addEventListener("submit"')
-    submit_code = recording_code[submit_start:]
-    assert 'fetch("/api/v1/recordings/sources"' in recording_code
-    assert "source_ref: source.source_ref" in submit_code
-    assert "source_uri: source.source_uri" not in submit_code
-    assert "source_display" in recording_code
-    assert "localDateTimeToIso" in html
-    assert "new Date(instant).toISOString()" in html
-    assert 'fetch("/api/v1/recordings"' in html
-    assert '/api/v1/recordings/${encodeURIComponent(jobId)}`' in html
-    assert '/api/v1/recordings/${encodeURIComponent(jobId)}/cancel' in html
-    assert '/api/v1/recordings/${encodeURIComponent(jobId)}/download' in html
-    assert "window.setInterval(pollRecordingJobs, 3000)" in html
+    assert "camera.source_ref" in html
+    assert "camera.source_uri" not in html
+    assert "encodeURIComponent(sourceRef)" in html
+    assert "/api/v1/recording-settings" in html
 
 
-def test_recording_controls_do_not_acquire_live_transport() -> None:
+def test_recording_settings_do_not_acquire_live_transport() -> None:
     html = _dashboard()
-    recording_start = html.index("const recordingStatusLabels")
-    recording_end = html.index("function showLiveBranchError")
-    recording_code = html[recording_start:recording_end]
-    assert "acquireLiveBranch" not in recording_code
-    assert "RTCPeerConnection" not in recording_code
-    assert "whep" not in recording_code.lower()
-    assert 'fetch("/api/v1/sources/preview-config"' in html
+    start = html.index("function renderRecordingSettings")
+    end = html.index('document.addEventListener("fullscreenchange"')
+    code = html[start:end]
+    assert "acquireLiveBranch" not in code
+    assert "RTCPeerConnection" not in code
+    assert "whep" not in code.lower()
+
+
+def test_dashboard_hides_settings_without_read_permission() -> None:
+    html = _dashboard()
+    assert 'id="recordingSettingsPanel"' in html
+    assert 'id="recordingContinuous"' in html
+    assert "response.status === 401 || response.status === 403" in html
+    assert "recordingSettingsPanel.hidden = true" in html

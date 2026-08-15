@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.api.recordings import RecordingCreate
 from app.core.recording_source_ref import recording_source_ref
 from app.core.recording_job_store import MAX_DURATION
-from app.database import ALEMBIC_HEAD_REVISION, recording_jobs
+from app.database import ALEMBIC_HEAD_REVISION, recording_jobs, recording_settings, recording_camera_settings
 
 
 def test_recording_schema_is_timezone_aware_and_duration_bounded() -> None:
@@ -26,7 +26,7 @@ def test_recording_schema_is_timezone_aware_and_duration_bounded() -> None:
 
 
 def test_database_metadata_exposes_authoritative_recording_table() -> None:
-    assert ALEMBIC_HEAD_REVISION == "20260810_0053"
+    assert ALEMBIC_HEAD_REVISION == "20260815_0060"
     assert recording_jobs.c.scheduled_start_utc.type.timezone is True
     assert recording_jobs.c.scheduled_end_utc.type.timezone is True
     assert {constraint.name for constraint in recording_jobs.constraints} >= {
@@ -35,3 +35,5 @@ def test_database_metadata_exposes_authoritative_recording_table() -> None:
         "ck_recording_jobs_status",
         "uq_recording_jobs_actor_idempotency",
     }
+    assert recording_settings.c.continuous_enabled.default is None
+    assert recording_camera_settings.c.source_uri.primary_key

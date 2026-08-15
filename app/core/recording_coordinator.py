@@ -188,7 +188,16 @@ class RecordingCoordinator:
         if job.status == "finalizing":
             job = self.store.transition(job.id, "uploading")
         path = Path(job.spool_path)
-        stored = self.storage.upload_finalized(job.id, path)
+        stored = self.storage.upload_finalized(
+            job.id, path, retention_days=job.retention_days,
+            metadata={
+                "quality-preset": job.quality_preset,
+                "output-width": str(job.output_width or "source"),
+                "output-height": str(job.output_height or "source"),
+                "output-fps": str(job.output_fps or "source"),
+                "output-bitrate-bps": str(job.output_bitrate_bps or ""),
+            },
+        )
         self.scheduler.accept_upload_result(job.id, UploadResult(stored.object_key, stored.size))
         path.unlink(missing_ok=True)
 

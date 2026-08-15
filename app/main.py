@@ -49,6 +49,7 @@ from app.api.static_videos import router as static_videos_router
 from app.api.live_branch import router as live_branch_router
 from app.api.broadcast_gpu import router as broadcast_gpu_router
 from app.api.recordings import router as recordings_router
+from app.api.recording_settings import router as recording_settings_router
 
 from app.config import settings
 from app.core.detection_media import RestrictedMediaStaticFiles
@@ -158,6 +159,7 @@ app.include_router(broadcast_router)
 app.include_router(live_branch_router)
 app.include_router(broadcast_gpu_router)
 app.include_router(recordings_router)
+app.include_router(recording_settings_router)
 
 app.include_router(plate_logs_router)
 app.include_router(car_plates_router)
@@ -197,6 +199,7 @@ _PATH_APPLICATIONS = (
     ("/api/v1/car-plates", "car_plates"),
     ("/api/v1/plate-logs", "plate_logs"),
     ("/api/v1/plate-settings", "plate_settings"),
+    ("/api/v1/recording-settings", "recording_settings"),
     ("/api/v1/recordings", "recordings"),
     ("/api/v1/live-branch", "live_branch"),
     ("/api/v1/developer", "developer"),
