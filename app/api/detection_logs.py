@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import io
+import re
 import threading
 import queue
 from typing import Any, Callable
@@ -33,6 +34,7 @@ from app.core.jalali_utils import (
     jalali_month_utc_range,
     local_date_range_bounds_utc,
     local_day_utc_range,
+    normalize_digits,
     parse_jalali_date,
     parse_jalali_datetime,
 )
@@ -484,11 +486,103 @@ def _delete_media_files(record: DetectionLogRecord) -> None:
     storage.delete_many(unreferenced)
 
 
+def _parse_jalali_time(s: str) -> tuple[int, int, int]:
+    """Parse a Jalali clock string (HH:MM[:SS]) with Persian/Arabic digits."""
+    s = normalize_digits(s.strip())
+    match = re.fullmatch(r"(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?", s)
+    if not match:
+        raise ValueError(f"فرمت ساعت شمسی نامعتبر: {s!r}")
+    hour, minute = int(match.group(1)), int(match.group(2))
+    second = int(match.group(3)) if match.group(3) else 0
+    if hour > 23 or minute > 59 or second > 59:
+        raise ValueError(f"ساعت شمسی خارج از محدوده: {s!r}")
+    return hour, minute, second
+
+
+def _combine_date_time_to_utc_iso(
+    date_jalali: str, time_jalali: str
+) -> str:
+    """Combine a Jalali date and clock string into a UTC ISO timestamp."""
+    from_g = parse_jalali_date(date_jalali)
+    from_h, from_m, from_s = _parse_jalali_time(time_jalali)
+    tehran = _get_tehran_tz()
+    local_dt = datetime(
+        from_g.year, from_g.month, from_g.day, from_h, from_m, from_s, tzinfo=tehran
+    )
+    return local_dt.astimezone(timezone.utc).isoformat()
+
+
 def _period_to_utc_range(
     period: str,
     from_date_jalali: str | None,
     to_date_jalali: str | None,
+    from_datetime_jalali: str | None = None,
+    to_datetime_jalali: str | None = None,
+    from_time_jalali: str | None = None,
+    to_time_jalali: str | None = None,
 ) -> tuple[str | None, str | None]:
+    # Explicit Jalali datetime boundaries take precedence over time-only,
+    # date-only boundaries and every preset, including a client-supplied or
+    # default period value.
+    if isinstance(from_datetime_jalali, str) or isinstance(to_datetime_jalali, str):
+        if not from_datetime_jalali or not to_datetime_jalali:
+            raise HTTPException(
+                400,
+                "برای بازه ساعت، from_datetime_jalali و to_datetime_jalali الزامی هستند",
+            )
+        try:
+            from_dt = parse_jalali_datetime(from_datetime_jalali)
+            to_dt = parse_jalali_datetime(to_datetime_jalali)
+        except ValueError:
+            # Fall back to time-only values combined with explicit dates.
+            if not from_date_jalali or not to_date_jalali:
+                raise HTTPException(
+                    400,
+                    "برای فیلتر ساعت، from_date_jalali و to_date_jalali الزامی هستند",
+                )
+            try:
+                utc_start = _combine_date_time_to_utc_iso(
+                    from_date_jalali, from_datetime_jalali
+                )
+                utc_end = _combine_date_time_to_utc_iso(
+                    to_date_jalali, to_datetime_jalali
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            if utc_start > utc_end:
+                raise HTTPException(400, "زمان شروع نباید بعد از زمان پایان باشد")
+            return utc_start, utc_end
+        if from_dt > to_dt:
+            raise HTTPException(400, "زمان شروع نباید بعد از زمان پایان باشد")
+        return (
+            from_dt.astimezone(timezone.utc).isoformat(),
+            to_dt.astimezone(timezone.utc).isoformat(),
+        )
+    # Time-only Jalali boundaries combine with the explicit date boundaries
+    # to form hour-level windows (from_date+from_time .. to_date+to_time).
+    if isinstance(from_time_jalali, str) or isinstance(to_time_jalali, str):
+        if not from_date_jalali or not to_date_jalali:
+            raise HTTPException(
+                400,
+                "برای فیلتر ساعت، from_date_jalali و to_date_jalali الزامی هستند",
+            )
+        if not from_time_jalali or not to_time_jalali:
+            raise HTTPException(
+                400,
+                "برای فیلتر ساعت، from_time_jalali و to_time_jalali الزامی هستند",
+            )
+        try:
+            utc_start = _combine_date_time_to_utc_iso(
+                from_date_jalali, from_time_jalali
+            )
+            utc_end = _combine_date_time_to_utc_iso(
+                to_date_jalali, to_time_jalali
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if utc_start > utc_end:
+            raise HTTPException(400, "زمان شروع نباید بعد از زمان پایان باشد")
+        return utc_start, utc_end
     # Explicit Jalali boundaries take precedence over every preset, including
     # a client-supplied or default period value.
     if from_date_jalali or to_date_jalali:
@@ -651,6 +745,10 @@ def filter_logs(
     period: str = Query("all"),
     from_date_jalali: str | None = Query(None),
     to_date_jalali: str | None = Query(None),
+    from_datetime_jalali: str | None = Query(None),
+    to_datetime_jalali: str | None = Query(None),
+    from_time_jalali: str | None = Query(None),
+    to_time_jalali: str | None = Query(None),
     personnel_id: int | None = Query(None),
     national_code: str | None = Query(None),
     room_id: int | None = Query(None),
@@ -667,7 +765,15 @@ def filter_logs(
     limit: int = Query(200, ge=1, le=1000),
     _: dict = Depends(require_permission("application.read")),
 ) -> list[dict]:
-    from_date_utc, to_date_utc = _period_to_utc_range(period, from_date_jalali, to_date_jalali)
+    from_date_utc, to_date_utc = _period_to_utc_range(
+        period,
+        from_date_jalali,
+        to_date_jalali,
+        from_datetime_jalali,
+        to_datetime_jalali,
+        from_time_jalali,
+        to_time_jalali,
+    )
 
     store = get_detection_log_store()
     records, _ = store.list_filter(

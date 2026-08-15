@@ -287,3 +287,169 @@ def test_filter_rejects_reversed_implicit_custom_period() -> None:
         api._period_to_utc_range("all", "1405-01-19", "1405-01-18")
 
     assert exc_info.value.status_code == 400
+
+
+def test_filter_jalali_datetime_range_converts_to_utc_hour_precision() -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        "all",
+        None,
+        None,
+        "1405-01-18 08:30:00",
+        "1405-01-18 10:15:00",
+    )
+
+    assert datetime.fromisoformat(utc_start) == datetime(
+        2026, 4, 7, 5, 0, tzinfo=timezone.utc
+    )
+    assert datetime.fromisoformat(utc_end) == datetime(
+        2026, 4, 7, 6, 45, tzinfo=timezone.utc
+    )
+
+
+def test_filter_datetime_jalali_overrides_date_and_period() -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        "today",
+        "1405-01-18",
+        "1405-01-19",
+        "1405-01-18 08:30:00",
+        "1405-01-18 10:15:00",
+    )
+
+    assert utc_start == datetime(2026, 4, 7, 5, 0, tzinfo=timezone.utc).isoformat()
+    assert utc_end == datetime(2026, 4, 7, 6, 45, tzinfo=timezone.utc).isoformat()
+
+
+@pytest.mark.parametrize(
+    "from_dt,to_dt",
+    [
+        ("1405-01-18 08:30:00", None),
+        (None, "1405-01-18 10:15:00"),
+    ],
+)
+def test_filter_datetime_requires_both_boundaries(from_dt, to_dt) -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("all", None, None, from_dt, to_dt)
+
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_rejects_invalid_jalali_datetime() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("all", None, None, "not-a-datetime", "1405-01-18 10:15:00")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_rejects_reversed_datetime_range() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range(
+            "all",
+            None,
+            None,
+            "1405-01-18 10:15:00",
+            "1405-01-18 08:30:00",
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_store_receives_datetime_range_boundaries(monkeypatch) -> None:
+    calls = []
+
+    class _Store:
+        def list_filter(self, **kwargs):
+            calls.append(kwargs)
+            return [], 0
+
+    monkeypatch.setattr(api, "get_detection_log_store", lambda: _Store())
+    monkeypatch.setattr(api, "_filter_response_enrichment", lambda records: {})
+
+    api.filter_logs(
+        period="all",
+        from_date_jalali=None,
+        to_date_jalali=None,
+        from_datetime_jalali="1405-01-18 08:30:00",
+        to_datetime_jalali="1405-01-18 10:15:00",
+        personnel_id=None,
+        national_code=None,
+        room_id=None,
+        camera_id=None,
+        section_id=None,
+        building_id=None,
+        access_granted=None,
+        counts_for_attendance=None,
+        log_type=None,
+        min_confidence=None,
+        max_confidence=None,
+        include_thumbnails=False,
+        skip=0,
+        limit=200,
+        _={},
+    )
+
+    assert calls[0]["from_date_utc"] == datetime(
+        2026, 4, 7, 5, 0, tzinfo=timezone.utc
+    ).isoformat()
+    assert calls[0]["to_date_utc"] == datetime(
+        2026, 4, 7, 6, 45, tzinfo=timezone.utc
+    ).isoformat()
+
+
+def test_filter_time_only_combines_with_date_range() -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        "all",
+        "1405-01-18",
+        "1405-01-18",
+        None,
+        None,
+        "08:23:00",
+        "08:25:00",
+    )
+
+    assert datetime.fromisoformat(utc_start) == datetime(
+        2026, 4, 7, 4, 53, tzinfo=timezone.utc
+    )
+    assert datetime.fromisoformat(utc_end) == datetime(
+        2026, 4, 7, 4, 55, tzinfo=timezone.utc
+    )
+
+
+def test_filter_time_only_accepts_persian_digits_and_no_seconds() -> None:
+    utc_start, utc_end = api._period_to_utc_range(
+        "all",
+        "۱۴۰۵-۰۱-۱۸",
+        "۱۴۰۵-۰۱-۱۸",
+        None,
+        None,
+        "۰۸:۲۳",
+        "۰۸:۲۵",
+    )
+
+    assert utc_start == datetime(2026, 4, 7, 4, 53, tzinfo=timezone.utc).isoformat()
+    assert utc_end == datetime(2026, 4, 7, 4, 55, tzinfo=timezone.utc).isoformat()
+
+
+def test_filter_time_only_requires_dates_and_both_times() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range("all", None, None, None, None, "08:23:00", "08:25:00")
+    assert exc_info.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range(
+            "all", "1405-01-18", "1405-01-18", None, None, "08:23:00", None
+        )
+    assert exc_info.value.status_code == 400
+
+
+def test_filter_rejects_invalid_or_reversed_time_only_range() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range(
+            "all", "1405-01-18", "1405-01-18", None, None, "not-a-time", "08:25:00"
+        )
+    assert exc_info.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc_info:
+        api._period_to_utc_range(
+            "all", "1405-01-18", "1405-01-18", None, None, "08:25:00", "08:23:00"
+        )
+    assert exc_info.value.status_code == 400
