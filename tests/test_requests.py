@@ -22,8 +22,8 @@ def stores(
 ) -> tuple[RequestStore, PersonnelStore, Path]:
     with postgres_database.connection() as connection:
         connection.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            ("request-reviewer", "unused-in-store-tests", "admin"),
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            ("request-reviewer", "unused-in-store-tests"),
         )
     return (
         RequestStore(postgres_database),

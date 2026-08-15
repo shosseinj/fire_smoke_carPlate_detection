@@ -4,6 +4,7 @@ import asyncio
 import json
 import queue
 import struct
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from app.core.broadcast import (
 )
 from app.runtime import Runtime
 from app.core.recent_detection_service import build_recent_detections_message
+from app.core.websocket_auth import authenticate_websocket, websocket_access_still_valid
 
 router = APIRouter(tags=["annotated-broadcast"])
 DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "web" / "dashboard.html"
@@ -66,8 +68,14 @@ async def annotated_broadcast_websocket(
     wall: bool = False,
     metadata_only: bool = False,
     fullscreen_source: str | None = None,
+    ticket: str | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> None:
+    access = await authenticate_websocket(
+        websocket, "broadcast", ticket, runtime=runtime, fullscreen_source=fullscreen_source
+    )
+    if access is None:
+        return
     await websocket.accept()
     if not runtime.broadcast.enabled:
         await websocket.close(code=1013, reason="پخش برای رابط کاربری غیرفعال است")
@@ -84,8 +92,14 @@ async def annotated_broadcast_websocket(
         asyncio.to_thread(build_recent_detections_message, runtime)
     )
     recent_sent = False
+    next_access_check = time.monotonic() + 30.0
     try:
         while runtime.broadcast.enabled:
+            if time.monotonic() >= next_access_check:
+                if not websocket_access_still_valid(access):
+                    await websocket.close(code=1008, reason="دسترسی شما به این جریان لغو شده است")
+                    return
+                next_access_check = time.monotonic() + 30.0
             if not recent_sent and recent_task.done():
                 recent_sent = True
                 try:
@@ -155,9 +169,15 @@ async def source_video_wall_websocket(
     wall: bool = True,
     fullscreen_source: str | None = None,
     batch: bool = False,
+    ticket: str | None = None,
     runtime: Runtime = Depends(get_runtime),
 ) -> None:
     """Stream source frames without AI overlays or result dependencies."""
+    access = await authenticate_websocket(
+        websocket, "video_wall", ticket, runtime=runtime, fullscreen_source=fullscreen_source
+    )
+    if access is None:
+        return
     await websocket.accept()
     if not runtime.broadcast.enabled:
         await websocket.close(code=1013, reason="دیوار ویدیویی غیرفعال است")
@@ -170,8 +190,14 @@ async def source_video_wall_websocket(
         wall=wall,
         fullscreen_source=fullscreen_source,
     )
+    next_access_check = time.monotonic() + 30.0
     try:
         while runtime.broadcast.enabled:
+            if time.monotonic() >= next_access_check:
+                if not websocket_access_still_valid(access):
+                    await websocket.close(code=1008, reason="دسترسی شما به این جریان لغو شده است")
+                    return
+                next_access_check = time.monotonic() + 30.0
             try:
                 frame = await asyncio.to_thread(target.get, True, 20.0)
             except queue.Empty:

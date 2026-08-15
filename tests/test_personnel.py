@@ -77,7 +77,7 @@ def _operator_token(client: TestClient) -> str:
     """Helper: create an operator user and return token."""
     admin_token = _admin_token(client)
     client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json={"username": "operator1", "password": "operator123", "role": "operator"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -92,7 +92,7 @@ def _viewer_token(client: TestClient) -> str:
     """Helper: create a viewer user and return token."""
     admin_token = _admin_token(client)
     client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json={"username": "viewer1", "password": "viewer1234", "role": "viewer"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -313,7 +313,7 @@ def test_personnel_shifts_endpoint_returns_complete_shift_info(tmp_path: Path) -
         person_id = create_resp.json()["id"]
 
         client.post(
-            "/api/v1/auth/create-user",
+            "/api/v1/auth/users",
             json={
                 "username": "shiftsop",
                 "password": "ShiftOp1!",

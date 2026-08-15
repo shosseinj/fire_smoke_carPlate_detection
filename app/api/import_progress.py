@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 
-from app.core.auth import get_current_user, normalize_role, require_role
+from app.core.auth import effective_permissions, get_current_user
 from app.core.auth_store import UserRecord
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.runtime import Runtime
@@ -104,7 +104,8 @@ def get_import_progress(
     record = runtime.import_progress.get(progress_id)
     if record is None:
         raise HTTPException(status_code=404, detail="رکورد پیشرفت ورود اطلاعات یافت نشد")
-    if record.created_by != current_user.id and normalize_role(current_user.role) not in ("admin", "superadmin"):
+    permissions = effective_permissions(current_user)
+    if record.created_by != current_user.id and not {"application.manage", "*"} & permissions:
         raise HTTPException(status_code=403, detail="شما فقط می‌توانید رکوردهای خود را مشاهده کنید")
     return record.to_dict()
 
@@ -118,6 +119,7 @@ def delete_import_progress(
     record = runtime.import_progress.get(progress_id)
     if record is None:
         raise HTTPException(status_code=404, detail="رکورد پیشرفت ورود اطلاعات یافت نشد")
-    if record.created_by != current_user.id and normalize_role(current_user.role) not in ("admin", "superadmin"):
+    permissions = effective_permissions(current_user)
+    if record.created_by != current_user.id and not {"application.manage", "*"} & permissions:
         raise HTTPException(status_code=403, detail="شما فقط می‌توانید رکوردهای خود را حذف کنید")
     runtime.import_progress.delete(progress_id)

@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260810_0053"
+ALEMBIC_HEAD_REVISION = "20260815_0058"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -57,14 +57,60 @@ users = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("username", Text, nullable=False, unique=True),
     Column("password_hash", Text, nullable=False),
-    Column("role", Text, nullable=False, server_default="user"),
     Column("is_active", Integer, nullable=False, server_default="1"),
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     Column("email", Text), Column("full_name", Text),
     Column("last_login_utc", UTC_TS), Column("login_attempts", Integer, nullable=False, server_default="0"),
     Column("locked_until_utc", UTC_TS),
-    CheckConstraint("role IN ('superadmin', 'admin', 'user')", name="ck_users_role"),
+    Column("auth_version", Integer, nullable=False, server_default="0"),
 )
+
+user_permission_grants = Table(
+    "user_permission_grants", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("application", String(100), nullable=False),
+    Column("action", String(50), nullable=False),
+    Column("scope_type", String(20), nullable=False),
+    Column("scope_id", Integer, nullable=False, server_default="0"),
+    Column("assigned_by", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    CheckConstraint(
+        "(scope_type = 'global' AND scope_id = 0) OR "
+        "(scope_type IN ('building', 'section', 'camera') AND scope_id > 0)",
+        name="ck_user_permission_grants_target",
+    ),
+    UniqueConstraint(
+        "user_id", "application", "action", "scope_type", "scope_id",
+        name="uq_user_permission_grant",
+    ),
+)
+Index("idx_user_permission_grants_lookup", user_permission_grants.c.user_id, user_permission_grants.c.application, user_permission_grants.c.action)
+
+websocket_tickets = Table(
+    "websocket_tickets", metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("application", String(100), nullable=False),
+    Column("scope_type", String(20), nullable=False),
+    Column("scope_id", Integer, nullable=False, server_default="0"),
+    Column("expires_at_utc", UTC_TS, nullable=False),
+    Column("consumed_at_utc", UTC_TS),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+)
+Index("idx_websocket_tickets_expiry", websocket_tickets.c.expires_at_utc)
+
+auth_audit_log = Table(
+    "auth_audit_log", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("actor_user_id", Integer, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("action", String(100), nullable=False),
+    Column("target_type", String(50), nullable=False),
+    Column("target_id", String(150), nullable=False),
+    Column("details", Text),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+)
+Index("idx_auth_audit_created", auth_audit_log.c.created_at_utc)
 
 recording_jobs = Table(
     "recording_jobs", metadata,

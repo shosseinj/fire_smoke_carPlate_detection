@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
 from app.api.fire_logs import (
     FireLogResponse,
@@ -77,7 +77,7 @@ def get_fire_smoke_settings(
 @router.put("/fire-smoke/settings", summary="بروزرسانی تنظیمات تشخیص حریق و دود")
 def update_fire_smoke_settings(
     payload: FireSmokeSettingsUpdate,
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:

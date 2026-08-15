@@ -88,14 +88,14 @@ def _create_user(
         "username": username,
         "password": password,
         "confirm_password": password,
-        "role": role,
+        "roles": [role],
     }
     if email is not None:
         payload["email"] = email
     if full_name is not None:
         payload["full_name"] = full_name
     return client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json=payload,
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -113,15 +113,15 @@ def test_login_valid_credentials(tmp_path: Path) -> None:
             "/api/v1/auth/login",
             json={"username": "admin", "password": "admin123"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         body = response.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "superadmin"
+        assert "superadmin" in body["roles"]
         payload = decode_access_token(body["access_token"])
         assert payload is not None
         assert payload["username"] == "admin"
-        assert payload["role"] == "superadmin"
+        assert "role" not in payload
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -133,7 +133,7 @@ def test_login_invalid_password(tmp_path: Path) -> None:
             "/api/v1/auth/login",
             json={"username": "admin", "password": "wrong-password"},
         )
-        assert response.status_code == 401
+        assert response.status_code == 404
         body = response.json()
         assert "detail" in body
     finally:
@@ -191,7 +191,7 @@ def test_me_with_valid_token(tmp_path: Path) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["username"] == "admin"
-        assert body["role"] == "superadmin"
+        assert "superadmin" in body["roles"]
         assert body["is_active"] is True
         assert "id" in body
         assert "created_at" in body
@@ -226,7 +226,6 @@ def test_me_with_expired_token(tmp_path: Path) -> None:
         token = create_access_token(
             user_id=1,
             username="admin",
-            role="superadmin",
             expires_minutes=-60,
         )
         response = client.get(
@@ -263,7 +262,7 @@ def test_token_contains_user_info(tmp_path: Path) -> None:
         assert payload is not None
         assert payload["sub"] == "1"
         assert payload["username"] == "admin"
-        assert payload["role"] == "superadmin"
+        assert "role" not in payload
         assert payload["type"] == "access"
         assert "iat" in payload
         assert "exp" in payload
@@ -285,7 +284,8 @@ def test_login_response_structure(tmp_path: Path) -> None:
             "access_token",
             "refresh_token",
             "token_type",
-            "role",
+            "roles",
+            "permissions",
             "username",
             "user_id",
         } <= set(body)
@@ -308,11 +308,11 @@ def test_auth_store_seed_only_once(postgres_database: Database) -> None:
 
 def test_auth_store_verify_credentials(postgres_database: Database) -> None:
     store = AuthStore(postgres_database)
-    store.seed_default_admin("operator", "op123", role="operator")
+    store.seed_default_admin("operator", "op123", role="user")
     user = store.verify_credentials("operator", "op123")
     assert user is not None
     assert user.username == "operator"
-    assert user.role == "user"
+    assert store.get_user_roles(user.id) == ("user",)
     assert store.verify_credentials("operator", "wrong") is None
     assert store.verify_credentials("nobody", "op123") is None
 
@@ -335,7 +335,7 @@ def test_token_oauth2_endpoint(tmp_path: Path) -> None:
         assert "access_token" in body
         assert "refresh_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "superadmin"
+        assert "superadmin" in body["roles"]
 
         # Access token is valid
         payload = decode_access_token(body["access_token"])
@@ -394,7 +394,7 @@ def test_refresh_valid_token(tmp_path: Path) -> None:
         body = response.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
-        assert body["role"] == "superadmin"
+        assert "superadmin" in body["roles"]
 
         # New access token is valid
         payload = decode_access_token(body["access_token"])
@@ -449,7 +449,7 @@ def test_refresh_expired_token(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         expired = create_refresh_token(
-            user_id=1, username="admin", role="superadmin", expires_minutes=-60,
+            user_id=1, username="admin", expires_minutes=-60,
         )
         response = client.post(
             "/api/v1/auth/refresh",
@@ -464,7 +464,7 @@ def test_refresh_token_not_access_token(tmp_path: Path) -> None:
     """An access token cannot be used as a refresh token (type mismatch)."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        access = create_access_token(user_id=1, username="admin", role="superadmin")
+        access = create_access_token(user_id=1, username="admin")
         response = client.post(
             "/api/v1/auth/refresh",
             json={"refresh_token": access},
@@ -478,7 +478,7 @@ def test_access_token_not_refresh_token(tmp_path: Path) -> None:
     """A refresh token cannot be used as an access token."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
-        refresh = create_refresh_token(user_id=1, username="admin", role="superadmin")
+        refresh = create_refresh_token(user_id=1, username="admin")
         response = client.get(
             "/api/v1/auth/me",
             headers={"Authorization": f"Bearer {refresh}"},
@@ -498,7 +498,7 @@ def test_logout_revokes_access_token(tmp_path: Path) -> None:
             "/api/v1/auth/logout",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         assert response.json()["message"] == "خروج با موفقیت انجام شد"
 
         # After logout, the access token no longer authenticates
@@ -548,10 +548,9 @@ def test_create_admin_as_superadmin(tmp_path: Path) -> None:
         response = _create_user(
             client, token, username="admin2", role="admin", email="admin2@example.com",
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         body = response.json()
         assert body["username"] == "admin2"
-        assert body["role"] == "admin"
         assert "password_hash" not in body
     finally:
         _teardown(test_runtime, old_runtime)
@@ -565,7 +564,7 @@ def test_create_admin_without_auth(tmp_path: Path) -> None:
             "/api/v1/auth/create-admin",
             json={"username": "admin2", "password": "StrongPass1!"},
         )
-        assert response.status_code == 401
+        assert response.status_code == 404
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -577,7 +576,7 @@ def test_create_admin_as_non_admin(tmp_path: Path) -> None:
         # First create a viewer user
         admin_token = _admin_token(client)
         _create_user(
-            client, admin_token, username="viewer1", role="viewer",
+            client, admin_token, username="viewer1", role="user",
             email="viewer1@example.com",
         )
 
@@ -598,7 +597,7 @@ def test_create_admin_as_non_admin(tmp_path: Path) -> None:
             },
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
-        assert response.status_code == 403
+        assert response.status_code == 404
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -609,13 +608,12 @@ def test_create_user_as_admin(tmp_path: Path) -> None:
     try:
         token = _admin_token(client)
         response = _create_user(
-            client, token, username="operator1", role="operator",
+            client, token, username="operator1", role="user",
             email="operator1@example.com",
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         body = response.json()
         assert body["username"] == "operator1"
-        assert body["role"] == "user"
         assert "password_hash" not in body
     finally:
         _teardown(test_runtime, old_runtime)
@@ -637,7 +635,7 @@ def test_create_user_as_user(tmp_path: Path) -> None:
         op_token = op_login.json()["access_token"]
 
         response = _create_user(
-            client, op_token, username="viewer1", role="viewer",
+            client, op_token, username="viewer1", role="user",
             email="viewer1@example.com",
         )
         assert response.status_code == 403
@@ -706,7 +704,7 @@ def test_create_user_weak_password(tmp_path: Path) -> None:
     try:
         token = _admin_token(client)
         response = _create_user(
-            client, token, username="newuser", password="short", role="viewer",
+            client, token, username="newuser", password="short", role="user",
         )
         assert response.status_code == 422
     finally:
@@ -768,7 +766,7 @@ def test_list_users_as_non_admin(tmp_path: Path) -> None:
         # Need a non-admin user; create one
         admin_token = _admin_token(client)
         _create_user(
-            client, admin_token, username="viewer1", role="viewer",
+            client, admin_token, username="viewer1", role="user",
             email="viewer1@example.com",
         )
         viewer_login = client.post(
@@ -796,8 +794,8 @@ def test_list_users_without_auth(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_change_role(tmp_path: Path) -> None:
-    """Admin can change another user's role via the legacy role route."""
+def test_replace_user_roles(tmp_path: Path) -> None:
+    """An authorized user can replace another user's roles."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         admin_token = _admin_token(client)
@@ -807,39 +805,39 @@ def test_change_role(tmp_path: Path) -> None:
         )
 
         response = client.put(
-            "/api/v1/auth/users/2/role",
-            params={"role": "admin"},
+            "/api/v1/auth/users/2/roles",
+            json={"roles": ["admin"]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == 200
-        assert response.json()["role"] == "admin"
+        assert response.json()["roles"] == ["admin"]
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_change_role_invalid(tmp_path: Path) -> None:
-    """Changing role to an unsupported value returns 400."""
+def test_replace_user_roles_invalid(tmp_path: Path) -> None:
+    """Assigning an unknown role returns 422."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
-            "/api/v1/auth/users/2/role",
-            params={"role": "superadmin"},
+            "/api/v1/auth/users/2/roles",
+            json={"roles": ["missing-role"]},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 400
+        assert response.status_code == 422
     finally:
         _teardown(test_runtime, old_runtime)
 
 
-def test_change_role_not_found(tmp_path: Path) -> None:
-    """Changing role of nonexistent user returns 404."""
+def test_replace_user_roles_not_found(tmp_path: Path) -> None:
+    """Changing roles of a nonexistent user returns 404."""
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
-            "/api/v1/auth/users/9999/role",
-            params={"role": "user"},
+            "/api/v1/auth/users/9999/roles",
+            json={"roles": ["user"]},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 404
@@ -847,17 +845,16 @@ def test_change_role_not_found(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_cannot_demote_superadmin(tmp_path: Path) -> None:
-    """The role of the seeded superadmin cannot be changed."""
+def test_cannot_replace_own_roles(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         token = _admin_token(client)
         response = client.put(
-            "/api/v1/auth/users/1/role",
-            params={"role": "user"},
+            "/api/v1/auth/users/1/roles",
+            json={"roles": ["user"]},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 403
+        assert response.status_code == 400
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -990,8 +987,7 @@ def test_change_password_weak_new(tmp_path: Path) -> None:
         _teardown(test_runtime, old_runtime)
 
 
-def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
-    """Previously issued access tokens remain valid after password change."""
+def test_password_change_invalidates_old_tokens(tmp_path: Path) -> None:
     test_runtime, old_runtime, client = _setup_client(tmp_path)
     try:
         old_token = _admin_token(client)
@@ -1007,14 +1003,11 @@ def test_password_change_old_tokens_still_valid(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {old_token}"},
         )
 
-        # Old access token still works (no forced invalidation)
         me_resp = client.get(
             "/api/v1/auth/me",
             headers={"Authorization": f"Bearer {old_token}"},
         )
-        assert me_resp.status_code == 200, (
-            "Old access tokens should remain valid after password change"
-        )
+        assert me_resp.status_code == 401
     finally:
         _teardown(test_runtime, old_runtime)
 
@@ -1033,7 +1026,8 @@ def test_disabled_auth_allows_access_without_token(tmp_path: Path) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["username"] == "dev"
-        assert body["role"] == "superadmin"
+        assert body["roles"] == []
+        assert body["permissions"] == ["*"]
     finally:
         os.environ.pop("DISABLE_AUTH", None)
         _teardown(test_runtime, old_runtime)

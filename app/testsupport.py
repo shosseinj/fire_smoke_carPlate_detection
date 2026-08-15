@@ -119,10 +119,10 @@ def setup_crud_context(tmp_path: Path) -> CrudTestContext:
 
     admin_token = _get_token(client, AUTH_USER, AUTH_PASS)
     operator_token = _create_user_and_get_token(
-        client, admin_token, "operator_crud", "Operator1!", "operator"
+        client, admin_token, "operator_crud", "Operator1!", "user"
     )
     viewer_token = _create_user_and_get_token(
-        client, admin_token, "viewer_crud", "Viewer123!", "viewer"
+        client, admin_token, "viewer_crud", "Viewer123!", "user"
     )
 
     return CrudTestContext(
@@ -155,11 +155,10 @@ def _create_user_and_get_token(
     client: TestClient, admin_token: str, username: str, password: str, role: str
 ) -> str:
     resp = client.post(
-        "/api/v1/auth/create-user",
+        "/api/v1/auth/users",
         json={
             "username": username,
             "password": password,
-            "role": role,
             "email": f"{username}@test.local",
             "confirm_password": password,
         },
@@ -167,6 +166,25 @@ def _create_user_and_get_token(
     )
     if resp.status_code not in (200, 201):
         return _get_token(client, username, password) if resp.status_code == 409 else ""
+    from app.core.access_matrix import ACCESS_DEFINITIONS
+
+    allowed_actions = {
+        "admin": {"read", "create", "edit", "delete", "manage", "system"},
+        "operator": {"read"},
+        "viewer": {"read"},
+    }.get(role, {"read"})
+    grants = [
+        {"application": definition.application, "action": action, "scope_type": "global", "scope_id": 0}
+        for definition in ACCESS_DEFINITIONS
+        for action in definition.actions
+        if action in allowed_actions and "global" in definition.scope_types
+    ]
+    access = client.put(
+        f"/api/v1/auth/users/{resp.json()['user_id']}/access",
+        json={"grants": grants},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert access.status_code == 200, access.text
     return _get_token(client, username, password)
 
 

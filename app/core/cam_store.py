@@ -167,9 +167,15 @@ class CamStore:
         limit: int = 100,
         section_id: int | None = None,
         source_type: str | None = None,
+        allowed_ids: set[int] | None = None,
     ) -> tuple[list[CamRecord], int]:
         clauses: list[str] = []
         params: list[Any] = []
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return [], 0
+            clauses.append("id IN (" + ", ".join("?" for _ in allowed_ids) + ")")
+            params.extend(sorted(allowed_ids))
         if section_id is not None:
             clauses.append("section_id = ?")
             params.append(section_id)

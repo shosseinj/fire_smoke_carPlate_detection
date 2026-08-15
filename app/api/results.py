@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import time
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
 from app.core.types import TaskName
 from app.runtime import Runtime
+from app.core.websocket_auth import authenticate_websocket, websocket_access_still_valid
 
 router = APIRouter(prefix="/api/v1", tags=["results"])
 
@@ -33,13 +35,22 @@ def router_status(runtime: Runtime = Depends(get_runtime)) -> dict:
 
 
 @router.websocket("/results/ws")
-async def result_websocket(websocket: WebSocket) -> None:
+async def result_websocket(websocket: WebSocket, ticket: str | None = None) -> None:
     from app.main import runtime
 
+    access = await authenticate_websocket(websocket, "results", ticket)
+    if access is None:
+        return
     await websocket.accept()
     subscriber_id, target = runtime.results.subscribe()
+    next_access_check = time.monotonic() + 30.0
     try:
         while True:
+            if time.monotonic() >= next_access_check:
+                if not websocket_access_still_valid(access):
+                    await websocket.close(code=1008, reason="دسترسی شما به این جریان لغو شده است")
+                    return
+                next_access_check = time.monotonic() + 30.0
             try:
                 payload = await asyncio.to_thread(target.get, True, 20.0)
             except queue.Empty:

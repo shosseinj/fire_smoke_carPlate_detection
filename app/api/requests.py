@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.auth import require_role
+from app.core.auth import require_permission
 from app.core.request_store import PersonnelRequestRecord, VALID_REQUEST_STATUSES, VALID_REQUEST_TYPES
 
 router = APIRouter(prefix="/api/v1/requests", tags=["Personnel Requests"])
@@ -28,7 +28,7 @@ def list_requests(
     personnel_id: int | None = Query(None),
     request_type: str | None = Query(None),
     status: str | None = Query(None),
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     records, total = store.list(
@@ -48,7 +48,7 @@ def list_requests(
 @router.post("/", status_code=201)
 def create_request(
     body: dict[str, Any],
-    current_user: dict = Depends(require_role("operator")),
+    current_user: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     try:
@@ -67,7 +67,7 @@ def create_request(
 @router.get("/{request_id}")
 def get_request(
     request_id: int,
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
@@ -80,7 +80,7 @@ def get_request(
 def approve_request(
     request_id: int,
     body: dict[str, Any],
-    current_user: dict = Depends(require_role("admin")),
+    current_user: dict = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     store = get_request_store()
     try:
@@ -100,7 +100,7 @@ def approve_request(
 @router.post("/{request_id}/cancel")
 def cancel_request(
     request_id: int,
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     try:
@@ -115,7 +115,7 @@ def cancel_request(
 @router.delete("/{request_id}")
 def delete_request(
     request_id: int,
-    _: dict = Depends(require_role("admin")),
+    _: dict = Depends(require_permission("application.manage")),
 ) -> dict[str, Any]:
     store = get_request_store()
     deleted = store.delete(request_id)
@@ -126,14 +126,14 @@ def delete_request(
 
 @router.get("/types/list")
 def list_request_types(
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     return {"types": sorted(VALID_REQUEST_TYPES)}
 
 
 @router.get("/statuses/list")
 def list_request_statuses(
-    _: dict = Depends(require_role("operator")),
+    _: dict = Depends(require_permission("application.read")),
 ) -> dict[str, Any]:
     return {"statuses": sorted(VALID_REQUEST_STATUSES)}
 

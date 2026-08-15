@@ -531,6 +531,7 @@ class PersonnelStore:
         department_id: int | None = None,
         search: str | None = None,
         employee_type_id: int | None = None,
+        allowed_department_ids: set[int] | None = None,
     ) -> tuple[list[PersonnelRecord], int]:
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -543,6 +544,13 @@ class PersonnelStore:
         if department_id is not None:
             where_clauses.append("p.department_id = ?")
             params.append(department_id)
+        if allowed_department_ids is not None:
+            if not allowed_department_ids:
+                where_clauses.append("1 = 0")
+            else:
+                placeholders = ", ".join("?" for _ in allowed_department_ids)
+                where_clauses.append(f"p.department_id IN ({placeholders})")
+                params.extend(sorted(allowed_department_ids))
         if search is not None:
             where_clauses.append("(p.fname LIKE ? OR p.lname LIKE ? OR p.national_code LIKE ?)")
             pattern = f"%{search}%"

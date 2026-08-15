@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.engine import make_url
 
 from app.api.models import ModelSettingsPatch
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
 from app.core.plate_settings_store import PlateDetectionPolicy
 from app.fire_core.policy import FireSmokePolicyConfig
@@ -177,7 +177,7 @@ def get_general_settings(
 )
 def update_general_settings(
     payload: GeneralSettingsPatch,
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:
@@ -232,7 +232,7 @@ def update_general_settings(
     summary="بازنشانی تنظیمات عمومی به مقادیر پیش‌فرض",
 )
 def reset_general_settings(
-    current_user: UserRecord = Depends(require_role("admin")),
+    current_user: UserRecord = Depends(require_permission("application.manage")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     runtime.source_settings.reset_default()

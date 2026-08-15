@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import uuid
@@ -21,23 +20,6 @@ LOGGER = logging.getLogger("uvicorn.error")
 _bearer_scheme = HTTPBearer(auto_error=False)
 _auth_store: AuthStore | None = None
 
-ROLE_ALIASES = {
-    "superuser": "superadmin",
-    "superadmin": "superadmin",
-    "admin": "admin",
-    "operator": "user",
-    "viewer": "user",
-    "user": "user",
-}
-CANONICAL_ROLES = frozenset({"superadmin", "admin", "user"})
-
-
-def normalize_role(role: str | None) -> str:
-    """Map legacy role vocabulary to the canonical target roles."""
-    normalized = ROLE_ALIASES.get((role or "").strip().lower())
-    return normalized or (role or "").strip().lower()
-
-
 def initialize_auth_store(database: Database, app_settings: Settings = settings) -> AuthStore:
     global _auth_store
     if _auth_store is None or _auth_store.database_url != database.url:
@@ -45,7 +27,6 @@ def initialize_auth_store(database: Database, app_settings: Settings = settings)
     _auth_store.ensure_default_admin(
         username=app_settings.auth_default_admin_username,
         password=app_settings.auth_default_admin_password,
-        role="superadmin",
         email=app_settings.auth_default_admin_email,
     )
     return _auth_store
@@ -89,9 +70,9 @@ def verify_password(plain: str, stored_hash: str) -> bool:
 def _make_jwt_payload(
     user_id: int,
     username: str,
-    role: str,
     token_type: str,
     expires_minutes: int | None = None,
+    auth_version: int = 0,
 ) -> dict[str, Any]:
     if expires_minutes is None:
         expires_minutes = (
@@ -104,31 +85,31 @@ def _make_jwt_payload(
         "sub": str(user_id),
         "user_id": user_id,
         "username": username,
-        "role": normalize_role(role),
         "iat": now,
         "exp": now + timedelta(minutes=expires_minutes),
         "type": token_type,
         "jti": str(uuid.uuid4()),
+        "auth_version": auth_version,
     }
 
 
 def create_access_token(
     user_id: int,
     username: str,
-    role: str,
     expires_minutes: int | None = None,
+    auth_version: int = 0,
 ) -> str:
-    payload = _make_jwt_payload(user_id, username, role, "access", expires_minutes)
+    payload = _make_jwt_payload(user_id, username, "access", expires_minutes, auth_version)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def create_refresh_token(
     user_id: int,
     username: str,
-    role: str,
     expires_minutes: int | None = None,
+    auth_version: int = 0,
 ) -> str:
-    payload = _make_jwt_payload(user_id, username, role, "refresh", expires_minutes)
+    payload = _make_jwt_payload(user_id, username, "refresh", expires_minutes, auth_version)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -148,7 +129,8 @@ def _decode_token(token: str, expected_type: str) -> dict[str, Any] | None:
 
     if payload.get("type") != expected_type:
         return None
-    payload["role"] = normalize_role(payload.get("role"))
+    if not isinstance(payload.get("jti"), str) or not payload["jti"].strip():
+        return None
     return payload
 
 
@@ -163,11 +145,9 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
 
 
 def token_revocation_id(token: str, payload: dict[str, Any]) -> str:
-    """Use jti when present and a stable non-secret fingerprint for legacy tokens."""
-    jti = payload.get("jti")
-    if isinstance(jti, str) and jti.strip():
-        return jti
-    return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+    """Return the required unique token identifier."""
+    del token
+    return str(payload["jti"])
 
 
 def decode_refresh_token(token: str) -> dict[str, Any] | None:
@@ -211,7 +191,7 @@ def revoke_refresh_token(token: str) -> bool:
 
 
 def resolve_user_from_payload(payload: dict[str, Any]) -> UserRecord | None:
-    """Resolve current storage identity from current or legacy JWT claim shapes."""
+    """Resolve the current database identity from numeric JWT claims."""
     store = get_auth_store()
 
     user_id_claim = payload.get("user_id")
@@ -232,9 +212,16 @@ def resolve_user_from_payload(payload: dict[str, Any]) -> UserRecord | None:
     except (TypeError, ValueError):
         pass
 
-    if isinstance(subject, str) and subject:
-        return store.get_user_by_username(subject)
     return None
+
+
+def token_matches_user_version(payload: dict[str, Any], user: UserRecord) -> bool:
+    """Reject tokens issued before the user's current security version."""
+    claim = payload.get("auth_version")
+    try:
+        return int(claim) == user.auth_version
+    except (TypeError, ValueError):
+        return False
 
 
 # ── FastAPI dependencies ────────────────────────────────────────────
@@ -243,7 +230,6 @@ _DISABLED_AUTH_USER = UserRecord(
     id=0,
     username="dev",
     password_hash="",
-    role="superadmin",
     is_active=True,
     created_at_utc="",
 )
@@ -284,6 +270,12 @@ def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="حساب کاربری غیرفعال است",
         )
+    if not token_matches_user_version(payload, user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token was issued before the latest security change",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
@@ -298,26 +290,69 @@ def get_optional_user(
     if payload is None:
         return None
     user = resolve_user_from_payload(payload)
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or not token_matches_user_version(payload, user):
         return None
     return user
 
 
-def require_role(required_role: str):
-    """Return a dependency enforcing the canonical superadmin > admin > user hierarchy."""
-    hierarchy = {"superadmin": 3, "admin": 2, "user": 1}
-    canonical_required = normalize_role(required_role)
-    if canonical_required not in hierarchy:
-        raise ValueError(f"Unknown authorization role: {required_role}")
+def effective_permissions(user: UserRecord) -> frozenset[str]:
+    """Resolve live permissions so changes do not wait for JWT expiry."""
+    if _auth_disabled() or user.id == _DISABLED_AUTH_USER.id:
+        return frozenset({"*"})
+    # Direct dependency unit tests may call the checker before application startup.
+    # Runtime requests always initialize the store during runtime construction.
+    if _auth_store is None:
+        return frozenset()
+    if user.username == settings.auth_default_admin_username:
+        return frozenset({"*"})
+    permissions = _auth_store.get_effective_permissions(user.id)
+    return permissions
 
-    def _role_checker(current_user: UserRecord = Depends(get_current_user)) -> UserRecord:
-        user_level = hierarchy.get(normalize_role(current_user.role), 0)
-        required_level = hierarchy.get(canonical_required, 0)
-        if user_level < required_level:
+
+def require_permission(*permission_keys: str, require_all: bool = True):
+    """Return a dependency requiring one or all explicit permission keys."""
+    normalized = tuple(dict.fromkeys(key.strip().lower() for key in permission_keys if key.strip()))
+    if not normalized:
+        raise ValueError("At least one permission key is required")
+
+    def _permission_checker(current_user: UserRecord = Depends(get_current_user)) -> UserRecord:
+        granted = effective_permissions(current_user)
+        allowed = "*" in granted or (
+            all(key in granted for key in normalized)
+            if require_all
+            else any(key in granted for key in normalized)
+        )
+        if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"برای این درخواست دسترسی با نقش «{canonical_required}» یا بالاتر لازم است",
+                detail="شما مجوز لازم برای انجام این درخواست را ندارید",
             )
         return current_user
 
-    return _role_checker
+    return _permission_checker
+
+
+def has_scoped_permission(user: UserRecord, permission: str, scope_type: str, scope_id: int = 0) -> bool:
+    if "*" in effective_permissions(user):
+        return True
+    return _auth_store is not None and _auth_store.has_scoped_permission(
+        user.id, permission.strip().lower(), scope_type, scope_id
+    )
+
+
+def enforce_scoped_permission(
+    user: UserRecord, permission: str, scope_type: str, scope_id: int = 0
+) -> None:
+    if not has_scoped_permission(user, permission, scope_type, scope_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما برای انجام این عملیات در محدوده انتخاب‌شده دسترسی ندارید",
+        )
+
+
+def accessible_scope_ids(user: UserRecord, permission: str, target_type: str) -> set[int] | None:
+    if "*" in effective_permissions(user):
+        return None
+    if _auth_store is None:
+        return set()
+    return _auth_store.accessible_scope_ids(user.id, permission.strip().lower(), target_type)

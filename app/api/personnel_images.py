@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 
-from app.core.auth import require_role
+from app.core.auth import require_permission
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -58,7 +58,7 @@ def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("operator")),
+    _: UserRecord = Depends(require_permission("application.read")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
@@ -75,7 +75,7 @@ def list_personnel_images(
 async def upload_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
     images: list[UploadFile] = File(...),
     enable_cropping: bool = Form(default=False),
     is_primary: bool = Form(default=False),
@@ -138,7 +138,7 @@ async def upload_personnel_images(
 def delete_personnel_image(
     image_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_role("admin")),
+    _: UserRecord = Depends(require_permission("application.manage")),
 ) -> Response:
     deleted = _store(runtime).delete_image(image_id)
     if not deleted:
