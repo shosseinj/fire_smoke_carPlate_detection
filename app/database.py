@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260815_0058"
+ALEMBIC_HEAD_REVISION = "20260815_0059"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -77,7 +77,7 @@ user_permission_grants = Table(
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     CheckConstraint(
         "(scope_type = 'global' AND scope_id = 0) OR "
-        "(scope_type IN ('building', 'section', 'camera') AND scope_id > 0)",
+        "(scope_type IN ('building', 'section', 'camera', 'room') AND scope_id > 0)",
         name="ck_user_permission_grants_target",
     ),
     UniqueConstraint(

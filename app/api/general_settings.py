@@ -177,7 +177,7 @@ def get_general_settings(
 )
 def update_general_settings(
     payload: GeneralSettingsPatch,
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("general_settings.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:
@@ -232,7 +232,7 @@ def update_general_settings(
     summary="بازنشانی تنظیمات عمومی به مقادیر پیش‌فرض",
 )
 def reset_general_settings(
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("general_settings.reset")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     runtime.source_settings.reset_default()

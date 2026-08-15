@@ -77,7 +77,7 @@ def get_fire_smoke_settings(
 @router.put("/fire-smoke/settings", summary="بروزرسانی تنظیمات تشخیص حریق و دود")
 def update_fire_smoke_settings(
     payload: FireSmokeSettingsUpdate,
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("fire_smoke.configure")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     try:

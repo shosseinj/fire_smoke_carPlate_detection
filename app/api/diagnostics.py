@@ -272,7 +272,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
 )
 def restart_camera_pipeline(
     camera_id: str,
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("diagnostics.execute")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     ingestor = runtime.video_ingestor

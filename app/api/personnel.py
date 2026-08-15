@@ -568,7 +568,7 @@ async def import_excel(
 )
 def import_template(
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel.import")),
 ) -> Response:
     data = _store(runtime).generate_import_template()
     return Response(
@@ -587,7 +587,7 @@ async def start_personnel_zip_import(
     runtime: Runtime = Depends(get_runtime),
     file: UploadFile = File(...),
     enable_cropping: bool = Form(default=True),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("personnel.import")),
 ) -> dict[str, Any]:
     raw = await file.read()
     if not raw:
@@ -743,7 +743,7 @@ def delete_personnel(
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel.import")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
@@ -774,7 +774,7 @@ async def upload_personnel_images(
         ),
     ] = None,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel.import")),
     enable_cropping: bool = Form(default=False),
     is_primary: str | None = Form(default=None),
 ) -> dict:
