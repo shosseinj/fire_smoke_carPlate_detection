@@ -145,7 +145,7 @@ def test_cancellation_during_upload_records_object_as_partial_without_orphan(tmp
     release = threading.Event()
 
     class Storage:
-        def upload_finalized(self, _job_id: str, _path: Path) -> object:
+        def upload_finalized(self, _job_id: str, _path: Path, **_options: object) -> object:
             entered.set()
             release.wait(1)
             return SimpleNamespace(object_key="recordings/job.mp4", size=8)

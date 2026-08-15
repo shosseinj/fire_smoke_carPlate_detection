@@ -13,11 +13,11 @@ WORKDIR /workspace
 # Nothing is installed on Windows.
 
 
-# COPY requirements.deepstream.txt /workspace/requirements.txt
+COPY requirements.deepstream.txt /workspace/requirements.txt
 
-# RUN python3 -m pip install \
-#     --no-cache-dir \
-#     -r /workspace/requirements.txt
+RUN python3 -m pip install \
+    --no-cache-dir \
+    -r /workspace/requirements.txt
 
 # Required for explicit ONNX export and runtime fallback. TensorRT is supplied
 # by the NVIDIA DeepStream base image.

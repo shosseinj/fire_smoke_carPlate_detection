@@ -49,6 +49,7 @@ ACCESS_DEFINITIONS = (
     AccessDefinition("import_progress", "وضعیت ورود اطلاعات", ("create", "read", "delete"), GLOBAL),
     AccessDefinition("live_branch", "شاخه پردازش زنده", ("execute",), GLOBAL),
     AccessDefinition("developer", "ابزارهای توسعه", ("read", "execute"), GLOBAL),
+    AccessDefinition("recording_settings", "Recording settings", ("read", "edit", "reset"), GLOBAL),
 )
 
 ACCESS_REGISTRY = {(d.application, action): d for d in ACCESS_DEFINITIONS for action in d.actions}
