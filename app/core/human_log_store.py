@@ -195,6 +195,66 @@ class HumanLogStore:
     def _connect(self) -> Connection:
         return self.database.connection()
 
+    def finalize_event_media(self, event: Any, video_key: str, snapshot_key: str) -> tuple[int, int]:
+        """Atomically and idempotently finalize worker-produced human and detection rows."""
+        event_id = str(event.event_id)
+        with self.database.connection() as connection:
+            human = connection.execute(
+                "SELECT id,event_id,camera,track_id,snapshot_url,video_url FROM human_logs WHERE event_id=? OR (session_id=? AND camera=? AND track_id=?) ORDER BY CASE WHEN event_id=? THEN 0 ELSE 1 END LIMIT 1 FOR UPDATE",
+                (event_id, event.tracking_session_id, event.camera_id, event.track_id, event_id),
+            ).fetchone()
+            if human is None:
+                connection.execute(
+                    """INSERT INTO human_logs
+                (event_id,session_id,camera,track_id,name,first_seen,last_seen,recognition_score,
+                 ref_img_id,snapshot_url,video_url,face_video_url,snapshot_quality,best_face_quality,
+                 full_frame_video_frames,accepted_face_frames,personnel_id,counts_for_attendance)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (event_id) DO NOTHING""",
+                    (event_id, event.tracking_session_id, event.camera_id, event.track_id, event.name,
+                     event.first_seen_at_utc, event.last_seen_at_utc, event.recognition_confidence,
+                     event.ref_img_id, snapshot_key, video_key, "", event.snapshot_quality, 0.0,
+                     0, 0, event.personnel_id, int(event.counts_for_attendance)),
+                )
+                human = connection.execute("SELECT id,event_id,camera,track_id,snapshot_url,video_url FROM human_logs WHERE event_id=? FOR UPDATE", (event_id,)).fetchone()
+            elif (human["event_id"] not in (None, event_id)
+                  or human["snapshot_url"] not in ("", snapshot_key)
+                  or human["video_url"] not in ("", video_key)):
+                raise ValueError("human event replay conflicts with finalized media")
+            if human is None or (human["camera"], human["track_id"]) != (event.camera_id, event.track_id):
+                raise ValueError("human event replay conflicts with finalized identity")
+            connection.execute("UPDATE human_logs SET event_id=?,snapshot_url=?,video_url=? WHERE id=?",
+                               (event_id, snapshot_key, video_key, human["id"]))
+            detection = connection.execute(
+                "SELECT id,source_event_key,source_human_log_id,snapshot_image,video FROM detection_logs WHERE source_event_key=? OR source_human_log_id=? ORDER BY CASE WHEN source_event_key=? THEN 0 ELSE 1 END LIMIT 1 FOR UPDATE",
+                (event_id, human["id"], event_id),
+            ).fetchone()
+            inserted = None
+            if detection is None:
+                inserted = connection.execute(
+                """INSERT INTO detection_logs
+                (source_system,source_event_key,source_human_log_id,personnel_id,person,confidence,
+                 detection_time,ref_img_id,room_id,camera_id,counts_for_attendance,log_type,
+                 snapshot_image,video,video_status,face_video_status,media_finalized_at)
+                VALUES ('human_event_media',?,?,?,?,?,?,?,?,?,?,'real_time',?,?,'ready','missing',CURRENT_TIMESTAMP)
+                ON CONFLICT (source_event_key) DO NOTHING""",
+                (event_id, human["id"], event.personnel_id, event.name, event.recognition_confidence,
+                 event.best_frame_at_utc, event.ref_img_id, event.room_id, event.camera_id,
+                 int(event.counts_for_attendance), snapshot_key, video_key),
+            )
+                detection = connection.execute("SELECT id,source_event_key,source_human_log_id,snapshot_image,video FROM detection_logs WHERE source_event_key=?", (event_id,)).fetchone()
+            elif (detection["source_event_key"] not in (None, event_id)
+                  or detection["source_human_log_id"] not in (None, human["id"])
+                  or detection["snapshot_image"] not in (None, "", snapshot_key)
+                  or detection["video"] not in (None, "", video_key)):
+                raise ValueError("detection event replay conflicts with finalized media")
+            if detection is None:
+                raise ValueError("detection event finalization failed")
+            connection.execute("UPDATE detection_logs SET source_system='human_event_media',source_event_key=?,source_human_log_id=?,snapshot_image=?,video=?,video_status='ready',media_finalized_at=CURRENT_TIMESTAMP WHERE id=?",
+                               (event_id, human["id"], snapshot_key, video_key, detection["id"]))
+        if inserted is not None and inserted.rowcount and self.detection_log_store is not None:
+            self.detection_log_store.notify_finalized_created(int(detection["id"]))
+        return int(human["id"]), int(detection["id"])
+
     def _create_schema(self) -> None:
         # Alembic owns the PostgreSQL schema; runtime startup validates it.
         return None

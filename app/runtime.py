@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +47,10 @@ from app.core.request_store import RequestStore
 from app.core.detection_log_store import DetectionLogStore
 from app.core.detection_event_publisher import DetectionEventPublisher
 from app.core.human_detection_event_observer import HumanDetectionEventObserver
+from app.core.human_event_media_worker import HumanEventMediaWorker
+from app.core.recording_segment_store import RecordingSegment, RecordingSegmentStore
+from app.core.recording_segment_dispatcher import RecordingSegmentDispatcher
+from app.core.durable_event_outbox import DurableHumanEventOutbox
 from app.core.recent_detection_service import (
     build_recent_detection_refresh_message,
     get_single_detection_payload_by_id,
@@ -90,6 +96,36 @@ def _observe_human_detection_event_once(
         room_ids_by_track=room_ids_by_track,
         counts_for_attendance=counts_for_attendance,
     )
+
+
+def _build_human_event_only_observer(
+    observer: HumanDetectionEventObserver,
+    registry: SourceRegistry,
+) -> Callable[[FramePacket, TaskResult], None]:
+    def observe(packet: FramePacket, result: TaskResult) -> None:
+        source = registry.get(result.source_id) if result.source_id else None
+        _observe_human_detection_event_once(
+            observer,
+            packet,
+            result,
+            {},
+            bool(source and source.counts_for_attendance),
+        )
+
+    return observe
+
+
+def _select_detection_observers(
+    enabled: bool,
+    legacy_face: Callable[[FramePacket, TaskResult], None],
+    event_face: Callable[[FramePacket, TaskResult], None],
+    fire: Callable[[FramePacket, TaskResult], None],
+    plate: Callable[[FramePacket, TaskResult], None],
+    location: Callable[[FramePacket, TaskResult], None],
+) -> tuple[Callable[[FramePacket, TaskResult], None] | None, ...]:
+    if enabled:
+        return legacy_face, fire, plate, location
+    return event_face, None, None, None
 
 
 def _safe_int(value: object) -> int | None:
@@ -145,6 +181,12 @@ class Runtime:
     detection_event_publisher: DetectionEventPublisher | None = None
     detection_event_redis: object | None = None
     detection_event_error: str | None = None
+    human_event_media_worker: HumanEventMediaWorker | None = None
+    human_event_media_redis: object | None = None
+    human_event_media_error: str | None = None
+    human_event_outbox: DurableHumanEventOutbox | None = None
+    recording_segment_dispatcher: RecordingSegmentDispatcher | None = None
+    human_event_observer: HumanDetectionEventObserver | None = None
     _closed: bool = False
     _general_teardown_complete: bool = False
 
@@ -384,6 +426,12 @@ class Runtime:
                 except Exception as exc:
                     self.recording_error = type(exc).__name__
                     LOGGER.warning("RECORDING_NOT_READY error=%s", type(exc).__name__)
+            if self.human_event_media_worker is not None:
+                self.human_event_media_worker.start()
+            if self.human_event_outbox is not None:
+                self.human_event_outbox.start()
+            if self.recording_segment_dispatcher is not None:
+                self.recording_segment_dispatcher.start()
             if self.video_ingestor is not None:
                 self.video_ingestor.start()
             if self.static_video_ingestor is not None:
@@ -411,6 +459,23 @@ class Runtime:
     def close(self) -> None:
         if self._closed:
             return
+        media_shutdown_error = None
+        observer = getattr(self, "human_event_observer", None)
+        if observer is not None and not observer.close(
+                getattr(getattr(self, "settings", None), "human_event_worker_shutdown_seconds", 5.0)):
+            media_shutdown_error = RuntimeError("human event completions remain undurable")
+        media_worker = getattr(self, "human_event_media_worker", None)
+        shutdown_seconds = getattr(getattr(self, "settings", None), "human_event_worker_shutdown_seconds", 5.0)
+        if media_worker is not None and not media_worker.close(shutdown_seconds):
+            media_shutdown_error = RuntimeError("human event media worker is still active")
+            self.human_event_media_error = "shutdown_timed_out"
+        for dispatcher in (getattr(self, "human_event_outbox", None), getattr(self, "recording_segment_dispatcher", None)):
+            if dispatcher is not None and not dispatcher.close(shutdown_seconds):
+                media_shutdown_error = RuntimeError("durable event dispatcher is still active")
+        media_redis = getattr(self, "human_event_media_redis", None)
+        if media_redis is not None and hasattr(media_redis, "close"):
+            media_redis.close()
+            self.human_event_media_redis = None
         publisher_stopped = True
         detection_shutdown_error: Exception | None = None
         if self.detection_event_publisher is not None:
@@ -474,6 +539,8 @@ class Runtime:
             raise RuntimeError(message) from coordinator_error
         if detection_shutdown_error is not None:
             raise RuntimeError("detection event publisher shutdown was incomplete; Redis dependency was preserved") from detection_shutdown_error
+        if media_shutdown_error is not None:
+            raise RuntimeError("human event media shutdown was incomplete; unrelated teardown completed") from media_shutdown_error
         self._closed = True
 
     def status(self) -> dict:
@@ -515,6 +582,15 @@ class Runtime:
         )
         if self.detection_event_error is not None:
             value["detection_events"]["error"] = self.detection_event_error
+        value["human_event_media"] = (
+            getattr(self, "human_event_media_worker", None).status()
+            if getattr(self, "human_event_media_worker", None) is not None
+            else {"enabled": getattr(self.settings, "human_event_media_enabled", False), "running": False}
+        )
+        value["human_event_media"].update({"write_enabled": getattr(self.settings, "human_event_media_write_enabled", False),
+                                            "error": getattr(self, "human_event_media_error", None)})
+        if getattr(self, "human_event_outbox", None) is not None:
+            value["human_event_media"]["outbox"] = self.human_event_outbox.status()
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
@@ -532,6 +608,8 @@ class Runtime:
         return value
 
 def build_runtime(app_settings: Settings = settings) -> Runtime:
+    if app_settings.human_event_media_enabled and not app_settings.detection_events_enabled:
+        raise ValueError("HUMAN_EVENT_MEDIA_ENABLED requires DETECTION_EVENTS_ENABLED=true")
     database = get_database(
         app_settings.database_url,
         echo=app_settings.database_echo,
@@ -887,7 +965,8 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         return location_observer
 
     human_event_observer = HumanDetectionEventObserver(
-        lambda: detection_event_publisher
+        lambda: human_event_outbox,
+        clip_padding_seconds=app_settings.human_event_clip_padding_seconds,
     )
 
     def _build_face_polygon_observer(
@@ -1005,9 +1084,15 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
 
         return face_observer
 
-    location_obs = _build_location_observer(location_store, registry)
-    face_polygon_obs = _build_face_polygon_observer(
-        location_store, registry, human_logs
+    face_result_obs, fire_result_obs, plate_result_obs, location_obs = (
+        _select_detection_observers(
+            app_settings.legacy_detection_persistence_enabled,
+            _build_face_polygon_observer(location_store, registry, human_logs),
+            _build_human_event_only_observer(human_event_observer, registry),
+            fire_smoke_logs.observe_result,
+            plate_logs.observe_result,
+            _build_location_observer(location_store, registry),
+        )
     )
 
     workers = {
@@ -1021,7 +1106,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             queue_capacity=app_settings.task_queue_capacity,
             queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
-            result_observer=fire_smoke_logs.observe_result,
+            result_observer=fire_result_obs,
             location_observer=location_obs,
         ),
         TaskName.PLATE_RECOGNITION: TaskWorker(
@@ -1034,7 +1119,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             queue_capacity=app_settings.task_queue_capacity,
             queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
-            result_observer=plate_logs.observe_result,
+            result_observer=plate_result_obs,
             location_observer=location_obs,
         ),
         TaskName.FACE_RECOGNITION: TaskWorker(
@@ -1048,7 +1133,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             queue_block_timeout_ms=app_settings.task_queue_block_timeout_ms,
             result_callback=broadcast.publish_result,
             # Combined observer: polygon matching + human log gating on transitions
-            result_observer=face_polygon_obs,
+            result_observer=face_result_obs,
             location_observer=None,
         ),
     }
@@ -1070,6 +1155,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         grace_seconds=app_settings.live_branch_grace_seconds,
         heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
         recording_segment_seconds=app_settings.live_recording_segment_seconds,
+        recording_spool_path=app_settings.continuous_recording_temp_path,
         camera_id_resolver=lambda source_id: (
             record.id if (record := registry.get(source_id)) is not None else None
         ),
@@ -1150,6 +1236,64 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         except Exception as exc:
             recording_error = type(exc).__name__
             LOGGER.warning("RECORDING_CONFIGURATION_UNAVAILABLE error=%s", type(exc).__name__)
+    segment_store = RecordingSegmentStore(database)
+    human_event_outbox = None
+    recording_segment_dispatcher = None
+    if app_settings.detection_events_enabled and detection_event_redis is not None:
+        human_event_outbox = DurableHumanEventOutbox(
+            database, detection_event_redis, app_settings.detection_events_human_stream,
+            app_settings.human_event_outbox_path,
+            max_spool_files=app_settings.human_event_outbox_max_files,
+        )
+        recording_segment_dispatcher = RecordingSegmentDispatcher(
+            segment_store, detection_event_redis,
+            app_settings.detection_events_recording_segment_stream,
+        )
+        def finalize_recording_segment(upload, width: int, height: int, fps: float, checksum: str) -> None:
+            segment_id = hashlib.sha256(upload.object_name.encode("utf-8")).hexdigest()
+            segment_store.upsert(RecordingSegment(
+                segment_id, upload.source_id or upload.camera_id, app_settings.recording_minio_bucket,
+                upload.object_name, datetime.fromisoformat(upload.start_time),
+                datetime.fromisoformat(upload.end_time), width, height, fps, checksum,
+            ))
+        live_branch.recording_segment_finalizer = finalize_recording_segment
+    human_event_media_worker = None
+    human_event_media_redis = None
+    human_event_media_error = None
+    if app_settings.human_event_media_enabled:
+        try:
+            import redis
+            if recording_storage is None:
+                recording_storage = RecordingStorageService(RecordingStorageSettings(
+                    endpoint=app_settings.recording_minio_endpoint,
+                    access_key=app_settings.recording_minio_access_key,
+                    secret_key=app_settings.recording_minio_secret_key,
+                    bucket_name=app_settings.recording_minio_bucket,
+                    secure=app_settings.recording_minio_secure,
+                ))
+            human_event_media_redis = redis.Redis.from_url(
+                app_settings.recording_redis_url, decode_responses=True,
+                socket_connect_timeout=3.0, socket_timeout=max(5.0, app_settings.human_event_media_block_ms / 1000 + 1),
+                retry_on_timeout=False,
+            )
+            human_event_media_worker = HumanEventMediaWorker(
+                human_event_media_redis, app_settings.detection_events_human_stream,
+                segment_store, recording_storage, human_logs.finalize_event_media,
+                group=app_settings.human_event_media_group,
+                consumer=app_settings.human_event_media_consumer,
+                dead_letter_stream=app_settings.human_event_media_dead_letter_stream,
+                block_ms=app_settings.human_event_media_block_ms,
+                claim_idle_ms=app_settings.human_event_media_claim_idle_ms,
+                max_attempts=app_settings.human_event_media_max_attempts,
+                max_segments=app_settings.human_event_media_max_segments,
+                max_duration_seconds=app_settings.human_event_media_max_duration_seconds,
+                max_temp_bytes=app_settings.human_event_media_max_temp_bytes,
+                temp_root=app_settings.human_event_media_temp_path,
+                write_enabled=app_settings.human_event_media_write_enabled,
+            )
+        except Exception as exc:
+            human_event_media_error = type(exc).__name__
+            LOGGER.warning("HUMAN_EVENT_MEDIA_NOT_READY error=%s", type(exc).__name__)
     if app_settings.video_ingestion_enabled:
         common_ingestor_settings = {
             "registry": registry,
@@ -1273,6 +1417,12 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         detection_event_publisher=detection_event_publisher,
         detection_event_redis=detection_event_redis,
         detection_event_error=detection_event_error,
+        human_event_media_worker=human_event_media_worker,
+        human_event_media_redis=human_event_media_redis,
+        human_event_media_error=human_event_media_error,
+        human_event_outbox=human_event_outbox,
+        recording_segment_dispatcher=recording_segment_dispatcher,
+        human_event_observer=human_event_observer,
     )
 
     def _publish_detection_change(action: str, record: object) -> None:

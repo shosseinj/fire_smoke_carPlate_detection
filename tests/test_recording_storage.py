@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from collections import namedtuple
 from datetime import timedelta
 from pathlib import Path
@@ -92,7 +93,7 @@ def _service(client: FakeMinioClient) -> RecordingStorageService:
 
 def test_object_key_is_deterministic_and_canonical() -> None:
     assert recording_object_key(JOB_UUID) == (
-        "recordings/12345678-1234-5678-9234-567812345678.mp4"
+        "scheduled/12345678-1234-5678-9234-567812345678.mp4"
     )
     assert recording_object_key(str(JOB_UUID).upper()) == recording_object_key(JOB_UUID)
 
@@ -111,6 +112,19 @@ def test_upload_verifies_and_is_idempotent_by_job_uuid(tmp_path: Path) -> None:
     assert first.sha256 == sha256_file(recording)
     assert client.uploads == 1
     assert recording.exists()
+
+
+def test_generic_upload_is_process_serialized_and_conflict_safe(tmp_path: Path) -> None:
+    first = tmp_path / "one"; first.write_bytes(b"same")
+    client = FakeMinioClient(); service = _service(client); results = []
+    threads = [threading.Thread(target=lambda: results.append(service.upload_object(
+        "derived/human/cam/e/clip.mp4", first, "video/mp4"))) for _ in range(4)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+    assert client.uploads == 1 and len(results) == 4
+    other = tmp_path / "other"; other.write_bytes(b"different")
+    with pytest.raises(ObjectConflictError):
+        service.upload_object("derived/human/cam/e/clip.mp4", other, "video/mp4")
 
 
 def test_existing_job_uuid_with_different_content_is_rejected(tmp_path: Path) -> None:
@@ -242,3 +256,46 @@ def test_minio_client_uses_bounded_connect_and_read_timeouts(monkeypatch: pytest
     assert captured["timeout"] == {"connect": 4.0, "read": 4.0}
     assert captured["retry"] == {"total": 1, "connect": 1, "read": 1, "redirect": 0}
     assert "http_client" in captured["minio"]  # type: ignore[operator]
+
+
+def test_default_lifecycle_configuration_supplies_required_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Filter:
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+
+    class Expiration:
+        def __init__(self, days: int) -> None:
+            self.days = days
+
+    class Rule:
+        def __init__(self, status: str, *, rule_filter: Filter | None,
+                     rule_id: str, expiration: Expiration) -> None:
+            if rule_filter is None:
+                raise ValueError("Rule filter must be provided")
+            captured["filter_prefix"] = rule_filter.prefix
+            captured["days"] = expiration.days
+
+    class LifecycleConfig:
+        def __init__(self, rules: list[Rule]) -> None:
+            self.rules = rules
+
+    lifecycle_module = SimpleNamespace(
+        Expiration=Expiration, Filter=Filter,
+        LifecycleConfig=LifecycleConfig, Rule=Rule,
+    )
+    monkeypatch.setitem(sys.modules, "minio.lifecycleconfig", lifecycle_module)
+    client = FakeMinioClient()
+    service = RecordingStorageService(
+        RecordingStorageSettings(
+            endpoint="minio:9000", access_key="injected", secret_key="injected"
+        ),
+        client=client,
+    )
+
+    service.initialize_private_bucket()
+
+    assert captured == {"filter_prefix": "", "days": 30}

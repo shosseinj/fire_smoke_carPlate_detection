@@ -82,6 +82,12 @@ class DetectionLogStore:
                     record.id,
                 )
 
+    def notify_finalized_created(self, log_id: int) -> None:
+        """Notify listeners after a shared worker transaction created a row."""
+        record = self.get(log_id)
+        if record is not None:
+            self._notify("created", record)
+
     def _connection(self) -> Connection:
         return self.database.connection()
 

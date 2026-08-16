@@ -12,6 +12,10 @@ WORKDIR /workspace
 # Install only application-level system dependencies inside the image.
 # Nothing is installed on Windows.
 
+# Continuous-recording uploads inspect finalized MP4 metadata with PyAV before
+# writing the object and its sidecar to MinIO.
+RUN python3 -m pip install --no-cache-dir "av>=12.0,<17.0"
+
 
 # COPY requirements.deepstream.txt /workspace/requirements.txt
 

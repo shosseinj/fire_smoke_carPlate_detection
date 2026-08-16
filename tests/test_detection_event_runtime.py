@@ -1,10 +1,18 @@
 from types import SimpleNamespace
+import inspect
 
 import numpy as np
 import pytest
 
-from app.runtime import Runtime, _observe_human_detection_event_once
+from app.runtime import (
+    Runtime,
+    build_runtime,
+    _build_human_event_only_observer,
+    _observe_human_detection_event_once,
+    _select_detection_observers,
+)
 from app.core.human_detection_event_observer import HumanDetectionEventObserver
+from app.core.worker import TaskWorker
 from app.core.types import FramePacket, TaskName, TaskResult
 
 
@@ -131,3 +139,80 @@ def test_face_event_wiring_is_once_while_legacy_dual_calls_remain_unchanged() ->
     legacy.observe_result(pkt, res)
     assert disabled.status()["active"] == disabled.status()["pending"] == 0
     assert len(legacy.calls) == 4
+
+
+def test_event_only_face_observer_calls_redis_once_without_location_or_legacy() -> None:
+    class Publisher:
+        def __init__(self): self.events = []
+        def publish(self, event): self.events.append(event); return True
+    class Registry:
+        def get(self, source_id):
+            return SimpleNamespace(room_id=99, counts_for_attendance=True)
+
+    publisher = Publisher()
+    actual = HumanDetectionEventObserver(lambda: publisher)
+    calls = []
+    class EventObserver:
+        def observe(self, *args, **kwargs):
+            calls.append(kwargs)
+            actual.observe(*args, **kwargs)
+    observer = EventObserver()
+    callback = _build_human_event_only_observer(observer, Registry())
+    pkt = FramePacket("cam", np.zeros((2, 2, 3), dtype=np.uint8), 1, 1, 0.0,
+                      "2026-01-01T00:00:01+00:00")
+    res = TaskResult(TaskName.FACE_RECOGNITION, "cam", 1, 1, "", "", 0, data={
+        "tracking_session_id": "session", "source_frame_size": {"width": 2, "height": 2},
+        "humans": [{"track_id": 4, "source_bbox": [0, 0, 2, 2], "face_visible": True,
+                    "best_face_quality": .8, "identity_stable": True, "person": "Ada",
+                    "ref_img_id": "personnel_12", "recognition_score": .9}],
+        "disappeared_humans": [{"track_id": 4}],
+    })
+    callback(pkt, res)
+    assert actual.close(1.0)
+
+    assert calls == [{"room_ids_by_track": {}, "counts_for_attendance": True}]
+    assert len(publisher.events) == 1
+    event = publisher.events[0]
+    assert event.room_id is None
+    assert (event.counts_for_attendance, event.personnel_id, event.name) == (True, 12, "Ada")
+    assert event.first_seen_at_utc == event.last_seen_at_utc
+
+
+def test_legacy_observer_selection_preserves_true_and_suppresses_false() -> None:
+    legacy_face, event_face, fire, plate, location = (
+        lambda *_: None for _ in range(5)
+    )
+    assert _select_detection_observers(
+        True, legacy_face, event_face, fire, plate, location
+    ) == (legacy_face, fire, plate, location)
+    assert _select_detection_observers(
+        False, legacy_face, event_face, fire, plate, location
+    ) == (event_face, None, None, None)
+
+
+def test_selected_observers_are_the_actual_worker_wiring_without_callback_changes() -> None:
+    legacy_face, event_face, fire, plate, location = (
+        lambda *_: None for _ in range(5)
+    )
+    broadcast = SimpleNamespace(publish_result=lambda *_: None)
+    selected = _select_detection_observers(
+        False, legacy_face, event_face, fire, plate, location
+    )
+    workers = [
+        TaskWorker(processor=SimpleNamespace(), result_store=SimpleNamespace(), batch_size=1,
+                   max_wait_ms=1, result_callback=broadcast.publish_result,
+                   result_observer=selected[1], location_observer=selected[3]),
+        TaskWorker(processor=SimpleNamespace(), result_store=SimpleNamespace(), batch_size=1,
+                   max_wait_ms=1, result_callback=broadcast.publish_result,
+                   result_observer=selected[2], location_observer=selected[3]),
+        TaskWorker(processor=SimpleNamespace(), result_store=SimpleNamespace(), batch_size=1,
+                   max_wait_ms=1, result_callback=broadcast.publish_result,
+                   result_observer=selected[0], location_observer=None),
+    ]
+    assert [(w.result_observer, w.location_observer) for w in workers] == [
+        (None, None), (None, None), (event_face, None)
+    ]
+    assert all(w.result_callback == broadcast.publish_result for w in workers)
+    wiring_source = inspect.getsource(build_runtime)
+    assert "result_callback=broadcast.publish_result" in wiring_source
+    assert "enabled=app_settings.live_branch_enabled" in wiring_source

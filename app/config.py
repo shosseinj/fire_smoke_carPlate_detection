@@ -132,9 +132,12 @@ class Settings:
         "LIVE_BRANCH_HEARTBEAT_TIMEOUT_SECONDS", 15.0
     )
     live_recording_segment_seconds: float = _env_float(
-        "LIVE_RECORDING_SEGMENT_SECONDS", 120.0
+        "LIVE_RECORDING_SEGMENT_SECONDS", 10.0
     ) # video durance in seconds
-    recording_enabled: bool = _env_bool("RECORDING_ENABLED", False)
+    recording_enabled: bool = _env_bool("RECORDING_ENABLED", True)
+    legacy_detection_persistence_enabled: bool = _env_bool(
+        "LEGACY_DETECTION_PERSISTENCE_ENABLED", False
+    )
     recording_redis_url: str = os.getenv("RECORDING_REDIS_URL", "redis://redis:6379/0")
     detection_events_enabled: bool = _env_bool("DETECTION_EVENTS_ENABLED", True)
     detection_events_queue_capacity: int = _env_int("DETECTION_EVENTS_QUEUE_CAPACITY", 256)
@@ -142,12 +145,33 @@ class Settings:
     detection_events_fire_smoke_stream: str = os.getenv("DETECTION_EVENTS_FIRE_SMOKE_STREAM", "detection:fire:v1").strip()
     detection_events_plate_stream: str = os.getenv("DETECTION_EVENTS_PLATE_STREAM", "detection:plate:v1").strip()
     detection_events_recording_segment_stream: str = os.getenv("DETECTION_EVENTS_RECORDING_SEGMENT_STREAM", "recording:segments:v1").strip()
+    human_event_media_enabled: bool = _env_bool("HUMAN_EVENT_MEDIA_ENABLED", True)
+    human_event_media_write_enabled: bool = _env_bool("HUMAN_EVENT_MEDIA_WRITE_ENABLED", True)
+    human_event_clip_padding_seconds: float = _env_float("HUMAN_EVENT_CLIP_PADDING_SECONDS", 5.0)
+    human_event_media_group: str = os.getenv("HUMAN_EVENT_MEDIA_GROUP", "detection-media-v1").strip()
+    human_event_media_consumer: str = os.getenv("HUMAN_EVENT_MEDIA_CONSUMER", "embedded-worker").strip()
+    human_event_media_dead_letter_stream: str = os.getenv("HUMAN_EVENT_MEDIA_DEAD_LETTER_STREAM", "detection:human:dead:v1").strip()
+    human_event_media_max_attempts: int = _env_int("HUMAN_EVENT_MEDIA_MAX_ATTEMPTS", 5)
+    human_event_media_block_ms: int = _env_int("HUMAN_EVENT_MEDIA_BLOCK_MS", 1000)
+    human_event_media_claim_idle_ms: int = _env_int("HUMAN_EVENT_MEDIA_CLAIM_IDLE_MS", 30000)
+    human_event_media_max_segments: int = _env_int("HUMAN_EVENT_MEDIA_MAX_SEGMENTS", 16)
+    human_event_media_max_duration_seconds: float = _env_float("HUMAN_EVENT_MEDIA_MAX_DURATION_SECONDS", 120.0)
+    human_event_media_max_temp_bytes: int = _env_int("HUMAN_EVENT_MEDIA_MAX_TEMP_BYTES", 2 * 1024 * 1024 * 1024)
+    human_event_media_temp_path: Path = _path(
+        "HUMAN_EVENT_MEDIA_TEMP_PATH", "saved_media/temporary_minIO/human_track"
+    )
+    human_event_worker_shutdown_seconds: float = _env_float("HUMAN_EVENT_WORKER_SHUTDOWN_SECONDS", 5.0)
+    human_event_outbox_path: Path = _path("HUMAN_EVENT_OUTBOX_PATH", "saved_media/human_event_outbox")
+    human_event_outbox_max_files: int = _env_int("HUMAN_EVENT_OUTBOX_MAX_FILES", 10000)
     recording_minio_endpoint: str = os.getenv("RECORDING_MINIO_ENDPOINT", "minio:9000")
-    recording_minio_access_key: str = os.getenv("RECORDING_MINIO_ACCESS_KEY", "")
-    recording_minio_secret_key: str = os.getenv("RECORDING_MINIO_SECRET_KEY", "")
+    recording_minio_access_key: str = os.getenv("RECORDING_MINIO_ACCESS_KEY", "your-access-key")
+    recording_minio_secret_key: str = os.getenv("RECORDING_MINIO_SECRET_KEY", "your-secret-key")
     recording_minio_bucket: str = os.getenv("RECORDING_MINIO_BUCKET", "recordings")
     recording_minio_secure: bool = _env_bool("RECORDING_MINIO_SECURE", False)
     recording_spool_path: Path = _path("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
+    continuous_recording_temp_path: Path = _path(
+        "CONTINUOUS_RECORDING_TEMP_PATH", "saved_media/temporary_minIO/continuous"
+    )
     recording_spool_high_water_percent: float = _env_float("RECORDING_SPOOL_HIGH_WATER_PERCENT", 90.0)
     recording_poll_seconds: float = _env_float("RECORDING_POLL_SECONDS", 0.5)
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")

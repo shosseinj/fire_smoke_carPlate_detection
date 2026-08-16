@@ -8,6 +8,7 @@ weights/**/*.pt
 weights/**/*.pth
 output/
 qdrant_storage/
+/saved_media/
 *.mp4
 *.zip
 *.sqlite3

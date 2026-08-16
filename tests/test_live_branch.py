@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.core.live_branch import GpuLiveBranchManager, live_stream_path
@@ -33,6 +35,7 @@ class _Element:
     def __init__(self, factory: str) -> None:
         self.factory = factory
         self.props: dict[str, object] = {}
+        self.signals: dict[str, object] = {}
         self.sink = _Pad()
 
     def set_property(self, name: str, value: object) -> None:
@@ -49,6 +52,9 @@ class _Element:
 
     def set_state(self, _state: object) -> None:
         return None
+
+    def connect(self, name: str, callback: object) -> None:
+        self.signals[name] = callback
 
 
 class _Tee(_Element):
@@ -108,7 +114,12 @@ def test_namespace_is_distinct_and_opaque() -> None:
 
 
 def test_disabled_mode_does_not_create_branch() -> None:
-    manager = GpuLiveBranchManager(publish_base="rtsp://mediamtx:8554", enabled=False)
+    manager = GpuLiveBranchManager(
+        publish_base="rtsp://mediamtx:8554",
+        enabled=False,
+        recording_spool_path="saved_media/temporary_minIO/continuous",
+    )
+    assert manager.recording_spool_path == Path("saved_media/temporary_minIO/continuous")
     assert manager.acquire("camera", "wall", "viewer") == {
         "enabled": False,
         "source_id": "camera",
@@ -121,7 +132,7 @@ def test_source_requires_confirmed_nvmm() -> None:
     tee = _Tee()
     pipeline = _Pipeline()
     assert manager.attach_source("camera", tee, pipeline)
-    assert manager.acquire("camera", "wall", "viewer")["path"].startswith("live-branch/wall/")
+    assert manager.acquire("camera", "wall", "viewer")["path"].startswith("live-branch/fullscreen/")
     assert manager.has_source("camera") is True
     assert manager.has_source("missing") is False
 
@@ -154,7 +165,7 @@ def test_wall_caps_are_exact_and_fullscreen_has_no_resize() -> None:
     wall = manager._build(source, "wall")
     fullscreen = manager._build(source, "fullscreen")
     assert wall.elements[2].props["caps"].to_string() == (
-        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
+        "video/x-raw(memory:NVMM),format=NV12,width=320,height=260"
     )
     assert "width=" not in fullscreen.elements[2].props["caps"].to_string()
     assert "height=" not in fullscreen.elements[2].props["caps"].to_string()
@@ -162,6 +173,45 @@ def test_wall_caps_are_exact_and_fullscreen_has_no_resize() -> None:
     assert wall.elements[3].props["iframeinterval"] == 15
     assert fullscreen.elements[3].props["idrinterval"] == 15
     assert fullscreen.elements[3].props["iframeinterval"] == 15
+
+
+def test_fullscreen_fragment_rotation_keeps_canonical_source_id(tmp_path) -> None:
+    manager = _manager()
+    manager.recording_spool_path = tmp_path
+    source = type(
+        "Source",
+        (),
+        {
+            "source_id": "rtsp://camera.example/live",
+            "camera_id": "12",
+            "tee": _Tee(),
+            "pipeline": _Pipeline(),
+        },
+    )()
+    branch = manager._build(source, "fullscreen")
+    splitmux = next(element for element in branch.elements if element.factory == "splitmuxsink")
+    callback = splitmux.signals["format-location"]
+
+    callback(splitmux, 0)
+    callback(splitmux, 1)
+
+    assert manager._upload_queue.get_nowait().source_id == "rtsp://camera.example/live"
+
+
+def test_terminal_recording_failure_is_quarantined_without_data_loss(tmp_path) -> None:
+    manager = _manager()
+    manager.recording_spool_path = tmp_path
+    recording = tmp_path / "camera-12-broken.mp4"
+    sidecar = recording.with_suffix(".json")
+    recording.write_bytes(b"broken")
+    sidecar.write_text("{}", encoding="utf-8")
+
+    quarantined = manager._quarantine_recording(recording)
+
+    assert quarantined.read_bytes() == b"broken"
+    assert quarantined.parent == tmp_path / "failed"
+    assert quarantined.with_suffix(".json").read_text(encoding="utf-8") == "{}"
+    assert not recording.exists()
 
 
 def test_branch_reuse_and_grace_release() -> None:
@@ -173,6 +223,18 @@ def test_branch_reuse_and_grace_release() -> None:
     assert first["path"] == second["path"]
     manager.release("camera", "wall", "one")
     assert manager.heartbeat("camera", "wall", "two")
+
+
+def test_wall_viewer_reuses_fullscreen_recording_encoder() -> None:
+    manager = _manager()
+    manager.attach_source("camera", _Tee(), _Pipeline())
+
+    wall = manager.acquire("camera", "wall", "wall-viewer")
+    fullscreen = manager.acquire("camera", "fullscreen", "fullscreen-viewer")
+
+    assert wall["path"] == fullscreen["path"]
+    assert list(manager.status()["branches"]) == ["camera/fullscreen"]
+    assert manager.release("camera", "wall", "wall-viewer")
 
 
 def test_durable_fullscreen_owner_does_not_expire_without_heartbeat(monkeypatch) -> None:
@@ -201,11 +263,13 @@ def test_expired_heartbeat_schedules_branch_for_grace_cleanup(monkeypatch) -> No
 
     clock["now"] = 103.0
     manager._expire()
-    assert ("camera", "wall") in manager._pending_removal
+    branch = manager._branches[("camera", "fullscreen")]
+    assert "viewer" not in branch.references
+    assert ("camera", "fullscreen") not in manager._pending_removal
 
     clock["now"] = 105.0
     manager._expire()
-    assert manager.status()["branches"] == {}
+    assert "camera/fullscreen" in manager.status()["branches"]
 
 
 def test_invalid_profile_rolls_back_without_branch() -> None:

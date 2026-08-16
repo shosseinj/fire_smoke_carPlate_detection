@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -11,6 +13,27 @@ from uuid import UUID
 
 
 SHA256_METADATA_KEY = "sha256"
+_OBJECT_LOCKS: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
+_OBJECT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def object_write_lock(bucket: str, key: str):
+    identity = (bucket, key)
+    with _OBJECT_LOCKS_GUARD:
+        lock, users = _OBJECT_LOCKS.get(identity, (threading.Lock(), 0))
+        _OBJECT_LOCKS[identity] = (lock, users + 1)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _OBJECT_LOCKS_GUARD:
+            current_lock, users = _OBJECT_LOCKS[identity]
+            if users == 1:
+                _OBJECT_LOCKS.pop(identity, None)
+            else:
+                _OBJECT_LOCKS[identity] = (current_lock, users - 1)
 
 
 class RecordingStorageError(RuntimeError):
@@ -46,6 +69,7 @@ class MinioClientProtocol(Protocol):
     def stat_object(self, bucket_name: str, object_name: str) -> Any: ...
 
     def remove_object(self, bucket_name: str, object_name: str) -> None: ...
+    def fget_object(self, bucket_name: str, object_name: str, file_path: str) -> Any: ...
 
     def presigned_get_object(
         self, bucket_name: str, object_name: str, expires: timedelta
@@ -107,6 +131,14 @@ class StoredRecording:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredObject:
+    object_key: str
+    size: int
+    sha256: str
+    already_present: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SpoolSettings:
     root: Path
     failed_retention_days: int = 7
@@ -144,7 +176,7 @@ class SpoolCleanupResult:
 
 def recording_object_key(job_uuid: UUID | str) -> str:
     parsed = job_uuid if isinstance(job_uuid, UUID) else UUID(str(job_uuid))
-    return f"recordings/{parsed}.mp4"
+    return f"scheduled/{parsed}.mp4"
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -197,6 +229,47 @@ class RecordingStorageService:
         )
         self.verify(key, size, checksum)
         return StoredRecording(parsed_uuid, key, size, checksum, False)
+
+    def stat(self, object_key: str) -> Any:
+        stat = self._stat_if_present(object_key)
+        if stat is None:
+            raise ObjectNotFoundError(f"Recording object not found: {object_key}")
+        return stat
+
+    def upload_object(self, object_key: str, local_path: Path | str, content_type: str) -> StoredObject:
+        if not object_key or object_key.startswith("/") or ".." in object_key.split("/"):
+            raise ValueError("object key must be relative and canonical")
+        path = Path(local_path)
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"Upload is not a regular file: {path}")
+        size, checksum = path.stat().st_size, sha256_file(path)
+        # MinIO fput has no portable create-only precondition. The embedded runtime
+        # owns one worker; this process lock makes its retries/concurrency safe.
+        with object_write_lock(self.settings.bucket_name, object_key):
+            existing = self._stat_if_present(object_key)
+            if existing is not None:
+                self._verify_stat(existing, size, checksum, object_key, conflict=True)
+                return StoredObject(object_key, size, checksum, True)
+            self.client.fput_object(self.settings.bucket_name, object_key, str(path),
+                                    content_type=content_type, metadata={SHA256_METADATA_KEY: checksum})
+            self.verify(object_key, size, checksum)
+            return StoredObject(object_key, size, checksum, False)
+
+    def download_object(self, object_key: str, destination: Path | str,
+                        *, expected_sha256: str | None = None) -> Path:
+        stat = self.stat(object_key)
+        destination_path = Path(destination)
+        self.client.fget_object(self.settings.bucket_name, object_key, str(destination_path))
+        if not destination_path.is_file() or destination_path.stat().st_size != int(stat.size):
+            destination_path.unlink(missing_ok=True)
+            raise ObjectVerificationError(f"Downloaded object size mismatch: {object_key}")
+        checksum = sha256_file(destination_path)
+        metadata_checksum = _metadata_value(getattr(stat, "metadata", {}) or {}, SHA256_METADATA_KEY)
+        required = expected_sha256 or metadata_checksum
+        if required and checksum != required:
+            destination_path.unlink(missing_ok=True)
+            raise ObjectVerificationError(f"Downloaded object checksum mismatch: {object_key}")
+        return destination_path
 
     def upload_verified_and_remove_local(
         self, job_uuid: UUID | str, local_path: Path | str
@@ -274,7 +347,7 @@ class RecordingStorageService:
             set_lifecycle(self.settings.bucket_name, config)
             return
         try:
-            from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
+            from minio.lifecycleconfig import Expiration, Filter, LifecycleConfig, Rule
         except ImportError as exc:
             raise RecordingStorageError(
                 "The optional 'minio' package is required to configure bucket retention"
@@ -283,7 +356,7 @@ class RecordingStorageService:
             [
                 Rule(
                     "Enabled",
-                    rule_filter=None,
+                    rule_filter=Filter(prefix=""),
                     rule_id="recording-retention",
                     expiration=Expiration(days=self.settings.minio_retention_days),
                 )

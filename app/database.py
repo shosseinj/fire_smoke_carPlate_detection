@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260815_0058"
+ALEMBIC_HEAD_REVISION = "20260815_0059"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -445,7 +445,7 @@ Index(
 
 human_logs = Table(
     "human_logs", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True), Column("session_id", Text, nullable=False),
+    Column("id", Integer, primary_key=True, autoincrement=True), Column("event_id", String(255), unique=True), Column("session_id", Text, nullable=False),
     Column("camera", Text, nullable=False), Column("track_id", Integer, nullable=False),
     Column("name", Text, nullable=False, server_default="Unknown"),
     Column("first_seen", UTC_TS, nullable=False), Column("last_seen", UTC_TS, nullable=False),
@@ -466,6 +466,31 @@ Index(
     human_logs.c.last_seen,
     postgresql_where=text("counts_for_attendance = 1 AND personnel_id IS NOT NULL"),
 )
+
+recording_segments = Table(
+    "recording_segments", metadata,
+    Column("segment_id", String(64), primary_key=True),
+    Column("camera_id", Text, nullable=False),
+    Column("bucket", Text, nullable=False), Column("object_key", Text, nullable=False, unique=True),
+    Column("started_at_utc", UTC_TS, nullable=False), Column("ended_at_utc", UTC_TS, nullable=False),
+    Column("frame_width", Integer, nullable=False), Column("frame_height", Integer, nullable=False),
+    Column("fps", Float, nullable=False), Column("published_at_utc", UTC_TS),
+    Column("sha256", String(64), nullable=False),
+    Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    CheckConstraint("ended_at_utc > started_at_utc", name="ck_recording_segments_interval"),
+    CheckConstraint("frame_width > 0 AND frame_height > 0 AND fps > 0", name="ck_recording_segments_media"),
+)
+Index("idx_recording_segments_camera_interval", recording_segments.c.camera_id, recording_segments.c.started_at_utc, recording_segments.c.ended_at_utc)
+
+detection_event_outbox = Table(
+    "detection_event_outbox", metadata,
+    Column("event_id", String(255), primary_key=True), Column("event_type", String(32), nullable=False),
+    Column("stream", Text, nullable=False), Column("payload", Text, nullable=False),
+    Column("published_at_utc", UTC_TS), Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text), Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+)
+Index("idx_detection_event_outbox_pending", detection_event_outbox.c.created_at_utc,
+      postgresql_where=text("published_at_utc IS NULL"))
 
 car_plates = Table(
     "car_plates", metadata,

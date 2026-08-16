@@ -7,6 +7,8 @@ from pathlib import Path
 import io
 import threading
 import queue
+import os
+import tempfile
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -27,6 +29,7 @@ from app.core.detection_media import (
     InvalidMediaKey,
     MEDIA_STATUS_READY,
 )
+from app.core.recording_storage import ObjectNotFoundError, ObjectVerificationError
 from app.core.jalali_utils import (
     _get_tehran_tz,
     gregorian_to_jalali_str,
@@ -1429,14 +1432,16 @@ def _content_disposition(path: Path, download: bool) -> str:
     return f'{disposition}; filename="{safe_name}"'
 
 
-def _range_not_satisfiable(file_size: int) -> Response:
+def _range_not_satisfiable(file_size: int, cleanup_path: Path | None = None) -> Response:
+    if cleanup_path is not None:
+        cleanup_path.unlink(missing_ok=True)
     return Response(
         status_code=416,
         headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
     )
 
 
-def _serve_media_file(path: Path, request: Request, download: bool) -> Response:
+def _serve_media_file(path: Path, request: Request, download: bool, cleanup: bool = False) -> Response:
     media_type = get_detection_media_storage().content_type(path)
     common_headers = {
         "Accept-Ranges": "bytes",
@@ -1446,40 +1451,46 @@ def _serve_media_file(path: Path, request: Request, download: bool) -> Response:
     }
     range_header = request.headers.get("range")
     if not range_header:
-        return FileResponse(str(path), media_type=media_type, headers=common_headers)
+        from starlette.background import BackgroundTask
+        return FileResponse(str(path), media_type=media_type, headers=common_headers,
+                            background=BackgroundTask(path.unlink, missing_ok=True) if cleanup else None)
 
     file_size = path.stat().st_size
     if not range_header.startswith("bytes=") or "," in range_header:
-        return _range_not_satisfiable(file_size)
+        return _range_not_satisfiable(file_size, path if cleanup else None)
     value = range_header[len("bytes=") :].strip()
     try:
         start_text, end_text = value.split("-", 1)
         if not start_text:
             suffix_length = int(end_text)
             if suffix_length <= 0:
-                return _range_not_satisfiable(file_size)
+                return _range_not_satisfiable(file_size, path if cleanup else None)
             start = max(0, file_size - suffix_length)
             end = file_size - 1
         else:
             start = int(start_text)
             end = int(end_text) if end_text else file_size - 1
     except (TypeError, ValueError):
-        return _range_not_satisfiable(file_size)
+        return _range_not_satisfiable(file_size, path if cleanup else None)
     if start < 0 or end < start or start >= file_size:
-        return _range_not_satisfiable(file_size)
+        return _range_not_satisfiable(file_size, path if cleanup else None)
     end = min(end, file_size - 1)
     content_length = end - start + 1
 
     def iterator():
-        remaining = content_length
-        with path.open("rb") as stream:
-            stream.seek(start)
-            while remaining > 0:
-                chunk = stream.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
+        try:
+            remaining = content_length
+            with path.open("rb") as stream:
+                stream.seek(start)
+                while remaining > 0:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+        finally:
+            if cleanup:
+                path.unlink(missing_ok=True)
 
     return StreamingResponse(
         iterator(),
@@ -1496,7 +1507,7 @@ def _serve_media_file(path: Path, request: Request, download: bool) -> Response:
 def _get_media_path(
     log_id: int,
     kind: str,
-) -> tuple[DetectionLogRecord, Path]:
+) -> tuple[DetectionLogRecord, Path, bool]:
     record = get_detection_log_store().get(log_id)
     if record is None:
         raise HTTPException(404, "لاگ یافت نشد")
@@ -1514,10 +1525,34 @@ def _get_media_path(
     if kind == "face-video" and record.face_video_status != MEDIA_STATUS_READY:
         status_code = 409 if record.face_video_status == "writing" else 404
         raise HTTPException(status_code, "ویدیوی چهره هنوز آماده نیست")
-    path = _resolve_media_path(getattr(record, field))
+    media_key = getattr(record, field)
+    if isinstance(media_key, str) and media_key.startswith("minio://"):
+        storage = get_runtime().recording_storage
+        if storage is None:
+            raise HTTPException(404, "پرونده یافت نشد")
+        location = media_key[len("minio://"):]
+        bucket, separator, object_key = location.partition("/")
+        if not separator or bucket != storage.settings.bucket_name or not object_key:
+            raise HTTPException(500, "نشانی پرونده نامعتبر است")
+        descriptor, temp_name = tempfile.mkstemp(suffix=Path(media_key).suffix)
+        os.close(descriptor)
+        path = Path(temp_name)
+        try:
+            storage.download_object(object_key, path)
+        except ObjectNotFoundError:
+            path.unlink(missing_ok=True)
+            raise HTTPException(404, "پرونده یافت نشد")
+        except ObjectVerificationError:
+            path.unlink(missing_ok=True)
+            raise HTTPException(502, "یکپارچگی پرونده تأیید نشد")
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise HTTPException(503, "ذخیره‌ساز پرونده در دسترس نیست")
+        return record, path, True
+    path = _resolve_media_path(media_key)
     if path is None or not path.is_file():
         raise HTTPException(404, "پرونده یافت نشد")
-    return record, path
+    return record, path, False
 
 
 @router.get("/{log_id}/thumbnail")
@@ -1555,8 +1590,8 @@ def get_face(
     download: bool = Query(False),
     _: dict = Depends(require_permission("application.read")),
 ) -> Response:
-    _, path = _get_media_path(log_id, "face")
-    return _serve_media_file(path, request, download)
+    _, path, cleanup = _get_media_path(log_id, "face")
+    return _serve_media_file(path, request, download, cleanup)
 
 
 @router.get("/{log_id}/body")
@@ -1567,8 +1602,8 @@ def get_body(
     download: bool = Query(False),
     _: dict = Depends(require_permission("application.read")),
 ) -> Response:
-    _, path = _get_media_path(log_id, "body")
-    return _serve_media_file(path, request, download)
+    _, path, cleanup = _get_media_path(log_id, "body")
+    return _serve_media_file(path, request, download, cleanup)
 
 
 @router.get("/{log_id}/snapshot")
@@ -1579,8 +1614,8 @@ def get_snapshot(
     download: bool = Query(False),
     _: dict = Depends(require_permission("application.read")),
 ) -> Response:
-    _, path = _get_media_path(log_id, "snapshot")
-    return _serve_media_file(path, request, download)
+    _, path, cleanup = _get_media_path(log_id, "snapshot")
+    return _serve_media_file(path, request, download, cleanup)
 
 
 @router.get("/{log_id}/video")
@@ -1591,8 +1626,8 @@ def get_video(
     download: bool = Query(False),
     _: dict = Depends(require_permission("application.read")),
 ) -> Response:
-    _, path = _get_media_path(log_id, "video")
-    return _serve_media_file(path, request, download)
+    _, path, cleanup = _get_media_path(log_id, "video")
+    return _serve_media_file(path, request, download, cleanup)
 
 
 @router.get("/{log_id}/face-video")
@@ -1603,8 +1638,8 @@ def get_face_video(
     download: bool = Query(False),
     _: dict = Depends(require_permission("application.read")),
 ) -> Response:
-    _, path = _get_media_path(log_id, "face-video")
-    return _serve_media_file(path, request, download)
+    _, path, cleanup = _get_media_path(log_id, "face-video")
+    return _serve_media_file(path, request, download, cleanup)
 
 
 @router.delete("/{log_id}")

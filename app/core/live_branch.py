@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
+from app.core.recording_storage import object_write_lock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class RecordingUpload:
     start_time: str
     end_time: str
     object_name: str
+    source_id: str | None = None
 
 
 class GpuLiveBranchManager:
@@ -94,7 +96,9 @@ class GpuLiveBranchManager:
         grace_seconds: float = 5.0,
         heartbeat_timeout_seconds: float = 15.0,
         recording_segment_seconds: float | None = None,
+        recording_spool_path: Path | str = "saved_media/temporary_minIO/continuous",
         camera_id_resolver: Callable[[str], int | str | None] | None = None,
+        recording_segment_finalizer: Callable[[RecordingUpload, int, int, float, str], None] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] | None = None,
     ) -> None:
         self.publish_base = self._validate_base(publish_base)
@@ -106,10 +110,9 @@ class GpuLiveBranchManager:
         if configured_segment_seconds is None:
             configured_segment_seconds = float(os.getenv("LIVE_RECORDING_SEGMENT_SECONDS", "3600"))
         self.recording_segment_seconds = max(1.0, configured_segment_seconds)
-        self.recording_spool_path = Path(
-            os.getenv("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
-        )
+        self.recording_spool_path = Path(recording_spool_path)
         self.camera_id_resolver = camera_id_resolver
+        self.recording_segment_finalizer = recording_segment_finalizer
         self.gst_loader = gst_loader
         self._gst: Any | None = None
         self._glib: Any | None = None
@@ -219,7 +222,10 @@ class GpuLiveBranchManager:
             return {"enabled": False, "source_id": source_id, "profile": profile}
         if profile not in {"wall", "fullscreen"}:
             raise ValueError("profile must be wall or fullscreen")
-        key = (source_id, profile)
+        # One NVENC session per source serves continuous recording, fullscreen,
+        # and bounded wall tiles. The frontend constrains wall dimensions.
+        branch_profile = "fullscreen"
+        key = (source_id, branch_profile)
         now = time.monotonic()
         with self._lock:
             source = self._sources.get(source_id)
@@ -227,7 +233,7 @@ class GpuLiveBranchManager:
                 raise RuntimeError("source has no confirmed NVMM decoder tee")
             branch = self._branches.get(key)
             if branch is None:
-                branch = self._build(source, profile)
+                branch = self._build(source, branch_profile)
                 self._branches[key] = branch
             branch.references.add(viewer_id)
             branch.last_heartbeat[viewer_id] = now
@@ -245,15 +251,17 @@ class GpuLiveBranchManager:
         return contract
 
     def heartbeat(self, source_id: str, profile: str, viewer_id: str) -> bool:
+        branch_profile = "fullscreen" if profile == "wall" else profile
         with self._lock:
-            branch = self._branches.get((source_id, profile))
+            branch = self._branches.get((source_id, branch_profile))
             if branch is None or viewer_id not in branch.references:
                 return False
             branch.last_heartbeat[viewer_id] = time.monotonic()
             return True
 
     def release(self, source_id: str, profile: str, viewer_id: str) -> bool:
-        key = (source_id, profile)
+        branch_profile = "fullscreen" if profile == "wall" else profile
+        key = (source_id, branch_profile)
         with self._lock:
             branch = self._branches.get(key)
             if branch is None:
@@ -324,7 +332,7 @@ class GpuLiveBranchManager:
                     if previous is not None:
                         end_time = datetime.now(timezone.utc)
                         upload = self._recording_upload(
-                            previous, camera_id, recording_state["start_time"], end_time
+                            previous, camera_id, recording_state["start_time"], end_time, source.source_id
                         )
                         LOGGER.info("fMP4 fragment written: %s", previous)
                         LOGGER.info("Recording file completed: %s", previous)
@@ -436,7 +444,7 @@ class GpuLiveBranchManager:
                 completed_path,
                 camera_id,
                 branch.recording_state.get("start_time") or datetime.now(timezone.utc),
-                datetime.now(timezone.utc),
+                datetime.now(timezone.utc), branch.source_id,
             )
             LOGGER.info("fMP4 fragment written: %s", completed_path)
             LOGGER.info("Recording file completed: %s", completed_path)
@@ -504,7 +512,8 @@ class GpuLiveBranchManager:
 
     @staticmethod
     def _recording_upload(
-        path: Path, camera_id: str, start_time: datetime, end_time: datetime
+        path: Path, camera_id: str, start_time: datetime, end_time: datetime,
+        source_id: str | None = None,
     ) -> RecordingUpload:
         object_name = f"continuous/{camera_id}/{start_time:%Y/%m/%d}/{path.name}"
         return RecordingUpload(
@@ -513,13 +522,14 @@ class GpuLiveBranchManager:
             start_time=start_time.isoformat(),
             end_time=end_time.isoformat(),
             object_name=object_name,
+            source_id=source_id,
         )
 
     @staticmethod
     def _upload_sidecar(upload: RecordingUpload) -> Path:
         return upload.path.with_suffix(".json")
 
-    def _persist_upload(self, upload: RecordingUpload) -> None:
+    def _persist_upload(self, upload: RecordingUpload, media: dict[str, Any] | None = None) -> None:
         self._upload_sidecar(upload).write_text(
             json.dumps(
                 {
@@ -527,6 +537,8 @@ class GpuLiveBranchManager:
                     "start_time": upload.start_time,
                     "end_time": upload.end_time,
                     "object_name": upload.object_name,
+                    "source_id": upload.source_id,
+                    **(media or {}),
                 }
             ),
             encoding="utf-8",
@@ -542,10 +554,24 @@ class GpuLiveBranchManager:
                 start_time=str(value["start_time"]),
                 end_time=str(value["end_time"]),
                 object_name=str(value["object_name"]),
+                source_id=str(value["source_id"]) if value.get("source_id") else None,
             )
         camera_id = path.name.split("-", 2)[1] if path.name.startswith("camera-") else "unknown"
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         return self._recording_upload(path, camera_id, modified, modified)
+
+    def _quarantine_recording(self, path: Path) -> Path:
+        failed = self.recording_spool_path / "failed"
+        failed.mkdir(parents=True, exist_ok=True)
+        target = failed / path.name
+        if target.exists():
+            target = failed / f"{path.stem}-{time.time_ns()}{path.suffix}"
+        sidecar = path.with_suffix(".json")
+        target_sidecar = target.with_suffix(".json")
+        path.replace(target)
+        if sidecar.is_file():
+            sidecar.replace(target_sidecar)
+        return target
 
     def _run_uploads(self) -> None:
         client = None
@@ -564,6 +590,19 @@ class GpuLiveBranchManager:
             self._persist_upload(upload)
             LOGGER.info("Recording upload started: %s", path)
             try:
+                import av
+                with av.open(str(path)) as media_file:
+                    video = next((stream for stream in media_file.streams if stream.type == "video"), None)
+                    if video is None or video.width <= 0 or video.height <= 0 or video.average_rate is None or float(video.average_rate) <= 0:
+                        raise ValueError("recording has invalid media metadata")
+                    width, height, fps = int(video.width), int(video.height), float(video.average_rate)
+                digest = hashlib.sha256()
+                with path.open("rb") as recording:
+                    while chunk := recording.read(1024 * 1024):
+                        digest.update(chunk)
+                checksum = digest.hexdigest()
+                self._persist_upload(upload, {"frame_width": width, "frame_height": height,
+                                              "fps": fps, "sha256": checksum})
                 if client is None:
                     from minio import Minio
 
@@ -576,18 +615,30 @@ class GpuLiveBranchManager:
                     )
                     if not client.bucket_exists(bucket):
                         client.make_bucket(bucket)
-                client.fput_object(
-                    bucket,
-                    upload.object_name,
-                    str(path),
-                    content_type="video/mp4",
-                    metadata={
+                video_metadata = {
                         "camera-id": upload.camera_id,
                         "start-time": upload.start_time,
                         "end-time": upload.end_time,
                         "object-name": upload.object_name,
-                    },
-                )
+                        "sha256": checksum,
+                    }
+                # Process-local one-writer scope; multi-process deployments need
+                # an external lock or backend conditional-create support.
+                with object_write_lock(bucket, upload.object_name):
+                    try:
+                        existing = client.stat_object(bucket, upload.object_name)
+                    except Exception as stat_error:
+                        if getattr(stat_error, "code", None) not in {"NoSuchKey", "NoSuchObject", "NotFound"}:
+                            raise
+                        existing = None
+                    if existing is not None:
+                        metadata = getattr(existing, "metadata", {}) or {}
+                        existing_sha = metadata.get("x-amz-meta-sha256") or metadata.get("sha256")
+                        if int(existing.size) != path.stat().st_size or existing_sha != checksum:
+                            raise ValueError("continuous recording object conflicts with existing content")
+                    else:
+                        client.fput_object(bucket, upload.object_name, str(path),
+                                           content_type="video/mp4", metadata=video_metadata)
                 sidecar = self._upload_sidecar(upload)
                 client.fput_object(
                     bucket,
@@ -595,12 +646,24 @@ class GpuLiveBranchManager:
                     str(sidecar),
                     content_type="application/json",
                 )
+                if self.recording_segment_finalizer is not None:
+                    self.recording_segment_finalizer(upload, width, height, fps, checksum)
                 path.unlink()
                 sidecar.unlink(missing_ok=True)
                 LOGGER.info("Recording upload succeeded: %s", upload.object_name)
             except Exception as exc:
                 client = None
-                LOGGER.warning("Recording upload failed: path=%s error=%s", path, type(exc).__name__)
+                LOGGER.warning(
+                    "Recording upload failed: path=%s error=%s detail=%s",
+                    path,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                if isinstance(exc, ValueError) or type(exc).__name__ == "InvalidDataError":
+                    quarantined = self._quarantine_recording(path)
+                    LOGGER.error("Recording quarantined after terminal media failure: %s", quarantined)
+                    continue
                 if not self._stop.wait(5.0):
                     self._upload_queue.put(upload)
 
