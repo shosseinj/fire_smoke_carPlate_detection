@@ -195,7 +195,7 @@ def test_source_crud_emits_online_websocket_events_and_allows_renaming(
                             "draw_vehicle": True,
                             "draw_plate": True,
                             "counts_for_attendance": True,
-                            "updated_at_utc": event["camera"]["updated_at_utc"],
+                            "updated_at_jalali": event["camera"]["updated_at_jalali"],
                         },
                     }
 
@@ -318,7 +318,8 @@ def test_single_and_bulk_source_updates(tmp_path: Path) -> None:
             assert single.status_code == 200
             assert single.json()["name"] == "Single update"
             assert "metadata" in single.json()
-            assert "updated_at_utc" in single.json()
+            assert "updated_at_jalali" in single.json()
+            assert "updated_at_utc" not in single.json()
 
             bulk = client.put(
                 "/api/v1/sources/bulk/task-assignment",

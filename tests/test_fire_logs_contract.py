@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.fire_logs import FireLogCreate, FireLogResponse, FireLogUpdate, _date_range_values
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 
 
 def test_fire_log_create_requires_independent_confidence() -> None:
@@ -43,7 +44,9 @@ def test_fire_log_request_enums_and_camera_validation() -> None:
 def test_fire_log_response_contract_and_date_range() -> None:
     response = FireLogResponse(
         id=1,
-        detection_time=datetime.now(timezone.utc),
+        detection_time=utc_iso_to_jalali_datetime(
+            datetime.now(timezone.utc).isoformat()
+        ),
         camera_id="camera-1",
         hazard_type="fire",
         severity="high",
@@ -57,6 +60,7 @@ def test_fire_log_response_contract_and_date_range() -> None:
         details={"events": []},
     )
     assert response.details == {"events": []}
+    assert isinstance(response.detection_time, str)
 
     start, end = _date_range_values(datetime(2026, 1, 1), datetime(2026, 1, 2))
     assert start == "2026-01-01T00:00:00+00:00"
