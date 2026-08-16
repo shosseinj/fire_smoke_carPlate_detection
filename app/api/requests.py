@@ -153,8 +153,6 @@ def _record_to_dict(r: PersonnelRequestRecord) -> dict[str, Any]:
         "status": r.status,
         "approved_by": r.approved_by,
         "rejection_reason": r.rejection_reason,
-        "created_at_utc": r.created_at_utc,
-        "updated_at_utc": r.updated_at_utc,
         "created_at_jalali": utc_iso_to_jalali_datetime(r.created_at_utc) or "",
         "updated_at_jalali": utc_iso_to_jalali_datetime(r.updated_at_utc),
     }
