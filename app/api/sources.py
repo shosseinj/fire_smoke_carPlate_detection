@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.core.media_preview import preview_stream_path
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.source_registry import STATIC_VIDEO, SourceRecord
 from app.core.video_ingestor import VideoFileIngestor
 from app.runtime import Runtime
@@ -139,6 +140,12 @@ def _response(record: SourceRecord, runtime: Runtime | None = None) -> SourceRes
     value = record.to_dict()
     # Ensure id is always an int
     value["id"] = value.get("id") or 0
+    value["created_at_jalali"] = utc_iso_to_jalali_datetime(
+        value.pop("created_at_utc", None)
+    ) or ""
+    value["updated_at_jalali"] = utc_iso_to_jalali_datetime(
+        value.pop("updated_at_utc", None)
+    )
     if runtime is not None and record.source_type == STATIC_VIDEO:
         static_record = runtime.static_video_store.get(record.source_uri)
         value["static_video_id"] = static_record.id if static_record is not None else None
