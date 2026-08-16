@@ -7,6 +7,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from app.core.jalali_utils import to_jalali_local_string
+
 
 class TaskName(str, Enum):
     """Python 3.10-compatible string enum used by FastAPI and Pydantic."""
@@ -106,8 +108,8 @@ class TaskResult:
             "source_id": self.source_id,
             "round_sequence": self.round_sequence,
             "frame_index": self.frame_index,
-            "captured_at_utc": self.captured_at_utc,
-            "processed_at_utc": self.processed_at_utc,
+            "captured_at": to_jalali_local_string(self.captured_at_utc),
+            "processed_at": to_jalali_local_string(self.processed_at_utc),
             "processing_ms": self.processing_ms,
             "frame_width": self.frame_width,
             "frame_height": self.frame_height,

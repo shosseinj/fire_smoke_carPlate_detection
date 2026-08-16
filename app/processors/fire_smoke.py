@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.fire_core.severity import (
     CameraRiskState,
@@ -416,6 +417,7 @@ class FireSmokeProcessor(BatchProcessor):
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         now_utc = datetime.now(timezone.utc).isoformat()
+        now_jalali = to_jalali_local_string(now_utc)
         if severity >= self.settings.incident_start_severity:
             if state.incident is None:
                 state.incident = IncidentState(
@@ -427,7 +429,7 @@ class FireSmokeProcessor(BatchProcessor):
                     {
                         "event_type": "incident_started",
                         "incident_id": state.incident.incident_id,
-                        "started_at_utc": now_utc,
+                        "started_at": now_jalali,
                         "severity": severity.label,
                     }
                 )
@@ -439,7 +441,7 @@ class FireSmokeProcessor(BatchProcessor):
                     {
                         "event_type": "alert_started",
                         "incident_id": state.incident.incident_id,
-                        "created_at_utc": now_utc,
+                        "created_at": now_jalali,
                         "severity": severity.label,
                     }
                 )
@@ -451,7 +453,7 @@ class FireSmokeProcessor(BatchProcessor):
                     {
                         "event_type": "incident_ended",
                         "incident_id": state.incident.incident_id,
-                        "ended_at_utc": now_utc,
+                        "ended_at": now_jalali,
                         "maximum_severity": state.incident.maximum_severity.label,
                     }
                 )
