@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.database import Database, Row, ensure_database
+from app.core.jalali_utils import to_jalali_local_string
 from app.time_utils import utc_now_text
 
 
@@ -53,8 +54,8 @@ class ImportProgressRecord:
                 else 0.0
             ),
             "created_by": self.created_by,
-            "created_at": self.created_at_utc,
-            "updated_at": self.updated_at_utc,
+            "created_at": to_jalali_local_string(self.created_at_utc) or "",
+            "updated_at": to_jalali_local_string(self.updated_at_utc) or "",
         }
 
 

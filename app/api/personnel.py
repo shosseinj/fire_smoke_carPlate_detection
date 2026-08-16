@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import accessible_scope_ids, enforce_scoped_permission, get_current_user, require_permission
 from app.core.common_schemas import UserBrief, resolve_user_brief, resolve_user_briefs
 from app.core.frontend_messages import LocalizedJSONRoute
-from app.core.jalali_utils import parse_jalali_date
+from app.core.jalali_utils import parse_jalali_date, to_jalali_local_string
 from app.core.legacy_service import format_jalali, validate_jalali_date
 from app.core.personnel_store import (
     PersonnelImageRecord,
@@ -123,7 +123,6 @@ class SimplePersonnelResponse(BaseModel):
     department_name: Optional[str] = None
     shift_name: Optional[str] = None
     degree: Optional[str] = None
-    created_at: datetime
     created_at_jalali: str = ""
     created_by: UserBrief | None = None
     updated_by: UserBrief | None = None
@@ -157,8 +156,8 @@ class PersonnelShiftAssignmentResponse(BaseModel):
     end_date: str
     start_date_gregorian: str
     end_date_gregorian: str
-    created_at_utc: str
-    updated_at_utc: str
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     shift: ShiftInfo | None = None
 
 
@@ -167,7 +166,7 @@ class PersonnelImageResponse(BaseModel):
     image_base64: Optional[str] = None
     personnel_id: int
     is_primary: bool
-    uploaded_at: Optional[datetime] = None
+    uploaded_at: Optional[str] = None
 
 
 # ── Converters ───────────────────────────────────────────────────
@@ -207,8 +206,8 @@ def _shift_assignment_response(
         end_date=format_jalali(assignment.end_date),
         start_date_gregorian=assignment.start_date.isoformat(),
         end_date_gregorian=assignment.end_date.isoformat(),
-        created_at_utc=assignment.created_at_utc,
-        updated_at_utc=assignment.updated_at_utc,
+        created_at_jalali=to_jalali_local_string(assignment.created_at_utc) or "",
+        updated_at_jalali=to_jalali_local_string(assignment.updated_at_utc),
         shift=_shift_info(shift),
     )
 
@@ -248,7 +247,6 @@ def _personnel_simple(
             else store._resolve_shift_name(p.shift_id)
         ),
         degree=p.degree,
-        created_at=p.created_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(p.created_at_utc) or "",
         created_by=c,
         updated_by=u,
@@ -261,8 +259,20 @@ def _image_to_base64_response(img: PersonnelImageRecord, store: PersonnelStore) 
         image_base64=store.read_image_base64(img.storage_key),
         personnel_id=img.personnel_id,
         is_primary=img.is_primary,
-        uploaded_at=img.uploaded_at_utc,
+        uploaded_at=to_jalali_local_string(img.uploaded_at_utc),
     )
+
+
+def _personnel_dict(value: dict) -> dict:
+    for utc_key, jalali_key in (
+        ("created_at_utc", "created_at_jalali"),
+        ("updated_at_utc", "updated_at_jalali"),
+        ("uploaded_at_utc", "uploaded_at_jalali"),
+    ):
+        raw = value.pop(utc_key, None)
+        if raw is not None:
+            value[jalali_key] = to_jalali_local_string(raw)
+    return value
 
 
 # ── Personnel CRUD ──────────────────────────────────────────────────
@@ -923,7 +933,7 @@ async def upload_personnel_images(
         img_record = store.get_image(img_record.id) or img_record
         saved_images.append(img_record)
         all_failed = False
-        img_dict = dataclass_to_dict(img_record)
+        img_dict = _personnel_dict(dataclass_to_dict(img_record))
         img_dict["face_status"] = face_status
         img_dict["cropped_face_key"] = cropped_face_key
         results.append({"success": True, "failure_code": None, "failure_message": None, "image": img_dict})
@@ -931,13 +941,13 @@ async def upload_personnel_images(
     if all_failed:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"total_success": 0, "total_failed": len(upload_files), "results": results, "personnel": dataclass_to_dict(person)},
+            detail={"total_success": 0, "total_failed": len(upload_files), "results": results, "personnel": _personnel_dict(dataclass_to_dict(person))},
         )
 
-    person_dict = dataclass_to_dict(person)
+    person_dict = _personnel_dict(dataclass_to_dict(person))
     person_dict["images"] = []
     for img in saved_images:
-        img_dict = dataclass_to_dict(img)
+        img_dict = _personnel_dict(dataclass_to_dict(img))
         for r in results:
             if r.get("image") and r["image"].get("id") == img.id:
                 img_dict["face_status"] = r["image"].get("face_status", 0)

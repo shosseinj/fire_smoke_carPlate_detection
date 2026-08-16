@@ -99,15 +99,15 @@ class PlateLogResponse(BaseModel):
     plate_number: str | None = None
     raw_plate_text: str | None = None
     confidence: float | None = None
-    detection_time: datetime
+    detection_time: str
     detection_time_local: str
     detection_time_jalali: str
     snapshot_thumbnail: str | None = None
     snap_shot_url: str | None = None
     video_url: str | None = None
     notes: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: str
 
 
 def get_runtime() -> Runtime:
@@ -140,6 +140,15 @@ def _response(
     result["detection_time_jalali"] = (
         utc_iso_to_jalali_datetime(_time_text(detected)) or ""
     )
+    result["detection_time"] = result["detection_time_jalali"]
+    result["created_at"] = utc_iso_to_jalali_datetime(
+        _time_text(result.get("created_at_utc"))
+    ) or ""
+    result["updated_at"] = utc_iso_to_jalali_datetime(
+        _time_text(result.get("updated_at_utc"))
+    ) or ""
+    for key in ("created_at_utc", "updated_at_utc"):
+        result.pop(key, None)
     snapshot_key = result.pop("snapshot_key", None)
     video_key = result.pop("video_key", None)
     result.pop("snapshot_url", None)

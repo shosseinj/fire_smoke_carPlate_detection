@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import Response
 
 from app.core.auth import require_permission
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -47,7 +48,7 @@ def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
         "image_base64": store.read_image_base64(img.storage_key),
         "personnel_id": img.personnel_id,
         "is_primary": img.is_primary,
-        "uploaded_at": img.uploaded_at_utc,
+        "uploaded_at": to_jalali_local_string(img.uploaded_at_utc),
     }
 
 

@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import require_permission
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.shift_store import WorkShiftRecord
 from app.core.legacy_service import (
     legacy_shift_response,
@@ -176,8 +177,8 @@ def _assignment_response(record: Any) -> dict[str, Any]:
         "end_date": format_jalali(record.end_date),
         "start_date_gregorian": record.start_date.isoformat(),
         "end_date_gregorian": record.end_date.isoformat(),
-        "created_at_utc": record.created_at_utc,
-        "updated_at_utc": record.updated_at_utc,
+        "created_at_jalali": to_jalali_local_string(record.created_at_utc) or "",
+        "updated_at_jalali": to_jalali_local_string(record.updated_at_utc),
     }
 
 

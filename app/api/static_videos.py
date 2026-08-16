@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.source_registry import SourceRecord
 from app.core.frontend_messages import LocalizedJSONRoute
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.static_video_store import StaticVideoRecord
 from app.core.video_ingestor import VIDEO_SUFFIXES
 from app.runtime import Runtime
@@ -111,8 +112,8 @@ def _api_response(record: StaticVideoRecord) -> dict[str, Any]:
         "processing_status": record.processing_status,
         "is_processed": record.is_processed,
         "processing_error": record.processing_error,
-        "processing_started_at": record.processing_started_at,
-        "processing_completed_at": record.processing_completed_at,
+        "processing_started_at": to_jalali_local_string(record.processing_started_at),
+        "processing_completed_at": to_jalali_local_string(record.processing_completed_at),
         "processing_attempts": record.processing_attempts,
     }
 

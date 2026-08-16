@@ -56,8 +56,6 @@ def _record_to_response(
         holiday_type=record.holiday_type,
         every_year=record.every_year,
         is_active=record.is_active,
-        created_at=record.created_at_utc,
-        updated_at=record.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(record.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(record.updated_at_utc),
         created_by=created_by,

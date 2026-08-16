@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.database import Connection, Database, IntegrityError, OperationalError, Row, ensure_database
+from app.core.jalali_utils import to_jalali_local_string
 from app.time_utils import utc_now_text
 
 import json
@@ -333,7 +334,7 @@ class ModelManager:
             return {
                 **value,
                 "revision": self._revision,
-                "updated_at_utc": self._updated_at,
+                "updated_at_jalali": to_jalali_local_string(self._updated_at),
                 "resolved_models": resolved,
             }
 
@@ -397,6 +398,19 @@ class ConversionJob:
     options: dict[str, Any]
     artifacts: list[str]
     errors: list[dict[str, str]]
+
+
+def _conversion_job_response(job: ConversionJob) -> dict[str, Any]:
+    result = asdict(job)
+    result["created_at_jalali"] = to_jalali_local_string(
+        result.pop("created_at_utc", None)
+    ) or ""
+    result["updated_at_jalali"] = to_jalali_local_string(
+        result.pop("updated_at_utc", None)
+    ) or ""
+    result["artifact_urls"] = [_artifact_url(path) for path in job.artifacts]
+    result["status_url"] = f"/api/v1/models/conversions/{job.job_id}"
+    return result
 
 
 class ModelConversionManager:
@@ -780,10 +794,7 @@ class ModelConversionManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            result = asdict(job)
-            result["artifact_urls"] = [_artifact_url(path) for path in job.artifacts]
-            result["status_url"] = f"/api/v1/models/conversions/{job.job_id}"
-            return result
+            return _conversion_job_response(job)
 
     def delete(self, job_id: str) -> bool:
         """Delete a finished conversion record and its generated artifacts."""
@@ -810,11 +821,7 @@ class ModelConversionManager:
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [
-                {
-                    **asdict(job),
-                    "artifact_urls": [_artifact_url(path) for path in job.artifacts],
-                    "status_url": f"/api/v1/models/conversions/{job.job_id}",
-                }
+                _conversion_job_response(job)
                 for job in reversed(list(self._jobs.values()))
             ]
 

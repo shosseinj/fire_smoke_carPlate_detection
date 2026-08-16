@@ -62,8 +62,6 @@ def _user_to_response(user: UserRecord) -> UserResponse:
         email=user.email,
         full_name=user.full_name,
         is_active=user.is_active,
-        created_at=_parse_utc(user.created_at_utc) or datetime.now(timezone.utc),
-        last_login=_parse_utc(user.last_login_utc),
         created_at_jalali=utc_iso_to_jalali_datetime(user.created_at_utc) or "",
         last_login_jalali=utc_iso_to_jalali_datetime(user.last_login_utc),
         permissions=sorted(effective_permissions(user)),

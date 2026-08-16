@@ -80,8 +80,6 @@ class BuildingResponse(BaseModel):
     address: str | None = None
     description: str | None = None
     is_active: bool = True
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -126,8 +124,6 @@ class SectionResponse(BaseModel):
     description: str | None = None
     is_active: bool = True
     building_id: int
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -174,8 +170,6 @@ class RoomResponse(BaseModel):
     camera_id: int | None = None
     section_id: int | None = None
     polygon_points: list[list[float]] | None = None
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -252,8 +246,6 @@ def _build_response(
         address=b.address,
         description=b.description,
         is_active=True,
-        created_at=b.created_at_utc,
-        updated_at=b.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(b.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(b.updated_at_utc),
         created_by=c,
@@ -284,8 +276,6 @@ def _section_response(
         description=s.description,
         is_active=s.is_active,
         building_id=s.building_id or 0,
-        created_at=s.created_at_utc,
-        updated_at=s.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(s.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(s.updated_at_utc),
         created_by=c,
@@ -313,8 +303,6 @@ def _room_response(
         camera_id=r.cam_id,
         section_id=r.section_id,
         polygon_points=_polygon_to_list(r.polygon_json),
-        created_at=r.created_at_utc,
-        updated_at=r.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(r.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(r.updated_at_utc),
         created_by=c,
