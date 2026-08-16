@@ -148,6 +148,7 @@ class Settings:
     human_event_media_enabled: bool = _env_bool("HUMAN_EVENT_MEDIA_ENABLED", True)
     human_event_media_write_enabled: bool = _env_bool("HUMAN_EVENT_MEDIA_WRITE_ENABLED", True)
     human_event_clip_padding_seconds: float = _env_float("HUMAN_EVENT_CLIP_PADDING_SECONDS", 5.0)
+    human_event_min_observations: int = _env_int("HUMAN_EVENT_MIN_OBSERVATIONS", 3)
     human_event_media_group: str = os.getenv("HUMAN_EVENT_MEDIA_GROUP", "detection-media-v1").strip()
     human_event_media_consumer: str = os.getenv("HUMAN_EVENT_MEDIA_CONSUMER", "embedded-worker").strip()
     human_event_media_dead_letter_stream: str = os.getenv("HUMAN_EVENT_MEDIA_DEAD_LETTER_STREAM", "detection:human:dead:v1").strip()

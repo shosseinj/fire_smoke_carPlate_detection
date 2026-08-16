@@ -592,6 +592,8 @@ class Runtime:
                                             "error": getattr(self, "human_event_media_error", None)})
         if getattr(self, "human_event_outbox", None) is not None:
             value["human_event_media"]["outbox"] = self.human_event_outbox.status()
+        if getattr(self, "human_event_observer", None) is not None:
+            value["human_event_media"]["observer"] = self.human_event_observer.status()
         value["plate_log_count"] = self.plate_logs.count()
         value["plate_logs"] = self.plate_logs.status()
         value["fire_smoke_logs"] = self.fire_smoke_logs.status()
@@ -968,6 +970,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     human_event_observer = HumanDetectionEventObserver(
         lambda: human_event_outbox,
         clip_padding_seconds=app_settings.human_event_clip_padding_seconds,
+        min_observations=app_settings.human_event_min_observations,
     )
 
     def _build_face_polygon_observer(

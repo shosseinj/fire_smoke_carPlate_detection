@@ -13,6 +13,7 @@ def test_config_has_expected_defaults() -> None:
     assert settings.human_event_media_enabled is False
     assert settings.human_event_media_write_enabled is False
     assert settings.human_event_clip_padding_seconds == 5.0
+    assert settings.human_event_min_observations == 3
     assert settings.human_event_media_group == "detection-media-v1"
     assert settings.continuous_recording_temp_path.as_posix().endswith(
         "saved_media/temporary_minIO/continuous"

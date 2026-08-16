@@ -125,6 +125,7 @@ services:
       RECORDING_SPOOL_PATH: ${RECORDING_SPOOL_PATH:-/workspace/saved_media/recording_spool}
       HUMAN_EVENT_MEDIA_TEMP_PATH: ${HUMAN_EVENT_MEDIA_TEMP_PATH:-/workspace/saved_media/temporary_minIO/human_track}
       HUMAN_EVENT_MEDIA_LOCAL_PATH: ${HUMAN_EVENT_MEDIA_LOCAL_PATH:-/workspace/saved_media/human_track}
+      HUMAN_EVENT_MIN_OBSERVATIONS: ${HUMAN_EVENT_MIN_OBSERVATIONS:-3}
       VIDEO_LOOP: ${VIDEO_LOOP:-true}
       RTSP_INGESTION_ENABLED: ${RTSP_INGESTION_ENABLED:-true}
       RTSP_TRANSPORT: ${RTSP_TRANSPORT:-tcp}

@@ -123,3 +123,19 @@ def test_pending_malformed_same_key_then_corrected_metadata_recovers_once():
     observe(observer, pub, result(humans=False, disappeared=True))
     assert len(pub.events) == 1 and pub.events[0].room_id == 9
     assert observer.status()["completed"] == 1
+
+
+def test_runtime_observation_gate_rejects_single_frame_and_accepts_three_frames():
+    pub = Publisher()
+    observer = HumanDetectionEventObserver(lambda: pub, min_observations=3)
+
+    observe(observer, pub, result(track=1, index=1))
+    observe(observer, pub, result(track=1, humans=False, disappeared=True, index=2))
+    for index in (1, 2, 3):
+        observe(observer, pub, result(track=2, index=index), packet(index))
+    observe(observer, pub, result(track=2, humans=False, disappeared=True, index=4))
+
+    assert observer.close(1.0)
+    assert [event.track_id for event in pub.events] == [2]
+    assert observer.status()["short_tracks_rejected"] == 1
+    assert observer.status()["min_observations"] == 3

@@ -30,6 +30,7 @@ class _Track:
     ref_img_id: str | None = None
     score: float = 0.0
     recognized: bool = False
+    observations: int = 1
 
 
 class HumanDetectionEventObserver:
@@ -38,7 +39,7 @@ class HumanDetectionEventObserver:
     def __init__(self, publisher: Callable[[], object | None], *, completed_capacity: int = 4096,
                   active_capacity: int = 4096, pending_capacity: int = 4096,
                   clip_padding_seconds: float = 5.0, completion_capacity: int = 4096,
-                  retry_seconds: float = .1) -> None:
+                  retry_seconds: float = .1, min_observations: int = 1) -> None:
         if min(completed_capacity, active_capacity, pending_capacity) <= 0:
             raise ValueError("observer capacities must be positive")
         self._publisher = publisher
@@ -48,6 +49,9 @@ class HumanDetectionEventObserver:
         self._clip_padding = timedelta(seconds=max(0.0, float(clip_padding_seconds)))
         if completion_capacity <= 0 or retry_seconds <= 0:
             raise ValueError("completion retry bounds must be positive")
+        if min_observations <= 0:
+            raise ValueError("minimum human track observations must be positive")
+        self._min_observations = int(min_observations)
         self._completion_capacity = completion_capacity; self._retry_seconds = retry_seconds
         self._waiting_capacity = completion_capacity
         self._admission_capacity = min(active_capacity, completion_capacity + self._waiting_capacity)
@@ -66,6 +70,7 @@ class HumanDetectionEventObserver:
                                                    "unresolved_recognized", "active_evicted", "pending_evicted",
                                                    "handoff_full", "retry_attempts", "undurable")}
         self._counts["admission_dropped"] = 0
+        self._counts["short_tracks_rejected"] = 0
         self._lock = threading.Lock()
         self._retry_thread = threading.Thread(target=self._retry_completions, name="human-event-completion", daemon=True)
         self._retry_thread.start()
@@ -122,6 +127,7 @@ class HumanDetectionEventObserver:
                             continue
                         state = self._active[key] = _Track(captured, captured, captured, int(result.frame_index), bbox, width, height, quality, face)
                     else:
+                        state.observations += 1
                         state.first = min(state.first, captured)
                         state.last = max(state.last, captured)
                         if (face, quality, -int(result.frame_index)) > (state.face, state.quality, -state.best_index):
@@ -164,6 +170,10 @@ class HumanDetectionEventObserver:
     def _finalize(self, key: tuple[str, str, int], publisher: object) -> None:
         state = self._active.get(key)
         if state is None:
+            return
+        if state.observations < self._min_observations:
+            self._counts["short_tracks_rejected"] += 1
+            self._terminal(key)
             return
         match = re.fullmatch(r"personnel_([1-9][0-9]*)", state.ref_img_id or "")
         if state.recognized and (match is None or not state.name.strip()):
@@ -267,4 +277,5 @@ class HumanDetectionEventObserver:
             return {**self._counts, "active": len(self._active), "completed": len(self._completed),
                     "pending": len(self._pending), "completion_primary": len(self._completions),
                     "completion_waiting": len(self._waiting_completions),
-                    "rejected_cached": len(self._rejected)}
+                    "rejected_cached": len(self._rejected),
+                    "min_observations": self._min_observations}
