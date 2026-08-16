@@ -10,6 +10,7 @@ import numpy as np
 
 from app.core.human_log_store import HumanLogStore
 from app.core.detection_log_store import DetectionLogStore
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.location_store import LocationStore
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.database import Database, metadata
@@ -124,8 +125,12 @@ def test_one_log_per_human_track_is_upgraded_after_recognition(
         rows = store.list(camera="camera-01", track_id=13)
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice"
-        assert rows[0]["first_seen"] == "2026-07-18T00:00:01Z"
-        assert rows[0]["last_seen"] == "2026-07-18T00:00:04Z"
+        assert rows[0]["first_seen"] == utc_iso_to_jalali_datetime(
+            "2026-07-18T00:00:01Z"
+        )
+        assert rows[0]["last_seen"] == utc_iso_to_jalali_datetime(
+            "2026-07-18T00:00:04Z"
+        )
         assert rows[0]["recognition_score"] == 0.93
         assert rows[0]["snapshot_quality"] == 0.97
         assert rows[0]["best_face_quality"] == 0.90
@@ -1335,3 +1340,7 @@ def test_ranked_face_state_rolls_back_when_media_queue_is_full(
             assert store._best_face_scores[key] == 0.80
     finally:
         store.close()
+
+import pytest
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming]

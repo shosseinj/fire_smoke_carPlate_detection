@@ -85,3 +85,5 @@ def test_person_patch_access_matches_old_rules(
         room_id,
         location_store,
     ) is expected
+
+pytestmark = pytest.mark.unit

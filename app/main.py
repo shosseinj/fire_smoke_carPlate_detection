@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.dependencies.utils import get_parameterless_sub_dependant
+from fastapi.routing import APIRoute
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -47,10 +49,13 @@ from app.api.static_videos import router as static_videos_router
 from app.api.live_branch import router as live_branch_router
 from app.api.broadcast_gpu import router as broadcast_gpu_router
 from app.api.recordings import router as recordings_router
+from app.api.recording_settings import router as recording_settings_router
 
 from app.config import settings
 from app.core.detection_media import RestrictedMediaStaticFiles
 from app.core.frontend_messages import install_frontend_exception_handlers, localize_frontend_payload
+from app.core.access_matrix import ACCESS_REGISTRY
+from app.core.auth import require_permission
 from app.runtime import build_runtime
 
 runtime = build_runtime(settings)
@@ -154,6 +159,7 @@ app.include_router(broadcast_router)
 app.include_router(live_branch_router)
 app.include_router(broadcast_gpu_router)
 app.include_router(recordings_router)
+app.include_router(recording_settings_router)
 
 app.include_router(plate_logs_router)
 app.include_router(car_plates_router)
@@ -175,6 +181,106 @@ app.include_router(developer_router)
 app.include_router(project_info_router)
 app.include_router(import_progress_router)
 app.include_router(static_videos_router)
+
+
+_PATH_APPLICATIONS = (
+    ("/api/v1/personnel-requests", "personnel_requests"),
+    ("/api/v1/personnel-images", "personnel_images"),
+    ("/api/v1/general-settings", "general_settings"),
+    ("/api/v1/frame-rounds", "frames"),
+    ("/api/v1/extract-frames", "extract_frames"),
+    ("/api/v1/broadcast-gpu", "broadcast_gpu"),
+    ("/api/v1/static-videos", "static_videos"),
+    ("/api/v1/import-progress", "import_progress"),
+    ("/api/v1/detection-logs", "detection_logs"),
+    ("/api/v1/logs", "detection_logs"),
+    ("/api/v1/fire-logs", "fire_logs"),
+    ("/api/v1/fire-smoke", "fire_smoke"),
+    ("/api/v1/car-plates", "car_plates"),
+    ("/api/v1/plate-logs", "plate_logs"),
+    ("/api/v1/plate-settings", "plate_settings"),
+    ("/api/v1/recording-settings", "recording_settings"),
+    ("/api/v1/recordings", "recordings"),
+    ("/api/v1/live-branch", "live_branch"),
+    ("/api/v1/developer", "developer"),
+    ("/api/v1/holidays", "holidays"),
+    ("/api/v1/shifts", "shifts"),
+    ("/api/v1/requests", "requests"),
+    ("/api/v1/personnel", "personnel"),
+    ("/api/v1/employee-types", "employee_types"),
+    ("/api/v1/sources", "sources"),
+    ("/api/v1/cams", "cameras"),
+    ("/api/v1/faces", "faces"),
+    ("/api/v1/humans", "humans"),
+    ("/api/v1/models", "models"),
+    ("/api/v1/settings", "general_settings"),
+    ("/api/v1/diagnostics", "diagnostics"),
+    ("/api/v1/tests", "processor_tests"),
+    ("/api/v1/results", "results"),
+    ("/api/v1/router", "results"),
+    ("/api/v1/broadcast", "broadcast"),
+    ("/buildings", "buildings"),
+    ("/sections", "sections"),
+    ("/rooms", "rooms"),
+)
+
+
+def _route_application(path: str) -> str | None:
+    return next((application for prefix, application in _PATH_APPLICATIONS if path.startswith(prefix)), None)
+
+
+def _route_action(application: str, method: str, path: str) -> str:
+    lowered = path.lower()
+    special = (
+        (("approve",), "approve"), (("reject",), "reject"),
+        (("cancel",), "cancel"), (("download", "/content"), "download"),
+        (("retry",), "retry"), (("enable", "disable"), "enable"),
+        (("assign", "grant", "revoke"), "assign"),
+        (("import",), "import"), (("export",), "export"),
+        (("generate",), "generate"), (("convert", "conversion"), "convert"),
+        (("enroll",), "enroll"),
+        (("upload",), "upload"),
+    )
+    for needles, action in special:
+        if any(needle in lowered for needle in needles) and (application, action) in ACCESS_REGISTRY:
+            return action
+    preferred = {
+        "GET": ("read", "execute"), "POST": ("create", "execute", "configure"),
+        "PUT": ("edit", "configure", "control", "execute"),
+        "PATCH": ("edit", "configure", "control", "execute"),
+        "DELETE": ("delete", "execute"),
+    }.get(method, ("read",))
+    return next(action for action in preferred if (application, action) in ACCESS_REGISTRY)
+
+
+def _has_permission_dependency(route: APIRoute) -> bool:
+    pending = list(route.dependant.dependencies)
+    while pending:
+        dependency = pending.pop()
+        if getattr(dependency.call, "__name__", "") == "_permission_checker":
+            return True
+        pending.extend(dependency.dependencies)
+    return False
+
+
+def _install_route_access_policy() -> None:
+    """Protect every operational HTTP route with its own application grant."""
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or _has_permission_dependency(route):
+            continue
+        application = _route_application(route.path)
+        if application is None:
+            continue
+        method = sorted(route.methods or {"GET"})[0]
+        permission = f"{application}.{_route_action(application, method, route.path)}"
+        dependency = Depends(require_permission(permission))
+        route.dependencies.append(dependency)
+        route.dependant.dependencies.insert(
+            0, get_parameterless_sub_dependant(depends=dependency, path=route.path_format)
+        )
+
+
+_install_route_access_policy()
 settings.saved_media_path.mkdir(parents=True, exist_ok=True)
 for media_directory in (
     "fire/snapshots",

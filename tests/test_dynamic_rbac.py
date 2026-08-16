@@ -88,9 +88,15 @@ def test_live_channels_are_matrix_permissions() -> None:
     assert ("results", "read") in ACCESS_REGISTRY
 
 
-def test_results_websocket_ticket_must_be_global() -> None:
-    with pytest.raises(ValidationError):
-        WebSocketTicketRequest(application="results", scope_type="camera", scope_id=1)
+def test_results_websocket_ticket_accepts_resource_scope() -> None:
+    ticket = WebSocketTicketRequest(application="results", scope_type="room", scope_id=1)
+    assert ticket.scope_type == "room"
+
+
+def test_broad_application_permission_is_removed() -> None:
+    assert not any(application == "application" for application, _ in ACCESS_REGISTRY)
+    assert ("rooms", "assign") in ACCESS_REGISTRY
+    assert ACCESS_REGISTRY[("rooms", "read")].scope_types[-2:] == ("camera", "room")
 
 
 def test_dashboard_requests_and_attaches_websocket_tickets() -> None:
@@ -98,3 +104,5 @@ def test_dashboard_requests_and_attaches_websocket_tickets() -> None:
     assert 'requestWebSocketTicket("results")' in dashboard
     assert 'requestWebSocketTicket(application)' in dashboard
     assert 'parameters.set("ticket", ticket)' in dashboard
+
+pytestmark = pytest.mark.unit

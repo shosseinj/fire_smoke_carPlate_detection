@@ -12,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.latest_buffer import LatestPerSourceBuffer
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.source_registry import SourceChange
@@ -310,7 +311,7 @@ class AnnotatedBroadcastHub:
                 "draw_vehicle": record.draw_vehicle,
                 "draw_plate": record.draw_plate,
                 "counts_for_attendance": record.counts_for_attendance,
-                "updated_at_utc": record.updated_at_utc,
+                "updated_at_jalali": to_jalali_local_string(record.updated_at_utc),
             }
         previous_source_uri = change.previous_source_uri
         event = BroadcastControlEvent(

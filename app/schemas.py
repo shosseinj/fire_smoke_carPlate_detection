@@ -206,8 +206,8 @@ class SourceResponse(BaseModel):
     draw_vehicle: bool = True
     draw_plate: bool = True
     counts_for_attendance: bool = True
-    created_at_utc: str
-    updated_at_utc: str
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     # Resolved per-source confidence thresholds (from the `sources` table)
     fire_confidence: float | None = None
     smoke_confidence: float | None = None
@@ -304,8 +304,8 @@ class CameraResponse(BaseModel):
     room_id: int | None = None
     metadata: dict[str, Any]
     counts_for_attendance: bool = True
-    created_at_utc: str
-    updated_at_utc: str
+    created_at_jalali: str = ""
+    updated_at_jalali: str | None = None
     settings_overrides: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("source_type")

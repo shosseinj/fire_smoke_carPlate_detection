@@ -9,3 +9,7 @@ def test_preview_stream_path_is_stable_without_exposing_source_id() -> None:
 
     assert first == second
     assert "camera-a" not in first
+
+import pytest
+
+pytestmark = pytest.mark.unit

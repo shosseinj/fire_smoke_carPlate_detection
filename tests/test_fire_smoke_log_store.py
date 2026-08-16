@@ -113,3 +113,7 @@ def test_fire_event_snapshot_and_policy_are_persisted_off_worker_path(
     assert frame_count >= 2
     assert {"fire_smoke_logs", "fire_smoke_settings"}.issubset(metadata.tables)
     assert "video_url" in metadata.tables["fire_smoke_logs"].c
+
+import pytest
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming]

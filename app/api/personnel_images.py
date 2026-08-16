@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import Response
 
 from app.core.auth import require_permission
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.personnel_store import (
     PersonnelImageRecord,
     PersonnelRecord,
@@ -47,7 +48,7 @@ def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
         "image_base64": store.read_image_base64(img.storage_key),
         "personnel_id": img.personnel_id,
         "is_primary": img.is_primary,
-        "uploaded_at": img.uploaded_at_utc,
+        "uploaded_at": to_jalali_local_string(img.uploaded_at_utc),
     }
 
 
@@ -58,7 +59,7 @@ def _image_response(img: PersonnelImageRecord, store: PersonnelStore) -> dict:
 def list_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("personnel_images.read")),
 ) -> list:
     store = _store(runtime)
     if store.get(personnel_id) is None:
@@ -75,7 +76,7 @@ def list_personnel_images(
 async def upload_personnel_images(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel_images.create")),
     images: list[UploadFile] = File(...),
     enable_cropping: bool = Form(default=False),
     is_primary: bool = Form(default=False),
@@ -138,7 +139,7 @@ async def upload_personnel_images(
 def delete_personnel_image(
     image_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("personnel_images.create")),
 ) -> Response:
     deleted = _store(runtime).delete_image(image_id)
     if not deleted:

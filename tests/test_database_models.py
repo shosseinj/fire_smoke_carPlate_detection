@@ -27,3 +27,7 @@ def test_employee_types_table_uses_name_without_code() -> None:
     assert "include_in_attendance_reports" in employee_types.c
     assert employee_types.c.include_in_attendance_reports.nullable is False
     assert "employee_type_id" in metadata.tables["personnel"].c
+
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -39,8 +38,6 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     is_active: bool
-    created_at: datetime
-    last_login: Optional[datetime] = None
     created_at_jalali: str = ""
     last_login_jalali: str | None = None
     permissions: list[str] = Field(default_factory=list)
@@ -102,15 +99,15 @@ class PasswordChangeResponse(BaseModel):
 class UserPermissionGrant(BaseModel):
     application: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_-]*$")
     action: str = Field(min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9_-]*$")
-    scope_type: Literal["global", "building", "section", "camera"]
+    scope_type: Literal["global", "building", "section", "camera", "room"]
     scope_id: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_scope_id(self):
         if self.scope_type == "global" and self.scope_id != 0:
-            raise ValueError("Global grants must use scope_id 0")
+            raise ValueError("مجوز سراسری باید شناسه محدوده صفر داشته باشد")
         if self.scope_type != "global" and self.scope_id < 1:
-            raise ValueError("Resource grants require a positive scope_id")
+            raise ValueError("شناسه محدوده منبع باید عددی مثبت باشد")
         return self
 
 
@@ -127,12 +124,12 @@ class AccessDefinitionResponse(BaseModel):
     application: str
     title: str
     actions: list[str]
-    scope_types: list[Literal["global", "building", "section", "camera"]]
+    scope_types: list[Literal["global", "building", "section", "camera", "room"]]
 
 
 class WebSocketTicketRequest(BaseModel):
     application: Literal["broadcast", "video_wall", "results"]
-    scope_type: Literal["global", "building", "section", "camera"] = "global"
+    scope_type: Literal["global", "building", "section", "camera", "room"] = "global"
     scope_id: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
@@ -141,8 +138,6 @@ class WebSocketTicketRequest(BaseModel):
             raise ValueError("محدوده سراسری باید شناسه صفر داشته باشد")
         if self.scope_type != "global" and self.scope_id < 1:
             raise ValueError("محدوده منبع باید شناسه مثبت داشته باشد")
-        if self.application == "results" and self.scope_type != "global":
-            raise ValueError("نتایج زنده در حال حاضر فقط دسترسی سراسری را پشتیبانی می‌کند")
         return self
 
 

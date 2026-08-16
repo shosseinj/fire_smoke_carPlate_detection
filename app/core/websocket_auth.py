@@ -74,12 +74,15 @@ def _scope_covers_room(runtime, ticket: WebSocketTicketRecord, room_id: int) -> 
         return True
     with runtime.database.connection() as conn:
         row = conn.execute(
-            "SELECT r.cam_id, r.section_id, s.building_id FROM rooms r "
-            "LEFT JOIN sections s ON s.id = r.section_id WHERE r.id = ?",
+            "SELECT r.cam_id, c.section_id, s.building_id FROM rooms r "
+            "LEFT JOIN cam c ON c.id = r.cam_id "
+            "LEFT JOIN sections s ON s.id = c.section_id WHERE r.id = ?",
             (room_id,),
         ).fetchone()
     if row is None:
         return False
+    if ticket.scope_type == "room":
+        return room_id == ticket.scope_id
     if ticket.scope_type == "camera":
         return row["cam_id"] is not None and int(row["cam_id"]) == ticket.scope_id
     if ticket.scope_type == "section":

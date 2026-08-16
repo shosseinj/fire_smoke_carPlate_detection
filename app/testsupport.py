@@ -169,7 +169,7 @@ def _create_user_and_get_token(
     from app.core.access_matrix import ACCESS_DEFINITIONS
 
     allowed_actions = {
-        "admin": {"read", "create", "edit", "delete", "manage", "system"},
+        "admin": {action for definition in ACCESS_DEFINITIONS for action in definition.actions},
         "operator": {"read"},
         "viewer": {"read"},
     }.get(role, {"read"})

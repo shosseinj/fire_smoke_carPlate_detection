@@ -99,15 +99,15 @@ class PlateLogResponse(BaseModel):
     plate_number: str | None = None
     raw_plate_text: str | None = None
     confidence: float | None = None
-    detection_time: datetime
+    detection_time: str
     detection_time_local: str
     detection_time_jalali: str
     snapshot_thumbnail: str | None = None
     snap_shot_url: str | None = None
     video_url: str | None = None
     notes: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: str
 
 
 def get_runtime() -> Runtime:
@@ -140,6 +140,15 @@ def _response(
     result["detection_time_jalali"] = (
         utc_iso_to_jalali_datetime(_time_text(detected)) or ""
     )
+    result["detection_time"] = result["detection_time_jalali"]
+    result["created_at"] = utc_iso_to_jalali_datetime(
+        _time_text(result.get("created_at_utc"))
+    ) or ""
+    result["updated_at"] = utc_iso_to_jalali_datetime(
+        _time_text(result.get("updated_at_utc"))
+    ) or ""
+    for key in ("created_at_utc", "updated_at_utc"):
+        result.pop(key, None)
     snapshot_key = result.pop("snapshot_key", None)
     video_key = result.pop("video_key", None)
     result.pop("snapshot_url", None)
@@ -254,7 +263,7 @@ def get_plate_log(
 @router.post("", response_model=PlateLogResponse, status_code=status.HTTP_201_CREATED)
 def create_plate_log(
     log_data: PlateLogCreate,
-    admin_user: UserRecord = Depends(require_permission("application.manage")),
+    admin_user: UserRecord = Depends(require_permission("plate_logs.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     payload = log_data.model_dump(mode="python")
@@ -274,7 +283,7 @@ def create_plate_log(
 def update_plate_log(
     log_id: int,
     log_data: PlateLogUpdate,
-    user: UserRecord = Depends(require_permission("application.manage")),
+    user: UserRecord = Depends(require_permission("plate_logs.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     _get_log_or_404(log_id, runtime)
@@ -337,7 +346,7 @@ def get_plate_video(
 @router.delete("/{log_id}")
 def delete_plate_log(
     log_id: int,
-    _: UserRecord = Depends(require_permission("application.system")),
+    _: UserRecord = Depends(require_permission("plate_logs.delete")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_log_or_404(log_id, runtime)

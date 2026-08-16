@@ -33,3 +33,7 @@ def test_save_video_frames_creates_readable_multi_frame_mp4(tmp_path: Path) -> N
     assert frame is not None
     assert frame.shape[:2] == (32, 48)
     assert frame_count >= 2
+
+import pytest
+
+pytestmark = pytest.mark.unit

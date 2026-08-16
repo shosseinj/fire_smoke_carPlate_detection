@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.source_registry import SourceChange
 
 
@@ -118,7 +119,7 @@ class PlateSettingsStore:
             return {
                 **asdict(self._general),
                 "revision": self._revision,
-                "updated_at_utc": self._general_updated_at,
+                "updated_at_jalali": to_jalali_local_string(self._general_updated_at),
             }
 
     def update_general(self, policy: PlateDetectionPolicy) -> dict[str, Any]:

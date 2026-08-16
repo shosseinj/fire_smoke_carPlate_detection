@@ -144,3 +144,8 @@ def test_retry_is_bounded_and_exponential() -> None:
     retry_two = scheduler.retry(retry_one, now=now)
     assert retry_two is not None and retry_two.attempt == 2
     assert scheduler.retry(retry_two, now=now) is None
+
+
+import pytest
+
+pytestmark = pytest.mark.unit

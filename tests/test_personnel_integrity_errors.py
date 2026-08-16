@@ -42,3 +42,7 @@ def test_unknown_constraint_does_not_claim_duplicate() -> None:
     )
 
     assert message == "Personnel data violates a database constraint"
+
+import pytest
+
+pytestmark = pytest.mark.unit

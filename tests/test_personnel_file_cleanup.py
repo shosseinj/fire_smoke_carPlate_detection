@@ -100,3 +100,7 @@ def test_delete_missing_personnel_does_not_remove_orphan_files(tmp_path: Path) -
     assert store.delete(7) is False
     assert snapshot.is_file()
     assert cropped.is_file()
+
+import pytest
+
+pytestmark = pytest.mark.unit

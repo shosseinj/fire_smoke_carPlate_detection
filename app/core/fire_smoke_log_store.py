@@ -17,6 +17,7 @@ from uuid import uuid4
 import cv2
 
 from app.core.media_utils import save_video_frames
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.fire_core.policy import FireSmokePolicyConfig
 
@@ -127,7 +128,7 @@ class FireSmokeLogStore:
             connection.commit()
             self._policy = policy
             self._policy_revision += 1
-        return {**asdict(policy), "updated_at_utc": updated_at}
+        return {**asdict(policy), "updated_at_jalali": to_jalali_local_string(updated_at)}
 
     def settings(self) -> dict[str, Any]:
         revision, policy = self.policy_snapshot()
@@ -138,7 +139,7 @@ class FireSmokeLogStore:
         return {
             **asdict(policy),
             "revision": revision,
-            "updated_at_utc": str(row["updated_at_utc"]),
+            "updated_at_jalali": to_jalali_local_string(str(row["updated_at_utc"])),
         }
 
     def observe_result(self, packet: FramePacket, result: TaskResult) -> None:

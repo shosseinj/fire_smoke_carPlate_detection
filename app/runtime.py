@@ -34,6 +34,7 @@ from app.core.recording_executor import ScheduledRecordingExecutor
 from app.core.recording_job_store import RecordingJobStore
 from app.core.recording_scheduler import RecordingScheduler
 from app.core.recording_storage import LocalSpoolLifecycle, RecordingStorageService, RecordingStorageSettings, SpoolSettings
+from app.core.recording_settings_store import RecordingSettingsStore
 from app.core.fire_smoke_log_store import FireSmokeLogStore
 from app.core.human_log_store import HumanLogStore
 from app.core.face_quality_store import FaceQualityPolicy, FaceQualitySettingsStore
@@ -171,6 +172,7 @@ class Runtime:
     static_video_lifecycle: StaticVideoLifecycle
     general_settings: GeneralSettingsStore
     source_settings: SourceSettingsStore
+    recording_settings: RecordingSettingsStore
     video_ingestor: VideoFileIngestor | DeepStreamIngestor | None = None
     static_video_ingestor: VideoFileIngestor | None = None
     media_preview: MediaPreviewPublisher | None = None
@@ -273,6 +275,15 @@ class Runtime:
         self._refresh_all_source_zones()
         for camera in self.registry.list():
             self._restart_ingestor_source(camera.source_uri)
+
+    def apply_recording_settings(self, source_uri: str | None = None) -> None:
+        """Apply persisted recording policy to attached live camera branches."""
+        if self.live_branch is None:
+            return
+        targets = [source_uri] if source_uri else [source.source_uri for source in self.registry.list()]
+        for target in targets:
+            if self.live_branch.has_source(target):
+                self.live_branch.apply_recording_policy(target)
 
     def _release_ingestor_source(self, source_uri: str) -> None:
         """Drop any cached ingestor state for a source URI immediately."""
@@ -628,6 +639,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         database,
         OperationalSettings.from_app_settings(app_settings),
     )
+    recording_settings = RecordingSettingsStore(database)
     operational = general_settings.get().operational
     initialize_auth_store(database, app_settings)
     registry = SourceRegistry(database)
@@ -1166,6 +1178,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         camera_id_resolver=lambda source_id: (
             record.id if (record := registry.get(source_id)) is not None else None
         ),
+        recording_policy_resolver=lambda source_id: recording_settings.effective(source_id).to_dict(),
     )
     recording_coordinator = None
     recording_redis = None
@@ -1226,6 +1239,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 secure=app_settings.recording_minio_secure,
                 minio_retention_days=30,
             ))
+            try:
+                recording_storage.initialize_private_bucket()
+            except Exception as exc:
+                LOGGER.warning("RECORDING_BUCKET_SETUP_FAILED error=%s", type(exc).__name__)
             recording_store = RecordingJobStore(database)
             recording_scheduler = RecordingScheduler(recording_store, recording_redis, global_concurrency=1)
             spool = LocalSpoolLifecycle(SpoolSettings(
@@ -1433,6 +1450,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         static_video_lifecycle=static_video_lifecycle,
         general_settings=general_settings,
         source_settings=source_settings,
+        recording_settings=recording_settings,
         video_ingestor=video_ingestor,
         static_video_ingestor=static_video_ingestor,
         media_preview=media_preview,

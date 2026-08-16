@@ -97,3 +97,7 @@ def test_preload_model_dependencies_resolves_both_lazy_exports(monkeypatch) -> N
     assert imported == ["ultralytics", "hezar.models"]
     assert ultralytics_loader.load_yolo_class() is yolo_class
     assert ultralytics_loader.load_hezar_model_class() is hezar_model_class
+
+import pytest
+
+pytestmark = pytest.mark.streaming

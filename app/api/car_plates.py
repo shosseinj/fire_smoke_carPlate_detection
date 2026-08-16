@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator, compute
 
 from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.plate_constants import (
     PLATE_ALPHABETS_BY_USAGE,
     PERSIAN_PLATE_ALPHABETS,
@@ -124,24 +125,11 @@ class CarPlateUpdate(BaseModel):
 
 class CarPlateResponse(CarPlateBase):
     id: int
-    created_at_utc: Optional[datetime] = None
-    updated_at_utc: Optional[datetime] = None
-    deleted_at_utc: Optional[datetime] = None
-    created_by: Optional[int] = None
-    updated_by: Optional[int] = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
-
-    @model_validator(mode="after")
-    def _populate_jalali(self) -> CarPlateResponse:
-        from app.core.jalali_utils import utc_iso_to_jalali_datetime
-        if self.created_at_utc is not None:
-            iso_str = self.created_at_utc.isoformat() if hasattr(self.created_at_utc, "isoformat") else str(self.created_at_utc)
-            self.created_at_jalali = utc_iso_to_jalali_datetime(iso_str) or ""
-        if self.updated_at_utc is not None:
-            iso_str = self.updated_at_utc.isoformat() if hasattr(self.updated_at_utc, "isoformat") else str(self.updated_at_utc)
-            self.updated_at_jalali = utc_iso_to_jalali_datetime(iso_str)
-        return self
+    deleted_at_jalali: str | None = None
+    created_by: Optional[int] = None
+    updated_by: Optional[int] = None
 
     @computed_field
     @property
@@ -152,6 +140,26 @@ class CarPlateResponse(CarPlateBase):
     @property
     def normalized_plate(self) -> str:
         return f"{self.left_digits}{self.plate_alphabet}{self.right_digits}{self.iran_code}"
+
+
+def _time_text(value: Any) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _plate_to_response(value: dict[str, Any]) -> dict[str, Any]:
+    response = dict(value)
+    response["created_at_jalali"] = utc_iso_to_jalali_datetime(
+        _time_text(response.get("created_at_utc"))
+    ) or ""
+    response["updated_at_jalali"] = utc_iso_to_jalali_datetime(
+        _time_text(response.get("updated_at_utc"))
+    )
+    response["deleted_at_jalali"] = utc_iso_to_jalali_datetime(
+        _time_text(response.get("deleted_at_utc"))
+    )
+    for key in ("created_at_utc", "updated_at_utc", "deleted_at_utc"):
+        response.pop(key, None)
+    return response
 
 
 def get_runtime() -> Runtime:
@@ -179,15 +187,18 @@ def list_car_plates(
     _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> list[dict[str, Any]]:
-    return runtime.car_plates.list(
-        active_only=active_only,
-        search=search,
-        usage_type=usage_type.value if usage_type else None,
-        vehicle_type=vehicle_type.value if vehicle_type else None,
-        owner_phone=owner_phone,
-        skip=skip,
-        limit=limit,
-    )
+    return [
+        _plate_to_response(row)
+        for row in runtime.car_plates.list(
+            active_only=active_only,
+            search=search,
+            usage_type=usage_type.value if usage_type else None,
+            vehicle_type=vehicle_type.value if vehicle_type else None,
+            owner_phone=owner_phone,
+            skip=skip,
+            limit=limit,
+        )
+    ]
 
 
 @router.get("/{plate_id}", response_model=CarPlateResponse)
@@ -196,21 +207,21 @@ def get_car_plate(
     _: UserRecord = Depends(get_current_user),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
-    return _get_plate_or_404(plate_id, runtime)
+    return _plate_to_response(_get_plate_or_404(plate_id, runtime))
 
 
 # @router.post("", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=CarPlateResponse, status_code=status.HTTP_201_CREATED)
 def create_car_plate(
     payload: CarPlateCreate,
-    admin_user: UserRecord = Depends(require_permission("application.manage")),
+    admin_user: UserRecord = Depends(require_permission("car_plates.create")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     data = payload.model_dump(mode="json")
     data["created_by"] = admin_user.id
     data["updated_by"] = admin_user.id
     try:
-        return runtime.car_plates.create(data)
+        return _plate_to_response(runtime.car_plates.create(data))
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail="این پلاک قبلاً ثبت شده است") from exc
@@ -221,7 +232,7 @@ def create_car_plate(
 def update_car_plate(
     plate_id: int,
     payload: CarPlateUpdate,
-    admin_user: UserRecord = Depends(require_permission("application.manage")),
+    admin_user: UserRecord = Depends(require_permission("car_plates.edit")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     plate = _get_plate_or_404(plate_id, runtime)
@@ -230,13 +241,13 @@ def update_car_plate(
     result = runtime.car_plates.update(plate_id, updates)
     if result is None:
         raise HTTPException(status_code=404, detail="پلاک خودرو یافت نشد")
-    return result
+    return _plate_to_response(result)
 
 
 @router.delete("/{plate_id}")
 def delete_car_plate(
     plate_id: int,
-    superuser: UserRecord = Depends(require_permission("application.system")),
+    superuser: UserRecord = Depends(require_permission("car_plates.delete")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, str]:
     _get_plate_or_404(plate_id, runtime)

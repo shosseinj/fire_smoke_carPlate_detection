@@ -21,3 +21,4 @@ def test_detection_log_response_preserves_unknown_person_message() -> None:
     }
     assert response["person"] == "unknown"
     assert response["log_type"] == "camera_rtsp"
+pytestmark = pytest.mark.unit

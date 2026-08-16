@@ -5,6 +5,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.operational_settings import OperationalSettings
 from app.database import Database, Row, ensure_database
 from app.time_utils import utc_now_text
@@ -74,7 +75,8 @@ class GeneralSettingsRecord:
             "confirmation_threshold": self.confirmation_threshold,
             "force": self.force,
             "operational": self.operational.to_dict(),
-            "created_at": self.created_at_utc, "updated_at": self.updated_at_utc,
+            "created_at": to_jalali_local_string(self.created_at_utc) or "",
+            "updated_at": to_jalali_local_string(self.updated_at_utc) or "",
             "created_by": self.created_by, "updated_by": self.updated_by,
         }
 

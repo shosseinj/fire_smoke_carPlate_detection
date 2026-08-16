@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.runtime import Runtime
 
 
@@ -22,7 +23,7 @@ Severity = Literal["low", "medium", "high"]
 
 class FireLogResponse(BaseModel):
     id: int
-    detection_time: datetime
+    detection_time: str
     camera_id: str
     incident_id: str | None = None
     hazard_type: HazardType | None = None
@@ -68,6 +69,8 @@ def _protected_media_response(value: dict[str, Any]) -> dict[str, Any]:
             response["snapshot_url"] = f"/api/v1/fire-logs/{log_id}/snapshot"
         if response.get("video_url"):
             response["video_url"] = f"/api/v1/fire-logs/{log_id}/video"
+    if response.get("detection_time") is not None:
+        response["detection_time"] = utc_iso_to_jalali_datetime(response["detection_time"])
     return response
 
 
@@ -180,12 +183,12 @@ def get_fire_log_video(
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=FireLogResponse)
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=FireLogResponse)
-def create_fire_log(payload: FireLogCreate, _: UserRecord = Depends(require_permission("application.manage")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+def create_fire_log(payload: FireLogCreate, _: UserRecord = Depends(require_permission("fire_logs.create")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     return _protected_media_response(runtime.fire_smoke_logs.create_manual(payload.model_dump()))
 
 
 @router.patch("/{log_id}", response_model=FireLogResponse)
-def update_fire_log(log_id: int, payload: FireLogUpdate, _: UserRecord = Depends(require_permission("application.system")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
+def update_fire_log(log_id: int, payload: FireLogUpdate, _: UserRecord = Depends(require_permission("fire_logs.edit")), runtime: Runtime = Depends(get_runtime)) -> dict[str, Any]:
     value = runtime.fire_smoke_logs.update_manual(log_id, payload.model_dump(exclude_unset=True))
     if value is None:
         raise HTTPException(status_code=404, detail="لاگ حریق یا دود یافت نشد")
@@ -193,7 +196,7 @@ def update_fire_log(log_id: int, payload: FireLogUpdate, _: UserRecord = Depends
 
 
 @router.delete("/{log_id}")
-def delete_fire_log(log_id: int, _: UserRecord = Depends(require_permission("application.system")), runtime: Runtime = Depends(get_runtime)) -> dict[str, str]:
+def delete_fire_log(log_id: int, _: UserRecord = Depends(require_permission("fire_logs.delete")), runtime: Runtime = Depends(get_runtime)) -> dict[str, str]:
     if not runtime.fire_smoke_logs.delete(log_id):
         raise HTTPException(status_code=404, detail="لاگ حریق یا دود یافت نشد")
     return {"message": "لاگ حریق یا دود با موفقیت حذف شد"}

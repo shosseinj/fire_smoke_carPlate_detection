@@ -218,7 +218,7 @@ class AuthStore:
             return self._select_user(conn, "id = ?", user_id)
 
     def has_scoped_permission(self, user_id: int, permission: str, scope_type: str, scope_id: int = 0) -> bool:
-        if scope_type not in {"global", "building", "section", "camera"}:
+        if scope_type not in {"global", "building", "section", "camera", "room"}:
             raise ValueError("نوع محدوده انتخاب‌شده معتبر نیست")
         application, action = permission_key(*permission.strip().lower().split(".", 1)).split(".", 1)
         with self._lock, self._connection() as conn:
@@ -240,6 +240,14 @@ class AuthStore:
                     "(scope_type = 'building' AND scope_id = (SELECT se.building_id FROM cam c JOIN sections se ON se.id = c.section_id WHERE c.id = ?))",
                 ))
                 params.extend((scope_id, scope_id, scope_id))
+            elif scope_type == "room":
+                targets.extend((
+                    "(scope_type = 'room' AND scope_id = ?)",
+                    "(scope_type = 'camera' AND scope_id = (SELECT cam_id FROM rooms WHERE id = ?))",
+                    "(scope_type = 'section' AND scope_id = (SELECT c.section_id FROM rooms r JOIN cam c ON c.id = r.cam_id WHERE r.id = ?))",
+                    "(scope_type = 'building' AND scope_id = (SELECT s.building_id FROM rooms r JOIN cam c ON c.id = r.cam_id JOIN sections s ON s.id = c.section_id WHERE r.id = ?))",
+                ))
+                params.extend((scope_id, scope_id, scope_id, scope_id))
             row = conn.execute(
                 "SELECT 1 FROM user_permission_grants WHERE user_id = ? AND application = ? "
                 "AND action = ? AND (" + " OR ".join(targets) + ") LIMIT 1",
@@ -249,7 +257,7 @@ class AuthStore:
 
     def accessible_scope_ids(self, user_id: int, permission: str, target_type: str) -> set[int] | None:
         """Return allowed target IDs, or None when a global grant allows every target."""
-        if target_type not in {"building", "section", "camera"}:
+        if target_type not in {"building", "section", "camera", "room"}:
             raise ValueError("نوع منبع انتخاب‌شده معتبر نیست")
         application, action = permission_key(*permission.strip().lower().split(".", 1)).split(".", 1)
         with self._lock, self._connection() as conn:
@@ -263,6 +271,7 @@ class AuthStore:
             building_ids = [int(row["scope_id"]) for row in grants if row["scope_type"] == "building"]
             section_ids = [int(row["scope_id"]) for row in grants if row["scope_type"] == "section"]
             camera_ids = {int(row["scope_id"]) for row in grants if row["scope_type"] == "camera"}
+            room_ids = {int(row["scope_id"]) for row in grants if row["scope_type"] == "room"}
             if target_type == "building":
                 return set(building_ids)
             if target_type == "section":
@@ -271,6 +280,17 @@ class AuthStore:
                     marks = ", ".join("?" for _ in building_ids)
                     result.update(int(row["id"]) for row in conn.execute(f"SELECT id FROM sections WHERE building_id IN ({marks})", building_ids).fetchall())
                 return result
+            if target_type == "room":
+                if camera_ids:
+                    marks = ", ".join("?" for _ in camera_ids)
+                    room_ids.update(int(row["id"]) for row in conn.execute(f"SELECT id FROM rooms WHERE cam_id IN ({marks})", list(camera_ids)).fetchall())
+                if section_ids:
+                    marks = ", ".join("?" for _ in section_ids)
+                    room_ids.update(int(row["id"]) for row in conn.execute(f"SELECT r.id FROM rooms r JOIN cam c ON c.id = r.cam_id WHERE c.section_id IN ({marks})", section_ids).fetchall())
+                if building_ids:
+                    marks = ", ".join("?" for _ in building_ids)
+                    room_ids.update(int(row["id"]) for row in conn.execute(f"SELECT r.id FROM rooms r JOIN cam c ON c.id = r.cam_id JOIN sections s ON s.id = c.section_id WHERE s.building_id IN ({marks})", building_ids).fetchall())
+                return room_ids
             if section_ids:
                 marks = ", ".join("?" for _ in section_ids)
                 camera_ids.update(int(row["id"]) for row in conn.execute(f"SELECT id FROM cam WHERE section_id IN ({marks})", section_ids).fetchall())
@@ -308,7 +328,7 @@ class AuthStore:
                     raise ValueError("محدوده برای این دسترسی معتبر نیست")
                 if (grant.scope_type == "global") != (grant.scope_id == 0):
                     raise ValueError("شناسه محدوده معتبر نیست")
-                table = {"building": "buildings", "section": "sections", "camera": "cam"}.get(grant.scope_type)
+                table = {"building": "buildings", "section": "sections", "camera": "cam", "room": "rooms"}.get(grant.scope_type)
                 if table and conn.execute(f"SELECT id FROM {table} WHERE id = ?", (grant.scope_id,)).fetchone() is None:
                     raise ValueError("منبع انتخاب‌شده یافت نشد")
             conn.execute("DELETE FROM user_permission_grants WHERE user_id = ?", (user_id,))

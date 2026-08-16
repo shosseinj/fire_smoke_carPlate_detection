@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.core.auth import get_current_user
 from app.core.auth_store import UserRecord
 from app.core.frontend_messages import LocalizedJSONRoute
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.recording_job_store import (
     ALL_STATUSES,
     InvalidRecordingTransition,
@@ -66,18 +67,24 @@ class RecordingResponse(BaseModel):
     source_display: str
     created_by: int | None
     status: str
-    scheduled_start_utc: datetime
-    scheduled_end_utc: datetime
-    started_at_utc: datetime | None
-    finished_at_utc: datetime | None
+    scheduled_start_jalali: str | None
+    scheduled_end_jalali: str | None
+    started_at_jalali: str | None
+    finished_at_jalali: str | None
     warning: str | None
     error: str | None
     is_partial: bool
     size_bytes: int | None
     attempt_count: int
-    object_expires_at_utc: datetime | None
-    created_at_utc: datetime | None
-    updated_at_utc: datetime | None
+    quality_preset: str
+    retention_days: int
+    output_width: int | None
+    output_height: int | None
+    output_fps: int | None
+    output_bitrate_bps: int | None
+    object_expires_at_jalali: str | None
+    created_at_jalali: str | None
+    updated_at_jalali: str | None
     has_content: bool
 
 
@@ -118,9 +125,25 @@ class RecordingSourceOption(BaseModel):
     source_display: str
 
 
+def _jalali(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return utc_iso_to_jalali_datetime(value.isoformat())
+
+
 def _response(job: RecordingJob, runtime) -> RecordingResponse:
     source = runtime.registry.get(job.source_uri)
     values = {name: getattr(job, name) for name in RecordingJob.__dataclass_fields__ if name != "source_uri"}
+    for utc_key, jalali_key in (
+        ("scheduled_start_utc", "scheduled_start_jalali"),
+        ("scheduled_end_utc", "scheduled_end_jalali"),
+        ("started_at_utc", "started_at_jalali"),
+        ("finished_at_utc", "finished_at_jalali"),
+        ("object_expires_at_utc", "object_expires_at_jalali"),
+        ("created_at_utc", "created_at_jalali"),
+        ("updated_at_utc", "updated_at_jalali"),
+    ):
+        values[jalali_key] = _jalali(values.pop(utc_key, None))
     values.update({
         "source_ref": recording_source_ref(job.source_uri),
         "source_name": safe_recording_source_name(source.name if source is not None else "", job.source_uri),
@@ -163,12 +186,18 @@ def create_recording(
     if coordinator.spool.status().high_water_exceeded:
         raise HTTPException(status_code=507, detail="فضای موقت ضبط از حد مجاز عبور کرده است")
     try:
+        policy = runtime.recording_settings.effective(source.source_uri)
+        output = policy.to_dict()["output"]
         job, created = store.create(
             source_uri=source.source_uri,
             scheduled_start_utc=payload.scheduled_start_utc,
             scheduled_end_utc=payload.scheduled_end_utc,
             created_by=current_user.id,
             idempotency_key=idempotency_key,
+            quality_preset=policy.quality_preset,
+            retention_days=policy.retention_days,
+            output_width=output["width"], output_height=output["height"],
+            output_fps=output["fps"], output_bitrate_bps=output["bitrate_bps"],
         )
     except RecordingOverlapError as exc:
         raise HTTPException(status_code=409, detail="این بازه با ضبط فعال دیگری برای همین منبع هم‌پوشانی دارد") from exc

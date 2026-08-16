@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.core.types import FramePacket, TaskName, TaskResult
 
 
@@ -29,8 +30,12 @@ def test_result_includes_frame_geometry_and_source_timestamp() -> None:
     assert payload["frame_width"] == 640
     assert payload["frame_height"] == 360
     assert payload["source_time_seconds"] == 12.5
-    assert payload["captured_at_utc"] == "2026-07-22T10:00:00+00:00"
-    assert payload["processed_at_utc"]
+    assert payload["captured_at"] == utc_iso_to_jalali_datetime(
+        "2026-07-22T10:00:00+00:00"
+    )
+    assert "captured_at_utc" not in payload
+    assert payload["processed_at"]
+    assert "processed_at_utc" not in payload
 
 
 def test_dashboard_uses_public_preview_and_bounded_multi_task_overlays() -> None:
@@ -49,3 +54,7 @@ def test_dashboard_uses_public_preview_and_bounded_multi_task_overlays() -> None
     assert "/api/v1/broadcast/ws" in dashboard
     assert "source.source_id" not in dashboard
     assert "source.source_uri" in dashboard
+
+import pytest
+
+pytestmark = pytest.mark.unit

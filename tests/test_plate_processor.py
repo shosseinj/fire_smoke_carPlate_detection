@@ -355,3 +355,7 @@ def test_vehicle_engine_runtime_failure_uses_onnx_fallback(
     assert result.data["plate_count"] == 1
     assert processor.status()["vehicle_detector_weights"] == str(onnx)
     assert processor.status()["vehicle_model_fallbacks"] == 1
+
+import pytest
+
+pytestmark = pytest.mark.streaming

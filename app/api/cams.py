@@ -70,8 +70,6 @@ class CamUpdate(BaseModel):
 
 class CamResponse(CamBase):
     id: int
-    created_at_utc: str
-    updated_at_utc: str
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -117,8 +115,6 @@ def _response(record: CamRecord, db=None) -> CamResponse:
         source_type=record.source_type,
         section_id=record.section_id,
         url=record.url,
-        created_at_utc=record.created_at_utc,
-        updated_at_utc=record.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(record.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(record.updated_at_utc),
         created_by=c,

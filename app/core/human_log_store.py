@@ -18,6 +18,7 @@ import numpy as np
 from app.core.types import FramePacket, TaskResult
 from app.core.detection_log_store import DetectionLogStore
 from app.core.detection_media import DetectionMediaStorage, MEDIA_STATUS_READY
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.personnel_store import normalize_national_code
 
 
@@ -1510,6 +1511,10 @@ class HumanLogStore:
             ).fetchall()
         items = [dict(row) for row in rows]
         for item in items:
+            for key in ("first_seen", "last_seen"):
+                raw = item.get(key)
+                if raw is not None:
+                    item[key] = to_jalali_local_string(raw)
             full_name = str(item.get("name") or "Unknown").strip() or "Unknown"
             if full_name == "Unknown":
                 first_name, last_name = "Unknown", ""

@@ -14,7 +14,7 @@ from app.config import settings
 from app.runtime import build_runtime
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 
 
 # ── Test helpers ─────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ def test_create_personnel(tmp_path: Path) -> None:
         assert body["employee_type"] == "کارمند"
         assert body["degree"] == "Bachelor"
         assert body["id"] > 0
-        assert body["created_at"] is not None
+        assert body["created_at_jalali"] is not None
     finally:
         _teardown(test_runtime, old_runtime)
 

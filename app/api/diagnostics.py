@@ -12,6 +12,7 @@ from app.core.auth_store import UserRecord
 from app.core.deepstream_ingestor import DeepStreamIngestor
 from app.core.fps_diagnostics import build_fps_report
 from app.core.frontend_messages import localize_frontend_payload
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.video_ingestor import VideoFileIngestor
 from app.core.types import TaskName
 from app.runtime import Runtime
@@ -91,7 +92,9 @@ async def fps_diagnostics(
         expected_fps=desired_fps,
         camera_tasks=camera_tasks,
     )
-    report["sampled_at_utc"] = datetime.now(timezone.utc).isoformat()
+    report["sampled_at"] = to_jalali_local_string(
+        datetime.now(timezone.utc).isoformat()
+    )
     return localize_frontend_payload(report)
 
 
@@ -272,7 +275,7 @@ def maintenance_checks(runtime: Runtime = Depends(get_runtime)) -> dict[str, Any
 )
 def restart_camera_pipeline(
     camera_id: str,
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("diagnostics.execute")),
     runtime: Runtime = Depends(get_runtime),
 ) -> dict[str, Any]:
     ingestor = runtime.video_ingestor

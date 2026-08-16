@@ -37,3 +37,6 @@ def test_project_info_releases_endpoint_registered() -> None:
     app = _build_test_app()
     paths = _collect_paths(app.routes)
     assert "/api/v1/project-info/releases" in paths
+import pytest
+
+pytestmark = pytest.mark.unit

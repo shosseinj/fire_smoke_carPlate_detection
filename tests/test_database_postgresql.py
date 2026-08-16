@@ -99,3 +99,7 @@ def test_runtime_source_has_no_local_relational_database_backend() -> None:
         content = path.read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in content, f"{token!r} remains in {path}"
+
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -237,3 +237,5 @@ def test_create_hourly_request_never_removes_logs(monkeypatch) -> None:
     )
 
     assert response["removed_logs_count"] == 0
+
+pytestmark = pytest.mark.unit

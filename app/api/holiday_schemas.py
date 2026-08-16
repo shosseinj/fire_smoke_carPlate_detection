@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -38,8 +38,6 @@ class HolidayResponse(BaseModel):
     holiday_type: str
     every_year: bool
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None

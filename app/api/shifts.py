@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import require_permission
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.shift_store import WorkShiftRecord
 from app.core.legacy_service import (
     legacy_shift_response,
@@ -176,15 +177,15 @@ def _assignment_response(record: Any) -> dict[str, Any]:
         "end_date": format_jalali(record.end_date),
         "start_date_gregorian": record.start_date.isoformat(),
         "end_date_gregorian": record.end_date.isoformat(),
-        "created_at_utc": record.created_at_utc,
-        "updated_at_utc": record.updated_at_utc,
+        "created_at_jalali": to_jalali_local_string(record.created_at_utc) or "",
+        "updated_at_jalali": to_jalali_local_string(record.updated_at_utc),
     }
 
 
 @router.post("/bulk-assignments", status_code=status.HTTP_201_CREATED)
 def bulk_assign_personnel_to_shift(
     body: BulkShiftAssignmentCreate,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> dict[str, Any]:
     try:
         start_date = validate_jalali_date(body.start_date)
@@ -212,7 +213,7 @@ def bulk_assign_personnel_to_shift(
 
 # Keep this registration order aligned with old/backend/app/routers/shifts.py.
 @router.get("/")
-def get_all_shifts(_: dict = Depends(require_permission("application.read"))) -> list[dict[str, Any]]:
+def get_all_shifts(_: dict = Depends(require_permission("shifts.read"))) -> list[dict[str, Any]]:
     store = get_shift_store()
     records, _ = store.list(offset=0, limit=10000, search=None)
     records.sort(key=lambda record: record.shift_name)
@@ -220,14 +221,14 @@ def get_all_shifts(_: dict = Depends(require_permission("application.read"))) ->
 
 
 @router.get("/statistics")
-def get_shift_statistics(_: dict = Depends(require_permission("application.read"))) -> dict[str, Any]:
+def get_shift_statistics(_: dict = Depends(require_permission("shifts.read"))) -> dict[str, Any]:
     return get_shift_store().statistics()
 
 
 @router.get("/{shift_id}")
 def get_shift_by_id(
     shift_id: int,
-    _: dict = Depends(require_permission("application.read")),
+    _: dict = Depends(require_permission("shifts.read")),
 ) -> dict[str, Any]:
     store = get_shift_store()
     record = store.get(shift_id)
@@ -239,7 +240,7 @@ def get_shift_by_id(
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_shift(
     body: ShiftCreate,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> dict[str, Any]:
     store = get_shift_store()
     try:
@@ -269,7 +270,7 @@ def create_shift(
 def update_shift(
     shift_id: int,
     body: ShiftUpdate,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> dict[str, Any]:
     store = get_shift_store()
     try:
@@ -304,7 +305,7 @@ def update_shift(
 def delete_shift(
     shift_id: int,
     force: bool = Query(False, description="حذف اجباری حتی اگر به پرسنل اختصاص داده شده باشد"),
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> Response:
     store = get_shift_store()
     try:
@@ -319,7 +320,7 @@ def delete_shift(
 @router.get("/{shift_id}/personnel")
 def get_personnel_by_shift(
     shift_id: int,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> list[dict[str, Any]]:
     store = get_shift_store()
     if store.get(shift_id) is None:
@@ -328,7 +329,7 @@ def get_personnel_by_shift(
 
 
 @router.get("/types")
-def get_shift_types(_: dict = Depends(require_permission("application.manage"))) -> list[dict[str, str]]:
+def get_shift_types(_: dict = Depends(require_permission("shifts.edit"))) -> list[dict[str, str]]:
     return SHIFT_TYPES
 
 
@@ -338,7 +339,7 @@ def assign_personnel_to_shift(
     shift_id: int,
     personnel_id: int,
     body: ShiftAssignmentCreate,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> dict[str, Any]:
     try:
         start_date = validate_jalali_date(body.start_date)
@@ -357,7 +358,7 @@ def get_personnel_shift_assignments(
     personnel_id: int,
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
-    _: dict = Depends(require_permission("application.read")),
+    _: dict = Depends(require_permission("shifts.read")),
 ) -> list[dict[str, Any]]:
     if get_shift_store().get(shift_id) is None:
         raise HTTPException(404, "شیفت یافت نشد")
@@ -379,7 +380,7 @@ def get_personnel_shift_assignments(
 def delete_personnel_shift_assignment(
     shift_id: int,
     assignment_id: int,
-    _: dict = Depends(require_permission("application.manage")),
+    _: dict = Depends(require_permission("shifts.edit")),
 ) -> Response:
     # shift_id keeps the assignment operation naturally scoped under its shift.
     if get_shift_store().get(shift_id) is None:
@@ -392,11 +393,11 @@ def delete_personnel_shift_assignment(
 @router.delete("/assign/{personnel_id}", include_in_schema=False)
 def remove_personnel_shift(
     personnel_id: int,
-    _: dict = Depends(require_permission("application.system")),
+    _: dict = Depends(require_permission("shifts.delete")),
 ) -> dict[str, Any]:
     return {"removed": get_shift_store().remove_personnel_shift(personnel_id)}
 
 
 @router.get("/statistics/summary", include_in_schema=False)
-def shift_statistics_summary(_: dict = Depends(require_permission("application.read"))) -> dict[str, Any]:
+def shift_statistics_summary(_: dict = Depends(require_permission("shifts.read"))) -> dict[str, Any]:
     return get_shift_store().statistics()

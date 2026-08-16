@@ -145,6 +145,21 @@ def utc_iso_to_jalali_datetime(utc_iso: str | None) -> str | None:
         return None
 
 
+def to_jalali_local_string(value: str | datetime | None) -> str | None:
+    """Convert a UTC ISO string or aware datetime to a Jalali local string.
+
+    Returns ``None`` when the input is ``None`` or unparseable.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        try:
+            return jalali_datetime_string(value)
+        except (ValueError, TypeError):
+            return None
+    return utc_iso_to_jalali_datetime(str(value))
+
+
 def jalali_datetime_string(utc_dt: datetime, tz_name: str = "Asia/Tehran") -> str:
     from zoneinfo import ZoneInfo
     local_dt = utc_dt.astimezone(ZoneInfo(tz_name))

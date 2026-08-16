@@ -345,3 +345,7 @@ def test_deepstream_fps_override_tolerates_nominal_timestamp_jitter() -> None:
     assert state.decoded_samples == 1
     assert state.rate_limited_frames == 0
     assert state.received_frames == 1
+
+import pytest
+
+pytestmark = pytest.mark.streaming

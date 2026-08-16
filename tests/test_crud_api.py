@@ -40,6 +40,7 @@ from app.testsupport import (
 pytestmark = [
     pytest.mark.crud,
     pytest.mark.api,
+    pytest.mark.postgresql,
     pytest.mark.usefixtures("postgres_database"),
 ]
 

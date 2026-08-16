@@ -80,8 +80,6 @@ class BuildingResponse(BaseModel):
     address: str | None = None
     description: str | None = None
     is_active: bool = True
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -126,8 +124,6 @@ class SectionResponse(BaseModel):
     description: str | None = None
     is_active: bool = True
     building_id: int
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -174,8 +170,6 @@ class RoomResponse(BaseModel):
     camera_id: int | None = None
     section_id: int | None = None
     polygon_points: list[list[float]] | None = None
-    created_at: str
-    updated_at: str | None = None
     created_at_jalali: str = ""
     updated_at_jalali: str | None = None
     created_by: UserBrief | None = None
@@ -252,8 +246,6 @@ def _build_response(
         address=b.address,
         description=b.description,
         is_active=True,
-        created_at=b.created_at_utc,
-        updated_at=b.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(b.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(b.updated_at_utc),
         created_by=c,
@@ -284,8 +276,6 @@ def _section_response(
         description=s.description,
         is_active=s.is_active,
         building_id=s.building_id or 0,
-        created_at=s.created_at_utc,
-        updated_at=s.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(s.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(s.updated_at_utc),
         created_by=c,
@@ -313,8 +303,6 @@ def _room_response(
         camera_id=r.cam_id,
         section_id=r.section_id,
         polygon_points=_polygon_to_list(r.polygon_json),
-        created_at=r.created_at_utc,
-        updated_at=r.updated_at_utc,
         created_at_jalali=utc_iso_to_jalali_datetime(r.created_at_utc) or "",
         updated_at_jalali=utc_iso_to_jalali_datetime(r.updated_at_utc),
         created_by=c,
@@ -590,7 +578,7 @@ def assign_source_to_room(
     room_id: int,
     source_uri: str = Query(...),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("rooms.assign")),
 ):
     store = _store(runtime)
     room = store.get_room(room_id)
@@ -613,7 +601,7 @@ def assign_source_to_room(
 #     room_id: int,
 #     cam_id: int,
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_permission("application.manage")),
+#     _: UserRecord = Depends(require_permission("rooms.edit")),
 # ):
 #     store = _store(runtime)
 #     if not store.get_room(room_id):
@@ -670,11 +658,14 @@ def list_rooms(
     limit: int = 100,
     camera_id: int | None = Query(default=None, ge=1),
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("rooms.read")),
 ):
     records, _ = _store(runtime).list_rooms(
         offset=skip, limit=limit, cam_id=camera_id
     )
+    allowed_room_ids = accessible_scope_ids(_, "rooms.read", "room")
+    if allowed_room_ids is not None:
+        records = [record for record in records if record.id in allowed_room_ids]
     store = _store(runtime)
     audit_ids = {
         user_id
@@ -692,7 +683,9 @@ def check_access(
     personnel_id: int,
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
+    current_user: UserRecord = Depends(get_current_user),
 ):
+    enforce_scoped_permission(current_user, "rooms.read", "room", room_id)
     has_access = _store(runtime).check_room_access(
         personnel_id=personnel_id, room_id=room_id
     )
@@ -703,11 +696,12 @@ def check_access(
 def get_room_by_id(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("rooms.read")),
 ):
     r = _store(runtime).get_room(room_id)
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    enforce_scoped_permission(_, "rooms.read", "room", room_id)
     return _room_response(r, _store(runtime))
 
 
@@ -715,12 +709,13 @@ def get_room_by_id(
 def get_room_access_list(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("rooms.read")),
 ):
     store = _store(runtime)
     r = store.get_room(room_id)
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    enforce_scoped_permission(_, "rooms.read", "room", room_id)
     records = store.list_room_personnel(room_id)
     return [PersonnelAccessEntry(**p) for p in records]
 
@@ -729,10 +724,13 @@ def get_room_access_list(
 def get_personnel_rooms_list(
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.read")),
+    _: UserRecord = Depends(require_permission("rooms.read")),
 ):
     store = _store(runtime)
     rooms = store.list_personnel_rooms(personnel_id)
+    allowed_room_ids = accessible_scope_ids(_, "rooms.read", "room")
+    if allowed_room_ids is not None:
+        rooms = [room for room in rooms if room.id in allowed_room_ids]
     return [_room_response(r, store) for r in rooms]
 
 
@@ -740,8 +738,9 @@ def get_personnel_rooms_list(
 def create_new_room(
     payload: RoomCreate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("rooms.create")),
 ):
+    enforce_scoped_permission(current_user, "rooms.create", "camera", payload.camera_id)
     if payload.polygon_points and len(payload.polygon_points) < 3:
         raise HTTPException(status_code=400, detail="چندضلعی باید حداقل ۳ نقطه داشته باشد")
     polygon_json = json.dumps(payload.polygon_points) if payload.polygon_points else None
@@ -809,8 +808,9 @@ def patch_room(
     room_id: int,
     payload: RoomUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("rooms.edit")),
 ):
+    enforce_scoped_permission(current_user, "rooms.edit", "room", room_id)
     return _update_room(room_id, payload, runtime, current_user)
 
 
@@ -819,8 +819,9 @@ def update_room_info(
     room_id: int,
     payload: LegacyRoomUpdate,
     runtime: Runtime = Depends(get_runtime),
-    current_user: UserRecord = Depends(require_permission("application.manage")),
+    current_user: UserRecord = Depends(require_permission("rooms.edit")),
 ):
+    enforce_scoped_permission(current_user, "rooms.edit", "room", room_id)
     return _update_room(room_id, payload, runtime, current_user)
 
 
@@ -830,8 +831,9 @@ def grant_access(
     personnel_id: int,
     assigned_by: str | None = None,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("rooms.assign")),
 ):
+    enforce_scoped_permission(_, "rooms.assign", "room", room_id)
     try:
         record = _store(runtime).grant_room_access(
             personnel_id=personnel_id,
@@ -853,8 +855,9 @@ def revoke_access(
     room_id: int,
     personnel_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.manage")),
+    _: UserRecord = Depends(require_permission("rooms.assign")),
 ):
+    enforce_scoped_permission(_, "rooms.assign", "room", room_id)
     success = _store(runtime).revoke_room_access(
         personnel_id=personnel_id, room_id=room_id
     )
@@ -867,11 +870,12 @@ def revoke_access(
 def remove_room(
     room_id: int,
     runtime: Runtime = Depends(get_runtime),
-    _: UserRecord = Depends(require_permission("application.system")),
+    _: UserRecord = Depends(require_permission("rooms.delete")),
 ):
     r = _store(runtime).get_room(room_id)
     if not r:
         raise HTTPException(status_code=404, detail="اتاق یافت نشد")
+    enforce_scoped_permission(_, "rooms.delete", "room", room_id)
     assigned_sources = [item.source_uri for item in runtime.registry.list() if item.room_id == room_id]
     _store(runtime).delete_room(room_id)
     for source_uri in assigned_sources:
@@ -892,7 +896,7 @@ def remove_room(
 #     offset: int = Query(default=0, ge=0),
 #     transition_type: str | None = Query(default=None, description="Filter by 'entered' or 'exited'"),
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_permission("application.read")),
+#     _: UserRecord = Depends(require_permission("rooms.read")),
 # ) -> dict:
 #     """List zone entry/exit events for a specific room/polygon.
 
@@ -937,7 +941,7 @@ def remove_room(
 #     limit: int = Query(default=50, ge=1, le=1000),
 #     offset: int = Query(default=0, ge=0),
 #     runtime: Runtime = Depends(get_runtime),
-#     _: UserRecord = Depends(require_permission("application.read")),
+#     _: UserRecord = Depends(require_permission("rooms.read")),
 # ) -> dict:
 #     store = _store(runtime)
 #     room = store.get_room(room_id)

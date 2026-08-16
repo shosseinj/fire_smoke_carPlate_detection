@@ -96,3 +96,7 @@ def test_general_settings_snapshot_exposes_force() -> None:
     )
 
     assert general_settings_module._snapshot(runtime)["force"] is True
+
+import pytest
+
+pytestmark = pytest.mark.unit

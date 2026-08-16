@@ -25,7 +25,7 @@ from app.core.personnel_image_service import ImageProcessResult
 from app.runtime import build_runtime
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

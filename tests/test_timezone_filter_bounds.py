@@ -28,3 +28,5 @@ def test_jalali_datetime_string_outputs_local_jalali_date_and_time() -> None:
     result = jalali_datetime_string(utc_value)
     assert "1403" in result
     assert "08:30:00" in result
+
+pytestmark = pytest.mark.unit

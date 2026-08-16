@@ -205,8 +205,36 @@ class RecordingStorageService:
             self.client.make_bucket(self.settings.bucket_name)
         self._remove_public_policy()
         self._configure_expiration()
+        self.backfill_legacy_retention_tags()
 
-    def upload_finalized(self, job_uuid: UUID | str, local_path: Path | str) -> StoredRecording:
+    def backfill_legacy_retention_tags(self, max_objects: int = 10_000) -> int:
+        list_objects = getattr(self.client, "list_objects", None)
+        get_tags = getattr(self.client, "get_object_tags", None)
+        set_tags = getattr(self.client, "set_object_tags", None)
+        if list_objects is None or get_tags is None or set_tags is None:
+            return 0
+        from minio.commonconfig import Tags
+        updated = 0
+        for index, item in enumerate(list_objects(self.settings.bucket_name, recursive=True)):
+            if index >= max_objects:
+                break
+            object_name = str(getattr(item, "object_name", ""))
+            if not object_name or object_name.endswith("/"):
+                continue
+            tags = get_tags(self.settings.bucket_name, object_name) or {}
+            if tags.get("retention-days"):
+                continue
+            replacement = Tags.new_object_tags()
+            replacement.update(tags)
+            replacement["retention-days"] = "30"
+            set_tags(self.settings.bucket_name, object_name, replacement)
+            updated += 1
+        return updated
+
+    def upload_finalized(
+        self, job_uuid: UUID | str, local_path: Path | str, *, metadata: dict[str, str] | None = None,
+        retention_days: int = 30,
+    ) -> StoredRecording:
         parsed_uuid = job_uuid if isinstance(job_uuid, UUID) else UUID(str(job_uuid))
         path = Path(local_path)
         if not path.is_file() or path.is_symlink():
@@ -218,6 +246,7 @@ class RecordingStorageService:
         existing = self._stat_if_present(key)
         if existing is not None:
             self._verify_stat(existing, size, checksum, key, conflict=True)
+            self._set_retention_tags(key, retention_days)
             return StoredRecording(parsed_uuid, key, size, checksum, True)
 
         self.client.fput_object(
@@ -225,9 +254,10 @@ class RecordingStorageService:
             key,
             str(path),
             content_type="video/mp4",
-            metadata={SHA256_METADATA_KEY: checksum},
+            metadata={SHA256_METADATA_KEY: checksum, "retention-days": str(retention_days), **(metadata or {})},
         )
         self.verify(key, size, checksum)
+        self._set_retention_tags(key, retention_days)
         return StoredRecording(parsed_uuid, key, size, checksum, False)
 
     def stat(self, object_key: str) -> Any:
@@ -360,6 +390,7 @@ class RecordingStorageService:
                     rule_id="recording-retention",
                     expiration=Expiration(days=self.settings.minio_retention_days),
                 )
+                for days in (7, 30, 90, 365)
             ]
         )
         set_lifecycle(self.settings.bucket_name, config)

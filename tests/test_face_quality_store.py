@@ -62,3 +62,7 @@ def test_postgresql_schema_has_separate_face_dimensions() -> None:
     assert "min_face_width" in columns
     assert "min_face_height" in columns
     assert "min_face_size" not in columns
+
+import pytest
+
+pytestmark = pytest.mark.postgresql

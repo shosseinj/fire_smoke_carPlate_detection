@@ -9,6 +9,7 @@ weights/**/*.pth
 output/
 qdrant_storage/
 /saved_media/
+saved_media/
 *.mp4
 *.zip
 *.sqlite3
@@ -25,5 +26,17 @@ qdrant_storage/
 # Local agent/workflow controls
 AGENTS.md
 .workflow/
+.opencode/commands/
+
+# opencode configuration & artifacts
+prompt.txt
+opencode.json
+opencode copy.json
+.opencode/
+create_video_recording_agents.ps1
+opencode_agents_guide_fa.md
+docs/superpowers/specs/2026-08-03-opencode-live-branch-workflow-design.md
+scripts/agentic_eval.py
+scripts/validate_agentic_workflow.py
 tools/start_phase.py
 tools/check_changes.py

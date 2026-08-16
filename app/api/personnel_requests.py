@@ -304,7 +304,7 @@ def list_requests(
     start_date_to: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    _: Any = Depends(require_permission("application.read")),
+    _: Any = Depends(require_permission("personnel_requests.read")),
 ) -> list[dict[str, Any]]:
     store = get_request_store()
     int_status = internal_status(status) if status else None
@@ -364,7 +364,7 @@ def get_my_requests(
 @router.post("/calculate-time")
 def calculate_time(
     body: dict[str, Any],
-    _: Any = Depends(require_permission("application.read")),
+    _: Any = Depends(require_permission("personnel_requests.read")),
 ) -> dict[str, Any]:
     personnel_id = int(body.get("personnel_id", 0))
     request_type = str(body.get("request_type", "earned_leave"))
@@ -460,7 +460,7 @@ def get_my_request_stats(
 
 @router.get("/stats/admin")
 def admin_statistics(
-    _: Any = Depends(require_permission("application.manage")),
+    _: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     store = get_request_store()
     by_status = store.count_by_status()
@@ -494,7 +494,7 @@ def admin_statistics(
 def create_request(
     body: PersonnelRequestCreate,
     remove_logs_in_request_dates: bool = False,
-    _: Any = Depends(require_permission("application.read")),
+    _: Any = Depends(require_permission("personnel_requests.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     personnel_id = body.personnel_id
@@ -589,7 +589,7 @@ def create_request(
 )
 def create_bulk_requests(
     body: BulkPersonnelRequestCreate,
-    _: Any = Depends(require_permission("application.read")),
+    _: Any = Depends(require_permission("personnel_requests.read")),
 ) -> dict[str, Any]:
     """Create an atomic batch of requests for one personnel."""
     personnel = _get_personnel(body.personnel_id)
@@ -626,7 +626,7 @@ def generate_fake_requests(
         True,
         description="حذف لاگ‌های همان پرسنل در تاریخ درخواست‌های روزانه ایجادشده",
     ),
-    admin_user: Any = Depends(require_permission("application.manage")),
+    admin_user: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     if bool(from_date) != bool(to_date):
         raise HTTPException(400, "from_date و to_date باید با هم ارسال شوند")
@@ -761,7 +761,7 @@ def generate_fake_requests(
 @router.get("/{request_id}", response_model=PersonnelRequestResponse)
 def get_request(
     request_id: int,
-    _: Any = Depends(require_permission("application.read")),
+    _: Any = Depends(require_permission("personnel_requests.read")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
@@ -781,7 +781,7 @@ def get_request(
 def patch_request(
     request_id: int,
     body: dict[str, Any],
-    current_user: Any = Depends(require_permission("application.manage")),
+    current_user: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
@@ -825,7 +825,7 @@ def patch_request(
 def approve_request(
     request_id: int,
     admin_notes: str | None = Query(None),
-    current_user: Any = Depends(require_permission("application.manage")),
+    current_user: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
@@ -859,7 +859,7 @@ def reject_request(
     request_id: int,
     rejection_reason: str = Query(..., min_length=1),
     admin_notes: str | None = Query(None),
-    current_user: Any = Depends(require_permission("application.manage")),
+    current_user: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)
@@ -892,7 +892,7 @@ def reject_request(
 @router.delete("/{request_id}")
 def delete_request(
     request_id: int,
-    _: Any = Depends(require_permission("application.manage")),
+    _: Any = Depends(require_permission("personnel_requests.edit")),
 ) -> dict[str, Any]:
     store = get_request_store()
     record = store.get(request_id)

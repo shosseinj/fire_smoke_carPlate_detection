@@ -69,3 +69,7 @@ def test_plate_collection_response_skips_media_file_checks(tmp_path) -> None:
     assert response["snapshot_thumbnail"] is None
     assert response["snap_shot_url"] == "/api/v1/plate-logs/9/snapshot"
     assert response["video_url"] == "/api/v1/plate-logs/9/video"
+
+import pytest
+
+pytestmark = pytest.mark.unit

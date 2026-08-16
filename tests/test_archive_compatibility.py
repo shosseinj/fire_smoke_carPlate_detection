@@ -20,3 +20,7 @@ def test_legacy_filter_parameters_are_exposed() -> None:
     fire_log_parameters = inspect.signature(list_fire_logs).parameters
     assert {"usage_type", "vehicle_type", "owner_phone"} <= set(car_plate_parameters)
     assert {"hazard_type", "detected_from", "detected_to"} <= set(fire_log_parameters)
+
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 metadata = MetaData()
 UTC_TS = DateTime(timezone=True)
-ALEMBIC_HEAD_REVISION = "20260815_0059"
+ALEMBIC_HEAD_REVISION = "20260815_0060"
 
 
 def _audit_columns() -> tuple[Column[Any], Column[Any]]:
@@ -77,7 +77,7 @@ user_permission_grants = Table(
     Column("created_at_utc", UTC_TS, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
     CheckConstraint(
         "(scope_type = 'global' AND scope_id = 0) OR "
-        "(scope_type IN ('building', 'section', 'camera') AND scope_id > 0)",
+        "(scope_type IN ('building', 'section', 'camera', 'room') AND scope_id > 0)",
         name="ck_user_permission_grants_target",
     ),
     UniqueConstraint(
@@ -128,6 +128,10 @@ recording_jobs = Table(
     Column("warning", Text), Column("error", Text),
     Column("is_partial", Boolean, nullable=False, server_default=text("FALSE")),
     Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("quality_preset", String(16), nullable=False, server_default="medium"),
+    Column("retention_days", Integer, nullable=False, server_default="30"),
+    Column("output_width", Integer), Column("output_height", Integer),
+    Column("output_fps", Integer), Column("output_bitrate_bps", Integer),
     Column("object_expires_at_utc", UTC_TS), Column("spool_expires_at_utc", UTC_TS),
     *_audit_columns(),
     CheckConstraint("scheduled_end_utc > scheduled_start_utc", name="ck_recording_jobs_positive_duration"),
@@ -137,6 +141,31 @@ recording_jobs = Table(
 )
 Index("idx_recording_jobs_source_start", recording_jobs.c.source_uri, recording_jobs.c.scheduled_start_utc)
 Index("idx_recording_jobs_status_start", recording_jobs.c.status, recording_jobs.c.scheduled_start_utc)
+recording_settings = Table(
+    "recording_settings", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("continuous_enabled", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("quality_preset", String(16), nullable=False, server_default="medium"),
+    Column("segment_seconds", Integer, nullable=False, server_default="120"),
+    Column("retention_days", Integer, nullable=False, server_default="30"),
+    *_user_audit_columns(), *_audit_columns(),
+    CheckConstraint("id = 1", name="ck_recording_settings_singleton"),
+    CheckConstraint("quality_preset IN ('low','medium','high','original')", name="ck_recording_settings_quality"),
+    CheckConstraint("segment_seconds IN (60,120,300,900)", name="ck_recording_settings_segment"),
+    CheckConstraint("retention_days IN (7,30,90,365)", name="ck_recording_settings_retention"),
+)
+recording_camera_settings = Table(
+    "recording_camera_settings", metadata,
+    Column("source_uri", Text, ForeignKey("sources.source_uri", ondelete="CASCADE"), primary_key=True),
+    Column("continuous_enabled", Boolean, nullable=False),
+    Column("quality_preset", String(16), nullable=False),
+    Column("segment_seconds", Integer, nullable=False),
+    Column("retention_days", Integer, nullable=False),
+    *_user_audit_columns(), *_audit_columns(),
+    CheckConstraint("quality_preset IN ('low','medium','high','original')", name="ck_recording_camera_settings_quality"),
+    CheckConstraint("segment_seconds IN (60,120,300,900)", name="ck_recording_camera_settings_segment"),
+    CheckConstraint("retention_days IN (7,30,90,365)", name="ck_recording_camera_settings_retention"),
+)
 Index("idx_users_username", users.c.username)
 Index("idx_users_email", users.c.email)
 

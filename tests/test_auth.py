@@ -22,7 +22,7 @@ from app.database import Database
 from app.runtime import build_runtime
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 
 
 def _test_database_url() -> str:
@@ -194,7 +194,8 @@ def test_me_with_valid_token(tmp_path: Path) -> None:
         assert "superadmin" in body["roles"]
         assert body["is_active"] is True
         assert "id" in body
-        assert "created_at" in body
+        assert "created_at_jalali" in body
+        assert "created_at" not in body
     finally:
         _teardown(test_runtime, old_runtime)
 
