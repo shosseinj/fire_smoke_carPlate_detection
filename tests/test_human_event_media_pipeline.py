@@ -53,6 +53,19 @@ def test_half_open_segment_matching_and_full_coverage() -> None:
                                 NOW + timedelta(seconds=25), max_segments=3)
 
 
+def test_segment_matching_tolerates_splitmux_clock_jitter() -> None:
+    values = [
+        segment("first", 0, 10),
+        RecordingSegment("second", "cam", "recordings", "continuous/second.mp4",
+                         NOW + timedelta(seconds=10, microseconds=100),
+                         NOW + timedelta(seconds=20), 1920, 1080, 25.0, "b" * 64),
+    ]
+
+    assert [item.segment_id for item in match_covering_segments(
+        values, NOW + timedelta(seconds=5), NOW + timedelta(seconds=15), max_segments=3
+    )] == ["first", "second"]
+
+
 @pytest.mark.postgresql
 def test_recording_segment_upsert_is_idempotent_with_postgresql_timestamps(
     postgres_database,
@@ -119,6 +132,9 @@ def test_human_media_files_are_removed_only_after_success(
     class Storage:
         settings = SimpleNamespace(bucket_name="recordings")
 
+        def __init__(self):
+            self.uploaded = []
+
         def stat(self, _key):
             return SimpleNamespace(size=4)
 
@@ -127,6 +143,7 @@ def test_human_media_files_are_removed_only_after_success(
             return destination
 
         def upload_object(self, _key, _path, _content_type):
+            self.uploaded.append(_key)
             if upload_fails:
                 raise RuntimeError("MinIO unavailable")
 
@@ -138,8 +155,11 @@ def test_human_media_files_are_removed_only_after_success(
     monkeypatch.setattr(module, "extract_human_media", extract)
     redis = Redis()
     root = tmp_path / "saved_media" / "temporary_minIO" / "human_track"
+    storage = Storage()
+    local_root = tmp_path / "saved_media" / "human_track"
     worker = HumanEventMediaWorker(
-        redis, "human", Store(), Storage(), lambda *_: None, temp_root=root,
+        redis, "human", Store(), storage, lambda *_: None,
+        temp_root=root, local_root=local_root,
     )
 
     worker._handle("1-0", {"event": event.model_dump_json()})
@@ -151,6 +171,12 @@ def test_human_media_files_are_removed_only_after_success(
         assert not any(call[0] == "ack" for call in redis.calls)
     else:
         assert not camera_root.exists()
+        assert storage.uploaded == [
+            "human_track/rtsp___camera_1/2026/08/15/e/clip.mp4",
+            "human_track/rtsp___camera_1/2026/08/15/e/snapshot.jpg",
+        ]
+        assert (local_root / "rtsp___camera_1/2026/08/15/e/clip.mp4").read_bytes() == b"clip"
+        assert (local_root / "rtsp___camera_1/2026/08/15/e/snapshot.jpg").read_bytes() == b"snapshot"
         assert any(call[0] == "ack" for call in redis.calls)
 
 

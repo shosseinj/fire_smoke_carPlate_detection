@@ -9,11 +9,11 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
-from app.core.recording_storage import object_write_lock
+from app.core.recording_storage import object_write_lock, sha256_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -97,6 +97,7 @@ class GpuLiveBranchManager:
         heartbeat_timeout_seconds: float = 15.0,
         recording_segment_seconds: float | None = None,
         recording_spool_path: Path | str = "saved_media/temporary_minIO/continuous",
+        recording_archive_path: Path | str = "saved_media/continuous",
         camera_id_resolver: Callable[[str], int | str | None] | None = None,
         recording_segment_finalizer: Callable[[RecordingUpload, int, int, float, str], None] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] | None = None,
@@ -111,6 +112,7 @@ class GpuLiveBranchManager:
             configured_segment_seconds = float(os.getenv("LIVE_RECORDING_SEGMENT_SECONDS", "3600"))
         self.recording_segment_seconds = max(1.0, configured_segment_seconds)
         self.recording_spool_path = Path(recording_spool_path)
+        self.recording_archive_path = Path(recording_archive_path)
         self.camera_id_resolver = camera_id_resolver
         self.recording_segment_finalizer = recording_segment_finalizer
         self.gst_loader = gst_loader
@@ -326,11 +328,13 @@ class GpuLiveBranchManager:
                 )
                 recording_state["current"] = None
                 recording_state["start_time"] = None
+                recording_state["start_monotonic"] = None
 
                 def format_location(_splitmux: Any, fragment_id: int) -> str:
                     previous = recording_state["current"]
                     if previous is not None:
-                        end_time = datetime.now(timezone.utc)
+                        elapsed = max(0.001, time.monotonic() - recording_state["start_monotonic"])
+                        end_time = recording_state["start_time"] + timedelta(seconds=elapsed)
                         upload = self._recording_upload(
                             previous, camera_id, recording_state["start_time"], end_time, source.source_id
                         )
@@ -339,7 +343,10 @@ class GpuLiveBranchManager:
                         self._upload_queue.put(upload)
                     opened = Path(str(location) % fragment_id)
                     recording_state["current"] = opened
-                    recording_state["start_time"] = datetime.now(timezone.utc)
+                    recording_state["start_time"] = (
+                        end_time if previous is not None else datetime.now(timezone.utc)
+                    )
+                    recording_state["start_monotonic"] = time.monotonic()
                     LOGGER.info("fMP4 file opened: %s", opened)
                     return str(opened)
 
@@ -440,11 +447,14 @@ class GpuLiveBranchManager:
         if completed_path is not None and completed_path.is_file():
             source = self._sources.get(branch.source_id)
             camera_id = source.camera_id if source and source.camera_id else "unknown"
+            start_time = branch.recording_state.get("start_time") or datetime.now(timezone.utc)
+            start_monotonic = branch.recording_state.get("start_monotonic")
+            elapsed = max(0.001, time.monotonic() - start_monotonic) if start_monotonic is not None else 0.001
             upload = self._recording_upload(
                 completed_path,
                 camera_id,
-                branch.recording_state.get("start_time") or datetime.now(timezone.utc),
-                datetime.now(timezone.utc), branch.source_id,
+                start_time,
+                start_time + timedelta(seconds=elapsed), branch.source_id,
             )
             LOGGER.info("fMP4 fragment written: %s", completed_path)
             LOGGER.info("Recording file completed: %s", completed_path)
@@ -573,6 +583,34 @@ class GpuLiveBranchManager:
             sidecar.replace(target_sidecar)
         return target
 
+    def _archive_upload(self, upload: RecordingUpload) -> Path:
+        parts = Path(upload.object_name).parts
+        if not parts or parts[0] != "continuous" or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("continuous recording object name is not canonical")
+        target = self.recording_archive_path.joinpath(*parts[1:])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        sidecar = self._upload_sidecar(upload)
+        target_sidecar = target.with_suffix(".json")
+        if target.is_file():
+            if target.stat().st_size != upload.path.stat().st_size:
+                raise ValueError("local continuous recording conflicts with durable copy")
+            existing = sha256_file(target)
+            incoming = sha256_file(upload.path)
+            if existing != incoming:
+                raise ValueError("local continuous recording conflicts with durable copy")
+        if sidecar.is_file() and target_sidecar.is_file() and target_sidecar.read_bytes() != sidecar.read_bytes():
+            raise ValueError("local continuous metadata conflicts with durable copy")
+        if target.is_file():
+            upload.path.unlink()
+        else:
+            upload.path.replace(target)
+        if sidecar.is_file():
+            if target_sidecar.is_file():
+                sidecar.unlink()
+            else:
+                sidecar.replace(target_sidecar)
+        return target
+
     def _run_uploads(self) -> None:
         client = None
         bucket = os.getenv("RECORDING_MINIO_BUCKET", "recordings")
@@ -648,9 +686,9 @@ class GpuLiveBranchManager:
                 )
                 if self.recording_segment_finalizer is not None:
                     self.recording_segment_finalizer(upload, width, height, fps, checksum)
-                path.unlink()
-                sidecar.unlink(missing_ok=True)
+                archived = self._archive_upload(upload)
                 LOGGER.info("Recording upload succeeded: %s", upload.object_name)
+                LOGGER.info("Recording archived locally: %s", archived)
             except Exception as exc:
                 client = None
                 LOGGER.warning(

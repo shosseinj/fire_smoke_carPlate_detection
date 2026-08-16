@@ -214,6 +214,30 @@ def test_terminal_recording_failure_is_quarantined_without_data_loss(tmp_path) -
     assert not recording.exists()
 
 
+def test_successful_recording_is_archived_outside_retry_spool(tmp_path) -> None:
+    manager = _manager()
+    manager.recording_archive_path = tmp_path / "saved_media" / "continuous"
+    spool = tmp_path / "temporary"
+    spool.mkdir()
+    recording = spool / "camera-12-part.mp4"
+    sidecar = recording.with_suffix(".json")
+    recording.write_bytes(b"video")
+    sidecar.write_text('{"durable": true}', encoding="utf-8")
+    upload = manager._recording_upload(
+        recording, "12", __import__("datetime").datetime(2026, 8, 16,
+            tzinfo=__import__("datetime").timezone.utc),
+        __import__("datetime").datetime(2026, 8, 16, 0, 0, 10,
+            tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    archived = manager._archive_upload(upload)
+
+    assert archived == manager.recording_archive_path / "12/2026/08/16/camera-12-part.mp4"
+    assert archived.read_bytes() == b"video"
+    assert archived.with_suffix(".json").read_text(encoding="utf-8") == '{"durable": true}'
+    assert not recording.exists()
+
+
 def test_branch_reuse_and_grace_release() -> None:
     manager = _manager()
     tee = _Tee()

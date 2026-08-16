@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from app.database import Database, ensure_database
@@ -53,9 +53,10 @@ def match_covering_segments(
     if not overlapping or len(overlapping) > max_segments:
         raise IncompleteCoverageError("recording coverage is absent or exceeds its bound")
     cursor = start
+    gap_tolerance = timedelta(milliseconds=250)
     selected: list[RecordingSegment] = []
     for segment in overlapping:
-        if segment.started_at_utc > cursor:
+        if segment.started_at_utc > cursor + gap_tolerance:
             raise IncompleteCoverageError("recording coverage contains a gap")
         if segment.ended_at_utc <= cursor:
             continue

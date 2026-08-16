@@ -20,6 +20,12 @@ def test_config_has_expected_defaults() -> None:
     assert settings.human_event_media_temp_path.as_posix().endswith(
         "saved_media/temporary_minIO/human_track"
     )
+    assert settings.continuous_recording_local_path.as_posix().endswith(
+        "saved_media/continuous"
+    )
+    assert settings.human_event_media_local_path.as_posix().endswith(
+        "saved_media/human_track"
+    )
 
 
 def test_legacy_detection_persistence_defaults_true_and_accepts_false(monkeypatch) -> None:

@@ -132,7 +132,7 @@ class Settings:
         "LIVE_BRANCH_HEARTBEAT_TIMEOUT_SECONDS", 15.0
     )
     live_recording_segment_seconds: float = _env_float(
-        "LIVE_RECORDING_SEGMENT_SECONDS", 10.0
+        "LIVE_RECORDING_SEGMENT_SECONDS", 600.0
     ) # video durance in seconds
     recording_enabled: bool = _env_bool("RECORDING_ENABLED", True)
     legacy_detection_persistence_enabled: bool = _env_bool(
@@ -160,6 +160,9 @@ class Settings:
     human_event_media_temp_path: Path = _path(
         "HUMAN_EVENT_MEDIA_TEMP_PATH", "saved_media/temporary_minIO/human_track"
     )
+    human_event_media_local_path: Path = _path(
+        "HUMAN_EVENT_MEDIA_LOCAL_PATH", "saved_media/human_track"
+    )
     human_event_worker_shutdown_seconds: float = _env_float("HUMAN_EVENT_WORKER_SHUTDOWN_SECONDS", 5.0)
     human_event_outbox_path: Path = _path("HUMAN_EVENT_OUTBOX_PATH", "saved_media/human_event_outbox")
     human_event_outbox_max_files: int = _env_int("HUMAN_EVENT_OUTBOX_MAX_FILES", 10000)
@@ -171,6 +174,9 @@ class Settings:
     recording_spool_path: Path = _path("RECORDING_SPOOL_PATH", "saved_media/recording_spool")
     continuous_recording_temp_path: Path = _path(
         "CONTINUOUS_RECORDING_TEMP_PATH", "saved_media/temporary_minIO/continuous"
+    )
+    continuous_recording_local_path: Path = _path(
+        "CONTINUOUS_RECORDING_LOCAL_PATH", "saved_media/continuous"
     )
     recording_spool_high_water_percent: float = _env_float("RECORDING_SPOOL_HIGH_WATER_PERCENT", 90.0)
     recording_poll_seconds: float = _env_float("RECORDING_POLL_SECONDS", 0.5)

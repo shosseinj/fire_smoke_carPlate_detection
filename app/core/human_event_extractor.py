@@ -42,12 +42,10 @@ def extract_human_media(
                     raise ValueError(f"segment has no positive frame rate: {path}")
                 if stream is None:
                     stream = output.add_stream("libx264", rate=rate)
-                    output_rate = float(rate)
+                    output_rate = rate
                     stream.width, stream.height, stream.pix_fmt = video.width, video.height, "yuv420p"
                 elif (stream.width, stream.height) != (video.width, video.height):
                     raise ValueError("segment dimensions differ")
-                elif abs(float(rate) - float(output_rate)) > max(.01, float(output_rate) * .01):
-                    raise ValueError("segment frame rates differ")
                 first_time = None
                 for frame in source.decode(video):
                     if frame.time is None:
@@ -61,7 +59,7 @@ def extract_human_media(
                     if delta < nearest_delta:
                         nearest, nearest_delta = frame.to_ndarray(format="bgr24"), delta
                     frame.pts = frame_count
-                    frame.time_base = Fraction(rate.denominator, rate.numerator)
+                    frame.time_base = Fraction(output_rate.denominator, output_rate.numerator)
                     for packet in stream.encode(frame):
                         output.mux(packet)
                     frame_count += 1

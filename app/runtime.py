@@ -1156,6 +1156,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         heartbeat_timeout_seconds=app_settings.live_branch_heartbeat_timeout_seconds,
         recording_segment_seconds=app_settings.live_recording_segment_seconds,
         recording_spool_path=app_settings.continuous_recording_temp_path,
+        recording_archive_path=app_settings.continuous_recording_local_path,
         camera_id_resolver=lambda source_id: (
             record.id if (record := registry.get(source_id)) is not None else None
         ),
@@ -1289,6 +1290,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_duration_seconds=app_settings.human_event_media_max_duration_seconds,
                 max_temp_bytes=app_settings.human_event_media_max_temp_bytes,
                 temp_root=app_settings.human_event_media_temp_path,
+                local_root=app_settings.human_event_media_local_path,
                 write_enabled=app_settings.human_event_media_write_enabled,
             )
         except Exception as exc:

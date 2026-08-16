@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from pathlib import Path
@@ -9,7 +10,12 @@ from typing import Any, Callable
 from app.core.detection_event_schemas import HumanDetectionEvent
 from app.core.human_event_extractor import extract_human_media
 from app.core.recording_segment_store import IncompleteCoverageError, RecordingSegmentStore
-from app.core.recording_storage import ObjectConflictError, RecordingStorageService
+from app.core.recording_storage import (
+    ObjectConflictError, RecordingStorageService, sha256_file,
+)
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class HumanEventMediaWorker:
@@ -21,6 +27,7 @@ class HumanEventMediaWorker:
                   claim_idle_ms: int = 30000, max_attempts: int = 5, max_segments: int = 16,
                   max_duration_seconds: float = 120.0, max_temp_bytes: int = 2 * 1024**3,
                   temp_root: Path | str = "saved_media/temporary_minIO/human_track",
+                  local_root: Path | str = "saved_media/human_track",
                   write_enabled: bool = True) -> None:
         if min(block_ms, claim_idle_ms, max_attempts, max_segments, max_temp_bytes) <= 0 or max_duration_seconds <= 0:
             raise ValueError("human media worker bounds must be positive")
@@ -29,6 +36,7 @@ class HumanEventMediaWorker:
         self.block_ms, self.claim_idle_ms, self.max_attempts = max(1, block_ms), max(1, claim_idle_ms), max(1, max_attempts)
         self.max_segments, self.max_duration_seconds, self.max_temp_bytes = max_segments, max_duration_seconds, max_temp_bytes
         self.temp_root = Path(temp_root)
+        self.local_root = Path(local_root)
         self.write_enabled = write_enabled
         self._stop = threading.Event(); self._thread: threading.Thread | None = None
         self._metrics = {key: 0 for key in ("processed", "retried", "dead_lettered", "errors")}
@@ -91,7 +99,6 @@ class HumanEventMediaWorker:
             downloads = [root / f".{event_id}.segment-{index}.mp4"
                          for index in range(len(segments))]
             clip, snapshot = root / f"{event_id}.mp4", root / f"{event_id}.jpg"
-            working_files = [*downloads, clip, snapshot]
             total = 0
             for segment in segments:
                 stat = self.storage.stat(segment.object_key)
@@ -111,13 +118,16 @@ class HumanEventMediaWorker:
                                 event.best_frame_at_utc, clip, snapshot,
                                 max_segments=self.max_segments,
                                 max_duration_seconds=self.max_duration_seconds)
-            prefix = f"derived/human/{camera}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
+            prefix = f"human_track/{event.camera_id}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
             clip_key, snapshot_key = f"{prefix}/clip.mp4", f"{prefix}/snapshot.jpg"
             self.storage.upload_object(clip_key, clip, "video/mp4")
             self.storage.upload_object(snapshot_key, snapshot, "image/jpeg")
             bucket = self.storage.settings.bucket_name
             self.finalizer(event, f"minio://{bucket}/{clip_key}", f"minio://{bucket}/{snapshot_key}")
-            for path in working_files:
+            durable_root = self.local_root / Path(prefix).relative_to("human_track")
+            self._archive_file(clip, durable_root / "clip.mp4")
+            self._archive_file(snapshot, durable_root / "snapshot.jpg")
+            for path in downloads:
                 path.unlink(missing_ok=True)
             try:
                 root.rmdir()
@@ -126,6 +136,11 @@ class HumanEventMediaWorker:
             self.redis.xack(self.stream, self.group, message_id)
             self._metrics["processed"] += 1
         except Exception as exc:
+            LOGGER.warning(
+                "Human event media processing failed: event_id=%s error=%s detail=%s",
+                getattr(locals().get("event"), "event_id", "unknown"),
+                type(exc).__name__, exc,
+            )
             terminal = isinstance(exc, (ValueError, ObjectConflictError)) and not isinstance(exc, IncompleteCoverageError)
             exhausted = self._delivery_count(message_id) >= self.max_attempts
             if terminal or exhausted:
@@ -138,6 +153,16 @@ class HumanEventMediaWorker:
                     self._metrics["errors"] += 1
             else:
                 self._metrics["retried"] += 1
+
+    @staticmethod
+    def _archive_file(source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file():
+            if sha256_file(source) != sha256_file(target):
+                raise ObjectConflictError(f"local human media conflicts with durable copy: {target}")
+            source.unlink()
+            return
+        source.replace(target)
 
     def close(self, timeout: float = 5.0) -> bool:
         self._stop.set()
