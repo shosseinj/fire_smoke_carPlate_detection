@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.auth import get_current_user, require_permission
 from app.core.auth_store import UserRecord
+from app.core.jalali_utils import utc_iso_to_jalali_datetime
 from app.runtime import Runtime
 
 
@@ -22,7 +23,7 @@ Severity = Literal["low", "medium", "high"]
 
 class FireLogResponse(BaseModel):
     id: int
-    detection_time: datetime
+    detection_time: str
     camera_id: str
     incident_id: str | None = None
     hazard_type: HazardType | None = None
@@ -68,6 +69,8 @@ def _protected_media_response(value: dict[str, Any]) -> dict[str, Any]:
             response["snapshot_url"] = f"/api/v1/fire-logs/{log_id}/snapshot"
         if response.get("video_url"):
             response["video_url"] = f"/api/v1/fire-logs/{log_id}/video"
+    if response.get("detection_time") is not None:
+        response["detection_time"] = utc_iso_to_jalali_datetime(response["detection_time"])
     return response
 
 

@@ -37,6 +37,7 @@ from app.core.jalali_utils import (
     normalize_digits,
     parse_jalali_date,
     parse_jalali_datetime,
+    utc_iso_to_jalali_datetime,
 )
 from app.core.legacy_detection_service import (
     calculate_access,
@@ -453,6 +454,8 @@ def _build_response(
             ),
         }
     )
+    if response["media_finalized_at"] is not None:
+        response["media_finalized_at"] = utc_iso_to_jalali_datetime(response["media_finalized_at"])
     for field in (
         "detection_time_utc", "detection_time_local", "detection_time_jalali",
         "created_at_utc", "created_at_local", "created_at_jalali",
