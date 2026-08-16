@@ -120,3 +120,5 @@ class TestHolidayStore:
     def test_blank_name(self, store: HolidayStore) -> None:
         with pytest.raises(ValueError, match="Holiday name is required"):
             store.create(name="", date_value="2026-01-01", holiday_type="national")
+
+pytestmark = pytest.mark.postgresql

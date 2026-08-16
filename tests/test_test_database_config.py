@@ -78,3 +78,5 @@ def test_explicit_target_safety_rejects_production_or_suspicious_urls(
 
     with pytest.raises(pytest.fail.Exception, match=message):
         test_support._test_database_url()
+
+pytestmark = pytest.mark.unit

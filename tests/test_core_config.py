@@ -7,3 +7,6 @@ def test_config_has_expected_defaults() -> None:
     assert settings.app_name is not None
     assert settings.processor_mode in ("mock", "real")
     assert settings.saved_media_path is not None
+import pytest
+
+pytestmark = pytest.mark.unit

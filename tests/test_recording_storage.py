@@ -242,3 +242,5 @@ def test_minio_client_uses_bounded_connect_and_read_timeouts(monkeypatch: pytest
     assert captured["timeout"] == {"connect": 4.0, "read": 4.0}
     assert captured["retry"] == {"total": 1, "connect": 1, "read": 1, "redirect": 0}
     assert "http_client" in captured["minio"]  # type: ignore[operator]
+
+pytestmark = pytest.mark.unit

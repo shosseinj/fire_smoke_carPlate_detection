@@ -67,3 +67,5 @@ def test_fire_log_response_contract_and_date_range() -> None:
     assert end == "2026-01-02T00:00:00+00:00"
     with pytest.raises(ValueError):
         _date_range_values(datetime(2026, 1, 2), datetime(2026, 1, 1))
+
+pytestmark = pytest.mark.unit

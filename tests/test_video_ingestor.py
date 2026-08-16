@@ -649,3 +649,7 @@ def test_deepstream_applies_source_enable_and_task_changes_without_restart(
     registry.delete(source_uri)
     ingestor._sync_sources()
     assert closed == [source_uri, source_uri]
+
+import pytest
+
+pytestmark = pytest.mark.streaming

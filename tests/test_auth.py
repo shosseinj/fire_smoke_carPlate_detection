@@ -22,7 +22,7 @@ from app.database import Database
 from app.runtime import build_runtime
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 
 
 def _test_database_url() -> str:

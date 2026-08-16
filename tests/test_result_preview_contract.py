@@ -54,3 +54,7 @@ def test_dashboard_uses_public_preview_and_bounded_multi_task_overlays() -> None
     assert "/api/v1/broadcast/ws" in dashboard
     assert "source.source_id" not in dashboard
     assert "source.source_uri" in dashboard
+
+import pytest
+
+pytestmark = pytest.mark.unit

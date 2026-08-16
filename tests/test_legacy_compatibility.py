@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.usefixtures("postgres_database")]
 
 
 def test_legacy_http_routes_are_registered() -> None:

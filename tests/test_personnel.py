@@ -14,7 +14,7 @@ from app.config import settings
 from app.runtime import build_runtime
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 
 
 # ── Test helpers ─────────────────────────────────────────────────────

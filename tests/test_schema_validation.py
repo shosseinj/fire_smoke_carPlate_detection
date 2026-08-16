@@ -22,3 +22,4 @@ def test_camera_schema_rejects_invalid_margin_and_scores() -> None:
 
     with pytest.raises(ValidationError, match="face_rec_score"):
         _CameraCreate(camera_url="rtsp://example.local/stream", face_rec_score=1.1)
+pytestmark = pytest.mark.unit

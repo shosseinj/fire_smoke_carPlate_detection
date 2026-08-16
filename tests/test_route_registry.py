@@ -106,3 +106,7 @@ def test_core_backend_routes_are_registered() -> None:
     missing = expected_paths - paths
     assert missing == set(), f"Missing routes: {missing}"
     assert "/api/v1/cameras" not in paths
+
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -31,3 +31,7 @@ def test_vendored_swagger_assets_are_present() -> None:
         asset = SWAGGER_ASSETS / filename
         assert asset.is_file()
         assert asset.stat().st_size >= minimum_size
+
+import pytest
+
+pytestmark = pytest.mark.unit

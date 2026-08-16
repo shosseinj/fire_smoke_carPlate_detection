@@ -16,3 +16,6 @@ def test_validate_national_code_rejects_invalid_patterns() -> None:
 
 def test_validate_national_code_accepts_known_valid_code() -> None:
     assert validate_national_code("0084575948") is True
+import pytest
+
+pytestmark = pytest.mark.unit

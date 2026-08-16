@@ -214,3 +214,5 @@ def test_upload_accepts_enable_cropping_flag(enable_cropping: bool) -> None:
     entry = result["results"][0]["image"]
     # In mock mode (face_processor=None) no cropping can happen
     assert "cropped_face_key" in entry
+
+pytestmark = pytest.mark.unit

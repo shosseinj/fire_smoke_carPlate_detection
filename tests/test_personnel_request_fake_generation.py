@@ -361,3 +361,5 @@ def test_generate_fake_requests_default_range_remains_last_180_days(monkeypatch)
         date.today() - personnel_requests.timedelta(days=180),
         date.today(),
     ]
+
+pytestmark = pytest.mark.unit

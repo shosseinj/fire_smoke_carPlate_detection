@@ -78,3 +78,7 @@ def test_file_uri_resolves_to_container_path() -> None:
     ingestor.project_root = Path("/")
     resolved = ingestor._resolve_uri("file:///workspace/data/1.mp4")
     assert resolved.replace("\\", "/").endswith("/workspace/data/1.mp4")
+
+import pytest
+
+pytestmark = pytest.mark.streaming

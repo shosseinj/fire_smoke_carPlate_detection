@@ -161,3 +161,5 @@ def test_video_status_requires_a_readable_finalized_file(tmp_path: Path) -> None
     invalid.parent.mkdir(parents=True)
     invalid.write_bytes(b"not-an-mp4")
     assert storage.finalized_video_status("human_videos/invalid.mp4") == "failed"
+
+pytestmark = pytest.mark.unit

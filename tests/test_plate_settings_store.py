@@ -63,3 +63,7 @@ def test_resetting_camera_settings_restores_all_general_values(
     assert camera["overrides"] == {}
     assert set(camera["inherited_fields"]) == set(store.FIELDS)
     assert camera["effective"]["ocr_confidence"] == 0.50
+
+import pytest
+
+pytestmark = pytest.mark.postgresql

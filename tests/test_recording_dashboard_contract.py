@@ -43,3 +43,7 @@ def test_dashboard_hides_settings_without_read_permission() -> None:
     assert 'id="recordingContinuous"' in html
     assert "response.status === 401 || response.status === 403" in html
     assert "recordingSettingsPanel.hidden = true" in html
+
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -30,3 +30,5 @@ def test_api_patch_accepts_practical_presets() -> None:
         continuous_enabled=True, quality_preset="high", segment_seconds=300, retention_days=90,
     ))
     assert changes == {"continuous_enabled": True, "quality_preset": "high", "segment_seconds": 300, "retention_days": 90}
+
+pytestmark = pytest.mark.unit

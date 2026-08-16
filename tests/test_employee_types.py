@@ -88,3 +88,5 @@ def test_employee_type_attendance_report_flag_can_be_updated(postgres_database) 
     assert updated is not None
     assert updated.include_in_attendance_reports is True
     assert employee_types.get(custom.id).include_in_attendance_reports is True
+
+pytestmark = pytest.mark.postgresql

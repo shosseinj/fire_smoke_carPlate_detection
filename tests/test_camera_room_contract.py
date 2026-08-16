@@ -90,3 +90,7 @@ def test_startup_repairs_unassigned_source_from_newest_active_camera_room() -> N
 
     assert count == 1
     assert updates == [("camera://one", 12)]
+
+import pytest
+
+pytestmark = pytest.mark.unit

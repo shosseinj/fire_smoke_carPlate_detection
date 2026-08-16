@@ -244,3 +244,5 @@ class TestRequestStore:
     def test_valid_statuses(self) -> None:
         assert "pending" in VALID_REQUEST_STATUSES
         assert "approved" in VALID_REQUEST_STATUSES
+
+pytestmark = pytest.mark.postgresql

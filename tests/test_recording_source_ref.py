@@ -48,3 +48,5 @@ def test_credential_bearing_or_uri_derived_name_is_replaced() -> None:
     assert safe_recording_source_name(uri, uri) == "دوربین"
     assert safe_recording_source_name("admin secret camera", uri) == "دوربین"
     assert safe_recording_source_name("دوربین ورودی", uri) == "دوربین ورودی"
+
+pytestmark = pytest.mark.unit

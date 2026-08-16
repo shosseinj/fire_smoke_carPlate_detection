@@ -336,3 +336,5 @@ def test_is_overnight_edge_cases() -> None:
     assert _is_overnight("23:59", "00:00") is True
     assert _is_overnight("12:00", "11:59") is True
     assert _is_overnight("00:00", "23:59") is False
+
+pytestmark = pytest.mark.postgresql

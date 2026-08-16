@@ -222,3 +222,5 @@ def test_source_refresh_detaches_all_owned_branches() -> None:
     manager.detach_source("camera")
     assert manager.status()["sources"] == 0
     assert manager.status()["branches"] == {}
+
+pytestmark = pytest.mark.streaming

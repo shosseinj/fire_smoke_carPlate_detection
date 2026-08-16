@@ -9,3 +9,6 @@ def test_resolve_camera_setting_uses_global_only_for_none() -> None:
     assert resolve_camera_setting(False, True) is False
     assert resolve_camera_setting(0.0, 0.4) == 0.0
     assert resolve_camera_setting(0.8, 0.4) == 0.8
+import pytest
+
+pytestmark = pytest.mark.unit
