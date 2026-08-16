@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.frontend_messages import LocalizedJSONRoute
 from app.core.holiday_store import HolidayStore
+from app.core.jalali_utils import to_jalali_local_string
 from app.core.location_store import LocationStore
 from app.core.personnel_store import PersonnelStore
 from app.core.request_store import RequestStore
@@ -1220,7 +1221,7 @@ def all_sections_status(runtime: Runtime = Depends(get_runtime)) -> dict[str, An
         "failed": failed,
         "warnings": warned,
         "skipped": skipped,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp": to_jalali_local_string(datetime.now(timezone.utc).isoformat()),
     }
     if failed:
         failed_names = [t["name"] for t in all_results if t["status"] == _TEST_FAIL]
@@ -1297,7 +1298,7 @@ async def all_sections_smoke_test(
         "passed": passed,
         "skipped": skipped,
         "failed": failed,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp": to_jalali_local_string(datetime.now(timezone.utc).isoformat()),
     }
     return smoke_results
 
