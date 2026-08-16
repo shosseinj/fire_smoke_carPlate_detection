@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -39,8 +38,6 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     is_active: bool
-    created_at: datetime
-    last_login: Optional[datetime] = None
     created_at_jalali: str = ""
     last_login_jalali: str | None = None
     permissions: list[str] = Field(default_factory=list)
