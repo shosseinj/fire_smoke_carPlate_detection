@@ -4,7 +4,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from app.core.detection_event_schemas import (DetectionEvent, FireSmokeDetectionEvent,
-    HumanDetectionEvent, PlateDetectionEvent, RecordingSegmentEvent)
+    HumanDetectionEvent, HumanTrackObservation, PlateDetectionEvent, RecordingSegmentEvent)
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -27,6 +27,19 @@ def test_human_round_trip_and_recognition_consistency() -> None:
     with pytest.raises(ValidationError): human(name="someone")
     with pytest.raises(ValidationError): human(bounding_box=(0.0, 0.0, 11.0, 5.0))
     with pytest.raises(ValidationError): human(first_seen_at_utc=datetime.now())
+
+
+def test_human_track_observations_are_validated_and_round_trip() -> None:
+    observation = HumanTrackObservation(
+        captured_at_utc=NOW + timedelta(seconds=1),
+        bounding_box=(1.0, 2.0, 6.0, 8.0), frame_width=10, frame_height=10,
+    )
+    event = human(track_observations=(observation,))
+    assert HumanDetectionEvent.model_validate_json(event.model_dump_json()) == event
+    with pytest.raises(ValidationError):
+        human(track_observations=(observation.model_copy(
+            update={"captured_at_utc": NOW - timedelta(seconds=1)}
+        ),))
 
 
 def test_recording_segment_round_trip_and_validation() -> None:
@@ -61,7 +74,8 @@ def plate(**changes):
     (human(), {"schema_version", "event_id", "event_name", "event_type", "camera_id", "room_id", "tracking_session_id",
       "track_id", "personnel_id", "ref_img_id", "name", "recognition_status", "recognition_confidence", "first_seen_at_utc",
       "last_seen_at_utc", "best_frame_at_utc", "best_frame_index", "bounding_box", "bounding_box_format", "frame_width",
-      "frame_height", "snapshot_quality", "clip_start_at_utc", "clip_end_at_utc", "counts_for_attendance", "created_at_utc"}),
+      "frame_height", "snapshot_quality", "clip_start_at_utc", "clip_end_at_utc", "counts_for_attendance", "created_at_utc",
+      "track_observations"}),
     (fire(), {"schema_version", "event_id", "event_name", "event_type", "incident_id", "camera_id", "room_id", "hazard_type",
       "severity", "fire_count", "smoke_count", "confidence", "first_seen_at_utc", "last_seen_at_utc", "best_frame_at_utc",
       "bounding_boxes", "bounding_box_format", "frame_width", "frame_height", "clip_start_at_utc", "clip_end_at_utc", "created_at_utc"}),

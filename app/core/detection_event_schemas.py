@@ -29,6 +29,22 @@ class _Event(BaseModel):
         return value
 
 
+class HumanTrackObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    captured_at_utc: datetime
+    bounding_box: Box
+    frame_width: int = Field(gt=0)
+    frame_height: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _valid(self):
+        if not _Event._utc(self.captured_at_utc):
+            raise ValueError("observation timestamp must be UTC-aware")
+        if not _Event._box(self.bounding_box, self.frame_width, self.frame_height):
+            raise ValueError("observation bounding box is outside frame")
+        return self
+
+
 class HumanDetectionEvent(_Event):
     event_id: str = Field(min_length=1)
     event_name: Literal["human"] = "human"
@@ -55,6 +71,7 @@ class HumanDetectionEvent(_Event):
     clip_end_at_utc: datetime
     counts_for_attendance: bool
     created_at_utc: datetime
+    track_observations: tuple[HumanTrackObservation, ...] = ()
 
     @model_validator(mode="after")
     def _valid(self):
@@ -70,6 +87,10 @@ class HumanDetectionEvent(_Event):
             raise ValueError("recognition identity is inconsistent")
         if not recognized and self.name != "Unknown": raise ValueError("unknown person name must be Unknown")
         if not self._box(self.bounding_box, self.frame_width, self.frame_height): raise ValueError("bounding box is outside frame")
+        if self.track_observations:
+            times = [item.captured_at_utc for item in self.track_observations]
+            if times != sorted(times) or times[0] < self.first_seen_at_utc or times[-1] > self.last_seen_at_utc:
+                raise ValueError("track observations are unordered or outside the track interval")
         return self
 
 

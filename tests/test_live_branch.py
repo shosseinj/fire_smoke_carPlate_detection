@@ -4,7 +4,21 @@ from pathlib import Path
 
 import pytest
 
-from app.core.live_branch import GpuLiveBranchManager, live_stream_path
+from app.core.live_branch import GpuLiveBranchManager, RecordingUpload, live_stream_path
+
+
+def test_recovered_fragment_uses_media_duration_when_interval_is_missing(tmp_path: Path) -> None:
+    instant = "2026-08-16T08:35:56+00:00"
+    upload = RecordingUpload(
+        tmp_path / "fragment.mp4", "4", instant, instant,
+        "continuous/4/2026/08/16/fragment.mp4", "camera",
+    )
+
+    repaired = GpuLiveBranchManager._repair_upload_interval(upload, 19.8)
+
+    assert repaired.end_time == instant
+    assert repaired.start_time == "2026-08-16T08:35:36.200000+00:00"
+    assert repaired.object_name == upload.object_name
 
 
 class _Caps:

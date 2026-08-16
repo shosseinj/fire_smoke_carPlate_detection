@@ -52,7 +52,14 @@ class HumanEventAuditStore:
         with self._lock:
             event_path.parent.mkdir(parents=True, exist_ok=True)
             if event_path.exists():
-                if event_path.read_text("utf-8") != payload:
+                retained = event_path.read_text("utf-8")
+                try:
+                    same_event = (
+                        HumanDetectionEvent.model_validate_json(retained) == event
+                    )
+                except Exception:
+                    same_event = False
+                if not same_event:
                     raise ValueError("event id conflicts with retained audit payload")
             else:
                 self._atomic_write(event_path, payload)

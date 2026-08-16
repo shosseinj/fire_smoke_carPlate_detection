@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque, OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import re
 import threading
@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Callable
 
-from app.core.detection_event_schemas import HumanDetectionEvent
+from app.core.detection_event_schemas import HumanDetectionEvent, HumanTrackObservation
 from app.core.types import FramePacket, TaskResult
 
 
@@ -31,6 +31,7 @@ class _Track:
     score: float = 0.0
     recognized: bool = False
     observations: int = 1
+    trajectory: deque[HumanTrackObservation] = field(default_factory=deque)
 
 
 class HumanDetectionEventObserver:
@@ -39,7 +40,8 @@ class HumanDetectionEventObserver:
     def __init__(self, publisher: Callable[[], object | None], *, completed_capacity: int = 4096,
                   active_capacity: int = 4096, pending_capacity: int = 4096,
                   clip_padding_seconds: float = 5.0, completion_capacity: int = 4096,
-                  retry_seconds: float = .1, min_observations: int = 1) -> None:
+                  retry_seconds: float = .1, min_observations: int = 1,
+                  reconciliation_seconds: float = 0.0) -> None:
         if min(completed_capacity, active_capacity, pending_capacity) <= 0:
             raise ValueError("observer capacities must be positive")
         self._publisher = publisher
@@ -52,6 +54,7 @@ class HumanDetectionEventObserver:
         if min_observations <= 0:
             raise ValueError("minimum human track observations must be positive")
         self._min_observations = int(min_observations)
+        self._reconciliation = timedelta(seconds=max(0.0, float(reconciliation_seconds)))
         self._completion_capacity = completion_capacity; self._retry_seconds = retry_seconds
         self._waiting_capacity = completion_capacity
         self._admission_capacity = min(active_capacity, completion_capacity + self._waiting_capacity)
@@ -64,6 +67,7 @@ class HumanDetectionEventObserver:
         self._wake = threading.Event(); self._stop = threading.Event()
         self._active: OrderedDict[tuple[str, str, int], _Track] = OrderedDict()
         self._pending: OrderedDict[tuple[str, str, int], None] = OrderedDict()
+        self._aliases: dict[tuple[str, str, int], tuple[str, str, int]] = {}
         self._completed: set[tuple[str, str, int]] = set()
         self._completed_order: deque[tuple[str, str, int]] = deque()
         self._counts = {k: 0 for k in ("observed", "published", "rejected", "malformed", "duplicate",
@@ -103,9 +107,33 @@ class HumanDetectionEventObserver:
             return
 
         with self._lock:
+            # Register ended backend IDs before processing new detections. ByteTrack
+            # can retire an old ID and create its replacement in the same result.
+            for human in result.data.get("disappeared_humans", ()):
+                try:
+                    raw_key = (session, camera, int(human["track_id"]))
+                    key = self._aliases.get(raw_key, raw_key)
+                    if key in self._completed or key in self._rejected:
+                        self._counts["duplicate"] += 1
+                        continue
+                    self._pending[key] = None
+                    self._pending.move_to_end(key)
+                    while len(self._pending) > self._pending_capacity:
+                        evicted = next((candidate for candidate in self._pending
+                                        if candidate not in self._completions
+                                        and candidate not in self._waiting_completions), None)
+                        if evicted is None:
+                            self._counts["handoff_full"] += 1
+                            break
+                        self._pending.pop(evicted, None)
+                        self._counts["pending_evicted"] += 1
+                except Exception:
+                    self._counts["malformed"] += 1
+
             for human in result.data.get("humans", ()):
                 try:
-                    track_id = int(human["track_id"]); key = (session, camera, track_id)
+                    track_id = int(human["track_id"]); raw_key = (session, camera, track_id)
+                    key = self._aliases.get(raw_key, raw_key)
                     if key in self._completed or key in self._rejected:
                         continue
                     raw = human["source_bbox"]
@@ -118,11 +146,21 @@ class HumanDetectionEventObserver:
                     quality = self._bounded(human.get("best_face_quality") if face else human.get("confidence"))
                     state = self._active.get(key)
                     if state is None:
+                        candidate = self._reconciliation_candidate(
+                            session, camera, captured, bbox, width, height, human
+                        )
+                        if candidate is not None:
+                            key = candidate
+                            self._aliases[raw_key] = candidate
+                            self._pending.pop(candidate, None)
+                            state = self._active[candidate]
+                    if state is None:
                         # Explicit drop-new policy: capacity is reserved before any
                         # partial track state is created. Completed handoffs remain
                         # represented in _active until durable and are never evicted.
                         if len(self._active) >= self._admission_capacity:
                             self._remember_rejected(key)
+                            self._pending.pop(key, None)
                             self._counts["admission_dropped"] += 1
                             continue
                         state = self._active[key] = _Track(captured, captured, captured, int(result.frame_index), bbox, width, height, quality, face)
@@ -133,6 +171,12 @@ class HumanDetectionEventObserver:
                         if (face, quality, -int(result.frame_index)) > (state.face, state.quality, -state.best_index):
                             state.best_at, state.best_index, state.bbox = captured, int(result.frame_index), bbox
                             state.width, state.height, state.quality, state.face = width, height, quality, face
+                    state.trajectory.append(HumanTrackObservation(
+                        captured_at_utc=captured, bounding_box=bbox,
+                        frame_width=width, frame_height=height,
+                    ))
+                    while len(state.trajectory) > 2048:
+                        state.trajectory.popleft()
                     self._active.move_to_end(key)
                     if track_id in room_ids_by_track:
                         state.room_id = int(room_ids_by_track[track_id])
@@ -148,24 +192,46 @@ class HumanDetectionEventObserver:
                 except Exception:
                     self._counts["malformed"] += 1
 
-            for human in result.data.get("disappeared_humans", ()):
-                try:
-                    key = (session, camera, int(human["track_id"]))
-                    if key in self._completed or key in self._rejected:
-                        self._counts["duplicate"] += 1; continue
-                    self._pending[key] = None
-                    self._pending.move_to_end(key)
-                    while len(self._pending) > self._pending_capacity:
-                        evicted = next((candidate for candidate in self._pending
-                                        if candidate not in self._completions
-                                        and candidate not in self._waiting_completions), None)
-                        if evicted is None:
-                            self._counts["handoff_full"] += 1; break
-                        self._pending.pop(evicted, None)
-                        self._counts["pending_evicted"] += 1
+            for key in list(self._pending):
+                state = self._active.get(key)
+                if state is not None and captured - state.last >= self._reconciliation:
                     self._finalize(key, publisher)
-                except Exception:
-                    self._counts["malformed"] += 1
+
+    @staticmethod
+    def _spatial_score(state: _Track, bbox: tuple[float, float, float, float], width: int, height: int) -> float:
+        old = (state.bbox[0] / state.width, state.bbox[1] / state.height,
+               state.bbox[2] / state.width, state.bbox[3] / state.height)
+        new = (bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height)
+        ix1, iy1, ix2, iy2 = max(old[0], new[0]), max(old[1], new[1]), min(old[2], new[2]), min(old[3], new[3])
+        intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        union = ((old[2] - old[0]) * (old[3] - old[1])
+                 + (new[2] - new[0]) * (new[3] - new[1]) - intersection)
+        iou = intersection / union if union > 0 else 0.0
+        old_center = ((old[0] + old[2]) / 2, (old[1] + old[3]) / 2)
+        new_center = ((new[0] + new[2]) / 2, (new[1] + new[3]) / 2)
+        distance = ((old_center[0] - new_center[0]) ** 2 + (old_center[1] - new_center[1]) ** 2) ** .5
+        return max(iou, 1.0 - distance / .20) if distance <= .20 else iou
+
+    def _reconciliation_candidate(
+        self, session: str, camera: str, captured: datetime,
+        bbox: tuple[float, float, float, float], width: int, height: int, human: dict,
+    ) -> tuple[str, str, int] | None:
+        if self._reconciliation.total_seconds() <= 0:
+            return None
+        candidates: list[tuple[float, tuple[str, str, int]]] = []
+        incoming_ref = str(human.get("ref_img_id") or "") if human.get("identity_stable") else ""
+        for key in self._pending:
+            if key[:2] != (session, camera):
+                continue
+            state = self._active.get(key)
+            if state is None or captured < state.last or captured - state.last > self._reconciliation:
+                continue
+            if state.recognized and incoming_ref and state.ref_img_id != incoming_ref:
+                continue
+            score = self._spatial_score(state, bbox, width, height)
+            if score >= .25:
+                candidates.append((score, key))
+        return max(candidates, default=(0.0, None), key=lambda item: item[0])[1]
 
     def _finalize(self, key: tuple[str, str, int], publisher: object) -> None:
         state = self._active.get(key)
@@ -193,7 +259,8 @@ class HumanDetectionEventObserver:
                 best_frame_index=state.best_index, bounding_box=state.bbox, frame_width=state.width, frame_height=state.height,
                 snapshot_quality=state.quality, clip_start_at_utc=state.first - self._clip_padding,
                 clip_end_at_utc=state.last + self._clip_padding,
-                counts_for_attendance=state.attendance, created_at_utc=now)
+                counts_for_attendance=state.attendance, created_at_utc=now,
+                track_observations=tuple(sorted(state.trajectory, key=lambda item: item.captured_at_utc)))
         except Exception:
             self._counts["malformed"] += 1
             return
@@ -246,6 +313,11 @@ class HumanDetectionEventObserver:
 
     def close(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
+        publisher = self._publisher()
+        if publisher is not None:
+            with self._lock:
+                for key in list(self._pending):
+                    self._finalize(key, publisher)
         self._wake.set()
         while time.monotonic() < deadline:
             with self._lock:
@@ -258,6 +330,8 @@ class HumanDetectionEventObserver:
     def _terminal(self, key: tuple[str, str, int]) -> None:
         self._active.pop(key, None)
         self._pending.pop(key, None)
+        self._aliases = {raw: canonical for raw, canonical in self._aliases.items()
+                         if canonical != key and raw != key}
         self._remember(key)
 
     def _remember(self, key: tuple[str, str, int]) -> None:

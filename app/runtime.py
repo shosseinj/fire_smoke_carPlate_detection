@@ -971,6 +971,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         lambda: human_event_outbox,
         clip_padding_seconds=app_settings.human_event_clip_padding_seconds,
         min_observations=app_settings.human_event_min_observations,
+        reconciliation_seconds=app_settings.human_event_reconciliation_seconds,
     )
 
     def _build_face_polygon_observer(
@@ -1310,6 +1311,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_temp_bytes=app_settings.human_event_media_max_temp_bytes,
                 temp_root=app_settings.human_event_media_temp_path,
                 local_root=app_settings.human_event_media_local_path,
+                continuous_local_root=app_settings.continuous_recording_local_path,
                 audit_store=human_event_audit_store,
                 storage_camera_id_resolver=resolve_storage_camera_id,
                 local_camera_name_resolver=resolve_local_camera_name,

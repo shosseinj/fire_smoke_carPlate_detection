@@ -71,6 +71,11 @@ def test_timing_best_frame_source_metadata_room_and_no_frame_retention():
     assert event.first_seen_at_utc.second == 2 and event.last_seen_at_utc.second == 4
     assert event.best_frame_index == 3 and event.bounding_box == (3, 4, 25, 18)
     assert (event.frame_width, event.frame_height, event.room_id, event.counts_for_attendance) == (40, 25, 7, True)
+    assert [item.bounding_box for item in event.track_observations] == [
+        (2.0, 3.0, 20.0, 15.0),
+        (3.0, 4.0, 25.0, 18.0),
+        (4.0, 5.0, 29.0, 19.0),
+    ]
     assert event.clip_start_at_utc == event.first_seen_at_utc and event.clip_end_at_utc == event.last_seen_at_utc
     assert event.created_at_utc >= event.last_seen_at_utc
 
@@ -122,6 +127,29 @@ def test_pending_malformed_same_key_then_corrected_metadata_recovers_once():
     observe(observer, pub, result(index=2), rooms={1: 9})
     observe(observer, pub, result(humans=False, disappeared=True))
     assert len(pub.events) == 1 and pub.events[0].room_id == 9
+
+
+def test_nearby_reassigned_track_id_is_reconciled_before_publication():
+    pub = Publisher(); observer = HumanDetectionEventObserver(
+        lambda: pub, reconciliation_seconds=3.0, retry_seconds=.01
+    )
+    observe(observer, pub, result(track=4, bbox=(2, 2, 12, 18)),
+            packet(1, "2026-01-01T00:00:01+00:00"))
+    observe(observer, pub, result(track=4, humans=False, disappeared=True),
+            packet(2, "2026-01-01T00:00:02+00:00"))
+    observe(observer, pub, result(track=9, bbox=(4, 2, 14, 18)),
+            packet(3, "2026-01-01T00:00:03+00:00"))
+    observe(observer, pub, result(track=9, humans=False, disappeared=True),
+            packet(4, "2026-01-01T00:00:04+00:00"))
+    # Advance beyond the reconciliation window and allow the retry publisher to run.
+    observe(observer, pub, result(track=20, bbox=(20, 2, 29, 18)),
+            packet(8, "2026-01-01T00:00:08+00:00"))
+    deadline = __import__("time").monotonic() + .5
+    while not pub.events and __import__("time").monotonic() < deadline:
+        __import__("time").sleep(.01)
+    assert len(pub.events) == 1
+    assert pub.events[0].track_id == 4
+    assert len(pub.events[0].track_observations) == 2
     assert observer.status()["completed"] == 1
 
 

@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from app.core.detection_event_schemas import HumanDetectionEvent
@@ -12,7 +13,7 @@ from app.core.human_event_extractor import extract_human_media
 from app.core.human_event_audit_store import HumanEventAuditStore, _safe_component
 from app.core.recording_segment_store import IncompleteCoverageError, RecordingSegmentStore
 from app.core.recording_storage import (
-    ObjectConflictError, RecordingStorageService, sha256_file,
+    ObjectConflictError, ObjectNotFoundError, RecordingStorageService, sha256_file,
 )
 
 
@@ -29,6 +30,7 @@ class HumanEventMediaWorker:
                   max_duration_seconds: float = 120.0, max_temp_bytes: int = 2 * 1024**3,
                    temp_root: Path | str = "saved_media/temporary_minIO/human_track",
                    local_root: Path | str = "saved_media/human_track",
+                   continuous_local_root: Path | str = "saved_media/continuous",
                    audit_store: HumanEventAuditStore | None = None,
                    storage_camera_id_resolver: Callable[[str], int | str | None] | None = None,
                    local_camera_name_resolver: Callable[[str], str | None] | None = None,
@@ -41,6 +43,7 @@ class HumanEventMediaWorker:
         self.max_segments, self.max_duration_seconds, self.max_temp_bytes = max_segments, max_duration_seconds, max_temp_bytes
         self.temp_root = Path(temp_root)
         self.local_root = Path(local_root)
+        self.continuous_local_root = Path(continuous_local_root)
         self.audit_store = audit_store
         self.storage_camera_id_resolver = storage_camera_id_resolver
         self.local_camera_name_resolver = local_camera_name_resolver
@@ -134,7 +137,7 @@ class HumanEventMediaWorker:
             clip, snapshot = root / f"{event_id}.mp4", root / f"{event_id}.jpg"
             total = 0
             for segment in segments:
-                stat = self.storage.stat(segment.object_key)
+                stat = self._stat_or_restore_segment(segment)
                 total += int(stat.size)
             # Reserve 25% for re-encoded output and JPEG before downloading.
             if total <= 0 or total + max(total // 4, 16 * 1024 * 1024) > self.max_temp_bytes:
@@ -156,6 +159,9 @@ class HumanEventMediaWorker:
                 event.best_frame_at_utc, clip, snapshot,
                 max_segments=self.max_segments,
                 max_duration_seconds=self.max_duration_seconds,
+                track_id=event.track_id,
+                track_observations=event.track_observations,
+                segment_ends=[s.ended_at_utc for s in segments],
             )
             if self.audit_store is not None:
                 self.audit_store.update(
@@ -164,7 +170,6 @@ class HumanEventMediaWorker:
                     concatenation_succeeded=len(segments) > 1,
                     clip_path=str(clip), snapshot_path=str(snapshot),
                 )
-            print('eventeventeventevent', event)    
             camera_component = (
                 _safe_component(local_camera_name) if local_camera_name
                 else storage_camera_id or _safe_component(event.camera_id)
@@ -193,7 +198,7 @@ class HumanEventMediaWorker:
                 self.audit_store.update(event, state="database_finalized", database_finalized=True)
             durable_root = (
                 self.local_root / f"{event.best_frame_at_utc:%Y/%m/%d}"
-                / camera_component / event_component
+                / str(camera_component) / str(event_component)
             )
             processing_stage = "local_archive"
             self._archive_file(clip, durable_root / "clip.mp4")
@@ -226,6 +231,7 @@ class HumanEventMediaWorker:
                 "Human event media processing failed: event_id=%s error=%s detail=%s",
                 getattr(locals().get("event"), "event_id", "unknown"),
                 type(exc).__name__, exc,
+                exc_info=True,
             )
             terminal = isinstance(exc, (ValueError, ObjectConflictError)) and not isinstance(exc, IncompleteCoverageError)
             exhausted = self._delivery_count(message_id) >= self.max_attempts
@@ -263,6 +269,28 @@ class HumanEventMediaWorker:
                     self._metrics["errors"] += 1
             else:
                 self._metrics["retried"] += 1
+
+    def _stat_or_restore_segment(self, segment: Any) -> Any:
+        try:
+            return self.storage.stat(segment.object_key)
+        except ObjectNotFoundError:
+            parts = PurePosixPath(segment.object_key).parts
+            if (not parts or parts[0] != "continuous"
+                    or any(part in {"", ".", ".."} for part in parts)):
+                raise ValueError("continuous segment object key is not canonical")
+            local = self.continuous_local_root.joinpath(*parts[1:])
+            if not local.is_file() or local.is_symlink():
+                raise
+            if sha256_file(local) != segment.sha256:
+                raise ObjectConflictError(
+                    f"local continuous segment checksum conflicts with metadata: {segment.object_key}"
+                )
+            LOGGER.warning(
+                "Restoring missing continuous object from verified local archive: %s",
+                segment.object_key,
+            )
+            self.storage.upload_object(segment.object_key, local, "video/mp4")
+            return self.storage.stat(segment.object_key)
 
     @staticmethod
     def _archive_file(source: Path, target: Path) -> None:

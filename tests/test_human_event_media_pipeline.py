@@ -11,10 +11,12 @@ from app.core.recording_segment_store import (
     IncompleteCoverageError, RecordingSegment, RecordingSegmentStore,
     match_covering_segments,
 )
+from app.core.recording_storage import ObjectNotFoundError
 from app.core.human_event_media_worker import HumanEventMediaWorker
 from app.core.human_event_audit_store import HumanEventAuditStore, _safe_component
 from app.core.durable_event_outbox import DurableHumanEventOutbox
-from app.core.detection_event_schemas import HumanDetectionEvent
+from app.core.detection_event_schemas import HumanDetectionEvent, HumanTrackObservation
+from app.core.human_event_extractor import _interpolated_box, _segment_capture_time, extract_human_media
 from app.core.recording_segment_dispatcher import RecordingSegmentDispatcher
 from app.database import Database
 from app.core.live_branch import GpuLiveBranchManager
@@ -36,6 +38,51 @@ def human_event(event_id: str = "e") -> HumanDetectionEvent:
         clip_end_at_utc=NOW + timedelta(seconds=5), counts_for_attendance=True,
         created_at_utc=NOW,
     )
+
+
+def test_extracted_human_clip_draws_scaled_moving_track_box_and_label(tmp_path: Path) -> None:
+    av = pytest.importorskip("av")
+    source_path = tmp_path / "source.mp4"
+    with av.open(str(source_path), "w") as output:
+        stream = output.add_stream("libx264", rate=5)
+        stream.width, stream.height, stream.pix_fmt = 80, 60, "yuv420p"
+        for _ in range(5):
+            frame = av.VideoFrame.from_ndarray(np.zeros((60, 80, 3), dtype=np.uint8), format="bgr24")
+            for packet in stream.encode(frame): output.mux(packet)
+        for packet in stream.encode(): output.mux(packet)
+    observations = (
+        HumanTrackObservation(captured_at_utc=NOW, bounding_box=(2., 2., 8., 8.), frame_width=20, frame_height=20),
+        HumanTrackObservation(captured_at_utc=NOW + timedelta(seconds=.8), bounding_box=(10., 2., 16., 8.), frame_width=20, frame_height=20),
+    )
+    clip, snapshot = tmp_path / "clip.mp4", tmp_path / "snapshot.jpg"
+    result = extract_human_media(
+        [source_path], [NOW], NOW, NOW + timedelta(seconds=1), NOW,
+        clip, snapshot, track_id=17, track_observations=observations,
+    )
+    with av.open(str(clip)) as encoded:
+        frames = [frame.to_ndarray(format="bgr24") for frame in encoded.decode(video=0)]
+    assert result.frames == len(frames) == 5
+    # The green rectangle follows the two differently positioned observations.
+    assert frames[0][6:30, 6:38, 1].max() > 150
+    assert frames[-1][6:30, 38:70, 1].max() > 150
+    # Text background above the rectangle proves the Track ID label was rendered.
+    assert np.count_nonzero(frames[0][:12, :, 1] > 100) > 10
+
+
+def test_segment_capture_time_calibrates_mp4_pts_to_durable_interval() -> None:
+    # A camera MP4 timeline that advances 2x wall time must still map its final
+    # frame to the durable segment end instead of shifting overlays late.
+    assert _segment_capture_time(NOW, NOW + timedelta(seconds=20), 10.0, 20.0) == (
+        NOW + timedelta(seconds=10)
+    )
+
+
+def test_track_box_is_interpolated_in_normalized_coordinates() -> None:
+    observations = (
+        HumanTrackObservation(captured_at_utc=NOW, bounding_box=(0., 0., 10., 10.), frame_width=20, frame_height=20),
+        HumanTrackObservation(captured_at_utc=NOW + timedelta(seconds=2), bounding_box=(20., 10., 40., 30.), frame_width=40, frame_height=40),
+    )
+    assert _interpolated_box(observations, NOW + timedelta(seconds=1), 80, 40) == (20, 5, 60, 25)
 
 
 def segment(name: str, start: int, end: int) -> RecordingSegment:
@@ -118,6 +165,49 @@ def test_human_media_uses_configured_temporary_root(tmp_path: Path) -> None:
     )
 
     assert worker.temp_root == root
+
+
+def test_missing_minio_segment_is_restored_from_verified_local_archive(tmp_path: Path) -> None:
+    payload = b"verified continuous media"
+    checksum = hashlib.sha256(payload).hexdigest()
+    value = RecordingSegment(
+        "segment", "cam", "recordings",
+        "continuous/4/2026/08/16/source.mp4",
+        NOW, NOW + timedelta(seconds=20), 80, 60, 5.0, checksum,
+    )
+    archive = tmp_path / "continuous"
+    local = archive / "4/2026/08/16/source.mp4"
+    local.parent.mkdir(parents=True); local.write_bytes(payload)
+
+    class Storage:
+        def __init__(self): self.restored = False
+        def stat(self, _key):
+            if not self.restored: raise ObjectNotFoundError("missing")
+            return SimpleNamespace(size=len(payload))
+        def upload_object(self, key, path, content_type):
+            assert key == value.object_key and Path(path) == local
+            assert content_type == "video/mp4"
+            self.restored = True
+
+    storage = Storage()
+    worker = HumanEventMediaWorker(
+        Redis(), "human", SimpleNamespace(), storage, lambda *_: None,
+        continuous_local_root=archive,
+    )
+
+    assert worker._stat_or_restore_segment(value).size == len(payload)
+    assert storage.restored is True and local.read_bytes() == payload
+
+
+def test_audit_store_accepts_legacy_event_without_empty_trajectory(tmp_path: Path) -> None:
+    event = human_event("legacy")
+    store = HumanEventAuditStore(tmp_path)
+    event_path = store.persist_event(event)
+    payload = __import__("json").loads(event_path.read_text("utf-8"))
+    payload.pop("track_observations")
+    event_path.write_text(__import__("json").dumps(payload, separators=(",", ":")), "utf-8")
+
+    assert store.persist_event(event) == event_path
 
 
 @pytest.mark.parametrize("upload_fails", [False, True])

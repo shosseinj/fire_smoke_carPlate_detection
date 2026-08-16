@@ -570,6 +570,23 @@ class GpuLiveBranchManager:
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         return self._recording_upload(path, camera_id, modified, modified)
 
+    @staticmethod
+    def _repair_upload_interval(upload: RecordingUpload, media_duration: float) -> RecordingUpload:
+        start = datetime.fromisoformat(upload.start_time)
+        end = datetime.fromisoformat(upload.end_time)
+        if end > start:
+            return upload
+        if media_duration <= 0:
+            raise ValueError("recording has no positive media duration")
+        return RecordingUpload(
+            path=upload.path,
+            camera_id=upload.camera_id,
+            start_time=(end - timedelta(seconds=media_duration)).isoformat(),
+            end_time=end.isoformat(),
+            object_name=upload.object_name,
+            source_id=upload.source_id,
+        )
+
     def _quarantine_recording(self, path: Path) -> Path:
         failed = self.recording_spool_path / "failed"
         failed.mkdir(parents=True, exist_ok=True)
@@ -634,6 +651,12 @@ class GpuLiveBranchManager:
                     if video is None or video.width <= 0 or video.height <= 0 or video.average_rate is None or float(video.average_rate) <= 0:
                         raise ValueError("recording has invalid media metadata")
                     width, height, fps = int(video.width), int(video.height), float(video.average_rate)
+                    media_duration = (
+                        float(video.duration * video.time_base)
+                        if video.duration is not None and video.time_base is not None
+                        else float(media_file.duration or 0) / float(av.time_base)
+                    )
+                upload = self._repair_upload_interval(upload, media_duration)
                 digest = hashlib.sha256()
                 with path.open("rb") as recording:
                     while chunk := recording.read(1024 * 1024):
