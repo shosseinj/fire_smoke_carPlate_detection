@@ -134,7 +134,7 @@ class Settings:
     live_recording_segment_seconds: float = _env_float(
         "LIVE_RECORDING_SEGMENT_SECONDS", 120.0
     ) # video durance in seconds
-    recording_enabled: bool = _env_bool("RECORDING_ENABLED", False)
+    recording_enabled: bool = _env_bool("RECORDING_ENABLED", True)
     recording_redis_url: str = os.getenv("RECORDING_REDIS_URL", "redis://redis:6379/0")
     recording_minio_endpoint: str = os.getenv("RECORDING_MINIO_ENDPOINT", "minio:9000")
     recording_minio_access_key: str = os.getenv("RECORDING_MINIO_ACCESS_KEY", "")
