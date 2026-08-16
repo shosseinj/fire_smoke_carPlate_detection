@@ -30,6 +30,7 @@ class HumanEventMediaWorker:
                    temp_root: Path | str = "saved_media/temporary_minIO/human_track",
                    local_root: Path | str = "saved_media/human_track",
                    audit_store: HumanEventAuditStore | None = None,
+                   storage_camera_id_resolver: Callable[[str], int | str | None] | None = None,
                    write_enabled: bool = True) -> None:
         if min(block_ms, claim_idle_ms, max_attempts, max_segments, max_temp_bytes) <= 0 or max_duration_seconds <= 0:
             raise ValueError("human media worker bounds must be positive")
@@ -40,6 +41,7 @@ class HumanEventMediaWorker:
         self.temp_root = Path(temp_root)
         self.local_root = Path(local_root)
         self.audit_store = audit_store
+        self.storage_camera_id_resolver = storage_camera_id_resolver
         self.write_enabled = write_enabled
         self._stop = threading.Event(); self._thread: threading.Thread | None = None
         self._metrics = {key: 0 for key in ("processed", "retried", "dead_lettered", "errors")}
@@ -90,6 +92,13 @@ class HumanEventMediaWorker:
         processing_stage = "event_validation"
         try:
             event = HumanDetectionEvent.model_validate_json(payload)
+            processing_stage = "camera_id_resolution"
+            storage_camera_id: str | None = None
+            if self.storage_camera_id_resolver is not None:
+                resolved = self.storage_camera_id_resolver(event.camera_id)
+                if resolved is None or not str(resolved).isdigit() or int(resolved) <= 0:
+                    raise ValueError("camera source does not resolve to a positive numeric id")
+                storage_camera_id = str(resolved)
             if self.audit_store is not None:
                 self.audit_store.update(
                     event, state="processing", delivery_attempt=self._delivery_count(message_id),
@@ -110,7 +119,8 @@ class HumanEventMediaWorker:
                 self._metrics["retried"] += 1
                 return
             self.temp_root.mkdir(parents=True, exist_ok=True)
-            camera = re.sub(r"[^A-Za-z0-9_.-]", "_", event.camera_id).strip("._") or "unknown"
+            camera_identity = storage_camera_id or event.camera_id
+            camera = re.sub(r"[^A-Za-z0-9_.-]", "_", camera_identity).strip("._") or "unknown"
             event_id = re.sub(r"[^A-Za-z0-9_.-]", "_", event.event_id).strip("._") or "unknown"
             root = self.temp_root / camera
             root.mkdir(parents=True, exist_ok=True)
@@ -150,7 +160,7 @@ class HumanEventMediaWorker:
                     clip_path=str(clip), snapshot_path=str(snapshot),
                 )
             print('eventeventeventevent', event)    
-            prefix = f"human_track/{event.camera_id}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
+            prefix = f"human_track/{camera_identity}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
             clip_key, snapshot_key = f"{prefix}/clip.mp4", f"{prefix}/snapshot.jpg"
             processing_stage = "minio_upload"
             self.storage.upload_object(clip_key, clip, "video/mp4")
@@ -190,16 +200,9 @@ class HumanEventMediaWorker:
                     local_clip_path=str(durable_root / "clip.mp4"),
                     local_snapshot_path=str(durable_root / "snapshot.jpg"),
                 )
+                self.audit_store.remove(event)
             processing_stage = "redis_ack"
-            acknowledged = self.redis.xack(self.stream, self.group, message_id)
-            if self.audit_store is not None:
-                try:
-                    self.audit_store.update(
-                        event, state="completed", acknowledged=acknowledged != 0,
-                        ack_pending=False,
-                    )
-                except Exception:
-                    self._metrics["errors"] += 1
+            self.redis.xack(self.stream, self.group, message_id)
             self._metrics["processed"] += 1
         except Exception as exc:
             LOGGER.warning(
@@ -234,17 +237,10 @@ class HumanEventMediaWorker:
                                 dead_letter_pending=False,
                                 dead_letter_message_id=str(dead_letter_id), ack_pending=True,
                             )
+                            self.audit_store.move_to_failed(event)
                         except Exception:
                             self._metrics["errors"] += 1
-                    acknowledged = self.redis.xack(self.stream, self.group, message_id)
-                    if "event" in locals() and self.audit_store is not None:
-                        try:
-                            self.audit_store.update(
-                                event, state="dead_lettered", dead_lettered=True,
-                                acknowledged=acknowledged != 0, ack_pending=False,
-                            )
-                        except Exception:
-                            self._metrics["errors"] += 1
+                    self.redis.xack(self.stream, self.group, message_id)
                     self._metrics["dead_lettered"] += 1
                 except Exception:
                     self._metrics["errors"] += 1

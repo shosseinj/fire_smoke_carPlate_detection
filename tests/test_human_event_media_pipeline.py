@@ -189,11 +189,17 @@ def test_human_event_audit_retains_event_and_merge_status(
     segments = [segment("first", -5, 0), segment("second", 0, 5)]
 
     class Store:
+        matched_camera_id = None
+
         def match(self, *args, **kwargs):
+            self.matched_camera_id = args[0]
             return segments
 
     class Storage:
         settings = SimpleNamespace(bucket_name="recordings")
+
+        def __init__(self):
+            self.uploaded = []
 
         def stat(self, _key):
             return SimpleNamespace(size=4)
@@ -203,6 +209,7 @@ def test_human_event_audit_retains_event_and_merge_status(
             return destination
 
         def upload_object(self, _key, _path, _content_type):
+            self.uploaded.append(_key)
             return None
 
     def extract(_downloads, _starts, _clip_start, _clip_end, _best, clip, snapshot, **_kwargs):
@@ -214,19 +221,32 @@ def test_human_event_audit_retains_event_and_merge_status(
     import app.core.human_event_media_worker as module
     monkeypatch.setattr(module, "extract_human_media", extract)
     audit_root = tmp_path / "saved_media/temporary_minIO/human_track"
-    audit = HumanEventAuditStore(audit_root)
+    resolver = lambda _source_id: 1
+    class CapturingAudit(HumanEventAuditStore):
+        completed_status = None
+
+        def remove(self, value):
+            import json
+            self.completed_status = json.loads(self.paths(value)[1].read_text("utf-8"))
+            super().remove(value)
+
+    audit = CapturingAudit(audit_root, camera_id_resolver=resolver)
     redis = Redis()
+    store = Store()
+    storage = Storage()
+    finalized = []
     worker = HumanEventMediaWorker(
-        redis, "human", Store(), Storage(), lambda *_: None,
+        redis, "human", store, storage, lambda value, *_: finalized.append(value),
         temp_root=audit_root, local_root=tmp_path / "saved_media/human_track",
-        audit_store=audit,
+        audit_store=audit, storage_camera_id_resolver=resolver,
     )
 
     worker._handle("1-0", {"event": event.model_dump_json()})
 
     event_path, status_path = audit.paths(event)
-    assert HumanDetectionEvent.model_validate_json(event_path.read_text("utf-8")) == event
-    status = json.loads(status_path.read_text("utf-8"))
+    assert event_path.parent.name == "1"
+    assert not event_path.exists() and not status_path.exists()
+    status = audit.completed_status
     assert status["state"] == "completed"
     assert status["segments_found"] == 2
     assert status["segments_used"] == ["first", "second"]
@@ -236,7 +256,43 @@ def test_human_event_audit_retains_event_and_merge_status(
     assert status["minio_uploaded"] is True
     assert status["database_finalized"] is True
     assert status["local_archived"] is True
-    assert status["completed"] is True and status["acknowledged"] is True
+    assert status["completed"] is True and status["ack_pending"] is True
+    assert status["storage_camera_id"] == "1"
+    assert store.matched_camera_id == event.camera_id
+    assert finalized == [event]
+    assert storage.uploaded == [
+        "human_track/1/2026/08/15/audit-event/clip.mp4",
+        "human_track/1/2026/08/15/audit-event/snapshot.jpg",
+    ]
+    assert (tmp_path / "saved_media/human_track/1/2026/08/15/audit-event/clip.mp4").is_file()
+
+
+def test_exhausted_human_media_failure_moves_audit_json_to_failed(
+    tmp_path: Path,
+) -> None:
+    event = human_event("failed-event")
+
+    class Store:
+        def match(self, *args, **kwargs):
+            raise RuntimeError("segment service unavailable")
+
+    resolver = lambda _source_id: 2
+    audit_root = tmp_path / "saved_media/temporary_minIO/human_track"
+    audit = HumanEventAuditStore(audit_root, camera_id_resolver=resolver)
+    audit.persist_event(event)
+    worker = HumanEventMediaWorker(
+        Redis(), "human", Store(), SimpleNamespace(), lambda *_: None,
+        temp_root=audit_root, audit_store=audit,
+        storage_camera_id_resolver=resolver, max_attempts=1,
+    )
+
+    worker._handle("1-0", {"event": event.model_dump_json()})
+
+    active_event, active_status = audit.paths(event)
+    failed_root = audit_root / "failed" / "2"
+    assert not active_event.exists() and not active_status.exists()
+    assert (failed_root / active_event.name).is_file()
+    assert (failed_root / active_status.name).is_file()
 
 
 def test_outbox_retains_event_audit_before_accepting_publish(tmp_path: Path) -> None:

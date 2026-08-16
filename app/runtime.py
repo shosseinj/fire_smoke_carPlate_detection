@@ -1241,7 +1241,14 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
     segment_store = RecordingSegmentStore(database)
     human_event_audit_store = None
     if app_settings.detection_events_enabled or app_settings.human_event_media_enabled:
-        human_event_audit_store = HumanEventAuditStore(app_settings.human_event_media_temp_path)
+        def resolve_storage_camera_id(source_id: str) -> int | None:
+            record = registry.get(source_id)
+            return record.id if record is not None else None
+
+        human_event_audit_store = HumanEventAuditStore(
+            app_settings.human_event_media_temp_path,
+            camera_id_resolver=resolve_storage_camera_id,
+        )
     human_event_outbox = None
     recording_segment_dispatcher = None
     if app_settings.detection_events_enabled and detection_event_redis is not None:
@@ -1297,6 +1304,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 temp_root=app_settings.human_event_media_temp_path,
                 local_root=app_settings.human_event_media_local_path,
                 audit_store=human_event_audit_store,
+                storage_camera_id_resolver=resolve_storage_camera_id,
                 write_enabled=app_settings.human_event_media_write_enabled,
             )
         except Exception as exc:

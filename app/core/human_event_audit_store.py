@@ -8,7 +8,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.detection_event_schemas import HumanDetectionEvent
 
@@ -22,15 +22,29 @@ def _safe_component(value: str) -> str:
 class HumanEventAuditStore:
     """Retained, atomic event and media-processing audit files."""
 
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str,
+                 camera_id_resolver: Callable[[str], int | str | None] | None = None) -> None:
         self.root = Path(root)
+        self.camera_id_resolver = camera_id_resolver
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
     def paths(self, event: HumanDetectionEvent) -> tuple[Path, Path]:
-        directory = self.root / _safe_component(event.camera_id)
+        camera_id = self.storage_camera_id(event)
+        if self.camera_id_resolver is not None:
+            directory = self.root / camera_id
+        else:
+            directory = self.root / _safe_component(camera_id)
         stem = _safe_component(event.event_id)
         return directory / f"{stem}.event.json", directory / f"{stem}.status.json"
+
+    def storage_camera_id(self, event: HumanDetectionEvent) -> str:
+        if self.camera_id_resolver is None:
+            return event.camera_id
+        resolved = self.camera_id_resolver(event.camera_id)
+        if resolved is None or not str(resolved).isdigit() or int(resolved) <= 0:
+            raise ValueError("camera source does not resolve to a positive numeric id")
+        return str(resolved)
 
     def persist_event(self, event: HumanDetectionEvent) -> Path:
         event_path, status_path = self.paths(event)
@@ -47,6 +61,7 @@ class HumanEventAuditStore:
                     "schema_version": 1,
                     "event_id": event.event_id,
                     "camera_id": event.camera_id,
+                    "storage_camera_id": self.storage_camera_id(event),
                     "state": "event_saved",
                     "event_saved": True,
                     "redis_published": False,
@@ -82,6 +97,33 @@ class HumanEventAuditStore:
             status["updated_at_utc"] = self._now()
             self._atomic_write(status_path, json.dumps(status, sort_keys=True))
         return status_path
+
+    def remove(self, event: HumanDetectionEvent) -> None:
+        event_path, status_path = self.paths(event)
+        with self._lock:
+            status_path.unlink(missing_ok=True)
+            event_path.unlink(missing_ok=True)
+            try:
+                event_path.parent.rmdir()
+            except OSError:
+                pass
+
+    def move_to_failed(self, event: HumanDetectionEvent) -> tuple[Path, Path]:
+        event_path, status_path = self.paths(event)
+        failed_directory = self.root / "failed" / self.storage_camera_id(event)
+        failed_event = failed_directory / event_path.name
+        failed_status = failed_directory / status_path.name
+        with self._lock:
+            failed_directory.mkdir(parents=True, exist_ok=True)
+            if event_path.is_file():
+                event_path.replace(failed_event)
+            if status_path.is_file():
+                status_path.replace(failed_status)
+            try:
+                event_path.parent.rmdir()
+            except OSError:
+                pass
+        return failed_event, failed_status
 
     @staticmethod
     def _now() -> str:
