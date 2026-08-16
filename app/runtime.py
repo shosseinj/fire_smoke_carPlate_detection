@@ -1245,6 +1245,10 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             record = registry.get(source_id)
             return record.id if record is not None else None
 
+        def resolve_local_camera_name(source_id: str) -> str | None:
+            record = registry.get(source_id)
+            return record.name if record is not None else None
+
         human_event_audit_store = HumanEventAuditStore(
             app_settings.human_event_media_temp_path,
             camera_id_resolver=resolve_storage_camera_id,
@@ -1305,6 +1309,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 local_root=app_settings.human_event_media_local_path,
                 audit_store=human_event_audit_store,
                 storage_camera_id_resolver=resolve_storage_camera_id,
+                local_camera_name_resolver=resolve_local_camera_name,
                 write_enabled=app_settings.human_event_media_write_enabled,
             )
         except Exception as exc:

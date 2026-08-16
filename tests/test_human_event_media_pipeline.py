@@ -12,7 +12,7 @@ from app.core.recording_segment_store import (
     match_covering_segments,
 )
 from app.core.human_event_media_worker import HumanEventMediaWorker
-from app.core.human_event_audit_store import HumanEventAuditStore
+from app.core.human_event_audit_store import HumanEventAuditStore, _safe_component
 from app.core.durable_event_outbox import DurableHumanEventOutbox
 from app.core.detection_event_schemas import HumanDetectionEvent
 from app.core.recording_segment_dispatcher import RecordingSegmentDispatcher
@@ -174,11 +174,12 @@ def test_human_media_files_are_removed_only_after_success(
     else:
         assert not camera_root.exists()
         assert storage.uploaded == [
-            "human_track/rtsp://camera/1/2026/08/15/e/clip.mp4",
-            "human_track/rtsp://camera/1/2026/08/15/e/snapshot.jpg",
+            f"human_track/2026/08/15/{_safe_component(event.camera_id)}/e/clip.mp4",
+            f"human_track/2026/08/15/{_safe_component(event.camera_id)}/e/snapshot.jpg",
         ]
-        assert (local_root / "rtsp___camera_1/2026/08/15/e/clip.mp4").read_bytes() == b"clip"
-        assert (local_root / "rtsp___camera_1/2026/08/15/e/snapshot.jpg").read_bytes() == b"snapshot"
+        durable_root = local_root / "2026/08/15" / _safe_component(event.camera_id) / "e"
+        assert (durable_root / "clip.mp4").read_bytes() == b"clip"
+        assert (durable_root / "snapshot.jpg").read_bytes() == b"snapshot"
         assert any(call[0] == "ack" for call in redis.calls)
 
 
@@ -222,6 +223,7 @@ def test_human_event_audit_retains_event_and_merge_status(
     monkeypatch.setattr(module, "extract_human_media", extract)
     audit_root = tmp_path / "saved_media/temporary_minIO/human_track"
     resolver = lambda _source_id: 1
+    camera_name = "Front / Door"
     class CapturingAudit(HumanEventAuditStore):
         completed_status = None
 
@@ -236,9 +238,10 @@ def test_human_event_audit_retains_event_and_merge_status(
     storage = Storage()
     finalized = []
     worker = HumanEventMediaWorker(
-        redis, "human", store, storage, lambda value, *_: finalized.append(value),
+        redis, "human", store, storage, lambda *values: finalized.append(values),
         temp_root=audit_root, local_root=tmp_path / "saved_media/human_track",
         audit_store=audit, storage_camera_id_resolver=resolver,
+        local_camera_name_resolver=lambda _source_id: camera_name,
     )
 
     worker._handle("1-0", {"event": event.model_dump_json()})
@@ -259,12 +262,19 @@ def test_human_event_audit_retains_event_and_merge_status(
     assert status["completed"] is True and status["ack_pending"] is True
     assert status["storage_camera_id"] == "1"
     assert store.matched_camera_id == event.camera_id
-    assert finalized == [event]
+    safe_camera_name = f"Front___Door-{hashlib.sha256(camera_name.encode('utf-8')).hexdigest()[:12]}"
+    assert finalized == [(
+        event,
+        f"minio://recordings/human_track/2026/08/15/{safe_camera_name}/audit-event/clip.mp4",
+        f"minio://recordings/human_track/2026/08/15/{safe_camera_name}/audit-event/snapshot.jpg",
+    )]
     assert storage.uploaded == [
-        "human_track/1/2026/08/15/audit-event/clip.mp4",
-        "human_track/1/2026/08/15/audit-event/snapshot.jpg",
+        f"human_track/2026/08/15/{safe_camera_name}/audit-event/clip.mp4",
+        f"human_track/2026/08/15/{safe_camera_name}/audit-event/snapshot.jpg",
     ]
-    assert (tmp_path / "saved_media/human_track/1/2026/08/15/audit-event/clip.mp4").is_file()
+    durable_root = tmp_path / "saved_media/human_track/2026/08/15" / safe_camera_name / "audit-event"
+    assert (durable_root / "clip.mp4").is_file()
+    assert (durable_root / "snapshot.jpg").is_file()
 
 
 def test_exhausted_human_media_failure_moves_audit_json_to_failed(

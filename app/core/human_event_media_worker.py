@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from app.core.detection_event_schemas import HumanDetectionEvent
 from app.core.human_event_extractor import extract_human_media
-from app.core.human_event_audit_store import HumanEventAuditStore
+from app.core.human_event_audit_store import HumanEventAuditStore, _safe_component
 from app.core.recording_segment_store import IncompleteCoverageError, RecordingSegmentStore
 from app.core.recording_storage import (
     ObjectConflictError, RecordingStorageService, sha256_file,
@@ -31,6 +31,7 @@ class HumanEventMediaWorker:
                    local_root: Path | str = "saved_media/human_track",
                    audit_store: HumanEventAuditStore | None = None,
                    storage_camera_id_resolver: Callable[[str], int | str | None] | None = None,
+                   local_camera_name_resolver: Callable[[str], str | None] | None = None,
                    write_enabled: bool = True) -> None:
         if min(block_ms, claim_idle_ms, max_attempts, max_segments, max_temp_bytes) <= 0 or max_duration_seconds <= 0:
             raise ValueError("human media worker bounds must be positive")
@@ -42,6 +43,7 @@ class HumanEventMediaWorker:
         self.local_root = Path(local_root)
         self.audit_store = audit_store
         self.storage_camera_id_resolver = storage_camera_id_resolver
+        self.local_camera_name_resolver = local_camera_name_resolver
         self.write_enabled = write_enabled
         self._stop = threading.Event(); self._thread: threading.Thread | None = None
         self._metrics = {key: 0 for key in ("processed", "retried", "dead_lettered", "errors")}
@@ -118,6 +120,9 @@ class HumanEventMediaWorker:
             if not self.write_enabled:
                 self._metrics["retried"] += 1
                 return
+            local_camera_name: str | None = None
+            if self.local_camera_name_resolver is not None:
+                local_camera_name = self.local_camera_name_resolver(event.camera_id)
             self.temp_root.mkdir(parents=True, exist_ok=True)
             camera_identity = storage_camera_id or event.camera_id
             camera = re.sub(r"[^A-Za-z0-9_.-]", "_", camera_identity).strip("._") or "unknown"
@@ -160,7 +165,18 @@ class HumanEventMediaWorker:
                     clip_path=str(clip), snapshot_path=str(snapshot),
                 )
             print('eventeventeventevent', event)    
-            prefix = f"human_track/{camera_identity}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
+            camera_component = (
+                _safe_component(local_camera_name) if local_camera_name
+                else storage_camera_id or _safe_component(event.camera_id)
+            )
+            event_component = (
+                event.event_id if re.fullmatch(r"[A-Za-z0-9_-]+", event.event_id)
+                else _safe_component(event.event_id)
+            )
+            prefix = (
+                f"human_track/{event.best_frame_at_utc:%Y/%m/%d}/"
+                f"{camera_component}/{event_component}"
+            )
             clip_key, snapshot_key = f"{prefix}/clip.mp4", f"{prefix}/snapshot.jpg"
             processing_stage = "minio_upload"
             self.storage.upload_object(clip_key, clip, "video/mp4")
@@ -176,7 +192,8 @@ class HumanEventMediaWorker:
             if self.audit_store is not None:
                 self.audit_store.update(event, state="database_finalized", database_finalized=True)
             durable_root = (
-                self.local_root / camera / f"{event.best_frame_at_utc:%Y/%m/%d}" / event_id
+                self.local_root / f"{event.best_frame_at_utc:%Y/%m/%d}"
+                / camera_component / event_component
             )
             processing_stage = "local_archive"
             self._archive_file(clip, durable_root / "clip.mp4")
