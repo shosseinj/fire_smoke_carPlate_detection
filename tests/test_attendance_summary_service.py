@@ -1009,3 +1009,5 @@ def test_personnel_query_filters_by_employee_type_report_eligibility() -> None:
     assert "JOIN employee_types et ON et.id = p.employee_type_id" in sql
     assert "et.include_in_attendance_reports = TRUE" in sql
     assert params == []
+
+pytestmark = pytest.mark.unit

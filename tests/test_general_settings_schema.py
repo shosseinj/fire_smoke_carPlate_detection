@@ -33,3 +33,5 @@ def test_general_settings_operational_patch_rejects_legacy_fps_fields(
 ) -> None:
     with pytest.raises(ValidationError):
         OperationalSettingsPatch.model_validate({field: 25})
+
+pytestmark = pytest.mark.unit

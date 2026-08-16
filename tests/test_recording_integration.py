@@ -85,3 +85,7 @@ def test_authenticated_source_options_never_expose_rtsp_credentials() -> None:
     assert payload[0]["source_ref"] == recording_source_ref(uri)
     assert payload[0]["source_name"] == "دوربین امن"
     assert not any(secret in serialized for secret in ("admin", "secret", "private", "token", "hidden"))
+
+import pytest
+
+pytestmark = pytest.mark.streaming

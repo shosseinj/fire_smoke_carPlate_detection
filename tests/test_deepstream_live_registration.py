@@ -195,3 +195,7 @@ def test_slow_static_caps_can_register_after_original_one_second_window() -> Non
     decoded_pad.advance_caps()
     assert retry() is False
     assert manager.attachments[0][0] == "source"
+
+import pytest
+
+pytestmark = pytest.mark.streaming

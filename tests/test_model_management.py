@@ -240,3 +240,7 @@ def test_subprocess_engine_timeout_continues_with_onnx(
         assert job["artifacts"] == ["fire_smoke/isolated/fire_nano.onnx"]
     finally:
         manager.close()
+
+import pytest
+
+pytestmark = pytest.mark.postgresql

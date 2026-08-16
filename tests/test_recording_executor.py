@@ -224,3 +224,5 @@ def test_restart_promotes_only_playable_partial_artifact(tmp_path: Path) -> None
 
     assert executor.recoverable_path("restart-job") == final_path
     assert final_path.read_bytes() == b"playable" and not partial_path.exists()
+
+pytestmark = pytest.mark.streaming

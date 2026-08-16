@@ -37,3 +37,5 @@ def test_database_metadata_exposes_authoritative_recording_table() -> None:
     }
     assert recording_settings.c.continuous_enabled.default is None
     assert recording_camera_settings.c.source_uri.primary_key
+
+pytestmark = pytest.mark.unit

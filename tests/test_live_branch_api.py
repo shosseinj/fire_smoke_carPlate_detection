@@ -84,3 +84,7 @@ def test_acquire_rewrites_loopback_whep_url_for_remote_dashboard() -> None:
     assert result["whep_url"] == (
         "http://192.168.110.10:8789/live-branch/wall/camera/whep"
     )
+
+import pytest
+
+pytestmark = pytest.mark.streaming

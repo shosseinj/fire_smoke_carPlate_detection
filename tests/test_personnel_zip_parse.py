@@ -74,3 +74,7 @@ def test_persian_digits_in_filename() -> None:
     """Persian digits in filename are normalized to ASCII."""
     fname, lname, nc = _parse_zip_entry_personnel("۱۲۳۴۵۶۷۸۹۰.jpg")
     assert nc == "1234567890"
+
+import pytest
+
+pytestmark = pytest.mark.unit

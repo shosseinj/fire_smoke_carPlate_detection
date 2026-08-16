@@ -223,15 +223,15 @@ def test_bulk_access_resolution_uses_bounded_queries() -> None:
 
 
 def test_hot_path_sources_use_set_based_queries() -> None:
-    human_source = (PROJECT_ROOT / "app/core/human_log_store.py").read_text()
+    human_source = (PROJECT_ROOT / "app/core/human_log_store.py").read_text(encoding="utf-8")
     attendance_source = (
         PROJECT_ROOT / "app/core/attendance_summary_service.py"
-    ).read_text()
-    location_source = (PROJECT_ROOT / "app/core/location_store.py").read_text()
-    personnel_source = (PROJECT_ROOT / "app/core/personnel_store.py").read_text()
+    ).read_text(encoding="utf-8")
+    location_source = (PROJECT_ROOT / "app/core/location_store.py").read_text(encoding="utf-8")
+    personnel_source = (PROJECT_ROOT / "app/core/personnel_store.py").read_text(encoding="utf-8")
     detection_source = (
         PROJECT_ROOT / "app/core/detection_log_store.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert "ON CONFLICT (session_id, camera, track_id) DO UPDATE" in human_source
     assert "RETURNING id, snapshot_url, video_url, face_video_url" in human_source
@@ -243,3 +243,5 @@ def test_hot_path_sources_use_set_based_queries() -> None:
     assert "WITH incoming(candidate_index" in detection_source
     assert "INSERT INTO detection_logs" in detection_source
     assert "RETURNING *" in detection_source
+
+pytestmark = pytest.mark.unit

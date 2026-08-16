@@ -412,3 +412,5 @@ def test_default_shift_seeding_adds_shifte_jang_when_other_shifts_exist() -> Non
 
     assert [item["shift_name"] for item in created] == ["شیفت جنگ"]
     assert any(shift.shift_name == "شیفت جنگ" for shift in seeded)
+
+pytestmark = pytest.mark.postgresql

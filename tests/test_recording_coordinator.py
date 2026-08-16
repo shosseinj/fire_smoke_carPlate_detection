@@ -296,3 +296,7 @@ def test_runtime_configures_bounded_redis_network_timeouts() -> None:
     assert "socket_connect_timeout=3.0" in source
     assert "socket_timeout=5.0" in source
     assert "retry_on_timeout=False" in source
+
+import pytest
+
+pytestmark = pytest.mark.streaming

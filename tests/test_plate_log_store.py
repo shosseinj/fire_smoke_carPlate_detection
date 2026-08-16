@@ -248,3 +248,7 @@ def test_invalid_ocr_text_is_saved_without_plate_number(
         assert saved["is_registered"] is False
     finally:
         store.close()
+
+import pytest
+
+pytestmark = pytest.mark.postgresql

@@ -139,3 +139,7 @@ def test_task_failure_exposes_persian_text_without_raw_exception() -> None:
     )
     assert result.error == "پردازش فریم با خطا مواجه شد"
     assert "secret" not in result.to_dict()["error"]
+
+import pytest
+
+pytestmark = pytest.mark.unit

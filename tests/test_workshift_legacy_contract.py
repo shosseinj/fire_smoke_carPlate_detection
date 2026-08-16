@@ -32,6 +32,7 @@ def test_shift_legacy_routes_are_registered_in_archive_order() -> None:
         for route in router.routes[:8]
     ]
     assert registered == [
+        ("/api/v1/shifts/bulk-assignments", ("POST",)),
         ("/api/v1/shifts/", ("GET",)),
         ("/api/v1/shifts/statistics", ("GET",)),
         ("/api/v1/shifts/{shift_id}", ("GET",)),
@@ -39,5 +40,8 @@ def test_shift_legacy_routes_are_registered_in_archive_order() -> None:
         ("/api/v1/shifts/{shift_id}", ("PUT",)),
         ("/api/v1/shifts/{shift_id}", ("DELETE",)),
         ("/api/v1/shifts/{shift_id}/personnel", ("GET",)),
-        ("/api/v1/shifts/types", ("GET",)),
     ]
+
+import pytest
+
+pytestmark = pytest.mark.unit

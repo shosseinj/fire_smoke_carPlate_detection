@@ -125,3 +125,5 @@ def test_extract_frames_does_not_fallback_to_full_video(
     with pytest.raises(HTTPException) as error:
         extract_frames.extract_frames(7, _=SimpleNamespace())
     assert error.value.status_code == 404
+
+pytestmark = pytest.mark.unit

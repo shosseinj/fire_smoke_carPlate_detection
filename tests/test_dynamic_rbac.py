@@ -104,3 +104,5 @@ def test_dashboard_requests_and_attaches_websocket_tickets() -> None:
     assert 'requestWebSocketTicket("results")' in dashboard
     assert 'requestWebSocketTicket(application)' in dashboard
     assert 'parameters.set("ticket", ticket)' in dashboard
+
+pytestmark = pytest.mark.unit

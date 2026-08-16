@@ -1340,3 +1340,7 @@ def test_ranked_face_state_rolls_back_when_media_queue_is_full(
             assert store._best_face_scores[key] == 0.80
     finally:
         store.close()
+
+import pytest
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming]

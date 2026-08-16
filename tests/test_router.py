@@ -244,3 +244,7 @@ def test_face_recognition_has_an_independent_worker(source_registry: SourceRegis
         assert face.batch_sizes == [1]
     finally:
         router.close()
+
+import pytest
+
+pytestmark = pytest.mark.postgresql

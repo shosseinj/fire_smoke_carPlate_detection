@@ -285,3 +285,7 @@ def test_fire_engine_runtime_failure_uses_onnx_fallback(
     assert result.error is None
     assert processor.status()["model_path"] == str(onnx)
     assert processor.status()["model_fallbacks"] == 1
+
+import pytest
+
+pytestmark = pytest.mark.streaming

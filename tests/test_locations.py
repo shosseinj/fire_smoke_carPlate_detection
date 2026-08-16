@@ -832,3 +832,5 @@ class TestCascadeDelete:
 
         matches_after, total_after = store.list_matches_for_room(room.id)
         assert total_after == 0
+
+pytestmark = pytest.mark.postgresql

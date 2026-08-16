@@ -86,3 +86,5 @@ class TestAuthDisabledFlag:
         """When DISABLE_AUTH is not set, optional_user with no creds returns None."""
         os.environ.pop("DISABLE_AUTH", None)
         assert callable(get_optional_user)
+
+pytestmark = pytest.mark.unit

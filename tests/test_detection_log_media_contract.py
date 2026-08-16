@@ -208,3 +208,7 @@ def test_cleanup_preserves_media_still_referenced_by_another_log(
     fake_store.referenced = False
     api._delete_media_files(record)
     assert not path.exists()
+
+import pytest
+
+pytestmark = pytest.mark.unit

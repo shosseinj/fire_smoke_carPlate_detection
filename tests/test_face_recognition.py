@@ -919,3 +919,5 @@ def test_qdrant_init_failure_falls_back_to_postgresql(
     status = processor.status()
     assert status["qdrant"]["mode"] == "postgresql"
     assert "Qdrant unavailable; using PostgreSQL fallback" in status["vector_store_warning"]
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming]

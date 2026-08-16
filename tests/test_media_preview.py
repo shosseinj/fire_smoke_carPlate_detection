@@ -94,3 +94,5 @@ def test_preview_failure_redacts_source_credentials(tmp_path: Path) -> None:
 
     assert "secret" not in str(publisher._last_error)
     assert "secret" not in publisher._safe_name(source_uri)
+
+pytestmark = pytest.mark.streaming

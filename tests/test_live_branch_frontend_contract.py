@@ -20,7 +20,7 @@ def test_dashboard_exposes_real_live_branch_surface() -> None:
     assert "reconcileLiveBranchSources()" in html
     assert "source.active === true" in html
     assert "liveBranchCards" in html
-    assert "attempt < 20" in html
+    assert "attempt < maxWhepAttempts" in html
     assert "heartbeat.status === 409" in html
     assert "const fullscreenRequest =" in html
     assert "fullscreenShell.requestFullscreen()" in html
@@ -68,3 +68,7 @@ def test_wall_acquire_url_is_get_discoverable_without_creating_a_session() -> No
         and "GET" in route.methods
     ]
     assert matching, "GET wall acquire compatibility/discovery route must be registered"
+
+import pytest
+
+pytestmark = pytest.mark.unit

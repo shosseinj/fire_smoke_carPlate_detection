@@ -77,3 +77,6 @@ def test_frontend_expected_backend_routes_are_registered() -> None:
 
     missing = expected_frontend_paths - paths
     assert missing == set(), f"Missing frontend routes: {missing}"
+import pytest
+
+pytestmark = pytest.mark.unit

@@ -60,3 +60,7 @@ def test_clear_discards_pending_latest_frames_for_all_sources() -> None:
     assert buffer.clear() == 2
     assert buffer.stats().pending_sources == 0
     buffer.close()
+
+import pytest
+
+pytestmark = pytest.mark.unit

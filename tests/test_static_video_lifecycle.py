@@ -10,7 +10,7 @@ from app.database import Database
 from app.schemas import SourceCreate
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+pytestmark = [pytest.mark.postgresql, pytest.mark.usefixtures("postgres_database")]
 
 
 class IdleRouter:

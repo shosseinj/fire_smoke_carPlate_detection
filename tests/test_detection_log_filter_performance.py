@@ -47,6 +47,12 @@ class _RowsConnection:
     def __init__(self) -> None:
         self.execute_count = 0
 
+    def __enter__(self) -> "_RowsConnection":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
     def execute(self, _sql, ids):
         self.execute_count += 1
         return SimpleNamespace(
@@ -453,3 +459,5 @@ def test_filter_rejects_invalid_or_reversed_time_only_range() -> None:
             "all", "1405-01-18", "1405-01-18", None, None, "08:25:00", "08:23:00"
         )
     assert exc_info.value.status_code == 400
+
+pytestmark = pytest.mark.unit

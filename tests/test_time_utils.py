@@ -35,3 +35,7 @@ def test_utc_iso_to_jalali_datetime_empty_returns_none() -> None:
 
 def test_utc_iso_to_jalali_datetime_invalid_returns_none() -> None:
     assert utc_iso_to_jalali_datetime("not-a-date") is None
+
+import pytest
+
+pytestmark = pytest.mark.unit

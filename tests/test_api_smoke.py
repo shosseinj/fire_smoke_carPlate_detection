@@ -74,3 +74,5 @@ def test_health_endpoint_not_present_in_api_router() -> None:
     app = _build_test_app()
     paths = _collect_paths(app.routes)
     assert "/health" not in paths
+
+pytestmark = pytest.mark.postgresql

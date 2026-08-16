@@ -35,3 +35,5 @@ def test_rooms_router_exposes_patch_with_exact_update_model() -> None:
     patch_routes = [route for route in rooms_router.routes if route.path == "/rooms/{room_id}" and "PATCH" in route.methods]
     assert len(patch_routes) == 1
     assert get_type_hints(patch_routes[0].endpoint)["payload"] is RoomUpdate
+
+pytestmark = pytest.mark.unit

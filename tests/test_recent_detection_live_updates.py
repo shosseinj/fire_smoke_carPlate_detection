@@ -39,3 +39,7 @@ def test_saved_detection_is_published_to_dashboard_subscribers(
     finally:
         runtime.broadcast.unsubscribe(subscriber_id)
         runtime.close()
+
+import pytest
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming]
