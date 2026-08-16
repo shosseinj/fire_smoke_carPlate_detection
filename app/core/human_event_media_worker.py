@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from app.core.detection_event_schemas import HumanDetectionEvent
 from app.core.human_event_extractor import extract_human_media
+from app.core.human_event_audit_store import HumanEventAuditStore
 from app.core.recording_segment_store import IncompleteCoverageError, RecordingSegmentStore
 from app.core.recording_storage import (
     ObjectConflictError, RecordingStorageService, sha256_file,
@@ -26,9 +27,10 @@ class HumanEventMediaWorker:
                  dead_letter_stream: str = "detection:human:dead:v1", block_ms: int = 1000,
                   claim_idle_ms: int = 30000, max_attempts: int = 5, max_segments: int = 16,
                   max_duration_seconds: float = 120.0, max_temp_bytes: int = 2 * 1024**3,
-                  temp_root: Path | str = "saved_media/temporary_minIO/human_track",
-                  local_root: Path | str = "saved_media/human_track",
-                  write_enabled: bool = True) -> None:
+                   temp_root: Path | str = "saved_media/temporary_minIO/human_track",
+                   local_root: Path | str = "saved_media/human_track",
+                   audit_store: HumanEventAuditStore | None = None,
+                   write_enabled: bool = True) -> None:
         if min(block_ms, claim_idle_ms, max_attempts, max_segments, max_temp_bytes) <= 0 or max_duration_seconds <= 0:
             raise ValueError("human media worker bounds must be positive")
         self.redis, self.stream, self.segment_store, self.storage = redis_client, stream, segment_store, storage
@@ -37,6 +39,7 @@ class HumanEventMediaWorker:
         self.max_segments, self.max_duration_seconds, self.max_temp_bytes = max_segments, max_duration_seconds, max_temp_bytes
         self.temp_root = Path(temp_root)
         self.local_root = Path(local_root)
+        self.audit_store = audit_store
         self.write_enabled = write_enabled
         self._stop = threading.Event(); self._thread: threading.Thread | None = None
         self._metrics = {key: 0 for key in ("processed", "retried", "dead_lettered", "errors")}
@@ -84,10 +87,25 @@ class HumanEventMediaWorker:
 
     def _handle(self, message_id: Any, fields: dict[Any, Any]) -> None:
         payload = self._value(fields, "event")
+        processing_stage = "event_validation"
         try:
             event = HumanDetectionEvent.model_validate_json(payload)
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="processing", delivery_attempt=self._delivery_count(message_id),
+                    redis_published=True, redis_publish_pending=False,
+                    redis_message_id=str(message_id), last_error=None,
+                )
+            processing_stage = "segment_selection"
             segments = self.segment_store.match(event.camera_id, event.clip_start_at_utc,
                                                 event.clip_end_at_utc, max_segments=self.max_segments)
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="segments_selected", segments_found=len(segments),
+                    segments_used=[segment.segment_id for segment in segments],
+                    segment_object_keys=[segment.object_key for segment in segments],
+                    concatenation_required=len(segments) > 1,
+                )
             if not self.write_enabled:
                 self._metrics["retried"] += 1
                 return
@@ -107,33 +125,81 @@ class HumanEventMediaWorker:
             if total <= 0 or total + max(total // 4, 16 * 1024 * 1024) > self.max_temp_bytes:
                 raise ValueError("temporary media bound exceeded")
             total = 0
+            processing_stage = "segment_download"
             for index, segment in enumerate(segments):
                 path = self.storage.download_object(segment.object_key, downloads[index],
                                                     expected_sha256=segment.sha256)
                 total += path.stat().st_size
                 if total > self.max_temp_bytes:
                     raise ValueError("temporary media bound exceeded")
-            extract_human_media(downloads, [s.started_at_utc for s in segments],
-                                event.clip_start_at_utc, event.clip_end_at_utc,
-                                event.best_frame_at_utc, clip, snapshot,
-                                max_segments=self.max_segments,
-                                max_duration_seconds=self.max_duration_seconds)
+            if self.audit_store is not None:
+                self.audit_store.update(event, state="segments_downloaded")
+            processing_stage = "clip_extraction"
+            extraction = extract_human_media(
+                downloads, [s.started_at_utc for s in segments],
+                event.clip_start_at_utc, event.clip_end_at_utc,
+                event.best_frame_at_utc, clip, snapshot,
+                max_segments=self.max_segments,
+                max_duration_seconds=self.max_duration_seconds,
+            )
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="clip_created", clip_created=True,
+                    clip_frames=extraction.frames,
+                    concatenation_succeeded=len(segments) > 1,
+                    clip_path=str(clip), snapshot_path=str(snapshot),
+                )
+            print('eventeventeventevent', event)    
             prefix = f"human_track/{event.camera_id}/{event.best_frame_at_utc:%Y/%m/%d}/{event.event_id}"
             clip_key, snapshot_key = f"{prefix}/clip.mp4", f"{prefix}/snapshot.jpg"
+            processing_stage = "minio_upload"
             self.storage.upload_object(clip_key, clip, "video/mp4")
             self.storage.upload_object(snapshot_key, snapshot, "image/jpeg")
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="minio_uploaded", minio_uploaded=True,
+                    clip_object_key=clip_key, snapshot_object_key=snapshot_key,
+                )
             bucket = self.storage.settings.bucket_name
+            processing_stage = "database_finalization"
             self.finalizer(event, f"minio://{bucket}/{clip_key}", f"minio://{bucket}/{snapshot_key}")
-            durable_root = self.local_root / Path(prefix).relative_to("human_track")
+            if self.audit_store is not None:
+                self.audit_store.update(event, state="database_finalized", database_finalized=True)
+            durable_root = (
+                self.local_root / camera / f"{event.best_frame_at_utc:%Y/%m/%d}" / event_id
+            )
+            processing_stage = "local_archive"
             self._archive_file(clip, durable_root / "clip.mp4")
             self._archive_file(snapshot, durable_root / "snapshot.jpg")
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="local_archived", local_archived=True,
+                    local_clip_path=str(durable_root / "clip.mp4"),
+                    local_snapshot_path=str(durable_root / "snapshot.jpg"),
+                )
             for path in downloads:
                 path.unlink(missing_ok=True)
             try:
                 root.rmdir()
             except OSError:
                 pass
-            self.redis.xack(self.stream, self.group, message_id)
+            if self.audit_store is not None:
+                self.audit_store.update(
+                    event, state="completed", completed=True, acknowledged=False,
+                    ack_pending=True,
+                    local_clip_path=str(durable_root / "clip.mp4"),
+                    local_snapshot_path=str(durable_root / "snapshot.jpg"),
+                )
+            processing_stage = "redis_ack"
+            acknowledged = self.redis.xack(self.stream, self.group, message_id)
+            if self.audit_store is not None:
+                try:
+                    self.audit_store.update(
+                        event, state="completed", acknowledged=acknowledged != 0,
+                        ack_pending=False,
+                    )
+                except Exception:
+                    self._metrics["errors"] += 1
             self._metrics["processed"] += 1
         except Exception as exc:
             LOGGER.warning(
@@ -143,11 +209,42 @@ class HumanEventMediaWorker:
             )
             terminal = isinstance(exc, (ValueError, ObjectConflictError)) and not isinstance(exc, IncompleteCoverageError)
             exhausted = self._delivery_count(message_id) >= self.max_attempts
+            if "event" in locals() and self.audit_store is not None:
+                try:
+                    self.audit_store.update(
+                        event, state="failed" if terminal or exhausted else "retrying",
+                        last_error={"stage": processing_stage, "type": type(exc).__name__,
+                                    "message": str(exc)},
+                        completed=False,
+                    )
+                except Exception:
+                    self._metrics["errors"] += 1
             if terminal or exhausted:
                 try:
-                    self.redis.xadd(self.dead_letter_stream, {"source_stream": self.stream,
+                    if "event" in locals() and self.audit_store is not None:
+                        self.audit_store.update(
+                            event, state="dead_letter_pending", dead_letter_pending=True,
+                        )
+                    dead_letter_id = self.redis.xadd(self.dead_letter_stream, {"source_stream": self.stream,
                         "source_id": message_id, "event": payload, "error": type(exc).__name__})
-                    self.redis.xack(self.stream, self.group, message_id)
+                    if "event" in locals() and self.audit_store is not None:
+                        try:
+                            self.audit_store.update(
+                                event, state="dead_lettered", dead_lettered=True,
+                                dead_letter_pending=False,
+                                dead_letter_message_id=str(dead_letter_id), ack_pending=True,
+                            )
+                        except Exception:
+                            self._metrics["errors"] += 1
+                    acknowledged = self.redis.xack(self.stream, self.group, message_id)
+                    if "event" in locals() and self.audit_store is not None:
+                        try:
+                            self.audit_store.update(
+                                event, state="dead_lettered", dead_lettered=True,
+                                acknowledged=acknowledged != 0, ack_pending=False,
+                            )
+                        except Exception:
+                            self._metrics["errors"] += 1
                     self._metrics["dead_lettered"] += 1
                 except Exception:
                     self._metrics["errors"] += 1

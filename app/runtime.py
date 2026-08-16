@@ -48,6 +48,7 @@ from app.core.detection_log_store import DetectionLogStore
 from app.core.detection_event_publisher import DetectionEventPublisher
 from app.core.human_detection_event_observer import HumanDetectionEventObserver
 from app.core.human_event_media_worker import HumanEventMediaWorker
+from app.core.human_event_audit_store import HumanEventAuditStore
 from app.core.recording_segment_store import RecordingSegment, RecordingSegmentStore
 from app.core.recording_segment_dispatcher import RecordingSegmentDispatcher
 from app.core.durable_event_outbox import DurableHumanEventOutbox
@@ -1238,6 +1239,9 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             recording_error = type(exc).__name__
             LOGGER.warning("RECORDING_CONFIGURATION_UNAVAILABLE error=%s", type(exc).__name__)
     segment_store = RecordingSegmentStore(database)
+    human_event_audit_store = None
+    if app_settings.detection_events_enabled or app_settings.human_event_media_enabled:
+        human_event_audit_store = HumanEventAuditStore(app_settings.human_event_media_temp_path)
     human_event_outbox = None
     recording_segment_dispatcher = None
     if app_settings.detection_events_enabled and detection_event_redis is not None:
@@ -1245,6 +1249,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
             database, detection_event_redis, app_settings.detection_events_human_stream,
             app_settings.human_event_outbox_path,
             max_spool_files=app_settings.human_event_outbox_max_files,
+            audit_store=human_event_audit_store,
         )
         recording_segment_dispatcher = RecordingSegmentDispatcher(
             segment_store, detection_event_redis,
@@ -1291,6 +1296,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
                 max_temp_bytes=app_settings.human_event_media_max_temp_bytes,
                 temp_root=app_settings.human_event_media_temp_path,
                 local_root=app_settings.human_event_media_local_path,
+                audit_store=human_event_audit_store,
                 write_enabled=app_settings.human_event_media_write_enabled,
             )
         except Exception as exc:

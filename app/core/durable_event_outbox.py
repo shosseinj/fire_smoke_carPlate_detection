@@ -9,14 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from app.core.detection_event_schemas import HumanDetectionEvent
+from app.core.human_event_audit_store import HumanEventAuditStore
 from app.database import Database, ensure_database
 
 
 class DurableHumanEventOutbox:
     """Fsync-first human-event publisher with PostgreSQL/Redis recovery."""
     def __init__(self, database: Database | str, redis_client: Any, stream: str, spool: Path,
-                 *, poll_seconds: float = 0.25, batch_size: int = 50, max_spool_files: int = 10_000,
-                 after_fsync: Any | None = None) -> None:
+                  *, poll_seconds: float = 0.25, batch_size: int = 50, max_spool_files: int = 10_000,
+                  after_fsync: Any | None = None,
+                  audit_store: HumanEventAuditStore | None = None) -> None:
         self.database, self.redis, self.stream = ensure_database(database), redis_client, stream
         self.spool, self.poll_seconds, self.batch_size = spool, max(.05, poll_seconds), max(1, min(batch_size, 500))
         self.spool.mkdir(parents=True, exist_ok=True)
@@ -24,6 +26,7 @@ class DurableHumanEventOutbox:
             raise ValueError("outbox spool bound must be positive")
         self.max_spool_files = max_spool_files
         self._after_fsync = after_fsync
+        self.audit_store = audit_store
         self.quarantine = self.spool / "quarantine"; self.quarantine.mkdir(exist_ok=True)
         self._recover_orphans()
         self._spool_count = sum(1 for _ in self.spool.glob("*.json"))
@@ -38,6 +41,8 @@ class DurableHumanEventOutbox:
         target = self.spool / f"{digest}.json"
         temporary = self.spool / f"{digest}.{uuid.uuid4().hex}.tmp"
         try:
+            if self.audit_store is not None:
+                self.audit_store.persist_event(event)
             with self._lock:
                 if target.exists():
                     if target.read_text("utf-8") != payload:
@@ -117,9 +122,25 @@ class DurableHumanEventOutbox:
         sent = 0
         for row in rows:
             try:
-                self.redis.xadd(row["stream"], {"event": row["payload"]})
+                event = None
+                if self.audit_store is not None:
+                    event = HumanDetectionEvent.model_validate_json(row["payload"])
+                    self.audit_store.update(
+                        event, state="redis_publish_pending", redis_publish_pending=True,
+                        redis_stream=row["stream"], last_error=None,
+                    )
+                message_id = self.redis.xadd(row["stream"], {"event": row["payload"]})
                 with self.database.connection() as connection:
                     connection.execute("UPDATE detection_event_outbox SET published_at_utc=CURRENT_TIMESTAMP,last_error=NULL WHERE event_id=? AND published_at_utc IS NULL", (row["event_id"],))
+                if self.audit_store is not None and event is not None:
+                    try:
+                        self.audit_store.update(
+                            event, state="redis_published", redis_published=True,
+                            redis_publish_pending=False,
+                            redis_message_id=str(message_id), last_error=None,
+                        )
+                    except Exception as audit_exc:
+                        self._error = type(audit_exc).__name__
                 sent += 1; self._metrics["published"] += 1
             except Exception as exc:
                 self._metrics["publish_failed"] += 1; self._error = type(exc).__name__

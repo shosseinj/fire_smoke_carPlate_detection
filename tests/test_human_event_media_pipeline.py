@@ -12,6 +12,7 @@ from app.core.recording_segment_store import (
     match_covering_segments,
 )
 from app.core.human_event_media_worker import HumanEventMediaWorker
+from app.core.human_event_audit_store import HumanEventAuditStore
 from app.core.durable_event_outbox import DurableHumanEventOutbox
 from app.core.detection_event_schemas import HumanDetectionEvent
 from app.core.recording_segment_dispatcher import RecordingSegmentDispatcher
@@ -150,6 +151,7 @@ def test_human_media_files_are_removed_only_after_success(
     def extract(_downloads, _starts, _clip_start, _clip_end, _best, clip, snapshot, **_kwargs):
         clip.write_bytes(b"clip")
         snapshot.write_bytes(b"snapshot")
+        return SimpleNamespace(frames=3)
 
     import app.core.human_event_media_worker as module
     monkeypatch.setattr(module, "extract_human_media", extract)
@@ -172,12 +174,90 @@ def test_human_media_files_are_removed_only_after_success(
     else:
         assert not camera_root.exists()
         assert storage.uploaded == [
-            "human_track/rtsp___camera_1/2026/08/15/e/clip.mp4",
-            "human_track/rtsp___camera_1/2026/08/15/e/snapshot.jpg",
+            "human_track/rtsp://camera/1/2026/08/15/e/clip.mp4",
+            "human_track/rtsp://camera/1/2026/08/15/e/snapshot.jpg",
         ]
         assert (local_root / "rtsp___camera_1/2026/08/15/e/clip.mp4").read_bytes() == b"clip"
         assert (local_root / "rtsp___camera_1/2026/08/15/e/snapshot.jpg").read_bytes() == b"snapshot"
         assert any(call[0] == "ack" for call in redis.calls)
+
+
+def test_human_event_audit_retains_event_and_merge_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = human_event("audit-event")
+    segments = [segment("first", -5, 0), segment("second", 0, 5)]
+
+    class Store:
+        def match(self, *args, **kwargs):
+            return segments
+
+    class Storage:
+        settings = SimpleNamespace(bucket_name="recordings")
+
+        def stat(self, _key):
+            return SimpleNamespace(size=4)
+
+        def download_object(self, _key, destination, **_kwargs):
+            destination.write_bytes(b"data")
+            return destination
+
+        def upload_object(self, _key, _path, _content_type):
+            return None
+
+    def extract(_downloads, _starts, _clip_start, _clip_end, _best, clip, snapshot, **_kwargs):
+        clip.write_bytes(b"clip")
+        snapshot.write_bytes(b"snapshot")
+        return SimpleNamespace(frames=27)
+
+    import json
+    import app.core.human_event_media_worker as module
+    monkeypatch.setattr(module, "extract_human_media", extract)
+    audit_root = tmp_path / "saved_media/temporary_minIO/human_track"
+    audit = HumanEventAuditStore(audit_root)
+    redis = Redis()
+    worker = HumanEventMediaWorker(
+        redis, "human", Store(), Storage(), lambda *_: None,
+        temp_root=audit_root, local_root=tmp_path / "saved_media/human_track",
+        audit_store=audit,
+    )
+
+    worker._handle("1-0", {"event": event.model_dump_json()})
+
+    event_path, status_path = audit.paths(event)
+    assert HumanDetectionEvent.model_validate_json(event_path.read_text("utf-8")) == event
+    status = json.loads(status_path.read_text("utf-8"))
+    assert status["state"] == "completed"
+    assert status["segments_found"] == 2
+    assert status["segments_used"] == ["first", "second"]
+    assert status["concatenation_required"] is True
+    assert status["concatenation_succeeded"] is True
+    assert status["clip_created"] is True and status["clip_frames"] == 27
+    assert status["minio_uploaded"] is True
+    assert status["database_finalized"] is True
+    assert status["local_archived"] is True
+    assert status["completed"] is True and status["acknowledged"] is True
+
+
+def test_outbox_retains_event_audit_before_accepting_publish(tmp_path: Path) -> None:
+    event = human_event("retained-event")
+    audit = HumanEventAuditStore(tmp_path / "audit")
+    outbox = DurableHumanEventOutbox(
+        Database.__new__(Database), Redis(), "human", tmp_path / "outbox",
+        audit_store=audit,
+    )
+
+    assert outbox.publish(event) is True
+    event_path, status_path = audit.paths(event)
+    assert event_path.is_file() and status_path.is_file()
+
+
+def test_audit_paths_do_not_collide_after_sanitization(tmp_path: Path) -> None:
+    audit = HumanEventAuditStore(tmp_path)
+    first = human_event("event/a").model_copy(update={"camera_id": "camera/a"})
+    second = human_event("event:a").model_copy(update={"camera_id": "camera:a"})
+
+    assert audit.paths(first) != audit.paths(second)
 
 
 def test_retryable_coverage_error_is_not_acked() -> None:
