@@ -28,6 +28,7 @@ AGENTS.md
 .opencode/commands/
 
 # opencode configuration & artifacts
+prompt.txt
 opencode.json
 opencode copy.json
 .opencode/
