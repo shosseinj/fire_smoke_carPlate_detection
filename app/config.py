@@ -182,6 +182,9 @@ class Settings:
     continuous_recording_local_path: Path = _path(
         "CONTINUOUS_RECORDING_LOCAL_PATH", "saved_media/continuous"
     )
+    continuous_recording_success_retention_seconds: float = _env_float(
+        "CONTINUOUS_RECORDING_SUCCESS_RETENTION_SECONDS", 180.0
+    )
     recording_spool_high_water_percent: float = _env_float("RECORDING_SPOOL_HIGH_WATER_PERCENT", 90.0)
     recording_poll_seconds: float = _env_float("RECORDING_POLL_SECONDS", 0.5)
     saved_media_path: Path = _path("SAVED_MEDIA_PATH", "saved_media/personnel")

@@ -98,6 +98,7 @@ class GpuLiveBranchManager:
         recording_segment_seconds: float | None = None,
         recording_spool_path: Path | str = "saved_media/temporary_minIO/continuous",
         recording_archive_path: Path | str = "saved_media/continuous",
+        recording_success_retention_seconds: float = 180.0,
         camera_id_resolver: Callable[[str], int | str | None] | None = None,
         recording_segment_finalizer: Callable[[RecordingUpload, int, int, float, str], None] | None = None,
         gst_loader: Callable[[], tuple[Any, Any]] | None = None,
@@ -113,6 +114,7 @@ class GpuLiveBranchManager:
         self.recording_segment_seconds = max(1.0, configured_segment_seconds)
         self.recording_spool_path = Path(recording_spool_path)
         self.recording_archive_path = Path(recording_archive_path)
+        self.recording_success_retention_seconds = max(0.0, float(recording_success_retention_seconds))
         self.camera_id_resolver = camera_id_resolver
         self.recording_segment_finalizer = recording_segment_finalizer
         self.gst_loader = gst_loader
@@ -540,7 +542,9 @@ class GpuLiveBranchManager:
         return upload.path.with_suffix(".json")
 
     def _persist_upload(self, upload: RecordingUpload, media: dict[str, Any] | None = None) -> None:
-        self._upload_sidecar(upload).write_text(
+        sidecar = self._upload_sidecar(upload)
+        temporary = sidecar.with_name(f".{sidecar.name}.{time.time_ns()}.tmp")
+        temporary.write_text(
             json.dumps(
                 {
                     "camera_id": upload.camera_id,
@@ -553,6 +557,38 @@ class GpuLiveBranchManager:
             ),
             encoding="utf-8",
         )
+        temporary.replace(sidecar)
+
+    def _acknowledge_upload(self, upload: RecordingUpload) -> None:
+        sidecar = self._upload_sidecar(upload)
+        value = json.loads(sidecar.read_text(encoding="utf-8"))
+        value["upload_succeeded_at"] = datetime.now(timezone.utc).isoformat()
+        temporary = sidecar.with_name(f".{sidecar.name}.{time.time_ns()}.tmp")
+        temporary.write_text(json.dumps(value), encoding="utf-8")
+        temporary.replace(sidecar)
+
+    def _upload_succeeded_at(self, path: Path) -> datetime | None:
+        try:
+            value = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            succeeded_at = datetime.fromisoformat(value["upload_succeeded_at"])
+            if succeeded_at.tzinfo is None:
+                return None
+            return succeeded_at.astimezone(timezone.utc)
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None
+
+    def _cleanup_retained_uploads(self) -> None:
+        now = datetime.now(timezone.utc)
+        for pattern in ("camera-*.mp4", "live-*.mp4"):
+            for path in self.recording_spool_path.glob(pattern):
+                succeeded_at = self._upload_succeeded_at(path)
+                if succeeded_at is None or (now - succeeded_at).total_seconds() < self.recording_success_retention_seconds:
+                    continue
+                try:
+                    archived = self._archive_upload(self._recover_upload(path))
+                    LOGGER.info("Recording archived locally: %s", archived)
+                except Exception:
+                    LOGGER.warning("Retained recording cleanup failed: %s", path, exc_info=True)
 
     def _recover_upload(self, path: Path) -> RecordingUpload:
         sidecar = path.with_suffix(".json")
@@ -633,14 +669,21 @@ class GpuLiveBranchManager:
         bucket = os.getenv("RECORDING_MINIO_BUCKET", "recordings")
         for pattern in ("camera-*.mp4", "live-*.mp4"):
             for path in self.recording_spool_path.glob(pattern):
-                self._upload_queue.put(self._recover_upload(path))
+                if self._upload_succeeded_at(path) is None:
+                    self._upload_queue.put(self._recover_upload(path))
+        last_cleanup = 0.0
         while not self._stop.is_set():
+            if time.monotonic() - last_cleanup >= 0.5:
+                self._cleanup_retained_uploads()
+                last_cleanup = time.monotonic()
             try:
                 upload = self._upload_queue.get(timeout=0.5)
             except queue_module.Empty:
                 continue
             path = upload.path
             if not path.is_file():
+                continue
+            if self._upload_succeeded_at(path) is not None:
                 continue
             self._persist_upload(upload)
             LOGGER.info("Recording upload started: %s", path)
@@ -709,9 +752,14 @@ class GpuLiveBranchManager:
                 )
                 if self.recording_segment_finalizer is not None:
                     self.recording_segment_finalizer(upload, width, height, fps, checksum)
-                archived = self._archive_upload(upload)
+                self._acknowledge_upload(upload)
                 LOGGER.info("Recording upload succeeded: %s", upload.object_name)
-                LOGGER.info("Recording archived locally: %s", archived)
+                if self.recording_success_retention_seconds <= 0:
+                    try:
+                        archived = self._archive_upload(upload)
+                        LOGGER.info("Recording archived locally: %s", archived)
+                    except Exception:
+                        LOGGER.warning("Retained recording cleanup failed: %s", upload.path, exc_info=True)
             except Exception as exc:
                 client = None
                 LOGGER.warning(

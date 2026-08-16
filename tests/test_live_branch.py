@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -250,6 +251,87 @@ def test_successful_recording_is_archived_outside_retry_spool(tmp_path) -> None:
     assert archived.read_bytes() == b"video"
     assert archived.with_suffix(".json").read_text(encoding="utf-8") == '{"durable": true}'
     assert not recording.exists()
+
+
+def _retained_upload(manager: GpuLiveBranchManager, tmp_path: Path, age_seconds: float) -> RecordingUpload:
+    manager.recording_spool_path = tmp_path / "temporary"
+    manager.recording_archive_path = tmp_path / "archive"
+    manager.recording_spool_path.mkdir()
+    recording = manager.recording_spool_path / "camera-12-retained.mp4"
+    recording.write_bytes(b"video")
+    upload = manager._recording_upload(
+        recording, "12", datetime(2026, 8, 16, tzinfo=timezone.utc),
+        datetime(2026, 8, 16, 0, 0, 10, tzinfo=timezone.utc),
+    )
+    manager._persist_upload(upload)
+    sidecar = upload.path.with_suffix(".json")
+    import json
+    value = json.loads(sidecar.read_text(encoding="utf-8"))
+    value["upload_succeeded_at"] = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
+    sidecar.write_text(json.dumps(value), encoding="utf-8")
+    return upload
+
+
+def test_acknowledged_recording_is_retained_until_expiry(tmp_path) -> None:
+    manager = _manager()
+    manager.recording_success_retention_seconds = 180
+    upload = _retained_upload(manager, tmp_path, 10)
+
+    manager._cleanup_retained_uploads()
+
+    assert upload.path.is_file()
+    assert manager._upload_succeeded_at(upload.path) is not None
+
+
+@pytest.mark.parametrize("retention,age", [(180, 181), (0, 0)])
+def test_acknowledged_recording_archives_after_retention(
+    tmp_path, retention: float, age: float,
+) -> None:
+    manager = _manager()
+    manager.recording_success_retention_seconds = retention
+    upload = _retained_upload(manager, tmp_path, age)
+
+    manager._cleanup_retained_uploads()
+
+    assert not upload.path.exists()
+    assert (manager.recording_archive_path / "12/2026/08/16/camera-12-retained.mp4").is_file()
+
+
+def test_missing_or_malformed_acknowledgement_remains_recoverable(tmp_path) -> None:
+    manager = _manager()
+    upload = _retained_upload(manager, tmp_path, 10)
+    sidecar = upload.path.with_suffix(".json")
+    sidecar.write_text(sidecar.read_text(encoding="utf-8").replace(
+        '"upload_succeeded_at":', '"upload_succeeded_at": "bad", "replaced":'
+    ), encoding="utf-8")
+
+    assert manager._upload_succeeded_at(upload.path) is None
+    assert manager._recover_upload(upload.path).path == upload.path
+
+
+def test_cleanup_failure_retains_acknowledgement_and_retries_without_upload(
+    tmp_path, monkeypatch,
+) -> None:
+    manager = _manager()
+    manager.recording_success_retention_seconds = 0
+    upload = _retained_upload(manager, tmp_path, 10)
+    archive = manager._archive_upload
+    attempts = {"count": 0}
+
+    def fail_once(candidate):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError("busy")
+        return archive(candidate)
+
+    monkeypatch.setattr(manager, "_archive_upload", fail_once)
+    manager._cleanup_retained_uploads()
+    assert upload.path.is_file()
+    assert manager._upload_succeeded_at(upload.path) is not None
+
+    manager._cleanup_retained_uploads()
+    assert not upload.path.exists()
+    assert manager._upload_queue.empty()
 
 
 def test_branch_reuse_and_grace_release() -> None:

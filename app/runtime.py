@@ -1162,6 +1162,7 @@ def build_runtime(app_settings: Settings = settings) -> Runtime:
         recording_segment_seconds=app_settings.live_recording_segment_seconds,
         recording_spool_path=app_settings.continuous_recording_temp_path,
         recording_archive_path=app_settings.continuous_recording_local_path,
+        recording_success_retention_seconds=app_settings.continuous_recording_success_retention_seconds,
         camera_id_resolver=lambda source_id: (
             record.id if (record := registry.get(source_id)) is not None else None
         ),
