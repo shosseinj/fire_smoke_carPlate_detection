@@ -19,9 +19,19 @@ from app.core.source_registry import SourceRecord, SourceRegistry
 from app.core.types import TaskName
 from app.database import get_database, metadata
 from app.runtime import Runtime, build_runtime
+from collections.abc import Iterator
 
 
-pytestmark = pytest.mark.usefixtures("postgres_database")
+@pytest.fixture(autouse=True)
+def _disable_auth() -> Iterator[None]:
+    os.environ["DISABLE_AUTH"] = "true"
+    try:
+        yield
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
+
+
+pytestmark = [pytest.mark.postgresql, pytest.mark.streaming, pytest.mark.usefixtures("postgres_database")]
 settings = replace(settings, media_preview_enabled=False)
 
 

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import time
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -26,6 +29,15 @@ from app.core.broadcast import (
 from app.core.source_registry import SourceChange, SourceRecord
 from app.core.types import FramePacket, TaskName, TaskResult
 from app.core.worker import TaskWorker
+
+
+@pytest.fixture(autouse=True)
+def _disable_websocket_auth() -> Iterator[None]:
+    os.environ["DISABLE_AUTH"] = "true"
+    try:
+        yield
+    finally:
+        os.environ.pop("DISABLE_AUTH", None)
 
 
 def packet(tasks: list[str], source_id: str = "camera-07") -> FramePacket:
@@ -878,3 +890,5 @@ def test_source_only_renderer_uses_configured_bounded_worker_pool() -> None:
         assert state["render_threads"] == 2
     finally:
         hub.close()
+
+pytestmark = pytest.mark.unit
